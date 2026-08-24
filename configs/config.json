@@ -1,0 +1,1118 @@
+{
+  "classify": {
+    "product_type": "classify_v2",
+    "configuration_id": null,
+    "rules": [
+      {
+        "type": "SLP_CIVIL",
+        "description": "Special Leave Petition (Civil) is filed against any judgment, decree, determination, sentence or order in any cause or matter passed or made by any court or tribunal in the territory of India."
+      },
+      {
+        "type": "SLP_CRIMINAL",
+        "description": "Special Leave Petition (Criminal) is filed against any judgment, decree, determination, sentence or order in a criminal proceeding passed or made by any court or tribunal in the territory of India."
+      },
+      {
+        "type": "ARBITRATION_PETITION",
+        "description": "Arbitration Petition typically involves matters related to appointment of arbitrators or challenging arbitral awards."
+      },
+      {
+        "type": "WRIT_PETITION_CIVIL",
+        "description": "Writ Petition (Civil) filed under Article 32 or 226 of the Constitution of India for enforcement of fundamental rights or other civil rights."
+      },
+      {
+        "type": "WRIT_PETITION_CRIMINAL",
+        "description": "Writ Petition (Criminal) filed under Article 32 or 226 for enforcement of fundamental rights involving personal liberty or criminal matters."
+      },
+      {
+        "type": "other",
+        "description": "Any other petition type not covered above."
+      }
+    ],
+    "mode": "FAST",
+    "parsing_configuration": {
+      "max_pages": 5
+    }
+  },
+  "extract-jubeex": {
+    "product_type": "extract_v2",
+    "configuration_id": null,
+    "data_schema": {
+      "title": "CoreFilingRecord",
+      "description": "Core Filing Record for JubeeX parsing pipeline. Same shape for all petition types.",
+      "type": "object",
+      "properties": {
+        "court": {
+          "title": "Court",
+          "description": "The court where the petition is filed.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "petition_type": {
+          "title": "Petition Type",
+          "description": "Type of the petition (e.g. SLP_CIVIL, WRIT_PETITION_CRIMINAL).",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "special_category": {
+          "title": "Special Category",
+          "description": "Special category of the petition (e.g. Appeal (Armed Forces) ,Civil Appeal with High Court Certificate , Indigent Person, Criminal Appeal with High Court Certificate, SLP (Civil) with respect to Motor Vehicles Act, Jail Petition, Matters Involving / Pertaining to Minors, Demolition Matters, Eviction Matters, Bail Applications / Bail Matters, Tax Matters, PIL).",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cause_title": {
+          "title": "CauseTitle",
+          "description": "Cause title representing petitioner vs respondent.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "raw_text": {
+                  "title": "Raw Text",
+                  "description": "The cause title verbatim",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "petitioner_summary": {
+                  "title": "Petitioner Summary",
+                  "description": "The petitioner side as printed",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "respondent_summary": {
+                  "title": "Respondent Summary",
+                  "description": "The respondent side as printed",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "formatted_title": {
+                  "title": "Formatted Title",
+                  "description": "A strictly formatted version of the cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. You MUST append 'And ors.' if there are multiple petitioners or multiple respondents.",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_part": {
+                  "title": "Source Part",
+                  "description": "The document part where this was found",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_pages": {
+                  "title": "Source Pages",
+                  "description": "Pages containing this data",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "raw_text",
+                "formatted_title"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "petitioners": {
+          "title": "Petitioners",
+          "description": "Array of petitioners. One record per petitioner.",
+          "type": "array",
+          "items": {
+            "title": "Petitioner",
+            "type": "object",
+            "properties": {
+              "serial": {
+                "title": "Serial",
+                "description": "Position in the cause title, 1-based",
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "full_name": {
+                "title": "Full Name",
+                "description": "Full name as printed",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "entity_type": {
+                "title": "Entity Type",
+                "description": "INDIVIDUAL, COMPANY, PARTNERSHIP, etc.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "acting_through": {
+                "title": "Acting Through",
+                "description": "The authorised signatory",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "relation_details": {
+                "title": "Relation Details",
+                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "source_part": {
+                "title": "Source Part",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "source_pages": {
+                "title": "Source Pages",
+                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "address_full_text": {
+                "title": "Address Full Text",
+                "description": "Mandatory verbatim address text. Do not omit any details.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "city": {
+                "title": "City",
+                "description": "Extracted city",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "state": {
+                "title": "State",
+                "description": "Extracted state",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "pin_code": {
+                "title": "Pin Code",
+                "description": "Extracted pincode",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            }
+          },
+          "default": []
+        },
+        "respondents": {
+          "title": "Respondents",
+          "description": "Array of respondents. One record per respondent.",
+          "type": "array",
+          "items": {
+            "title": "Respondent",
+            "type": "object",
+            "properties": {
+              "serial": {
+                "title": "Serial",
+                "description": "Position in the cause title, 1-based",
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "full_name": {
+                "title": "Full Name",
+                "description": "Full name as printed. DO NOT concatenate relations.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "age": {
+                "title": "Age",
+                "description": "Age as an integer",
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "occupation": {
+                "title": "Occupation",
+                "description": "Occupation",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "source_part": {
+                "title": "Source Part",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "source_pages": {
+                "title": "Source Pages",
+                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "relation_details": {
+                "title": "Relation Details",
+                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "address_full_text": {
+                "title": "Address Full Text",
+                "description": "Mandatory verbatim address text. Do not omit any details.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "city": {
+                "title": "City",
+                "description": "Extracted city",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "state": {
+                "title": "State",
+                "description": "Extracted state",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "pin_code": {
+                "title": "Pin Code",
+                "description": "Extracted pincode",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            }
+          },
+          "default": []
+        },
+        "matter_classification": {
+          "title": "MatterClassification",
+          "description": "Main category, sub category, special category, PIL flag.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "main_category": {
+                  "title": "Main Category",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "sub_category": {
+                  "title": "Sub Category",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "special_category": {
+                  "title": "Special Category",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "is_pil": {
+                  "title": "Is Pil",
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_part": {
+                  "title": "Source Part",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_pages": {
+                  "title": "Source Pages",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "impugned_order": {
+          "title": "ImpugnedOrder",
+          "description": "The challenged order and the earlier court.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "applicable": {
+                  "title": "Applicable",
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": true
+                },
+                "not_applicable_reason": {
+                  "title": "Not Applicable Reason",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "date_of_impugned_order": {
+                  "title": "Date Of Impugned Order",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "earlier_court": {
+                  "title": "Earlier Court",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "case_number": {
+                  "title": "Case Number",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "petition_type": {
+                  "title": "Petition Type",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "certified_copy_applied_on": {
+                  "title": "Certified Copy Applied On",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "certified_copy_obtained_on": {
+                  "title": "Certified Copy Obtained On",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_part": {
+                  "title": "Source Part",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_pages": {
+                  "title": "Source Pages",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "advocate_on_record": {
+          "title": "AdvocateOnRecord",
+          "description": "AOR identity and contact details.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "title": "Name",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "registration_number": {
+                  "title": "Registration Number",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "email": {
+                  "title": "Email",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "mobile": {
+                  "title": "Mobile",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "firm_name": {
+                  "title": "Firm Name",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "office_address": {
+                  "title": "Office Address",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "title": "Type",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "full_text": {
+                          "title": "Full Text",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "city": {
+                          "title": "City",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "state": {
+                          "title": "State",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "pin_code": {
+                          "title": "Pin Code",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        },
+                        "country": {
+                          "title": "Country",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": null
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_part": {
+                  "title": "Source Part",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "source_pages": {
+                  "title": "Source Pages",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "name"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "filing_summary": {
+          "title": "FilingSummary",
+          "description": "Court, matter type and title, counts, review estimate.",
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "court": {
+                  "title": "Court",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "matter_type": {
+                  "title": "Matter Type",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "matter_title": {
+                  "title": "Matter Title",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "documents": {
+                  "title": "Documents",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "title": "Count",
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": 0
+                        },
+                        "items": {
+                          "title": "Items",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "annexures": {
+                  "title": "Annexures",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "title": "Count",
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": 0
+                        },
+                        "items": {
+                          "title": "Items",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "applications": {
+                  "title": "Applications",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "count": {
+                          "title": "Count",
+                          "anyOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": 0
+                        },
+                        "items": {
+                          "title": "Items",
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": []
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "estimated_review_minutes": {
+                  "title": "Estimated Review Minutes",
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "estimated_review_basis": {
+                  "title": "Estimated Review Basis",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "court",
+        "petition_type",
+        "cause_title",
+        "petitioners",
+        "respondents",
+        "advocate_on_record"
+      ]
+    },
+    "tier": "agentic",
+    "extraction_target": "per_doc",
+    "system_prompt": null,
+    "cite_sources": true,
+    "confidence_scores": true
+  },
+  "parse": {
+    "product_type": "parse_v2",
+    "configuration_id": null,
+    "tier": "agentic",
+    "version": "latest"
+  },
+  "split": {
+    "product_type": "split_v1",
+    "configuration_id": null,
+    "categories": [
+      {
+        "name": "COVER_PAGE",
+        "description": "Cover / index / listing proforma pages showing court name, cause title, petition number, and registry particulars."
+      },
+      {
+        "name": "PETITION",
+        "description": "Main petition body including facts, grounds, questions of law, and prayers."
+      },
+      {
+        "name": "IMPUGNED_ORDER",
+        "description": "The judgment, order, or award under challenge from the earlier court or tribunal."
+      },
+      {
+        "name": "AOR_DECLARATION",
+        "description": "Advocate-on-Record declaration, vakalatnama, or AOR contact and registration details."
+      },
+      {
+        "name": "APPLICATION",
+        "description": "Interlocutory applications such as stay, exemption, condonation of delay, or interim relief."
+      },
+      {
+        "name": "ANNEXURE",
+        "description": "Annexures, exhibits, and supporting documents attached to the petition."
+      },
+      {
+        "name": "AFFIDAVIT",
+        "description": "Affidavits, verifications, and sworn statements filed with the petition."
+      }
+    ],
+    "splitting_strategy": {
+      "allow_uncategorized": "include"
+    }
+  }
+}

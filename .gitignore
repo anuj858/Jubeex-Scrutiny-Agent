@@ -1,0 +1,16 @@
+.env
+.env.local
+.env.*.local
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+uv.lock
+workflows.db
+package-lock.json
+node_modules/
+ui/node_modules/
+ui/dist/
+.DS_Store

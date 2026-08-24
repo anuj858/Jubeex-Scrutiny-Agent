@@ -1,0 +1,23 @@
+# LlamaAgents deployment spec (no real secrets in this file).
+# Values like ${PINECONE_API_KEY} are resolved from your local environment
+# when you run: uvx llamactl deployments apply -f deployment.yaml
+#
+# Before apply:
+#   1. Commit + push main (do NOT commit .env)
+#   2. set -a && source .env && set +a
+#   3. uvx llamactl auth login
+
+name: jubeex-scrutiny-agent
+spec:
+  repo_url: https://github.com/anuj858/Jubeex-Scrutiny-Agent.git
+  deployment_file_path: "."
+  git_ref: main
+  secrets:
+    PINECONE_API_KEY: ${PINECONE_API_KEY}
+    PINECONE_INDEX: ${PINECONE_INDEX}
+    PINECONE_CLOUD: ${PINECONE_CLOUD}
+    PINECONE_REGION: ${PINECONE_REGION}
+    PINECONE_EMBED_MODEL: ${PINECONE_EMBED_MODEL}
+    PINECONE_TEXT_FIELD: ${PINECONE_TEXT_FIELD}
+    PINECONE_NAMESPACE: ${PINECONE_NAMESPACE}
+    VECTOR_BACKEND: pinecone
