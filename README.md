@@ -1,6 +1,6 @@
 # Jubeex Scrutiny Agent
 
-A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** + **LlamaSplit** for section-aware RAG, LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + section chunks in Pinecone.
+A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** for page markdown, LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + page chunks in Pinecone.
 
 # Running the application
 
@@ -37,7 +37,7 @@ uvx llamactl deployments apply -f deployment.yaml
 
 ## Features
 
-- **Parse + Split**: LlamaParse produces per-page markdown; LlamaSplit labels petition sections (Cover Page, Petition, Impugned Order, AOR's Declaration, Annexures, Affidavit, Listing Proforma, and related filing parts)
+- **Parse**: LlamaParse produces per-page markdown used for Pinecone page chunks
 - **Petition classification**: LlamaClassify labels filings as one of:
   - `SLP_CIVIL`
   - `SLP_CRIMINAL`
@@ -53,9 +53,9 @@ uvx llamactl deployments apply -f deployment.yaml
   - Impugned order details
   - Advocate on Record (AOR) contact and registration
   - Filing summary (documents, annexures, applications, review estimate)
-- **Parallel classify + extract**: After parse/split, extraction starts and classification runs alongside
+- **Parallel classify + extract**: After parse, extraction starts and classification runs alongside
 - **Agent Data storage**: Results land in collection `jubeex-filing-extraction`, deduplicated by file hash
-- **Pinecone vector index**: Upserts (1) a filing summary vector and (2) per-section chunks from Parse×Split. Embeddings are **not** generated in-app — Pinecone’s integrated model (`llama-text-embed-v2`) embeds server-side
+- **Pinecone vector index**: Upserts (1) a filing summary vector and (2) per-page chunks from Parse. Embeddings are **not** generated in-app — Pinecone’s integrated model (`llama-text-embed-v2`) embeds server-side
 - **Review UI**: Upload filings, watch workflow progress, edit/approve extracted records
 
 ## Project layout
@@ -78,9 +78,9 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 
 - Runtime settings: `configs/config.json`
   - `parse` — LlamaParse tier/version
-  - `split` — petition section categories
   - `classify` — rules, FAST mode, first 5 pages for classification
   - `extract-jubeex` — Core Filing Record JSON schema, agentic tier, source citations + confidence scores
+  - `split` — unused for now (kept for optional re-enable later)
 - Python models and collection name: `src/extraction_review/config.py`
 - Workflow registration: `[tool.llamadeploy]` in `pyproject.toml`
 
@@ -88,22 +88,20 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 
 1. **Upload**: User uploads a petition PDF through the UI (`process-file` workflow).
 2. **Parse**: LlamaParse converts the PDF to per-page markdown.
-3. **Split**: LlamaSplit assigns pages to section categories (cover, petition, impugned order, AOR, applications, annexures, affidavits).
-4. **Start extraction**: Starts a LlamaExtract job with the JubeeX schema.
-5. **Classify (parallel)**: LlamaClassify picks petition type; on failure defaults to `other`.
-6. **Complete extraction**: Waits for extract, validates against `CoreFilingRecord`, stamps classification + parse/split metadata.
-7. **Store**: Dedupes by `file_hash`, then creates Agent Data in `jubeex-filing-extraction`.
-8. **Vector index** (when `VECTOR_BACKEND=pinecone`): Upserts a summary vector plus section chunks (long sections windowed to ~3500 chars); Pinecone embeds with the integrated model.
-9. **Review**: UI lists items for review/edit.
+3. **Start extraction**: Starts a LlamaExtract job with the JubeeX schema.
+4. **Classify (parallel)**: LlamaClassify picks petition type; on failure defaults to `other`.
+5. **Complete extraction**: Waits for extract, validates against `CoreFilingRecord`, stamps classification + parse metadata.
+6. **Store**: Dedupes by `file_hash`, then creates Agent Data in `jubeex-filing-extraction`.
+7. **Vector index** (when `VECTOR_BACKEND=pinecone`): Upserts a summary vector plus page chunks (long pages windowed to ~3500 chars); Pinecone embeds with the integrated model.
+8. **Review**: UI lists items for review/edit.
 
-Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_section_records`, `search_filings`).
+Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_page_records`, `search_filings`).
 
 ### Workflows
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | parse → split → extract → classify → store → Pinecone |
-| `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
+| `process-file` | `src/extraction_review/process_file.py` | parse → extract → classify → store → Pinecone |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
 
 Progress is streamed to the UI via `Status` events (and extraction result events).

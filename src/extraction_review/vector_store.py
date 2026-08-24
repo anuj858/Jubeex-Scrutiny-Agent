@@ -168,77 +168,56 @@ def split_text_windows(
     return [w for w in windows if w]
 
 
-def build_section_records(
+def build_page_records(
     *,
     base_id: str,
     page_markdown: dict[int, str],
-    segments: list[dict[str, Any]],
     metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Build Pinecone records from parse pages + split segments.
+    Build Pinecone records from parse page markdown.
 
-    Each split segment's pages are joined, then window-chunked if long.
+    Each page is window-chunked if longer than MAX_CHUNK_CHARS.
     """
     base_meta = metadata or {}
     records: list[dict[str, Any]] = []
-    empty_segments = 0
+    empty_pages = 0
 
-    for seg_idx, segment in enumerate(segments):
-        category = str(segment.get("category") or "uncategorized")
-        pages = [int(p) for p in (segment.get("pages") or [])]
-        confidence = segment.get("confidence_category")
-        parts = [
-            page_markdown[p]
-            for p in pages
-            if p in page_markdown and page_markdown[p]
-        ]
-        section_text = "\n\n".join(parts).strip()
-        if not section_text:
-            empty_segments += 1
-            logger.info(
-                "[Pinecone] Segment %s category=%s pages=%s has no markdown; skip",
-                seg_idx,
-                category,
-                pages,
-            )
+    for page_num in sorted(page_markdown.keys()):
+        page_text = (page_markdown.get(page_num) or "").strip()
+        if not page_text:
+            empty_pages += 1
             continue
 
-        windows = split_text_windows(section_text)
+        windows = split_text_windows(page_text)
         logger.info(
-            "[Pinecone] Segment %s category=%s pages=%s → %s char(s) → %s window(s)",
-            seg_idx,
-            category,
-            pages,
-            len(section_text),
+            "[Pinecone] Page %s → %s char(s) → %s window(s)",
+            page_num,
+            len(page_text),
             len(windows),
         )
         for chunk_idx, window in enumerate(windows):
-            record_id = f"{base_id}:{category}:{seg_idx}:{chunk_idx}"
+            record_id = f"{base_id}:page:{page_num}:{chunk_idx}"
             records.append(
                 {
                     "record_id": record_id,
                     "chunk_text": window,
                     "metadata": {
                         **base_meta,
-                        "chunk_kind": "section",
-                        "section_category": category,
-                        "segment_index": seg_idx,
+                        "chunk_kind": "page",
+                        "page_start": page_num,
+                        "page_end": page_num,
+                        "pages": str(page_num),
                         "chunk_index": chunk_idx,
-                        "page_start": min(pages) if pages else None,
-                        "page_end": max(pages) if pages else None,
-                        "pages": ",".join(str(p) for p in pages),
-                        "split_confidence": confidence,
                     },
                 }
             )
 
     logger.info(
-        "[Pinecone] Section records ready: %s chunk(s) from %s segment(s) "
-        "(%s empty)",
+        "[Pinecone] Page records ready: %s chunk(s) from %s page(s) (%s empty)",
         len(records),
-        len(segments),
-        empty_segments,
+        len(page_markdown),
+        empty_pages,
     )
     return records
 

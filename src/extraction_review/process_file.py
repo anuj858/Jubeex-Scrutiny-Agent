@@ -18,12 +18,11 @@ from .config import (
     ClassifyConfig,
     ExtractConfig,
     ParseConfig,
-    SplitConfig,
     get_extraction_schema,
 )
 from .vector_store import (
     build_filing_chunk_text,
-    build_section_records,
+    build_page_records,
     pinecone_enabled,
     upsert_records,
 )
@@ -41,8 +40,8 @@ class FileEvent(StartEvent):
     file_hash: str | None = None
 
 
-class ParsedSplitEvent(Event):
-    """Parse + split finished (or soft-failed); extraction may proceed."""
+class ParsedEvent(Event):
+    """Parse finished (or soft-failed); extraction may proceed."""
 
     pass
 
@@ -81,8 +80,6 @@ class ExtractionState(BaseModel):
     classification_reasoning: str | None = None
     # page_number (1-indexed) -> markdown text
     page_markdown: dict[int, str] = Field(default_factory=dict)
-    # [{category, pages, confidence_category}, ...]
-    split_segments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 async def _wait_for_classify(client: AsyncLlamaCloud, job_id: str) -> Any:
@@ -122,10 +119,10 @@ def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
 
 
 class ProcessFileWorkflow(Workflow):
-    """Parse, split, classify, and extract a JubeeX filing."""
+    """Parse, classify, and extract a JubeeX filing."""
 
     @step()
-    async def parse_and_split(
+    async def parse_file(
         self,
         event: FileEvent,
         ctx: Context[ExtractionState],
@@ -141,17 +138,8 @@ class ProcessFileWorkflow(Workflow):
                 description="LlamaParse settings for JubeeX filings",
             ),
         ],
-        split_config: Annotated[
-            SplitConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="split",
-                label="Split Categories",
-                description="Section categories for petition bundles",
-            ),
-        ],
-    ) -> ParsedSplitEvent:
-        """Parse the PDF to markdown pages, then split into petition sections."""
+    ) -> ParsedEvent:
+        """Parse the PDF to markdown pages for Pinecone indexing."""
         file_id = event.file_id
         logger.info(f"Running file {file_id}")
 
@@ -236,94 +224,16 @@ class ProcessFileWorkflow(Workflow):
                 )
             )
 
-        # --- Split ---
-        segments: list[dict[str, Any]] = []
-        try:
-            categories = [
-                {"name": c.name, "description": c.description}
-                for c in (split_config.categories or [])
-            ]
-            if not categories:
-                raise ValueError("split.categories is empty in configs/config.json")
-
-            ctx.write_event_to_stream(
-                Status(level="info", message=f"Splitting file {filename} into sections")
-            )
-            # Split API currently accepts file_id only (parse_job_id returns 422).
-            document_input = {"type": "file_id", "value": file_id}
-
-            split_kwargs: dict[str, Any] = {
-                "document_input": document_input,
-                "categories": categories,
-                "project_id": project_id,
-            }
-            if split_config.splitting_strategy is not None:
-                split_kwargs["splitting_strategy"] = split_config.model_dump(
-                    include={"splitting_strategy"},
-                    exclude_none=True,
-                ).get("splitting_strategy")
-
-            if split_config.configuration_id:
-                completed_split = await llama_cloud_client.beta.split.create(
-                    document_input=document_input,
-                    configuration_id=split_config.configuration_id,
-                    project_id=project_id,
-                )
-                completed_split = (
-                    await llama_cloud_client.beta.split.wait_for_completion(
-                        completed_split.id,
-                        project_id=project_id,
-                    )
-                )
-            else:
-                completed_split = await llama_cloud_client.beta.split.split(
-                    **split_kwargs
-                )
-
-            result = getattr(completed_split, "result", None)
-            raw_segments = getattr(result, "segments", None) or []
-            for seg in raw_segments:
-                if hasattr(seg, "model_dump"):
-                    segments.append(seg.model_dump(mode="json"))
-                elif isinstance(seg, dict):
-                    segments.append(seg)
-                else:
-                    segments.append(
-                        {
-                            "category": getattr(seg, "category", "uncategorized"),
-                            "pages": list(getattr(seg, "pages", []) or []),
-                            "confidence_category": getattr(
-                                seg, "confidence_category", None
-                            ),
-                        }
-                    )
-
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=f"Split into {len(segments)} section(s)",
-                )
-            )
-        except Exception as e:
-            logger.error(f"Split failed for {filename}: {e}", exc_info=True)
-            ctx.write_event_to_stream(
-                Status(
-                    level="warning",
-                    message=f"Split failed; continuing without sections: {e}",
-                )
-            )
-
         async with ctx.store.edit_state() as state:
             state.parse_job_id = parse_job_id
             state.page_markdown = page_markdown
-            state.split_segments = segments
 
-        return ParsedSplitEvent()
+        return ParsedEvent()
 
     @step()
     async def start_extraction(
         self,
-        event: ParsedSplitEvent,
+        event: ParsedEvent,
         ctx: Context[ExtractionState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
@@ -489,7 +399,7 @@ class ProcessFileWorkflow(Workflow):
             ),
         ],
     ) -> StopEvent:
-        """Wait for extraction, save Agent Data, and index sections in Pinecone."""
+        """Wait for extraction, save Agent Data, and index pages in Pinecone."""
         state = await ctx.store.get_state()
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
@@ -547,7 +457,7 @@ class ProcessFileWorkflow(Workflow):
             data.metadata["classification_confidence"] = state.classification_confidence
             data.metadata["classification_reasoning"] = state.classification_reasoning
             data.metadata["parse_job_id"] = state.parse_job_id
-            data.metadata["split_segment_count"] = len(state.split_segments)
+            data.metadata["page_count"] = len(state.page_markdown or {})
             extracted_event = ExtractedEvent(data=data)
         except InvalidExtractionData as e:
             logger.error(f"Error validating extracted data: {e}", exc_info=True)
@@ -610,12 +520,10 @@ class ProcessFileWorkflow(Workflow):
                 }
 
                 logger.info(
-                    "[Pinecone] Indexing start for %s (base_id=%s, "
-                    "pages=%s, split_segments=%s)",
+                    "[Pinecone] Indexing start for %s (base_id=%s, pages=%s)",
                     state.filename,
                     base_id,
                     len(state.page_markdown or {}),
-                    len(state.split_segments or []),
                 )
                 ctx.write_event_to_stream(
                     Status(
@@ -654,39 +562,38 @@ class ProcessFileWorkflow(Workflow):
                 else:
                     logger.warning("[Pinecone] Summary chunk empty; skipping")
 
-                # 2) Section vectors from Parse pages × Split segments
-                section_records = build_section_records(
+                # 2) Page vectors from Parse markdown
+                page_records = build_page_records(
                     base_id=base_id,
                     page_markdown=state.page_markdown,
-                    segments=state.split_segments,
                     metadata=shared_meta,
                 )
-                pinecone_items.extend(section_records)
+                pinecone_items.extend(page_records)
                 logger.info(
-                    "[Pinecone] Built %s section chunk(s) from %s split segment(s)",
-                    len(section_records),
-                    len(state.split_segments or []),
+                    "[Pinecone] Built %s page chunk(s) from %s page(s)",
+                    len(page_records),
+                    len(state.page_markdown or {}),
                 )
-                if not section_records and not (state.split_segments or []):
+                if not page_records:
                     logger.warning(
-                        "[Pinecone] No split segments available — "
+                        "[Pinecone] No page markdown available — "
                         "only summary vector will be indexed"
                     )
 
                 count = upsert_records(pinecone_items)
                 logger.info(
                     "[Pinecone] Indexed %s vector(s) for %s "
-                    "(1 summary + %s section chunks)",
+                    "(1 summary + %s page chunks)",
                     count,
                     state.filename,
-                    len(section_records),
+                    len(page_records),
                 )
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
                         message=(
                             f"Indexed {count} vector(s) in Pinecone "
-                            f"(summary + {len(section_records)} section chunks)"
+                            f"(summary + {len(page_records)} page chunks)"
                         ),
                     )
                 )
