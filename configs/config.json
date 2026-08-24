@@ -1083,32 +1083,61 @@
     "configuration_id": null,
     "categories": [
       {
-        "name": "COVER_PAGE",
-        "description": "Cover / index / listing proforma pages showing court name, cause title, petition number, and registry particulars."
+        "name": "Advocate's Checklist"
       },
       {
-        "name": "PETITION",
-        "description": "Main petition body including facts, grounds, questions of law, and prayers."
+        "name": "Caveat Report"
       },
       {
-        "name": "IMPUGNED_ORDER",
-        "description": "The judgment, order, or award under challenge from the earlier court or tribunal."
+        "name": "Cover Page"
       },
       {
-        "name": "AOR_DECLARATION",
-        "description": "Advocate-on-Record declaration, vakalatnama, or AOR contact and registration details."
+        "name": "Record of Proceedings"
       },
       {
-        "name": "APPLICATION",
-        "description": "Interlocutory applications such as stay, exemption, condonation of delay, or interim relief."
+        "name": "AOR's Declaration"
       },
       {
-        "name": "ANNEXURE",
-        "description": "Annexures, exhibits, and supporting documents attached to the petition."
+        "name": "Index"
       },
       {
-        "name": "AFFIDAVIT",
-        "description": "Affidavits, verifications, and sworn statements filed with the petition."
+        "name": "Office Report on Limitation"
+      },
+      {
+        "name": "Listing Proforma"
+      },
+      {
+        "name": "Synopsis"
+      },
+      {
+        "name": "List of Dates & Events"
+      },
+      {
+        "name": "Petition"
+      },
+      {
+        "name": "Affidavit"
+      },
+      {
+        "name": "Annexures"
+      },
+      {
+        "name": "Appendix"
+      },
+      {
+        "name": "Memo of Parties"
+      },
+      {
+        "name": "Memo of Appearance"
+      },
+      {
+        "name": "Impugned Order"
+      },
+      {
+        "name": "Vakalatnama + PoA/BR"
+      },
+      {
+        "name": "Court Fees"
       }
     ],
     "splitting_strategy": {

@@ -37,7 +37,7 @@ uvx llamactl deployments apply -f deployment.yaml
 
 ## Features
 
-- **Parse + Split**: LlamaParse produces per-page markdown; LlamaSplit labels petition sections (COVER_PAGE, PETITION, IMPUGNED_ORDER, AOR_DECLARATION, APPLICATION, ANNEXURE, AFFIDAVIT)
+- **Parse + Split**: LlamaParse produces per-page markdown; LlamaSplit labels petition sections (Cover Page, Petition, Impugned Order, AOR's Declaration, Annexures, Affidavit, Listing Proforma, and related filing parts)
 - **Petition classification**: LlamaClassify labels filings as one of:
   - `SLP_CIVIL`
   - `SLP_CRIMINAL`
