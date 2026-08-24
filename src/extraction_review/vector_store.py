@@ -66,11 +66,12 @@ def ensure_index(pc: Pinecone | None = None) -> Any:
     name = pinecone_index_name
     if not client.has_index(name):
         logger.info(
-            "Creating Pinecone index %s with model %s (%s/%s)",
+            "[Pinecone] Creating index %s with embed model %s (%s/%s, field=%s)",
             name,
             pinecone_embed_model,
             pinecone_cloud,
             pinecone_region,
+            pinecone_text_field,
         )
         client.create_index_for_model(
             name=name,
@@ -81,6 +82,9 @@ def ensure_index(pc: Pinecone | None = None) -> Any:
                 "field_map": {"text": pinecone_text_field},
             },
         )
+        logger.info("[Pinecone] Index %s created", name)
+    else:
+        logger.info("[Pinecone] Using existing index %s", name)
     return client.Index(name)
 
 
@@ -178,6 +182,7 @@ def build_section_records(
     """
     base_meta = metadata or {}
     records: list[dict[str, Any]] = []
+    empty_segments = 0
 
     for seg_idx, segment in enumerate(segments):
         category = str(segment.get("category") or "uncategorized")
@@ -190,9 +195,24 @@ def build_section_records(
         ]
         section_text = "\n\n".join(parts).strip()
         if not section_text:
+            empty_segments += 1
+            logger.info(
+                "[Pinecone] Segment %s category=%s pages=%s has no markdown; skip",
+                seg_idx,
+                category,
+                pages,
+            )
             continue
 
         windows = split_text_windows(section_text)
+        logger.info(
+            "[Pinecone] Segment %s category=%s pages=%s → %s char(s) → %s window(s)",
+            seg_idx,
+            category,
+            pages,
+            len(section_text),
+            len(windows),
+        )
         for chunk_idx, window in enumerate(windows):
             record_id = f"{base_id}:{category}:{seg_idx}:{chunk_idx}"
             records.append(
@@ -212,6 +232,14 @@ def build_section_records(
                     },
                 }
             )
+
+    logger.info(
+        "[Pinecone] Section records ready: %s chunk(s) from %s segment(s) "
+        "(%s empty)",
+        len(records),
+        len(segments),
+        empty_segments,
+    )
     return records
 
 
@@ -234,17 +262,35 @@ def _flatten_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 def upsert_records(items: list[dict[str, Any]], *, batch_size: int = 50) -> int:
     """Batch-upsert text records for integrated embedding."""
     if not items:
+        logger.info("[Pinecone] No records to upsert (empty items list)")
         return 0
+
+    logger.info(
+        "[Pinecone] Preparing upsert: %s item(s) → index=%s namespace=%s "
+        "embed_model=%s (server-side integrated embeddings)",
+        len(items),
+        pinecone_index_name,
+        pinecone_namespace,
+        pinecone_embed_model,
+    )
 
     client = get_pinecone_client()
     index = ensure_index(client)
     text_field = resolve_text_field(client)
+    logger.info(
+        "[Pinecone] Connected to index=%s text_field=%s (Pinecone embeds this field)",
+        pinecone_index_name,
+        text_field,
+    )
 
     prepared: list[dict[str, Any]] = []
+    skipped = 0
+    total_chars = 0
     for item in items:
         chunk_text = (item.get("chunk_text") or "").strip()
         record_id = item.get("record_id")
         if not chunk_text or not record_id:
+            skipped += 1
             continue
         record: dict[str, Any] = {
             "_id": str(record_id),
@@ -252,16 +298,48 @@ def upsert_records(items: list[dict[str, Any]], *, batch_size: int = 50) -> int:
             **_flatten_metadata(item.get("metadata")),
         }
         prepared.append(record)
+        total_chars += len(chunk_text)
+
+    if skipped:
+        logger.warning(
+            "[Pinecone] Skipped %s item(s) with empty text or missing record_id",
+            skipped,
+        )
+
+    logger.info(
+        "[Pinecone] Embedding + upserting %s record(s) (~%s chars total) "
+        "via %s in batches of %s",
+        len(prepared),
+        total_chars,
+        pinecone_embed_model,
+        batch_size,
+    )
 
     for i in range(0, len(prepared), batch_size):
         batch = prepared[i : i + batch_size]
+        batch_num = (i // batch_size) + 1
+        batch_total = (len(prepared) + batch_size - 1) // batch_size
+        logger.info(
+            "[Pinecone] Upserting batch %s/%s (%s records)...",
+            batch_num,
+            batch_total,
+            len(batch),
+        )
         index.upsert_records(namespace=pinecone_namespace, records=batch)
+        logger.info(
+            "[Pinecone] Batch %s/%s upserted (embeddings generated server-side)",
+            batch_num,
+            batch_total,
+        )
 
     logger.info(
-        "Upserted %s Pinecone record(s) into %s/%s",
+        "[Pinecone] Done: upserted %s record(s) into %s/%s "
+        "(model=%s, text_field=%s)",
         len(prepared),
         pinecone_index_name,
         pinecone_namespace,
+        pinecone_embed_model,
+        text_field,
     )
     return len(prepared)
 

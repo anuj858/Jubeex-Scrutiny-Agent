@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Annotated, Any, Literal
 
 from llama_cloud import AsyncLlamaCloud
@@ -248,11 +249,8 @@ class ProcessFileWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(level="info", message=f"Splitting file {filename} into sections")
             )
-            document_input: dict[str, str]
-            if parse_job_id:
-                document_input = {"type": "parse_job_id", "value": parse_job_id}
-            else:
-                document_input = {"type": "file_id", "value": file_id}
+            # Split API currently accepts file_id only (parse_job_id returns 422).
+            document_input = {"type": "file_id", "value": file_id}
 
             split_kwargs: dict[str, Any] = {
                 "document_input": document_input,
@@ -611,6 +609,24 @@ class ProcessFileWorkflow(Workflow):
                     "petition_type": filing_type,
                 }
 
+                logger.info(
+                    "[Pinecone] Indexing start for %s (base_id=%s, "
+                    "pages=%s, split_segments=%s)",
+                    state.filename,
+                    base_id,
+                    len(state.page_markdown or {}),
+                    len(state.split_segments or []),
+                )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Indexing vectors in Pinecone for {state.filename} "
+                            f"(integrated embeddings)"
+                        ),
+                    )
+                )
+
                 pinecone_items: list[dict[str, Any]] = []
 
                 # 1) Filing-level summary vector
@@ -631,30 +647,52 @@ class ProcessFileWorkflow(Workflow):
                             },
                         }
                     )
+                    logger.info(
+                        "[Pinecone] Built summary chunk (%s chars)",
+                        len(summary_text),
+                    )
+                else:
+                    logger.warning("[Pinecone] Summary chunk empty; skipping")
 
                 # 2) Section vectors from Parse pages × Split segments
-                pinecone_items.extend(
-                    build_section_records(
-                        base_id=base_id,
-                        page_markdown=state.page_markdown,
-                        segments=state.split_segments,
-                        metadata=shared_meta,
-                    )
+                section_records = build_section_records(
+                    base_id=base_id,
+                    page_markdown=state.page_markdown,
+                    segments=state.split_segments,
+                    metadata=shared_meta,
                 )
+                pinecone_items.extend(section_records)
+                logger.info(
+                    "[Pinecone] Built %s section chunk(s) from %s split segment(s)",
+                    len(section_records),
+                    len(state.split_segments or []),
+                )
+                if not section_records and not (state.split_segments or []):
+                    logger.warning(
+                        "[Pinecone] No split segments available — "
+                        "only summary vector will be indexed"
+                    )
 
                 count = upsert_records(pinecone_items)
+                logger.info(
+                    "[Pinecone] Indexed %s vector(s) for %s "
+                    "(1 summary + %s section chunks)",
+                    count,
+                    state.filename,
+                    len(section_records),
+                )
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
                         message=(
                             f"Indexed {count} vector(s) in Pinecone "
-                            f"(summary + section chunks)"
+                            f"(summary + {len(section_records)} section chunks)"
                         ),
                     )
                 )
             except Exception as e:
                 logger.error(
-                    "Pinecone indexing failed for %s: %s",
+                    "[Pinecone] Indexing failed for %s: %s",
                     state.filename,
                     e,
                     exc_info=True,
@@ -665,6 +703,14 @@ class ProcessFileWorkflow(Workflow):
                         message=f"Pinecone indexing failed: {e}",
                     )
                 )
+        else:
+            logger.info(
+                "[Pinecone] Skipped indexing for %s "
+                "(VECTOR_BACKEND=%s, PINECONE_API_KEY set=%s)",
+                state.filename,
+                os.getenv("VECTOR_BACKEND") or "pinecone",
+                bool(os.getenv("PINECONE_API_KEY")),
+            )
 
         return StopEvent(result=item.id)
 
