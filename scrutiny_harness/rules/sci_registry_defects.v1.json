@@ -1,0 +1,2775 @@
+{
+  "catalogue_id": "sci_registry_defects",
+  "schema_version": "1.0",
+  "catalogue_version": "1.0.0",
+  "status": "automated_unreviewed",
+  "jurisdiction": "Supreme Court of India",
+  "filing_type": "slp_civil",
+  "effective_from": "2025-01-21",
+  "last_official_source_reviewed_at": "2026-07-30T00:00:00+05:30",
+  "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
+  "allowed_result_states": [
+    "defect_found",
+    "compliant",
+    "not_applicable",
+    "not_determined",
+    "needs_review"
+  ],
+  "sources": [
+    {
+      "source_id": "SCI_CHECKLIST_2025",
+      "title": "Revised Check List for Scrutiny Assistants at Filing Counter and Advocate's Check List",
+      "authority_type": "official_circular",
+      "url": "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/uploads/2025/01/2025010980.pdf",
+      "issued_date": "2025-01-09",
+      "effective_date": "2025-01-21",
+      "checksum": "sha256:1151e50cdf6a0117e6d64e28a0f88306aef57999cdab4bde20d9089c8a7a05c4",
+      "locators": {
+        "registry_checks": "Annexure C, mandatory Registry checks 1-17",
+        "advocate_checks": "Annexure D, Advocate-on-Record checks 1-15",
+        "supersession": "Circular page 1, superseding circular dated 01.02.2019",
+        "effective_date": "Circular page 1, effective from 21.01.2025"
+      }
+    },
+    {
+      "source_id": "SCI_DEFAULT_LIST",
+      "title": "Supreme Court of India Default List",
+      "authority_type": "official_webpage",
+      "url": "https://www.sci.gov.in/default-list/",
+      "issued_date": null,
+      "effective_date": "2025-01-21",
+      "checksum": null,
+      "locators": {
+        "registry_checks": "Check List for Scrutiny Assistants at Filing Counter",
+        "advocate_checks": "Advocate's Check List (To be Certified by AOR)"
+      }
+    },
+    {
+      "source_id": "SCI_FORM_28",
+      "title": "Form 28 - Special Leave Petition (Civil)",
+      "authority_type": "official_form",
+      "url": "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/uploads/2024/01/2024011779.pdf",
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": "sha256:0866dd3ca2b651676c0e28a67ff0b8ff35ccd7d86dff95463753361c27251601",
+      "locators": {
+        "caption": "Page 1, court, jurisdiction, Article 136, party positions",
+        "opening": "Page 2, opening petition statement and impugned decision particulars",
+        "question_of_law": "Page 2, item 2",
+        "rule_4_2": "Page 2, item 3",
+        "rule_6": "Page 2, item 4",
+        "grounds": "Page 2, item 5",
+        "interim_grounds": "Page 2, item 6",
+        "main_prayer": "Page 3, item 7",
+        "interim_relief": "Page 3, item 8",
+        "execution": "Page 3, place, date, advocate and settled-by fields"
+      }
+    },
+    {
+      "source_id": "SCI_RULES_2013",
+      "title": "Supreme Court Rules, 2013",
+      "authority_type": "official_rules",
+      "url": "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/uploads/2024/01/2024011691-1.pdf",
+      "issued_date": "2013-05-27",
+      "effective_date": "2014-08-19",
+      "checksum": "sha256:dd53d9264107ed983f511bd153199bc4478df4ba37cef8ff7d753ef9328f9a43",
+      "locators": {
+        "order_xv_rule_1": "Order XV Rule 1",
+        "order_xvi_rule_4": "Order XVI Rule 4",
+        "order_xix_rule_3": "Order XIX Rule 3(1)",
+        "order_xxi_rule_3": "Order XXI Rule 3(1)(f)",
+        "order_xxi_xxii_prior_petition": "Orders XXI and XXII prior-petition statement requirements",
+        "registry_defects": "Registrar scrutiny, amendment and re-presentation provisions"
+      }
+    },
+    {
+      "source_id": "SCI_RULES_CURRENT",
+      "title": "Supreme Court of India Rules and Amendments",
+      "authority_type": "official_webpage",
+      "url": "https://www.sci.gov.in/supreme-court-rules/",
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "rules_2013": "Supreme Court Rules, 2013",
+        "amendment_2025_04_21": "Supreme Court (Amendment) Rules, 2025 dated 21 April 2025",
+        "amendment_2025_06_14": "Supreme Court (Amendment) Rules, 2025 dated 14 June 2025"
+      }
+    },
+    {
+      "source_id": "SCI_FORMS_PAGE",
+      "title": "Supreme Court of India Official Forms",
+      "authority_type": "official_webpage",
+      "url": "https://www.sci.gov.in/forms/",
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "form_28": "Form 28 - SLP (Civil)"
+      }
+    }
+  ],
+  "global_decision_policy": {
+    "compliant": "All applicable mandatory subchecks pass and every required section or page has complete active-version coverage.",
+    "defect_found": "Complete active-version evidence proves that at least one applicable mandatory requirement is absent, inconsistent, or unsatisfied.",
+    "not_applicable": "Structured matter facts conclusively show that the conditional requirement does not apply to this Civil SLP.",
+    "not_determined": "Required evidence, processing, page coverage, or provider output is missing, failed, skipped, or incomplete.",
+    "needs_review": "Evidence conflicts, legal interpretation is ambiguous, physical evidence is required, or a lawyer must make the final assessment."
+  },
+  "authority_crosswalk": [
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_1",
+      "disposition": "covered",
+      "check_ids": [
+        "D002"
+      ],
+      "reason": "Court-fee evidence is evaluated by D002."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_2",
+      "disposition": "covered",
+      "check_ids": [
+        "D003"
+      ],
+      "reason": "Petition and application signatures are evaluated by D003."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_3",
+      "disposition": "covered",
+      "check_ids": [
+        "D004"
+      ],
+      "reason": "All five cause-title, address, substitution and contact subparts are mapped to D004."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_4",
+      "disposition": "covered",
+      "check_ids": [
+        "D005"
+      ],
+      "reason": "Supporting affidavit, attestation and identification are evaluated by D005."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_5",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D009"
+      ],
+      "reason": "Translation or exemption evidence is required only when vernacular content exists."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_6",
+      "disposition": "covered",
+      "check_ids": [
+        "D001"
+      ],
+      "reason": "The prior-petition statement is evaluated with Form 28 declarations."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_7",
+      "disposition": "covered",
+      "check_ids": [
+        "D006"
+      ],
+      "reason": "Vakalatnama, power-of-attorney and incorporated-body authority subparts are mapped to D006."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_8",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D006"
+      ],
+      "reason": "Permission to appear in person applies only when the petitioner is not represented by an AOR."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_9",
+      "disposition": "out_of_scope_for_slp_civil",
+      "check_ids": [],
+      "reason": "Surrender and custody-proof requirements belong to criminal matters and require a future criminal catalogue."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_10",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D005"
+      ],
+      "reason": "The no-private-motive affidavit applies only where the filing is classified as PIL."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_11",
+      "disposition": "covered",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "Listing Proforma completeness is evaluated by D008."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_12",
+      "disposition": "covered",
+      "check_ids": [
+        "D010"
+      ],
+      "reason": "Legibility and document-quality requirements are evaluated by D010."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_13",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D002",
+        "D007"
+      ],
+      "reason": "A time-barred petition requires both delay details and fee-bearing condonation material."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_14",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D009"
+      ],
+      "reason": "English provisions are required when non-English provisions are relied upon."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_15",
+      "disposition": "covered",
+      "check_ids": [
+        "D001"
+      ],
+      "reason": "Identical Supreme Court matter particulars are evaluated with petition declarations."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_16",
+      "disposition": "covered",
+      "check_ids": [
+        "D001"
+      ],
+      "reason": "The Order XIX Rule 3(1) statement is evaluated by D001."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:registry_check_17",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D002"
+      ],
+      "reason": "The NCDRC deposit applies only to qualifying consumer appeals."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_1",
+      "disposition": "covered",
+      "check_ids": [
+        "D001"
+      ],
+      "reason": "Form 28 structure and certificate are evaluated by D001."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_2",
+      "disposition": "covered",
+      "check_ids": [
+        "D001"
+      ],
+      "reason": "Order XV Rule 1 compliance is evaluated by D001."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_3",
+      "disposition": "covered",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "Paper arrangement is evaluated by D008."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_4",
+      "disposition": "covered",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "List of Dates presence and placement are evaluated by D008."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_5",
+      "disposition": "covered",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "Consecutive numbering and Index alignment are evaluated by D008."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_6",
+      "disposition": "manual_evidence_required",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "A PDF cannot prove the physical number of paper-book copies submitted."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_7",
+      "disposition": "covered",
+      "check_ids": [
+        "D007",
+        "D009"
+      ],
+      "reason": "Impugned-decision particulars and supporting document consistency are jointly evaluated."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_8",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D009"
+      ],
+      "reason": "Judgment, decree and certificate are required only for an appeal by certificate."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_9",
+      "disposition": "covered",
+      "check_ids": [
+        "D010"
+      ],
+      "reason": "Annexure true-copy and chronological-order checks are evaluated by D010."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_10",
+      "disposition": "covered",
+      "check_ids": [
+        "D010"
+      ],
+      "reason": "Separate annexure filing and indexing are evaluated by D010."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_11",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D009"
+      ],
+      "reason": "Trial and First Appellate Court orders apply to an SLP against a Second Appeal order."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_12",
+      "disposition": "covered",
+      "check_ids": [
+        "D003",
+        "D008"
+      ],
+      "reason": "The signed, complete Listing Proforma is evaluated by signature and sequence checks."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_13",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D004",
+        "D005"
+      ],
+      "reason": "PIL identity, interest and no-private-motive disclosures apply only when the matter is PIL."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_14",
+      "disposition": "conditionally_applicable",
+      "check_ids": [
+        "D009"
+      ],
+      "reason": "AFT leave certificate applies only to an appeal under the Armed Forces Tribunal Act."
+    },
+    {
+      "authority_ref": "SCI_CHECKLIST_2025:advocate_check_15",
+      "disposition": "manual_evidence_required",
+      "check_ids": [
+        "D008"
+      ],
+      "reason": "Final physical paper-book order must be confirmed after all defects are cured."
+    }
+  ],
+  "defect_order": [
+    "D001",
+    "D002",
+    "D003",
+    "D004",
+    "D005",
+    "D006",
+    "D007",
+    "D008",
+    "D009",
+    "D010",
+    "D011"
+  ],
+  "defects": [
+    {
+      "check_id": "D001",
+      "order": 1,
+      "title": "Form 28 structure and declarations",
+      "objective": "Confirm that the Civil SLP follows the official Form 28 petition body and contains the declarations and statements required by the current filing checklist.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Read the exact Main Petition range, its headings and the active document outline. Check the court and jurisdiction caption, Article 136/Special Leave Petition description, party positions, opening statement identifying the challenged court, case, date and result, Questions of Law, Rule 4(2) declaration, Rule 6 true-copy declaration, Grounds, Grounds for Interim Relief, Main Prayer, Interim Relief, place, date, advocate and settled-by fields. Also check the current checklist statements about an earlier petition, identical Supreme Court matters and Order XIX Rule 3(1). Do not treat a mere mention in an Index as the required statement.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_FORM_28",
+          "locator": "Pages 1-3"
+        },
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry items 6, 15, 16; Advocate items 1, 2"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D001.S01",
+          "title": "Form 28 caption and parties",
+          "criterion": "The petition identifies the Supreme Court, Civil Appellate Jurisdiction, Article 136/Special Leave Petition and party positions.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 1"
+            }
+          ],
+          "required_evidence": [
+            "cause_title_section",
+            "main_petition_opening"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "OCR or section boundaries are incomplete"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S02",
+          "title": "Impugned decision opening",
+          "criterion": "The opening statement identifies the challenged court or tribunal, case number, decision date and nature of the order.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 1"
+            }
+          ],
+          "required_evidence": [
+            "main_petition_opening",
+            "impugned_order_facts"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "The petition challenges more than one decision"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S03",
+          "title": "Questions of Law",
+          "criterion": "A distinct Questions of Law section contains one or more questions for consideration.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 2"
+            }
+          ],
+          "required_evidence": [
+            "questions_of_law_section"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Heading is present but section content is not retrievable"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S04",
+          "title": "Rule 4(2) prior-petition declaration",
+          "criterion": "The petition states whether another leave petition was filed against the impugned decision and gives its result when applicable.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 3"
+            },
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 6"
+            }
+          ],
+          "required_evidence": [
+            "rule_4_2_declaration"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Prior filing facts conflict"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S05",
+          "title": "Rule 6 true-copy declaration",
+          "criterion": "The petition declares that annexures are true copies of material forming part of the record below.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 4"
+            }
+          ],
+          "required_evidence": [
+            "rule_6_declaration"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Declaration wording is qualified or conflicting"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S06",
+          "title": "Grounds, reliefs and no separate interim relief application",
+          "criterion": "Grounds, Grounds for Interim Relief, Main Prayer and Interim Relief sections are present and incorporated within Form 28 as applicable. No separate application for interim relief shall be filed outside Form 28; if interim relief is sought, it must be incorporated within the petition itself.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2 items 5-6 and page 3 items 7-8"
+            },
+            {
+              "source_id": "SCI_RULES_2013",
+              "locator": "Order XXI Rule 3(1)(a)"
+            }
+          ],
+          "required_evidence": [
+            "grounds_section",
+            "prayer_section",
+            "application_sections"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Whether interim relief is sought cannot be determined",
+            "A separate application for interim relief may exist after the annexures"
+          ]
+        },
+        {
+          "subcheck_id": "D001.S07",
+          "title": "Other mandatory declarations",
+          "criterion": "Identical Supreme Court matter particulars and the Order XIX Rule 3(1) statement are supplied where required.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry items 15-16"
+            }
+          ],
+          "required_evidence": [
+            "main_petition_declarations"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "Applicability or wording requires AOR interpretation"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "matter_manifest",
+          "document_outline",
+          "document_section",
+          "hybrid_search",
+          "entities",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "active document manifest",
+          "Main Petition exact sections"
+        ],
+        "optional_evidence": [
+          "impugned order facts",
+          "petition profile"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": false
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "required_section_presence",
+          "form28_heading_sequence",
+          "non_empty_section"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "All applicable Form 28 and declaration subchecks pass with complete Main Petition coverage.",
+        "defect_found": "A mandatory Form 28 component or declaration is absent under complete coverage.",
+        "not_applicable": "A conditional relief or declaration is conclusively inapplicable.",
+        "not_determined": "The Main Petition range or a required declaration could not be completely retrieved.",
+        "needs_review": "The wording exists but its legal sufficiency or applicability is ambiguous."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "legal drafting",
+          "prayers",
+          "grounds",
+          "declarations",
+          "signatures"
+        ]
+      }
+    },
+    {
+      "check_id": "D002",
+      "order": 2,
+      "title": "Court fee or exemption",
+      "objective": "Determine whether visible and structured evidence supports the prescribed court fee or an applicable fee-bearing exemption, delay application or statutory deposit.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Inspect the document outline, Index, court-fee pages, visual evidence, applications and structured filing facts. Confirm that a court-fee item is present. When translation exemption or condonation of delay is relied upon, check that the associated application, affidavit and fee evidence are present. When the source proceeding is an applicable NCDRC consumer matter, look for the prescribed deposit evidence. Do not infer the monetary sufficiency of a physical or electronic fee solely from a visual stamp; ambiguous values require lawyer review.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry items 1, 5, 13, 17"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D002.S01",
+          "title": "Base court fee",
+          "criterion": "The filing contains identifiable court-fee evidence or a supported exemption basis.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 1"
+            }
+          ],
+          "required_evidence": [
+            "court_fee_section_or_visual"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Fee amount or denomination cannot be read reliably"
+          ]
+        },
+        {
+          "subcheck_id": "D002.S02",
+          "title": "Translation-exemption fee",
+          "criterion": "An application seeking exemption from official translation includes related affidavit and court-fee evidence.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "has_untranslated_vernacular_content",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 5"
+            }
+          ],
+          "required_evidence": [
+            "translation_exemption_application",
+            "supporting_affidavit",
+            "court_fee_evidence"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Language detection is uncertain"
+          ]
+        },
+        {
+          "subcheck_id": "D002.S03",
+          "title": "Delay-application fee",
+          "criterion": "A time-barred filing contains a condonation application with affidavit and court-fee evidence.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_time_barred",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 13"
+            }
+          ],
+          "required_evidence": [
+            "condonation_application",
+            "delay_affidavit",
+            "court_fee_evidence"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Limitation calculation is unresolved"
+          ]
+        },
+        {
+          "subcheck_id": "D002.S04",
+          "title": "NCDRC deposit",
+          "criterion": "Where the consumer appeal requires it, evidence of the statutory deposit is present.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "originates_from_ncdrc",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 17"
+            }
+          ],
+          "required_evidence": [
+            "ncdrc_order",
+            "deposit_evidence"
+          ],
+          "evaluation_method": "manual",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "Applicable Act, ordered amount or deposit value requires legal/financial confirmation"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "hybrid_search",
+          "visual_evidence",
+          "entities"
+        ],
+        "required_evidence": [
+          "court-fee and application inventory"
+        ],
+        "optional_evidence": [
+          "visual fee crops",
+          "NCDRC order facts"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "required_document_presence",
+          "conditional_bundle_presence"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "All applicable fee and deposit subchecks have complete supporting evidence.",
+        "defect_found": "Complete inventory proves required fee or application evidence is absent.",
+        "not_applicable": "The conditional exemption, delay or NCDRC requirement does not apply.",
+        "not_determined": "Court-fee pages or applicable-condition facts are incomplete.",
+        "needs_review": "A visible fee exists but amount, validity or statutory sufficiency needs lawyer confirmation."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "manual_only",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "court fee",
+          "payment evidence",
+          "bank draft",
+          "financial values"
+        ]
+      }
+    },
+    {
+      "check_id": "D003",
+      "order": 3,
+      "title": "Petition and application signatures",
+      "objective": "Check the detected signature slots in the petition, applications and listing material without claiming signer identity or authenticity.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Use structured visual formalities and signature-slot records before text similarity. Identify all petition, application, AOR, party-in-person, deponent and Listing Proforma signature labels. For each detected slot, determine present, absent or not determined using exact page evidence. Do not identify the person from handwriting and do not treat a typed name as a handwritten signature. A negative result requires complete visual analysis of every relevant page.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry item 2; Advocate item 12"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D003.S01",
+          "title": "Petition execution",
+          "criterion": "The original petition set contains a signature-like mark at the AOR or party-in-person execution slot.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 2"
+            }
+          ],
+          "required_evidence": [
+            "petition_signature_slots",
+            "visual_formality_coverage"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Visual coverage is partial or signature role is unknown"
+          ]
+        },
+        {
+          "subcheck_id": "D003.S02",
+          "title": "Application execution",
+          "criterion": "Every detected application requiring execution contains a signature-like mark at its applicable signature slot.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "application_count",
+                "operator": "greater_than",
+                "value": 0
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 2"
+            }
+          ],
+          "required_evidence": [
+            "application_sections",
+            "application_signature_slots"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "The required signer for an application is ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D003.S03",
+          "title": "Listing Proforma execution",
+          "criterion": "The complete Listing Proforma contains the required AOR signature-like mark.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 12"
+            }
+          ],
+          "required_evidence": [
+            "listing_proforma",
+            "listing_proforma_signature_slot"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Listing Proforma is not machine-locatable"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "visual_evidence",
+          "visual_formalities",
+          "evidence_resolution"
+        ],
+        "required_evidence": [
+          "all relevant signature slots",
+          "complete visual coverage"
+        ],
+        "optional_evidence": [
+          "nearby role labels"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic",
+        "deterministic_validators": [
+          "signature_slot_coverage",
+          "signature_role_proximity"
+        ],
+        "model_allowed": false
+      },
+      "decision_policy": {
+        "compliant": "Every applicable detected signature slot is present with complete visual coverage.",
+        "defect_found": "Complete visual coverage shows an applicable signature slot is absent.",
+        "not_applicable": "No applications or conditional signature locations apply.",
+        "not_determined": "Any relevant page failed or a signature slot could not be localized.",
+        "needs_review": "A mark is visible but its role or relationship to the slot is ambiguous."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "manual_only",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "signatures",
+          "handwriting",
+          "signer identity",
+          "attestation"
+        ]
+      }
+    },
+    {
+      "check_id": "D004",
+      "order": 4,
+      "title": "Cause title and Memo of Parties",
+      "objective": "Verify party names, positions, representation, service details and consistency across the petition and impugned decision.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Retrieve exact cause-title, Memo of Parties, impugned-decision and Vakalatnama sections plus structured party entities. Compare normalized party names and positions without silently resolving conflicts. Check complete addresses, representation, appropriate Union/State department and service address, email/mobile fields, and conditional legal-representative/substitution details. PIL and incorporated-body details remain conditional. Report conflicting values as needs_review with both sources.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry item 3; Advocate item 13"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D004.S01",
+          "title": "Party-name and position consistency",
+          "criterion": "Party names and positions in the petition correspond with the impugned judgment and Memo of Parties, subject to explained transposition.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 3(i)-(ii)"
+            }
+          ],
+          "required_evidence": [
+            "cause_title",
+            "memo_of_parties",
+            "impugned_judgment_cause_title"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "Names differ after normalization or parties were added, deleted or transposed"
+          ]
+        },
+        {
+          "subcheck_id": "D004.S02",
+          "title": "Addresses and representation",
+          "criterion": "Each party has a complete address and representation description sufficient for the filing record.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 3(i)"
+            }
+          ],
+          "required_evidence": [
+            "party_entities",
+            "memo_of_parties"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Address completeness depends on local service requirements"
+          ]
+        },
+        {
+          "subcheck_id": "D004.S03",
+          "title": "Government service details",
+          "criterion": "Where Union or State Government is a party, the proper department and service address are specified.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "has_union_or_state_party",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 3(iii)"
+            }
+          ],
+          "required_evidence": [
+            "government_party_entity",
+            "service_address"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Correct department requires legal confirmation"
+          ]
+        },
+        {
+          "subcheck_id": "D004.S04",
+          "title": "Legal representatives and substitution",
+          "criterion": "For a deceased party below, LR, substitution, delay/abatement applications, relationship, age, address, affidavit and fee evidence are present as applicable.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "has_deceased_party_below",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 3(iv)"
+            }
+          ],
+          "required_evidence": [
+            "deceased_party_fact",
+            "lr_application_bundle"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Abatement or limitation consequences require AOR review"
+          ]
+        },
+        {
+          "subcheck_id": "D004.S05",
+          "title": "Party contact details",
+          "criterion": "Mobile numbers and email addresses are stated in the cause title and Vakalatnama where required.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 3(v)"
+            }
+          ],
+          "required_evidence": [
+            "cause_title_contacts",
+            "vakalatnama_contacts"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Redaction or privacy masking is present"
+          ]
+        },
+        {
+          "subcheck_id": "D004.S06",
+          "title": "PIL disclosures",
+          "criterion": "A PIL supplies identity, address, contact, income/occupation, personal-interest, connected-litigation and public-injury disclosures.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_pil",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 13"
+            }
+          ],
+          "required_evidence": [
+            "pil_disclosure_section"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "PIL classification or disclosure adequacy is disputed"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "entities",
+          "hybrid_search",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "cause title",
+          "Memo of Parties",
+          "impugned decision parties"
+        ],
+        "optional_evidence": [
+          "Vakalatnama contacts",
+          "PIL disclosures"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": false
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "normalized_party_consistency",
+          "required_contact_presence",
+          "conditional_bundle_presence"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "All applicable party and service-detail subchecks pass with complete relevant-section coverage.",
+        "defect_found": "Complete evidence proves mandatory party, address, contact or conditional bundle information is absent.",
+        "not_applicable": "A conditional government, LR or PIL requirement conclusively does not apply.",
+        "not_determined": "A required cause-title or party section is unavailable.",
+        "needs_review": "Normalized party facts conflict or legal representation cannot be resolved mechanically."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "party names",
+          "party positions",
+          "addresses",
+          "legal representation"
+        ]
+      }
+    },
+    {
+      "check_id": "D005",
+      "order": 5,
+      "title": "Affidavit, verification and attestation",
+      "objective": "Check that supporting affidavits contain verification, deponent execution, identification and visible attestation indicators without claiming legal authenticity.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Resolve every affidavit scope and its verification pages. Use PostgreSQL formalities and signature slots before general visual search. Check deponent or authorized-person identification, verification wording, deponent signature-like mark and visible attestation or notarial indicators. For PIL, check the no-private-gain/private-motive affidavit statement. Do not say genuine, validly notarized, or identify a signer. A negative visual conclusion requires complete analysis of all relevant pages.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry items 4 and 10"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D005.S01",
+          "title": "Supporting affidavit in support of statement of facts",
+          "criterion": "A supporting affidavit in support of the statement of facts contained in the petition is present, filed after the SLP following the AOR's Certificate, with a complete attestation.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 4"
+            },
+            {
+              "source_id": "SCI_RULES_2013",
+              "locator": "Order XXI Rule 4"
+            }
+          ],
+          "required_evidence": [
+            "affidavit_scopes",
+            "document_outline"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Document boundaries are incomplete"
+          ]
+        },
+        {
+          "subcheck_id": "D005.S02",
+          "title": "Verification and deponent execution",
+          "criterion": "Each affidavit has verification text and a signature-like mark associated with the Deponent slot.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 4"
+            }
+          ],
+          "required_evidence": [
+            "verification_section",
+            "deponent_signature_slot",
+            "visual_coverage"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Signature role or scope association is ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D005.S03",
+          "title": "Visible attestation and identification",
+          "criterion": "Each applicable affidavit contains visible indicators of attestation and identification consistent with the filing material.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 4"
+            }
+          ],
+          "required_evidence": [
+            "formality_assessment",
+            "notary_or_attestation_elements"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "Visible indicators exist but authenticity and legal validity are not assessed"
+          ]
+        },
+        {
+          "subcheck_id": "D005.S04",
+          "title": "PIL motive affidavit",
+          "criterion": "Where the filing is a PIL, the affidavit states there is no personal gain, private motive or oblique reason.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_pil",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 10"
+            }
+          ],
+          "required_evidence": [
+            "pil_affidavit"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Equivalent wording requires AOR interpretation"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "visual_evidence",
+          "visual_formalities",
+          "evidence_resolution"
+        ],
+        "required_evidence": [
+          "every affidavit scope",
+          "verification and visual formality records"
+        ],
+        "optional_evidence": [
+          "PIL affidavit"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "affidavit_scope_coverage",
+          "signature_slot_coverage",
+          "formality_decision"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "Every applicable affidavit has complete textual and visual evidence satisfying all mandatory subchecks.",
+        "defect_found": "Complete evidence proves a required affidavit, verification or deponent signature slot is absent.",
+        "not_applicable": "A conditional PIL affidavit requirement does not apply.",
+        "not_determined": "Any affidavit page or formality assessment is incomplete.",
+        "needs_review": "Visible attestation exists but its sufficiency requires lawyer confirmation."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "manual_only",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "affidavits",
+          "verification",
+          "signatures",
+          "stamps",
+          "seals",
+          "attestation"
+        ]
+      }
+    },
+    {
+      "check_id": "D006",
+      "order": 6,
+      "title": "Vakalatnama and representation authority",
+      "objective": "Verify the filing contains the applicable Vakalatnama, appearance, power-of-attorney and organizational authority records.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Retrieve the Vakalatnama, Memo of Appearance, party profile and related authority documents. Confirm execution by petitioner, acceptance by AOR and presence of Memo of Appearance. If a power-of-attorney holder acts, check the English or translated power and permission material. If an incorporated body files, check registration and authority evidence. If party-in-person, check the permission application. Use visual signature records only for visible presence and never for identity or authenticity.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry items 7-8"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D006.S01",
+          "title": "Vakalatnama and Memo of Appearance",
+          "criterion": "A Vakalatnama is executed by the petitioner, accepted by the AOR, and accompanied by Memo of Appearance.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_party_in_person",
+                "operator": "equals",
+                "value": false
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 7(i)"
+            }
+          ],
+          "required_evidence": [
+            "vakalatnama_section",
+            "petitioner_signature_slot",
+            "aor_signature_slot",
+            "memo_of_appearance"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "AOR acceptance mark is ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D006.S02",
+          "title": "Power-of-attorney representation",
+          "criterion": "A filing through power of attorney contains the English/translated power and applicable permission material.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "represented_by_power_of_attorney",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 7(ii)"
+            }
+          ],
+          "required_evidence": [
+            "power_of_attorney",
+            "translation_or_english_version",
+            "permission_application"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Scope of authority requires legal interpretation"
+          ]
+        },
+        {
+          "subcheck_id": "D006.S03",
+          "title": "Incorporated-body authority",
+          "criterion": "A registered body supplies registration evidence and proof that the filing person is authorized.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "petitioner_is_incorporated_body",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry items 7(iii)-(iv)"
+            }
+          ],
+          "required_evidence": [
+            "registration_certificate",
+            "authority_document"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Authority language or corporate status is ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D006.S04",
+          "title": "Party-in-person permission",
+          "criterion": "A party-in-person supplies the permission application and required explanation regarding representation.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_party_in_person",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 8"
+            }
+          ],
+          "required_evidence": [
+            "party_in_person_permission_application"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Application adequacy requires Registry/AOR assessment"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "entities",
+          "visual_evidence",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "representation facts",
+          "Vakalatnama or party-in-person material"
+        ],
+        "optional_evidence": [
+          "power of attorney",
+          "registration and authority records"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "conditional_bundle_presence",
+          "signature_slot_coverage"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "The complete applicable representation bundle is present.",
+        "defect_found": "Complete evidence proves a mandatory representation document or execution slot is absent.",
+        "not_applicable": "The power-of-attorney, incorporated-body or party-in-person condition is false.",
+        "not_determined": "Representation type or required document coverage is incomplete.",
+        "needs_review": "Authority wording or execution sufficiency needs lawyer confirmation."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "manual_only",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "Vakalatnama",
+          "power of attorney",
+          "signatures",
+          "corporate authority"
+        ]
+      }
+    },
+    {
+      "check_id": "D007",
+      "order": 7,
+      "title": "Limitation and impugned-order dates",
+      "objective": "Check impugned-decision particulars and determine whether delay and condonation information is complete and internally consistent.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Retrieve the petition opening, List of Dates, impugned decision, certified-copy information and any delay application. Compare court, case number, decision date and result across exact sources. Use deterministic date normalization and preserve conflicts. When structured limitation facts show delay, check the stated number of days, condonation application, affidavit and fee evidence. Do not calculate a legally final limitation period from uncertain dates or exceptions; mark such cases needs_review.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry item 13; Advocate item 7"
+        },
+        {
+          "source_id": "SCI_FORM_28",
+          "locator": "Page 2, item 1"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D007.S01",
+          "title": "Impugned-decision consistency",
+          "criterion": "Court, case number, decision date and nature of the impugned order are uniformly stated across the petition and supporting documents.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 7"
+            },
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 1"
+            }
+          ],
+          "required_evidence": [
+            "petition_impugned_particulars",
+            "impugned_decision_metadata"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "More than one order is challenged or normalized facts conflict"
+          ]
+        },
+        {
+          "subcheck_id": "D007.S02",
+          "title": "Delay days stated",
+          "criterion": "Where the filing is time barred, the condonation application states the number of delayed days.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_time_barred",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 13"
+            }
+          ],
+          "required_evidence": [
+            "limitation_facts",
+            "condonation_application"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Final limitation calculation depends on exclusions or condonable periods"
+          ]
+        },
+        {
+          "subcheck_id": "D007.S03",
+          "title": "Condonation bundle",
+          "criterion": "A time-barred filing includes the condonation application, supporting affidavit and court-fee evidence.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_time_barred",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 13"
+            }
+          ],
+          "required_evidence": [
+            "condonation_application",
+            "delay_affidavit",
+            "court_fee_evidence"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "A document's role cannot be determined"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "entities",
+          "hybrid_search",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "impugned decision facts",
+          "petition opening and chronology"
+        ],
+        "optional_evidence": [
+          "limitation and condonation material"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": false
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "normalized_date_consistency",
+          "case_number_consistency",
+          "conditional_bundle_presence"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "Impugned-decision facts are consistent and every applicable delay requirement passes.",
+        "defect_found": "Complete evidence proves a required delay statement or condonation document is absent.",
+        "not_applicable": "Structured facts conclusively show that delay requirements do not apply.",
+        "not_determined": "Required decision dates or limitation facts are unavailable.",
+        "needs_review": "Dates conflict or legal limitation requires AOR calculation."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "dates",
+          "limitation claims",
+          "impugned order particulars",
+          "affidavits"
+        ]
+      }
+    },
+    {
+      "check_id": "D008",
+      "order": 8,
+      "title": "Filing sequence, index and pagination",
+      "objective": "Check document order, List of Dates, Index alignment, consecutive numbering and Listing Proforma completeness.",
+      "severity": "medium",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Use the active document outline, page inventory, typography, Index rows and document-content map. Confirm the expected filing sequence, Brief List of Dates, consecutive paragraph/page numbering and accurate Index page ranges. Confirm the Listing Proforma is present, complete and signed through D003 evidence. Record physical paper-book count and final post-curing order as manual requirements because an uploaded PDF cannot prove them. Do not renumber or modify the original.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry item 11; Advocate items 3-6, 12, 15"
+        },
+        {
+          "source_id": "SCI_RULES_2013",
+          "locator": "Order XXI Rule 3(1)(f)"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D008.S01",
+          "title": "Paper arrangement",
+          "criterion": "The filing components are arranged in the applicable Order XXI sequence.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 3"
+            },
+            {
+              "source_id": "SCI_RULES_2013",
+              "locator": "Order XXI Rule 3(1)(f)"
+            }
+          ],
+          "required_evidence": [
+            "document_outline",
+            "ordered_document_content"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "A component has an unknown role"
+          ]
+        },
+        {
+          "subcheck_id": "D008.S02",
+          "title": "Brief List of Dates",
+          "criterion": "A Brief List of Dates or equivalent chronology component is present.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 4"
+            }
+          ],
+          "required_evidence": [
+            "list_of_dates_section"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Chronology is merged into Synopsis and boundaries are unclear"
+          ]
+        },
+        {
+          "subcheck_id": "D008.S03",
+          "title": "Index and numbering consistency",
+          "criterion": "Paragraphs and pages are consecutive and the Index accurately records component page ranges.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 5"
+            }
+          ],
+          "required_evidence": [
+            "index_rows",
+            "physical_and_printed_page_map",
+            "paragraph_numbering"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Printed pagination is missing or OCR confidence is low"
+          ]
+        },
+        {
+          "subcheck_id": "D008.S04",
+          "title": "Listing Proforma",
+          "criterion": "The Listing Proforma is present, Columns 6 (connected/pending matters) and 7 (similar matters) of the Proforma for First Listing are duly filled in, all other relevant columns are complete, and signature evidence is available.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 11; Advocate item 12"
+            }
+          ],
+          "required_evidence": [
+            "listing_proforma",
+            "listing_proforma_signature_result"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "A required column's applicability is unclear"
+          ]
+        },
+        {
+          "subcheck_id": "D008.S05",
+          "title": "Physical paper-book requirements",
+          "criterion": "Required physical paper-book copies and final order after curing defects are confirmed by a filing operator.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate items 6 and 15"
+            }
+          ],
+          "required_evidence": [
+            "manual_filing_confirmation"
+          ],
+          "evaluation_method": "manual",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "Always requires physical filing confirmation"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "matter_manifest",
+          "document_outline",
+          "document_section",
+          "typography",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "complete page inventory",
+          "Index and ordered document outline"
+        ],
+        "optional_evidence": [
+          "manual physical filing confirmation"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "document_sequence",
+          "index_page_alignment",
+          "page_sequence",
+          "paragraph_sequence"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "All machine-checkable sequence and indexing checks pass and manual confirmations are supplied where applicable.",
+        "defect_found": "Complete page and Index evidence proves a sequence, pagination or mandatory component defect.",
+        "not_applicable": "A conditional sequence component conclusively does not apply.",
+        "not_determined": "Page, Index or printed-number coverage is incomplete.",
+        "needs_review": "Physical paper-book requirements or ambiguous component roles require human confirmation."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "compare_page_sequence",
+          "generate_page_number_map",
+          "generate_index_review_file",
+          "generate_review_annotations",
+          "build_review_copy"
+        ],
+        "prohibited_changes": [
+          "original PDF",
+          "legal text",
+          "signed pages",
+          "court orders"
+        ]
+      }
+    },
+    {
+      "check_id": "D009",
+      "order": 9,
+      "title": "Impugned decisions and translations",
+      "objective": "Confirm the required decisions, certificates, prior-court orders, translations and cited provisions are present for the applicable case path.",
+      "severity": "high",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Retrieve the document outline, impugned decision, lower-court orders, certificate material and translation-related applications. Confirm the decision challenged by the petition is present and its particulars match D007. If the matter is an appeal by certificate, check judgment, decree and certificate. If the challenged order is in Second Appeal, check Trial Court and First Appellate Court orders. Detect vernacular content and require official translation or the application/affidavit/fee exemption bundle. Check English versions of relied-upon provisions where applicable. Apply the AFT certificate rule only to an AFT appeal.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry items 5 and 14; Advocate items 7, 8, 11, 14"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D009.S01",
+          "title": "Impugned decision present",
+          "criterion": "The challenged judgment or order is present and identifiable in the active filing.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 7"
+            }
+          ],
+          "required_evidence": [
+            "impugned_decision_section",
+            "petition_impugned_particulars"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Multiple decisions are challenged"
+          ]
+        },
+        {
+          "subcheck_id": "D009.S02",
+          "title": "Appeal-by-certificate documents",
+          "criterion": "An appeal by certificate includes the judgment, decree and order granting certificate.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "is_appeal_by_certificate",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 8"
+            }
+          ],
+          "required_evidence": [
+            "judgment",
+            "decree",
+            "certificate_order"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Filing path is uncertain"
+          ]
+        },
+        {
+          "subcheck_id": "D009.S03",
+          "title": "Second Appeal prior orders",
+          "criterion": "An SLP against a Second Appeal order includes Trial Court and First Appellate Court orders.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "impugned_case_type",
+                "operator": "equals",
+                "value": "second_appeal"
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 11"
+            }
+          ],
+          "required_evidence": [
+            "trial_court_order",
+            "first_appellate_order",
+            "second_appeal_order"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Court-level classification is ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D009.S04",
+          "title": "Official translation or exemption application",
+          "criterion": "Every vernacular document in the annexures has an official translation filed. If the translation filed is not an official one, an application seeking exemption from filing the official translation is present in the applications placed after the annexures, along with its supporting affidavit and the court fee.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "has_vernacular_content",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 5"
+            }
+          ],
+          "required_evidence": [
+            "vernacular_sections",
+            "official_translation_or_exemption_bundle"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Language or translation status is uncertain"
+          ]
+        },
+        {
+          "subcheck_id": "D009.S05",
+          "title": "English provisions appendix",
+          "criterion": "Relevant non-English constitutional, statutory or regulatory provisions relied upon are supplied in English.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "relies_on_non_english_provision",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 14"
+            }
+          ],
+          "required_evidence": [
+            "cited_provisions",
+            "english_provisions_appendix"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Whether a provision is relevant requires legal interpretation"
+          ]
+        },
+        {
+          "subcheck_id": "D009.S06",
+          "title": "AFT leave certificate",
+          "criterion": "An appeal under the Armed Forces Tribunal Act includes evidence of moving the AFT for leave to appeal.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [
+              {
+                "fact": "originates_from_aft",
+                "operator": "equals",
+                "value": true
+              }
+            ],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 14"
+            }
+          ],
+          "required_evidence": [
+            "aft_leave_certificate_material"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Nature of AFT certificate is unclear"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "hybrid_search",
+          "entities",
+          "petition_profile"
+        ],
+        "required_evidence": [
+          "impugned decision and case-path facts"
+        ],
+        "optional_evidence": [
+          "translations",
+          "lower-court orders",
+          "certificate material"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": false
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "required_document_presence",
+          "case_path_bundle",
+          "language_coverage"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "The impugned decision and every conditionally required order, certificate or translation are present.",
+        "defect_found": "Complete case-path evidence proves a mandatory document or translation bundle is absent.",
+        "not_applicable": "The certificate, Second Appeal, translation, provision or AFT condition is false.",
+        "not_determined": "Case path, language or document coverage is incomplete.",
+        "needs_review": "Document classification or legal relevance is ambiguous."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "manual_only",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "court orders",
+          "judgments",
+          "translations",
+          "certificates",
+          "statutory text"
+        ]
+      }
+    },
+    {
+      "check_id": "D010",
+      "order": 10,
+      "title": "Annexures and document quality",
+      "objective": "Check annexure inventory, references, chronology, separate indexing, true-copy relationship and machine-observable document quality.",
+      "severity": "medium",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Use the annexure map, document outline, Index, List of Dates, petition references, typography and OCR coverage. Confirm every referenced annexure is present, labelled separately, separately indexed rather than collectively marked, and ordered consistently with the List of Dates. Check the Rule 6 true-copy declaration relationship without deciding authenticity. Check observable legibility, one-side layout and double-spacing indicators where machine evidence supports them. Treat poor OCR alone as a processing warning unless page rendering independently establishes unreadability.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Registry item 12; Advocate items 9-10"
+        },
+        {
+          "source_id": "SCI_FORM_28",
+          "locator": "Page 2, item 4"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D010.S01",
+          "title": "Referenced annexures present",
+          "criterion": "Every annexure referenced in the petition has a corresponding active filing component.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 9"
+            }
+          ],
+          "required_evidence": [
+            "petition_annexure_references",
+            "annexure_map"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Annexure labels are damaged or ambiguous"
+          ]
+        },
+        {
+          "subcheck_id": "D010.S02",
+          "title": "Annexure chronology",
+          "criterion": "Annexures are ordered consistently with the List of Dates and related petition references.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 9"
+            }
+          ],
+          "required_evidence": [
+            "annexure_dates",
+            "list_of_dates",
+            "annexure_order"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "An annexure has no reliable date"
+          ]
+        },
+        {
+          "subcheck_id": "D010.S03",
+          "title": "Separate annexure indexing",
+          "criterion": "Annexures are individually labelled and indexed rather than collectively marked.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 10"
+            }
+          ],
+          "required_evidence": [
+            "annexure_map",
+            "index_rows"
+          ],
+          "evaluation_method": "deterministic",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Index rows are incomplete"
+          ]
+        },
+        {
+          "subcheck_id": "D010.S04",
+          "title": "True-copy relationship",
+          "criterion": "The filing contains the Form 28 Rule 6 declaration connecting annexures to the record below.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_FORM_28",
+              "locator": "Page 2, item 4"
+            },
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Advocate item 9"
+            }
+          ],
+          "required_evidence": [
+            "rule_6_declaration",
+            "annexure_map"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Jubeex cannot determine whether a copy formed part of the record below"
+          ]
+        },
+        {
+          "subcheck_id": "D010.S05",
+          "title": "Legibility and layout",
+          "criterion": "Petition, applications and accompanying documents are visibly legible and machine-observable layout indicators do not contradict double spacing and one-side presentation.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Registry item 12"
+            }
+          ],
+          "required_evidence": [
+            "typography_summary",
+            "page_render_quality",
+            "ocr_coverage"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "needs_review",
+          "manual_review_when": [
+            "OCR and rendered-page quality disagree or physical presentation cannot be inferred"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "document_outline",
+          "document_section",
+          "annexure_map",
+          "typography",
+          "hybrid_search"
+        ],
+        "required_evidence": [
+          "complete annexure map",
+          "Index and petition references"
+        ],
+        "optional_evidence": [
+          "typography and page-quality summaries"
+        ],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": true
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [
+          "annexure_reference_resolution",
+          "annexure_chronology",
+          "annexure_index_alignment",
+          "page_quality_coverage"
+        ],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "Every annexure reference resolves, ordering/index checks pass and quality coverage is complete.",
+        "defect_found": "Complete evidence proves an annexure is missing, misordered or not separately indexed.",
+        "not_applicable": "No annexures exist and the filing contains no annexure references.",
+        "not_determined": "Annexure, Index, chronology or page-quality coverage is incomplete.",
+        "needs_review": "True-copy provenance or observable quality cannot be conclusively assessed."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "compare_page_sequence",
+          "generate_index_review_file",
+          "generate_review_annotations",
+          "build_review_copy"
+        ],
+        "prohibited_changes": [
+          "annexure content",
+          "court records",
+          "true-copy declarations",
+          "original PDF"
+        ]
+      }
+    },
+    {
+      "check_id": "D011",
+      "order": 11,
+      "title": "Advocate's Checklist presence",
+      "objective": "Verify that the Advocate's Checklist is filed in the prescribed format with all requirements marked as YES, NO, or N.A., and includes the AOR declaration.",
+      "severity": "medium",
+      "applicability": {
+        "filing_types": [
+          "slp_civil"
+        ],
+        "conditions": [],
+        "unknown_condition_result": "not_determined"
+      },
+      "instruction": "Search the front of the case file (before the Cover Page and Office Report on Limitation) for the Advocate's Checklist. Confirm that it follows the prescribed numbered format with YES/NO/N.A. indicators, and concludes with the AOR's declaration.",
+      "authority_refs": [
+        {
+          "source_id": "SCI_CHECKLIST_2025",
+          "locator": "Page 5"
+        }
+      ],
+      "subchecks": [
+        {
+          "subcheck_id": "D011.S01",
+          "title": "Advocate's Checklist format",
+          "criterion": "The Advocate's Checklist is present in the prescribed format.",
+          "applicability": {
+            "filing_types": [
+              "slp_civil"
+            ],
+            "conditions": [],
+            "unknown_condition_result": "not_determined"
+          },
+          "authority_refs": [
+            {
+              "source_id": "SCI_CHECKLIST_2025",
+              "locator": "Page 5"
+            }
+          ],
+          "required_evidence": [
+            "advocates_checklist"
+          ],
+          "evaluation_method": "model_assisted",
+          "failure_result": "defect_found",
+          "manual_review_when": [
+            "Checklist format significantly deviates from prescribed layout"
+          ]
+        }
+      ],
+      "evidence_plan": {
+        "crg_capabilities": [
+          "matter_manifest",
+          "document_outline",
+          "hybrid_search"
+        ],
+        "required_evidence": [
+          "active document manifest"
+        ],
+        "optional_evidence": [],
+        "minimum_coverage": {
+          "active_versions_only": true,
+          "all_relevant_sections": true,
+          "all_relevant_pages": false
+        }
+      },
+      "evaluation": {
+        "mode": "deterministic_then_model_assisted",
+        "deterministic_validators": [],
+        "model_allowed": true
+      },
+      "decision_policy": {
+        "compliant": "The Advocate's Checklist is present and matches the prescribed format.",
+        "defect_found": "The Advocate's Checklist is missing or not in the prescribed format.",
+        "not_applicable": "Never applies because the checklist is mandatory.",
+        "not_determined": "Document outline is unreadable.",
+        "needs_review": "Format compliance is ambiguous."
+      },
+      "output_contract": {
+        "schema_name": "scrutiny_finding_v1",
+        "required_fields": [
+          "check_id",
+          "status",
+          "summary",
+          "subcheck_results",
+          "evidence_ids",
+          "coverage",
+          "confidence"
+        ]
+      },
+      "remediation": {
+        "mode": "lawyer_review_required",
+        "allowed_operation_codes": [
+          "generate_review_annotations"
+        ],
+        "prohibited_changes": [
+          "court orders",
+          "judgments"
+        ]
+      }
+    }
+  ]
+}

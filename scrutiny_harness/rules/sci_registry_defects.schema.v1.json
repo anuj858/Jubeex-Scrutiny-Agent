@@ -1,0 +1,659 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jubeex.local/schemas/sci_registry_defects.schema.v1.json",
+  "title": "Jubeex Supreme Court Registry Defect Catalogue",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalogue_id",
+    "schema_version",
+    "catalogue_version",
+    "status",
+    "jurisdiction",
+    "filing_type",
+    "effective_from",
+    "last_official_source_reviewed_at",
+    "allowed_result_states",
+    "sources",
+    "global_decision_policy",
+    "authority_crosswalk",
+    "defect_order",
+    "defects"
+  ],
+  "properties": {
+    "catalogue_id": {
+      "const": "sci_registry_defects"
+    },
+    "schema_version": {
+      "const": "1.0"
+    },
+    "catalogue_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "status": {
+      "enum": [
+        "draft_pending_aor_review",
+        "automated_unreviewed",
+        "approved",
+        "retired"
+      ]
+    },
+    "jurisdiction": {
+      "const": "Supreme Court of India"
+    },
+    "filing_type": {
+      "const": "slp_civil"
+    },
+    "effective_from": {
+      "type": "string",
+      "format": "date"
+    },
+    "last_official_source_reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "disclaimer": {
+      "type": "string",
+      "minLength": 20
+    },
+    "allowed_result_states": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "defect_found"
+        },
+        {
+          "const": "compliant"
+        },
+        {
+          "const": "not_applicable"
+        },
+        {
+          "const": "not_determined"
+        },
+        {
+          "const": "needs_review"
+        }
+      ],
+      "items": false
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "global_decision_policy": {
+      "$ref": "#/$defs/decisionPolicy"
+    },
+    "authority_crosswalk": {
+      "type": "array",
+      "minItems": 32,
+      "items": {
+        "$ref": "#/$defs/crosswalk"
+      }
+    },
+    "defect_order": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "D001"
+        },
+        {
+          "const": "D002"
+        },
+        {
+          "const": "D003"
+        },
+        {
+          "const": "D004"
+        },
+        {
+          "const": "D005"
+        },
+        {
+          "const": "D006"
+        },
+        {
+          "const": "D007"
+        },
+        {
+          "const": "D008"
+        },
+        {
+          "const": "D009"
+        },
+        {
+          "const": "D010"
+        },
+        {
+          "const": "D011"
+        }
+      ],
+      "items": false
+    },
+    "defects": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "$ref": "#/$defs/defect"
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "title",
+        "authority_type",
+        "url",
+        "issued_date",
+        "effective_date",
+        "checksum",
+        "locators"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^SCI_[A-Z0-9_]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 5
+        },
+        "authority_type": {
+          "enum": [
+            "official_circular",
+            "official_form",
+            "official_rules",
+            "official_webpage"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "issued_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "effective_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "checksum": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "locators": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      }
+    },
+    "crosswalk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_ref",
+        "disposition",
+        "check_ids",
+        "reason"
+      ],
+      "properties": {
+        "authority_ref": {
+          "type": "string",
+          "minLength": 5
+        },
+        "disposition": {
+          "enum": [
+            "covered",
+            "conditionally_applicable",
+            "manual_evidence_required",
+            "out_of_scope_for_slp_civil"
+          ]
+        },
+        "check_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^D\\d{3}$"
+          },
+          "uniqueItems": true
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 10
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fact",
+        "operator",
+        "value"
+      ],
+      "properties": {
+        "fact": {
+          "type": "string",
+          "minLength": 2
+        },
+        "operator": {
+          "enum": [
+            "equals",
+            "not_equals",
+            "contains",
+            "exists",
+            "greater_than"
+          ]
+        },
+        "value": {}
+      }
+    },
+    "applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filing_types",
+        "conditions",
+        "unknown_condition_result"
+      ],
+      "properties": {
+        "filing_types": {
+          "type": "array",
+          "contains": {
+            "const": "slp_civil"
+          },
+          "items": {
+            "type": "string"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "unknown_condition_result": {
+          "const": "not_determined"
+        }
+      }
+    },
+    "authorityReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "locator"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^SCI_[A-Z0-9_]+$"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 2
+        }
+      }
+    },
+    "subcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subcheck_id",
+        "title",
+        "criterion",
+        "applicability",
+        "authority_refs",
+        "required_evidence",
+        "evaluation_method",
+        "failure_result",
+        "manual_review_when"
+      ],
+      "properties": {
+        "subcheck_id": {
+          "type": "string",
+          "pattern": "^D\\d{3}\\.S\\d{2}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3
+        },
+        "criterion": {
+          "type": "string",
+          "minLength": 15
+        },
+        "applicability": {
+          "$ref": "#/$defs/applicability"
+        },
+        "authority_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/authorityReference"
+          }
+        },
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        },
+        "evaluation_method": {
+          "enum": [
+            "deterministic",
+            "model_assisted",
+            "manual"
+          ]
+        },
+        "failure_result": {
+          "enum": [
+            "defect_found",
+            "needs_review",
+            "not_determined"
+          ]
+        },
+        "manual_review_when": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 5
+          }
+        }
+      }
+    },
+    "evidencePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "crg_capabilities",
+        "required_evidence",
+        "optional_evidence",
+        "minimum_coverage"
+      ],
+      "properties": {
+        "crg_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "matter_manifest",
+              "document_outline",
+              "document_section",
+              "hybrid_search",
+              "entities",
+              "typography",
+              "visual_evidence",
+              "visual_formalities",
+              "annexure_map",
+              "evidence_resolution",
+              "petition_profile"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "required_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "optional_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minimum_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "active_versions_only",
+            "all_relevant_sections"
+          ],
+          "properties": {
+            "active_versions_only": {
+              "const": true
+            },
+            "all_relevant_sections": {
+              "type": "boolean"
+            },
+            "all_relevant_pages": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "deterministic_validators",
+        "model_allowed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "deterministic",
+            "deterministic_then_model_assisted",
+            "manual"
+          ]
+        },
+        "deterministic_validators": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]+$"
+          }
+        },
+        "model_allowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "decisionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compliant",
+        "defect_found",
+        "not_applicable",
+        "not_determined",
+        "needs_review"
+      ],
+      "properties": {
+        "compliant": {
+          "type": "string",
+          "minLength": 10
+        },
+        "defect_found": {
+          "type": "string",
+          "minLength": 10
+        },
+        "not_applicable": {
+          "type": "string",
+          "minLength": 10
+        },
+        "not_determined": {
+          "type": "string",
+          "minLength": 10
+        },
+        "needs_review": {
+          "type": "string",
+          "minLength": 10
+        }
+      }
+    },
+    "outputContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_name",
+        "required_fields"
+      ],
+      "properties": {
+        "schema_name": {
+          "const": "scrutiny_finding_v1"
+        },
+        "required_fields": {
+          "type": "array",
+          "contains": {
+            "const": "check_id"
+          },
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "remediation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "allowed_operation_codes",
+        "prohibited_changes"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "lawyer_review_required",
+            "manual_only"
+          ]
+        },
+        "allowed_operation_codes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "inspect_pdf_metadata",
+              "compare_page_sequence",
+              "generate_page_number_map",
+              "generate_index_review_file",
+              "generate_review_annotations",
+              "build_review_copy"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "prohibited_changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "defect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "order",
+        "title",
+        "objective",
+        "severity",
+        "applicability",
+        "instruction",
+        "authority_refs",
+        "subchecks",
+        "evidence_plan",
+        "evaluation",
+        "decision_policy",
+        "output_contract",
+        "remediation"
+      ],
+      "properties": {
+        "check_id": {
+          "type": "string",
+          "pattern": "^D\\d{3}$"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 11
+        },
+        "title": {
+          "type": "string",
+          "minLength": 5
+        },
+        "objective": {
+          "type": "string",
+          "minLength": 20
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "applicability": {
+          "$ref": "#/$defs/applicability"
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 100
+        },
+        "authority_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/authorityReference"
+          }
+        },
+        "subchecks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/subcheck"
+          }
+        },
+        "evidence_plan": {
+          "$ref": "#/$defs/evidencePlan"
+        },
+        "evaluation": {
+          "$ref": "#/$defs/evaluation"
+        },
+        "decision_policy": {
+          "$ref": "#/$defs/decisionPolicy"
+        },
+        "output_contract": {
+          "$ref": "#/$defs/outputContract"
+        },
+        "remediation": {
+          "$ref": "#/$defs/remediation"
+        }
+      }
+    }
+  }
+}

@@ -13,4 +13,5 @@ package-lock.json
 node_modules/
 ui/node_modules/
 ui/dist/
+.pnpm-store/
 .DS_Store

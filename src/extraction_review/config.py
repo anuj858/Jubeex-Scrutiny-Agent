@@ -20,6 +20,7 @@ from .json_util import get_extraction_schema as get_extraction_schema
 logger = logging.getLogger(__name__)
 
 EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
+SCRUTINY_FINDINGS_COLLECTION: str = "jubeex-scrutiny-findings"
 
 JUBEEX_FILING_TYPES = [
     "SLP_CIVIL", 

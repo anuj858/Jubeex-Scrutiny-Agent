@@ -312,8 +312,7 @@ def upsert_records(items: list[dict[str, Any]], *, batch_size: int = 50) -> int:
         )
 
     logger.info(
-        "[Pinecone] Done: upserted %s record(s) into %s/%s "
-        "(model=%s, text_field=%s)",
+        "[Pinecone] Done: upserted %s record(s) into %s/%s (model=%s, text_field=%s)",
         len(prepared),
         pinecone_index_name,
         pinecone_namespace,
@@ -347,6 +346,14 @@ def upsert_filing_record(
     return record_id
 
 
+def _raw_hits(result: Any) -> list[Any]:
+    hits = getattr(result, "result", result)
+    matches = getattr(hits, "hits", None)
+    if matches is None and isinstance(hits, dict):
+        matches = hits.get("hits", [])
+    return list(matches or [])
+
+
 def search_filings(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
     """Semantic search over indexed filings (uses the same integrated embed model)."""
     index = ensure_index()
@@ -354,12 +361,8 @@ def search_filings(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         namespace=pinecone_namespace,
         query={"top_k": top_k, "inputs": {"text": query}},
     )
-    hits = getattr(result, "result", result)
-    matches = getattr(hits, "hits", None)
-    if matches is None and isinstance(hits, dict):
-        matches = hits.get("hits", [])
     out: list[dict[str, Any]] = []
-    for hit in matches or []:
+    for hit in _raw_hits(result):
         if isinstance(hit, dict):
             out.append(hit)
         elif hasattr(hit, "to_dict"):
@@ -372,3 +375,136 @@ def search_filings(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
                 }
             )
     return out
+
+
+def _hit_fields(hit: Any) -> tuple[str | None, float | None, dict[str, Any]]:
+    """Normalize a Pinecone hit into (id, score, fields) across SDK shapes."""
+    if hasattr(hit, "to_dict"):
+        hit = hit.to_dict()
+    if isinstance(hit, dict):
+        record_id = hit.get("_id") or hit.get("id")
+        score = hit.get("_score") or hit.get("score")
+        fields = hit.get("fields") or hit.get("metadata") or {}
+        return record_id, score, dict(fields) if fields else {}
+    fields = getattr(hit, "fields", None) or getattr(hit, "metadata", None) or {}
+    return (
+        getattr(hit, "_id", None) or getattr(hit, "id", None),
+        getattr(hit, "_score", None) or getattr(hit, "score", None),
+        dict(fields) if fields else {},
+    )
+
+
+def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
+    record_id, score, fields = _hit_fields(hit)
+    text = (fields.get(text_field) or "").strip()
+    if not text:
+        return None
+
+    page = fields.get("page_start")
+    try:
+        page = int(page) if page is not None else None
+    except (TypeError, ValueError):
+        page = None
+
+    return {
+        "record_id": record_id,
+        "score": score,
+        "text": text,
+        "page": page,
+        "chunk_kind": fields.get("chunk_kind"),
+        "file_name": fields.get("file_name"),
+    }
+
+
+def search_filing_chunks(
+    query: str,
+    *,
+    file_hash: str,
+    top_k: int = 8,
+    chunk_kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """Semantic search scoped to a single filing.
+
+    Unlike `search_filings`, this filters on `file_hash` metadata so scrutiny of
+    one document never pulls evidence out of a different filing.
+    """
+    if not file_hash:
+        raise ValueError("file_hash is required to scope a filing search")
+
+    client = get_pinecone_client()
+    index = ensure_index(client)
+    text_field = resolve_text_field(client)
+
+    metadata_filter: dict[str, Any] = {"file_hash": {"$eq": file_hash}}
+    if chunk_kind:
+        metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
+
+    result = index.search(
+        namespace=pinecone_namespace,
+        query={
+            "top_k": top_k,
+            "inputs": {"text": query},
+            "filter": metadata_filter,
+        },
+        fields=[text_field, "chunk_kind", "page_start", "page_end", "file_name"],
+    )
+
+    chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
+    logger.info(
+        "[Pinecone] Filing search returned %s chunk(s) for file_hash=%s (top_k=%s)",
+        len(chunks),
+        file_hash,
+        top_k,
+    )
+    return chunks
+
+
+def gather_filing_evidence(
+    queries: list[str],
+    *,
+    file_hash: str,
+    top_k: int = 8,
+    max_chunks: int = 24,
+) -> list[dict[str, Any]]:
+    """Union the results of several queries into one deduped evidence set.
+
+    Absence-type criteria ("the declaration is missing") are sensitive to
+    retrieval recall, so each subcheck contributes its own query rather than
+    relying on a single top-k over the whole defect.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for query in queries:
+        if not query or not query.strip():
+            continue
+        try:
+            for chunk in search_filing_chunks(query, file_hash=file_hash, top_k=top_k):
+                record_id = chunk.get("record_id")
+                if not record_id:
+                    continue
+                existing = seen.get(record_id)
+                if existing is None or (chunk.get("score") or 0) > (
+                    existing.get("score") or 0
+                ):
+                    seen[record_id] = chunk
+        except Exception as e:
+            logger.warning("[Pinecone] Query failed (%s): %s", query[:60], e)
+
+    chunks = sorted(
+        seen.values(),
+        key=lambda c: (c.get("chunk_kind") != "summary", -(c.get("score") or 0)),
+    )
+    if len(chunks) > max_chunks:
+        logger.info(
+            "[Pinecone] Trimming evidence from %s to %s chunk(s)",
+            len(chunks),
+            max_chunks,
+        )
+        chunks = chunks[:max_chunks]
+
+    # Present page chunks in reading order; keep the summary chunk first.
+    summary = [c for c in chunks if c.get("chunk_kind") == "summary"]
+    pages = sorted(
+        (c for c in chunks if c.get("chunk_kind") != "summary"),
+        key=lambda c: (c.get("page") is None, c.get("page") or 0),
+    )
+    return summary + pages

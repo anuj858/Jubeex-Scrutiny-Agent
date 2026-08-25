@@ -4,11 +4,15 @@ import {
   ExtractedDataItemGrid,
   HandlerState,
   AgentDataItem,
+  Button,
 } from "@llamaindex/ui";
 import styles from "./HomePage.module.css";
 import { useNavigate } from "react-router-dom";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { ShieldCheck } from "lucide-react";
 import { WorkflowProgress } from "@/lib/WorkflowProgress";
+import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
+import { isApproved, useScrutiny } from "@/lib/scrutiny";
 
 export default function HomePage() {
   return <TaskList />;
@@ -21,6 +25,43 @@ function TaskList() {
   };
   const [reloadSignal, setReloadSignal] = useState(0);
   const [handlers, setHandlers] = useState<HandlerState[]>([]);
+  const scrutiny = useScrutiny();
+  const { run: runScrutiny, running: scrutinyRunning } = scrutiny;
+
+  const scrutinyColumn = useMemo(
+    () => ({
+      key: "scrutiny",
+      header: "",
+      getValue: (item: AgentDataItem) => item,
+      renderCell: (value: unknown) => {
+        const item = value as AgentDataItem;
+        const approved = isApproved(item);
+        return (
+          <div
+            onClick={(e) => {
+              // Keep the row click from navigating to the item page.
+              e.stopPropagation();
+            }}
+          >
+            <Button
+              size="sm"
+              variant="outline"
+              label="Check defects"
+              startIcon={<ShieldCheck className="h-3.5 w-3.5" />}
+              disabled={!approved || scrutinyRunning}
+              title={
+                approved
+                  ? "Check this filing against the registry defect catalogue"
+                  : "Only approved filings can be checked"
+              }
+              onClick={() => runScrutiny(item)}
+            />
+          </div>
+        );
+      },
+    }),
+    [runScrutiny, scrutinyRunning],
+  );
 
   return (
     <div className={styles.page}>
@@ -68,6 +109,7 @@ function TaskList() {
         <ExtractedDataItemGrid
           key={reloadSignal}
           onRowClick={goToItem}
+          customColumns={[scrutinyColumn]}
           builtInColumns={{
             fileName: true,
             status: true,
@@ -75,6 +117,14 @@ function TaskList() {
             itemsToReview: true,
             actions: true,
           }}
+        />
+
+        <ScrutinyDialog
+          target={scrutiny.target}
+          running={scrutiny.running}
+          report={scrutiny.report}
+          error={scrutiny.error}
+          onClose={scrutiny.close}
         />
       </main>
     </div>

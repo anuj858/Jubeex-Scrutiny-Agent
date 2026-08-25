@@ -26,6 +26,7 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-timeout>=2.3.1",
     "llama-cloud-fake>=0.1,<0.2",
+    "jsonschema>=4.23.0",
 ]
 
 [build-system]
@@ -34,6 +35,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/extraction_review"]
+
+# Ship the defect catalogue inside the wheel so the deployed agent can load it
+# without depending on the repo layout.
+[tool.hatch.build.targets.wheel.force-include]
+"scrutiny_harness/rules" = "extraction_review/_rules"
 
 [tool.hatch.envs.default.scripts]
 "format" = "ruff format ."
@@ -52,11 +58,12 @@ timeout_method = "thread"
 [tool.llamadeploy]
 env_files = [".env"]
 llama_cloud = true
-required_env_vars = ["PINECONE_API_KEY"]
+required_env_vars = ["PINECONE_API_KEY", "OPENROUTER_API_KEY"]
 
 [tool.llamadeploy.workflows]
 process-file = "extraction_review.process_file:workflow"
 metadata = "extraction_review.metadata_workflow:workflow"
+scrutiny-check = "extraction_review.scrutiny_workflow:workflow"
 
 [tool.llamadeploy.ui]
 directory = "ui"
