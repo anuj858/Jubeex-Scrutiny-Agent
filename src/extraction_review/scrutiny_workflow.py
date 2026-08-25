@@ -19,7 +19,7 @@ from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource
 
 from .clients import agent_name, get_llama_cloud_client
-from .config import EXTRACTED_DATA_COLLECTION, SCRUTINY_FINDINGS_COLLECTION
+from .config import EXTRACTED_DATA_COLLECTION
 from .llm import call_structured, openrouter_enabled, openrouter_model
 from .scrutiny.prompts import (
     build_defect_prompt,
@@ -379,7 +379,7 @@ class ScrutinyWorkflow(Workflow):
             summary=summarize(findings),
         )
 
-        await self._persist(llama_cloud_client, report, ctx)
+        await self._persist(llama_cloud_client, item, payload, report, ctx)
 
         ctx.write_event_to_stream(
             Status(
@@ -396,31 +396,37 @@ class ScrutinyWorkflow(Workflow):
     async def _persist(
         self,
         client: AsyncLlamaCloud,
+        item: Any,
+        payload: dict[str, Any],
         report: ScrutinyReport,
         ctx: Context[ScrutinyState],
     ) -> None:
-        """Store the report alongside the filing, replacing any earlier run.
+        """Write the report onto the same Agent Data item LlamaExtract created.
 
-        Findings live in their own collection so re-running scrutiny never
-        mutates an approved extraction record.
+        That keeps one record per filing (no extra collection) and lets a later
+        'View last check' read it back from the extraction item.
         """
-        deployment = agent_name or "_public"
-        try:
-            if report.agent_data_id:
-                await client.beta.agent_data.delete_by_query(
-                    deployment_name=deployment,
-                    collection=SCRUTINY_FINDINGS_COLLECTION,
-                    filter={"agent_data_id": {"eq": report.agent_data_id}},
+        item_id = str(getattr(item, "id", "") or "") or report.agent_data_id
+        if not item_id:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message="Results could not be saved: the filing has no Agent Data id.",
                 )
-            await client.beta.agent_data.create(
-                data=report.model_dump(mode="json"),
-                deployment_name=deployment,
-                collection=SCRUTINY_FINDINGS_COLLECTION,
             )
+            return
+
+        updated = dict(payload)
+        metadata = dict(updated.get("metadata") or {})
+        metadata["scrutiny_report"] = report.model_dump(mode="json")
+        updated["metadata"] = metadata
+
+        try:
+            await client.beta.agent_data.update(item_id, data=updated)
             logger.info(
-                "[Scrutiny] Stored report for %s in %s",
+                "[Scrutiny] Saved report on extraction item %s (%s)",
+                item_id,
                 report.file_name,
-                SCRUTINY_FINDINGS_COLLECTION,
             )
         except Exception as e:
             # A storage failure should not lose the results the user is waiting on.

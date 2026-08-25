@@ -9,7 +9,7 @@ import {
 import styles from "./HomePage.module.css";
 import { useNavigate } from "react-router-dom";
 import { useMemo, useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, History } from "lucide-react";
 import { WorkflowProgress } from "@/lib/WorkflowProgress";
 import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
@@ -26,7 +26,7 @@ function TaskList() {
   const [reloadSignal, setReloadSignal] = useState(0);
   const [handlers, setHandlers] = useState<HandlerState[]>([]);
   const scrutiny = useScrutiny();
-  const { run: runScrutiny, running: scrutinyRunning } = scrutiny;
+  const { run: runScrutiny, viewSaved, busy: scrutinyBusy } = scrutiny;
 
   const scrutinyColumn = useMemo(
     () => ({
@@ -38,6 +38,7 @@ function TaskList() {
         const approved = isApproved(item);
         return (
           <div
+            className="flex items-center gap-1"
             onClick={(e) => {
               // Keep the row click from navigating to the item page.
               e.stopPropagation();
@@ -48,7 +49,7 @@ function TaskList() {
               variant="outline"
               label="Check defects"
               startIcon={<ShieldCheck className="h-3.5 w-3.5" />}
-              disabled={!approved || scrutinyRunning}
+              disabled={!approved || scrutinyBusy}
               title={
                 approved
                   ? "Check this filing against the registry defect catalogue"
@@ -56,11 +57,20 @@ function TaskList() {
               }
               onClick={() => runScrutiny(item)}
             />
+            <Button
+              size="sm"
+              variant="ghost"
+              label="View last check"
+              startIcon={<History className="h-3.5 w-3.5" />}
+              disabled={scrutinyBusy}
+              title="Open the last saved defect check for this filing"
+              onClick={() => viewSaved(item)}
+            />
           </div>
         );
       },
     }),
-    [runScrutiny, scrutinyRunning],
+    [runScrutiny, viewSaved, scrutinyBusy],
   );
 
   return (
@@ -122,6 +132,7 @@ function TaskList() {
         <ScrutinyDialog
           target={scrutiny.target}
           running={scrutiny.running}
+          loading={scrutiny.loading}
           report={scrutiny.report}
           error={scrutiny.error}
           onClose={scrutiny.close}

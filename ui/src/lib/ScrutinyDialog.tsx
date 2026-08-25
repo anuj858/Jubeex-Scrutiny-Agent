@@ -1,5 +1,5 @@
-import { Dialog, DialogContent } from "@llamaindex/ui";
-import { AlertTriangle, ChevronDown, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, Button } from "@llamaindex/ui";
+import { AlertTriangle, ChevronDown, Download, Loader2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { cn } from "./utils";
 import {
@@ -11,6 +11,8 @@ import {
   SubcheckResult,
   ScrutinyTarget,
   sortFindings,
+  downloadScrutinyReport,
+  downloadScrutinyDoc,
 } from "./scrutiny";
 
 function StatusBadge({
@@ -188,16 +190,19 @@ function SummaryBar({ report }: { report: ScrutinyReport }) {
 export function ScrutinyDialog({
   target,
   running,
+  loading,
   report,
   error,
   onClose,
 }: {
   target?: ScrutinyTarget;
   running: boolean;
+  loading?: boolean;
   report?: ScrutinyReport;
   error?: string;
   onClose: () => void;
 }) {
+  const busy = running || loading;
   return (
     <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
@@ -209,28 +214,33 @@ export function ScrutinyDialog({
             </p>
           </div>
 
-          {running && (
+          {busy && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-4 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Checking this filing against the Supreme Court registry defect
-              catalogue. This usually takes under a minute.
+              {running
+                ? "Checking this filing against the Supreme Court registry defect catalogue. This usually takes under a minute."
+                : "Loading the last saved defect check for this filing."}
             </div>
           )}
 
-          {error && !running && (
+          {error && !busy && (
             <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-100">
               <AlertTriangle
                 className="mt-0.5 h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
               <div>
-                <div className="font-medium">The check could not be run</div>
+                <div className="font-medium">
+                  {target?.mode === "view"
+                    ? "No saved check to show"
+                    : "The check could not be run"}
+                </div>
                 <div className="mt-0.5 break-words opacity-90">{error}</div>
               </div>
             </div>
           )}
 
-          {report && !running && (
+          {report && !busy && (
             <>
               <SummaryBar report={report} />
 
@@ -240,7 +250,7 @@ export function ScrutinyDialog({
                 ))}
               </div>
 
-              <div className="border-t border-border pt-3 text-xs text-muted-foreground">
+              <div className="border-t border-border pt-3 text-xs text-muted-foreground space-y-2">
                 <p>
                   {report.catalogue_id} v{report.catalogue_version}
                   {report.model && ` · ${report.model}`} ·{" "}
@@ -249,6 +259,20 @@ export function ScrutinyDialog({
                 {report.disclaimer && (
                   <p className="mt-1">{report.disclaimer}</p>
                 )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    label="Download Word report"
+                    startIcon={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => downloadScrutinyDoc(report)}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    label="Download JSON"
+                    onClick={() => downloadScrutinyReport(report)}
+                  />
+                </div>
               </div>
             </>
           )}
