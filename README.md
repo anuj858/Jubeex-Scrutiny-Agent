@@ -57,6 +57,9 @@ uvx llamactl deployments apply -f deployment.yaml
 - **Agent Data storage**: Results land in collection `jubeex-filing-extraction`, deduplicated by file hash
 - **Pinecone vector index**: Upserts (1) a filing summary vector and (2) per-page chunks from Parse. Embeddings are **not** generated in-app — Pinecone’s integrated model (`llama-text-embed-v2`) embeds server-side
 - **Review UI**: Upload filings, watch workflow progress, edit/approve extracted records
+- **Defect check (after approve)**: `scrutiny-check` runs D001 / D004 / D007 against Pinecone + OpenRouter; report is stored on the same Agent Data item
+
+How the live path is wired (diagrams for non-developers): [docs/how-it-works.md](docs/how-it-works.md). Agent orientation for code changes: [AGENTS.md](AGENTS.md).
 
 ## Project layout
 
@@ -101,8 +104,9 @@ Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `buil
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | parse → extract → classify → store → Pinecone |
+| `process-file` | `src/extraction_review/process_file.py` | parse → start extract → classify → store → Pinecone |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
+| `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: catalogue defects, Pinecone evidence, OpenRouter, save on same Agent Data item |
 
 Progress is streamed to the UI via `Status` events (and extraction result events).
 

@@ -30,7 +30,7 @@
     ],
     "mode": "FAST",
     "parsing_configuration": {
-      "max_pages": 5
+      "max_pages": 6
     }
   },
   "extract-jubeex": {
