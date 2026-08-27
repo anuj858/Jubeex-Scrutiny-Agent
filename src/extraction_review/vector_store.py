@@ -30,6 +30,25 @@ pinecone_namespace = os.getenv("PINECONE_NAMESPACE", "jubeex-filings")
 pinecone_text_field = os.getenv("PINECONE_TEXT_FIELD", DEFAULT_TEXT_FIELD)
 vector_backend = (os.getenv("VECTOR_BACKEND") or "pinecone").strip().lower()
 
+# Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
+DEFAULT_TOP_K = 8
+DEFAULT_MAX_CHUNKS = 12
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+
+
+def scrutiny_top_k() -> int:
+    return _int_env("SCRUTINY_TOP_K", DEFAULT_TOP_K)
+
+
+def scrutiny_max_chunks() -> int:
+    return _int_env("SCRUTINY_MAX_CHUNKS", DEFAULT_MAX_CHUNKS)
+
 
 def pinecone_enabled() -> bool:
     return vector_backend == "pinecone" and bool(pinecone_api_key)
@@ -420,7 +439,7 @@ def search_filing_chunks(
     query: str,
     *,
     file_hash: str,
-    top_k: int = 8,
+    top_k: int | None = None,
     chunk_kind: str | None = None,
 ) -> list[dict[str, Any]]:
     """Semantic search scoped to a single filing.
@@ -428,6 +447,8 @@ def search_filing_chunks(
     Unlike `search_filings`, this filters on `file_hash` metadata so scrutiny of
     one document never pulls evidence out of a different filing.
     """
+    if top_k is None:
+        top_k = scrutiny_top_k()
     if not file_hash:
         raise ValueError("file_hash is required to scope a filing search")
 
@@ -463,8 +484,8 @@ def gather_filing_evidence(
     queries: list[str],
     *,
     file_hash: str,
-    top_k: int = 8,
-    max_chunks: int = 24,
+    top_k: int | None = None,
+    max_chunks: int | None = None,
 ) -> list[dict[str, Any]]:
     """Union the results of several queries into one deduped evidence set.
 
@@ -472,6 +493,11 @@ def gather_filing_evidence(
     retrieval recall, so each where-to-look / trigger-word query contributes
     rather than relying on a single top-k over the whole defect.
     """
+    if top_k is None:
+        top_k = scrutiny_top_k()
+    if max_chunks is None:
+        max_chunks = scrutiny_max_chunks()
+
     seen: dict[str, dict[str, Any]] = {}
     for query in queries:
         if not query or not query.strip():

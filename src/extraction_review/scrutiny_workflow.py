@@ -48,8 +48,6 @@ from .vector_store import gather_filing_evidence, pinecone_enabled
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONCURRENCY = 3
-DEFAULT_TOP_K = 8
-DEFAULT_MAX_CHUNKS = 24
 
 
 class ScrutinyEvent(StartEvent):
@@ -135,8 +133,6 @@ async def _run_defect(
     record: dict[str, Any] | None,
     file_hash: str | None,
     file_name: str | None,
-    top_k: int,
-    max_chunks: int,
 ) -> DefectFinding:
     chunks: list[dict[str, Any]] = []
     if file_hash and pinecone_enabled():
@@ -145,8 +141,6 @@ async def _run_defect(
             gather_filing_evidence,
             queries,
             file_hash=file_hash,
-            top_k=top_k,
-            max_chunks=max_chunks,
         )
 
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
@@ -258,8 +252,6 @@ class ScrutinyWorkflow(Workflow):
         semaphore = asyncio.Semaphore(
             _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
         )
-        top_k = _int_env("SCRUTINY_TOP_K", DEFAULT_TOP_K)
-        max_chunks = _int_env("SCRUTINY_MAX_CHUNKS", DEFAULT_MAX_CHUNKS)
 
         async def guarded(defect: Defect) -> DefectFinding:
             async with semaphore:
@@ -276,8 +268,6 @@ class ScrutinyWorkflow(Workflow):
                         record=record,
                         file_hash=file_hash,
                         file_name=file_name,
-                        top_k=top_k,
-                        max_chunks=max_chunks,
                     )
                 except LLMError as e:
                     logger.exception("[Scrutiny] %s failed", defect.check_id)
