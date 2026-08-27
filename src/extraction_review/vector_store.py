@@ -469,8 +469,8 @@ def gather_filing_evidence(
     """Union the results of several queries into one deduped evidence set.
 
     Absence-type criteria ("the declaration is missing") are sensitive to
-    retrieval recall, so each subcheck contributes its own query rather than
-    relying on a single top-k over the whole defect.
+    retrieval recall, so each where-to-look / trigger-word query contributes
+    rather than relying on a single top-k over the whole defect.
     """
     seen: dict[str, dict[str, Any]] = {}
     for query in queries:

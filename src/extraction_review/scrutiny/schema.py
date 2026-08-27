@@ -1,8 +1,8 @@
 """The `scrutiny_finding_v1` response contract.
 
-Two layers live here. `DefectResponse` is the narrow shape the model must return
-for a single defect; everything else is computed in Python so that roll-up and
-severity aggregation stay deterministic and auditable.
+`DefectResponse` is the narrow shape the model must return for a single defect.
+Catalogue fields (how to cure, rule, source) are copied onto the finding in
+Python so they stay aligned with the defect API payload.
 """
 
 from __future__ import annotations
@@ -13,17 +13,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .rules import Defect, ResultState, Subcheck
+from .rules import Defect
 
-# Ordered most severe first. A defect takes the most severe status among its
-# applicable subchecks.
-RESULT_PRECEDENCE: tuple[ResultState, ...] = (
+ResultState = Literal[
     "defect_found",
-    "needs_review",
-    "not_determined",
     "compliant",
     "not_applicable",
-)
+    "not_determined",
+    "needs_review",
+]
 
 
 class EvidenceRef(BaseModel):
@@ -35,14 +33,15 @@ class EvidenceRef(BaseModel):
     quote: str = Field(description="Verbatim excerpt supporting the finding")
 
 
-class SubcheckResult(BaseModel):
-    """The model's verdict on a single subcheck."""
+class DefectResponse(BaseModel):
+    """Exactly what the model returns for one defect."""
 
     model_config = ConfigDict(extra="forbid")
 
-    subcheck_id: str
+    check_id: str
     status: ResultState
     confidence: float = Field(ge=0.0, le=1.0)
+    summary: str = Field(description="One or two sentences covering the whole defect")
     reasoning: str = Field(description="Why this status was chosen, citing evidence")
     evidence: list[EvidenceRef]
     suggested_fix: str | None = Field(
@@ -51,16 +50,6 @@ class SubcheckResult(BaseModel):
     fix_rationale: str | None = Field(
         description="Why the suggested fix resolves the defect. Null if no fix."
     )
-
-
-class DefectResponse(BaseModel):
-    """Exactly what the model returns for one defect."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    check_id: str
-    summary: str = Field(description="One or two sentences covering the whole defect")
-    subcheck_results: list[SubcheckResult]
 
 
 class Coverage(BaseModel):
@@ -75,18 +64,25 @@ class Coverage(BaseModel):
 
 
 class DefectFinding(BaseModel):
-    """Server-assembled finding. Field names follow `output_contract`."""
+    """Server-assembled finding for one catalogue defect."""
 
     check_id: str
+    serial_no: int
     title: str
-    severity: str
+    main_category: str
+    special_category: str | None = None
     status: ResultState
     summary: str
     confidence: float
-    subcheck_results: list[SubcheckResult]
+    reasoning: str
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+    suggested_fix: str | None = None
+    fix_rationale: str | None = None
+    how_to_cure: list[str] = Field(default_factory=list)
+    applicable_rule: str | None = None
+    location_source: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
-    authority_refs: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -115,48 +111,6 @@ class ScrutinyReport(BaseModel):
     summary: ScrutinySummary
 
 
-def skipped_subcheck(
-    subcheck: Subcheck,
-    *,
-    status: ResultState = "not_determined",
-    reason: str,
-) -> SubcheckResult:
-    """A subcheck the model was never asked about, with the reason recorded."""
-    return SubcheckResult(
-        subcheck_id=subcheck.subcheck_id,
-        status=status,
-        confidence=1.0,
-        reasoning=reason,
-        evidence=[],
-        suggested_fix=None,
-        fix_rationale=None,
-    )
-
-
-def roll_up_status(results: list[SubcheckResult]) -> ResultState:
-    """Most severe subcheck status wins.
-
-    This is computed here rather than asked of the model so aggregation is
-    reproducible and reviewable.
-    """
-    if not results:
-        return "not_determined"
-    present = {r.status for r in results}
-    for state in RESULT_PRECEDENCE:
-        if state in present:
-            return state
-    return "not_determined"
-
-
-def roll_up_confidence(results: list[SubcheckResult], status: ResultState) -> float:
-    """Mean confidence of the subchecks that decided the outcome."""
-    deciding = [r.confidence for r in results if r.status == status]
-    pool = deciding or [r.confidence for r in results]
-    if not pool:
-        return 0.0
-    return round(sum(pool) / len(pool), 3)
-
-
 def build_finding(
     defect: Defect,
     response: DefectResponse,
@@ -164,20 +118,26 @@ def build_finding(
     evidence_ids: list[str],
     coverage: Coverage,
 ) -> DefectFinding:
-    status = roll_up_status(response.subcheck_results)
+    suggested = response.suggested_fix if response.status == "defect_found" else None
+    rationale = response.fix_rationale if response.status == "defect_found" else None
     return DefectFinding(
         check_id=defect.check_id,
+        serial_no=defect.serial_no,
         title=defect.title,
-        severity=defect.severity,
-        status=status,
+        main_category=defect.main_category,
+        special_category=defect.special_category,
+        status=response.status,
         summary=response.summary,
-        confidence=roll_up_confidence(response.subcheck_results, status),
-        subcheck_results=response.subcheck_results,
+        confidence=response.confidence,
+        reasoning=response.reasoning,
+        evidence=response.evidence,
+        suggested_fix=suggested,
+        fix_rationale=rationale,
+        how_to_cure=list(defect.how_to_cure),
+        applicable_rule=defect.applicable_rule,
+        location_source=defect.location_source,
         evidence_ids=evidence_ids,
         coverage=coverage,
-        authority_refs=[
-            f"{ref.source_id}: {ref.locator}" for ref in defect.authority_refs
-        ],
     )
 
 
@@ -185,18 +145,20 @@ def failed_finding(defect: Defect, error: str) -> DefectFinding:
     """Placeholder when a defect could not be evaluated at all."""
     return DefectFinding(
         check_id=defect.check_id,
+        serial_no=defect.serial_no,
         title=defect.title,
-        severity=defect.severity,
+        main_category=defect.main_category,
+        special_category=defect.special_category,
         status="not_determined",
         summary=f"This check could not be completed: {error}",
         confidence=0.0,
-        subcheck_results=[
-            skipped_subcheck(sub, reason=f"Check did not run: {error}")
-            for sub in defect.subchecks
-        ],
-        authority_refs=[
-            f"{ref.source_id}: {ref.locator}" for ref in defect.authority_refs
-        ],
+        reasoning=f"Check did not run: {error}",
+        evidence=[],
+        suggested_fix=None,
+        fix_rationale=None,
+        how_to_cure=list(defect.how_to_cure),
+        applicable_rule=defect.applicable_rule,
+        location_source=defect.location_source,
         error=error,
     )
 

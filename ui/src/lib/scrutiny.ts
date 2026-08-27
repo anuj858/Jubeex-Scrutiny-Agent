@@ -33,16 +33,27 @@ export interface Coverage {
 
 export interface DefectFinding {
   check_id: string;
+  serial_no?: number;
   title: string;
-  severity: string;
+  main_category?: string;
+  special_category?: string | null;
   status: ResultState;
   summary: string;
   confidence: number;
-  subcheck_results: SubcheckResult[];
-  evidence_ids: string[];
+  reasoning?: string;
+  evidence?: EvidenceRef[];
+  suggested_fix?: string | null;
+  fix_rationale?: string | null;
+  how_to_cure?: string[];
+  applicable_rule?: string | null;
+  location_source?: string | null;
+  evidence_ids?: string[];
   coverage: Coverage;
-  authority_refs: string[];
-  error: string | null;
+  error?: string | null;
+  /** Present on reports saved before the flattened defect format. */
+  severity?: string;
+  subcheck_results?: SubcheckResult[];
+  authority_refs?: string[];
 }
 
 export interface ScrutinySummary {
@@ -104,7 +115,10 @@ export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
   return [...findings].sort((a, b) => {
     const byStatus =
       RESULT_ORDER.indexOf(a.status) - RESULT_ORDER.indexOf(b.status);
-    return byStatus !== 0 ? byStatus : a.check_id.localeCompare(b.check_id);
+    return byStatus !== 0
+      ? byStatus
+      : (a.serial_no ?? Number.MAX_SAFE_INTEGER) -
+          (b.serial_no ?? Number.MAX_SAFE_INTEGER);
   });
 }
 
@@ -207,9 +221,37 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
 
   const findingBlocks = findings
     .map((finding) => {
-      const subchecks = finding.subcheck_results
+      const evidenceItems = finding.evidence ?? [];
+      const evidence =
+        evidenceItems.length > 0
+          ? `<ul>${evidenceItems
+              .map(
+                (ref) =>
+                  `<li>${ref.page !== null ? `<b>Page ${ref.page}:</b> ` : ""}<i>“${escapeHtml(ref.quote)}”</i></li>`,
+              )
+              .join("")}</ul>`
+          : "";
+      const fix = finding.suggested_fix
+        ? `<p style="background:#EFF6FF;border-left:4px solid #2563EB;padding:8px 12px;"><b>Suggested fix:</b> ${escapeHtml(finding.suggested_fix)}${finding.fix_rationale ? `<br/><span style="color:#1E3A8A;">${escapeHtml(finding.fix_rationale)}</span>` : ""}</p>`
+        : "";
+      const cure = finding.how_to_cure?.length
+        ? `<p><b>How to cure</b></p><ol>${finding.how_to_cure.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>`
+        : "";
+      const heading =
+        finding.serial_no != null
+          ? `S.No. ${finding.serial_no} · ${finding.check_id}`
+          : finding.check_id;
+      const meta = [
+        finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
+        finding.applicable_rule,
+        finding.location_source,
+        finding.main_category,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" · ");
+      const legacySubchecks = (finding.subcheck_results ?? [])
         .map((sub) => {
-          const evidence =
+          const subEvidence =
             sub.evidence.length > 0
               ? `<ul>${sub.evidence
                   .map(
@@ -218,27 +260,31 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
                   )
                   .join("")}</ul>`
               : "";
-          const fix = sub.suggested_fix
-            ? `<p style="background:#EFF6FF;border-left:4px solid #2563EB;padding:8px 12px;"><b>Suggested fix:</b> ${escapeHtml(sub.suggested_fix)}${sub.fix_rationale ? `<br/><span style="color:#1E3A8A;">${escapeHtml(sub.fix_rationale)}</span>` : ""}</p>`
+          const subFix = sub.suggested_fix
+            ? `<p style="background:#EFF6FF;border-left:4px solid #2563EB;padding:8px 12px;"><b>Suggested fix:</b> ${escapeHtml(sub.suggested_fix)}</p>`
             : "";
           return `<tr>
             <td style="padding:8px 10px;border-bottom:1px solid #E2E8F0;vertical-align:top;width:110px;"><b>${escapeHtml(sub.subcheck_id)}</b></td>
             <td style="padding:8px 10px;border-bottom:1px solid #E2E8F0;vertical-align:top;">
               ${statusBadge(sub.status)}
-              <span style="color:#64748B;font-size:10pt;"> &nbsp;${Math.round(sub.confidence * 100)}% confident</span>
               <p>${escapeHtml(sub.reasoning)}</p>
-              ${evidence}
-              ${fix}
+              ${subEvidence}
+              ${subFix}
             </td>
           </tr>`;
         })
         .join("");
 
-      return `<h2 style="margin:28px 0 8px;font-size:14pt;">${escapeHtml(finding.check_id)} — ${escapeHtml(finding.title)}</h2>
-        <p>${statusBadge(finding.status)} <span style="color:#64748B;">${escapeHtml(finding.severity)} · ${Math.round(finding.confidence * 100)}% confident</span></p>
+      return `<h2 style="margin:28px 0 8px;font-size:14pt;">${escapeHtml(heading)}</h2>
+        <p>${statusBadge(finding.status)} <span style="color:#64748B;">${Math.round(finding.confidence * 100)}% confident</span></p>
+        <p>${escapeHtml(finding.title)}</p>
         <p>${escapeHtml(finding.summary)}</p>
-        ${finding.authority_refs.length ? `<p style="color:#64748B;font-size:10pt;"><b>Authority:</b> ${escapeHtml(finding.authority_refs.join(" · "))}</p>` : ""}
-        <table style="width:100%;border-collapse:collapse;">${subchecks}</table>`;
+        ${finding.reasoning ? `<p>${escapeHtml(finding.reasoning)}</p>` : ""}
+        ${evidence}
+        ${fix}
+        ${cure}
+        ${meta ? `<p style="color:#64748B;font-size:10pt;"><b>Authority:</b> ${escapeHtml(meta)}</p>` : ""}
+        ${legacySubchecks ? `<table style="width:100%;border-collapse:collapse;">${legacySubchecks}</table>` : ""}`;
     })
     .join("");
 

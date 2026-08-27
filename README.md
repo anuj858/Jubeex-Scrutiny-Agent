@@ -57,7 +57,7 @@ uvx llamactl deployments apply -f deployment.yaml
 - **Agent Data storage**: Results land in collection `jubeex-filing-extraction`, deduplicated by file hash
 - **Pinecone vector index**: Upserts (1) a filing summary vector and (2) per-page chunks from Parse. Embeddings are **not** generated in-app — Pinecone’s integrated model (`llama-text-embed-v2`) embeds server-side
 - **Review UI**: Upload filings, watch workflow progress, edit/approve extracted records
-- **Defect check (after approve)**: `scrutiny-check` runs D001 / D004 / D007 against Pinecone + OpenRouter; report is stored on the same Agent Data item
+- **Defect check (after approve)**: `scrutiny-check` runs D001 (Form 28) and D002 (Rule 3(2) earlier-SLP declaration) against Pinecone + OpenRouter; report is stored on the same Agent Data item
 
 How the live path is wired (diagrams for non-developers): [docs/how-it-works.md](docs/how-it-works.md). Agent orientation for code changes: [AGENTS.md](AGENTS.md).
 

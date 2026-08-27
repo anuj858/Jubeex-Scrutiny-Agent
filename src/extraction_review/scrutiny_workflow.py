@@ -27,8 +27,8 @@ from .scrutiny.prompts import (
     build_system_prompt,
 )
 from .scrutiny.rules import (
+    Catalogue,
     Defect,
-    Subcheck,
     defects_for_filing_type,
     enabled_defect_ids,
     get_catalogue,
@@ -38,10 +38,8 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
-    SubcheckResult,
     build_finding,
     failed_finding,
-    skipped_subcheck,
     summarize,
 )
 from .vector_store import gather_filing_evidence, pinecone_enabled
@@ -51,12 +49,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONCURRENCY = 3
 DEFAULT_TOP_K = 8
 DEFAULT_MAX_CHUNKS = 24
-
-VISUAL_SKIP_REASON = (
-    "This subcheck depends on visual evidence (signatures, stamps, typography or "
-    "page rendering). Only extracted text is available, so it cannot be decided "
-    "automatically and needs manual review."
-)
 
 
 class ScrutinyEvent(StartEvent):
@@ -120,89 +112,34 @@ async def _load_item(
     )
 
 
-def _partition_subchecks(defect: Defect) -> tuple[list[Subcheck], list[Subcheck]]:
-    """Split into subchecks we can evaluate from text and ones we cannot."""
-    evaluable = [s for s in defect.subchecks if not s.requires_visual_evidence]
-    skipped = [s for s in defect.subchecks if s.requires_visual_evidence]
-    return evaluable, skipped
-
-
-def _reconcile(
-    defect: Defect,
-    evaluated: list[Subcheck],
-    skipped: list[Subcheck],
-    response: DefectResponse,
-) -> DefectResponse:
-    """Keep only known subchecks and fill in any the model failed to answer."""
-    expected = {s.subcheck_id for s in evaluated}
-    by_id: dict[str, SubcheckResult] = {}
-
-    for result in response.subcheck_results:
-        if result.subcheck_id not in expected:
-            logger.warning(
-                "[Scrutiny] %s returned unknown subcheck %s; dropping",
-                defect.check_id,
-                result.subcheck_id,
-            )
-            continue
-        if result.status != "defect_found":
-            result.suggested_fix = None
-            result.fix_rationale = None
-        by_id[result.subcheck_id] = result
-
-    ordered: list[SubcheckResult] = []
-    for subcheck in defect.subchecks:
-        if subcheck in skipped:
-            ordered.append(skipped_subcheck(subcheck, reason=VISUAL_SKIP_REASON))
-        elif subcheck.subcheck_id in by_id:
-            ordered.append(by_id[subcheck.subcheck_id])
-        else:
-            logger.warning(
-                "[Scrutiny] %s did not answer %s",
-                defect.check_id,
-                subcheck.subcheck_id,
-            )
-            ordered.append(
-                skipped_subcheck(
-                    subcheck,
-                    reason="The model did not return a result for this subcheck.",
-                )
-            )
-
-    return DefectResponse(
-        check_id=defect.check_id,
-        summary=response.summary,
-        subcheck_results=ordered,
-    )
+def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectResponse:
+    """Keep the catalogue check_id and drop fixes unless a defect was found."""
+    if response.check_id != defect.check_id:
+        logger.warning(
+            "[Scrutiny] Model returned check_id %s for %s; correcting",
+            response.check_id,
+            defect.check_id,
+        )
+        response.check_id = defect.check_id
+    if response.status != "defect_found":
+        response.suggested_fix = None
+        response.fix_rationale = None
+    return response
 
 
 async def _run_defect(
     defect: Defect,
     *,
+    catalogue: Catalogue,
     record: dict[str, Any] | None,
     file_hash: str | None,
     file_name: str | None,
-    system_prompt: str,
     top_k: int,
     max_chunks: int,
 ) -> DefectFinding:
-    evaluated, skipped = _partition_subchecks(defect)
-
-    if not evaluated:
-        response = DefectResponse(
-            check_id=defect.check_id,
-            summary=(
-                "Every subcheck in this defect needs visual evidence, which is not "
-                "available from extracted text. Manual review is required."
-            ),
-            subcheck_results=[],
-        )
-        response = _reconcile(defect, evaluated, skipped, response)
-        return build_finding(defect, response, evidence_ids=[], coverage=Coverage())
-
     chunks: list[dict[str, Any]] = []
     if file_hash and pinecone_enabled():
-        queries = build_evidence_queries(defect, evaluated)
+        queries = build_evidence_queries(defect)
         chunks = await asyncio.to_thread(
             gather_filing_evidence,
             queries,
@@ -219,20 +156,18 @@ async def _run_defect(
         evidence_complete=bool(chunks) and bool(record),
     )
 
-    user_prompt = build_defect_prompt(
-        defect,
-        record=record,
-        chunks=chunks,
-        file_name=file_name,
-        skipped=skipped,
-    )
-
     raw = await call_structured(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        system_prompt=build_system_prompt(catalogue, defect),
+        user_prompt=build_defect_prompt(
+            defect,
+            record=record,
+            chunks=chunks,
+            file_name=file_name,
+            catalogue=catalogue,
+        ),
         response_model=DefectResponse,
     )
-    response = _reconcile(defect, evaluated, skipped, raw)
+    response = _sanitize_response(defect, raw)
 
     return build_finding(
         defect,
@@ -289,9 +224,10 @@ class ScrutinyWorkflow(Workflow):
         defects = defects_for_filing_type(filing_type)
 
         if not defects:
+            covered = sorted({d.main_category for d in catalogue.defects})
             raise ValueError(
                 f"No defect checks apply to petition type '{filing_type}'. "
-                f"The catalogue currently covers {catalogue.filing_type} only "
+                f"The catalogue currently covers {', '.join(covered) or 'no categories'} "
                 f"(enabled checks: {', '.join(enabled_defect_ids())})."
             )
 
@@ -317,7 +253,6 @@ class ScrutinyWorkflow(Workflow):
             )
         )
 
-        system_prompt = build_system_prompt(catalogue)
         semaphore = asyncio.Semaphore(
             _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
         )
@@ -329,16 +264,16 @@ class ScrutinyWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
-                        message=f"Checking {defect.check_id} — {defect.title}",
+                        message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
                     )
                 )
                 try:
                     finding = await _run_defect(
                         defect,
+                        catalogue=catalogue,
                         record=record,
                         file_hash=file_hash,
                         file_name=file_name,
-                        system_prompt=system_prompt,
                         top_k=top_k,
                         max_chunks=max_chunks,
                     )
@@ -364,7 +299,7 @@ class ScrutinyWorkflow(Workflow):
                 return finding
 
         findings = list(await asyncio.gather(*(guarded(d) for d in defects)))
-        findings.sort(key=lambda f: f.check_id)
+        findings.sort(key=lambda f: f.serial_no)
 
         report = ScrutinyReport(
             catalogue_id=catalogue.catalogue_id,

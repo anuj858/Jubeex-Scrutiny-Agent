@@ -8,7 +8,6 @@ import {
   RESULT_STYLES,
   ResultState,
   ScrutinyReport,
-  SubcheckResult,
   ScrutinyTarget,
   sortFindings,
   downloadScrutinyReport,
@@ -34,51 +33,53 @@ function StatusBadge({
   );
 }
 
-function SubcheckRow({ result }: { result: SubcheckResult }) {
+function EvidenceList({
+  evidence,
+}: {
+  evidence: { page: number | null; quote: string }[];
+}) {
+  if (evidence.length === 0) {
+    return null;
+  }
   return (
-    <div className="border-t border-border px-4 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-sm font-medium">{result.subcheck_id}</div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">
-            {Math.round(result.confidence * 100)}% confident
-          </span>
-          <StatusBadge status={result.status} />
-        </div>
-      </div>
-
-      <p className="mt-1.5 text-sm text-muted-foreground">{result.reasoning}</p>
-
-      {result.evidence.length > 0 && (
-        <ul className="mt-2 space-y-1.5">
-          {result.evidence.map((ref, i) => (
-            <li
-              key={i}
-              className="border-l-2 border-border pl-3 text-xs text-muted-foreground"
-            >
-              {ref.page !== null && (
-                <span className="font-medium">Page {ref.page}: </span>
-              )}
-              <span className="italic">“{ref.quote}”</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {result.suggested_fix && (
-        <div className="mt-2.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-900 dark:bg-blue-950">
-          <div className="text-xs font-semibold text-blue-900 dark:text-blue-100">
-            Suggested fix
-          </div>
-          <p className="mt-0.5 text-sm text-blue-900 dark:text-blue-100">
-            {result.suggested_fix}
-          </p>
-          {result.fix_rationale && (
-            <p className="mt-1 text-xs text-blue-800 dark:text-blue-200 opacity-80">
-              {result.fix_rationale}
-            </p>
+    <ul className="mt-2 space-y-1.5">
+      {evidence.map((ref, i) => (
+        <li
+          key={i}
+          className="border-l-2 border-border pl-3 text-xs text-muted-foreground"
+        >
+          {ref.page !== null && (
+            <span className="font-medium">Page {ref.page}: </span>
           )}
-        </div>
+          <span className="italic">“{ref.quote}”</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SuggestedFix({
+  suggestedFix,
+  rationale,
+}: {
+  suggestedFix?: string | null;
+  rationale?: string | null;
+}) {
+  if (!suggestedFix) {
+    return null;
+  }
+  return (
+    <div className="mt-2.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 dark:border-blue-900 dark:bg-blue-950">
+      <div className="text-xs font-semibold text-blue-900 dark:text-blue-100">
+        Suggested fix
+      </div>
+      <p className="mt-0.5 text-sm text-blue-900 dark:text-blue-100">
+        {suggestedFix}
+      </p>
+      {rationale && (
+        <p className="mt-1 text-xs text-blue-800 dark:text-blue-200 opacity-80">
+          {rationale}
+        </p>
       )}
     </div>
   );
@@ -97,10 +98,17 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
         className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors"
       >
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold">{finding.check_id}</span>
-            <span className="text-sm">{finding.title}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            {finding.serial_no != null && (
+              <span className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-0.5 text-sm font-semibold tabular-nums">
+                S.No. {finding.serial_no}
+              </span>
+            )}
+            <span className="text-xs font-medium text-muted-foreground">
+              {finding.check_id}
+            </span>
           </div>
+          <p className="mt-1 text-sm">{finding.title}</p>
           <p className="mt-1 text-sm text-muted-foreground">
             {finding.summary}
           </p>
@@ -122,8 +130,41 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
 
       {open && (
         <div className="bg-muted/20">
-          {finding.subcheck_results.map((result) => (
-            <SubcheckRow key={result.subcheck_id} result={result} />
+          <div className="border-t border-border px-4 py-3">
+            {finding.reasoning && (
+              <p className="text-sm text-muted-foreground">{finding.reasoning}</p>
+            )}
+            <EvidenceList evidence={finding.evidence ?? []} />
+            <SuggestedFix
+              suggestedFix={finding.suggested_fix}
+              rationale={finding.fix_rationale}
+            />
+            {finding.how_to_cure && finding.how_to_cure.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs font-semibold">How to cure</div>
+                <ol className="mt-1 list-decimal space-y-1 pl-4 text-sm text-muted-foreground">
+                  {finding.how_to_cure.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+          {(finding.subcheck_results ?? []).map((result) => (
+            <div key={result.subcheck_id} className="border-t border-border px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="text-sm font-medium">{result.subcheck_id}</div>
+                <StatusBadge status={result.status} />
+              </div>
+              <p className="mt-1.5 text-sm text-muted-foreground">
+                {result.reasoning}
+              </p>
+              <EvidenceList evidence={result.evidence} />
+              <SuggestedFix
+                suggestedFix={result.suggested_fix}
+                rationale={result.fix_rationale}
+              />
+            </div>
           ))}
           {!finding.coverage.evidence_complete && (
             <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
@@ -134,9 +175,19 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               the relevant text was not retrieved.
             </div>
           )}
-          {finding.authority_refs.length > 0 && (
+          {(finding.serial_no != null ||
+            finding.applicable_rule ||
+            finding.location_source ||
+            (finding.authority_refs ?? []).length > 0) && (
             <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              Authority: {finding.authority_refs.join(" · ")}
+              {[
+                finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
+                finding.applicable_rule,
+                finding.location_source,
+                ...(finding.authority_refs ?? []),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </div>
           )}
         </div>
