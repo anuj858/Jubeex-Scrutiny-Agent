@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from .scrutiny.schema import LlmUsage
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -28,6 +30,10 @@ MAX_ATTEMPTS = 3
 
 class LLMError(RuntimeError):
     """Raised when the model cannot produce a valid structured response."""
+
+    def __init__(self, message: str, usage: LlmUsage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage or LlmUsage()
 
 
 def openrouter_api_key() -> str | None:
@@ -91,6 +97,56 @@ def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     return schema
 
 
+def parse_openrouter_usage(
+    payload: dict[str, Any], *, model: str | None = None
+) -> LlmUsage:
+    """Take `usage.cost` and token counts from the /chat/completions body.
+
+    Do not estimate from list prices. Do not read cost from the model JSON.
+    """
+    if not isinstance(payload, dict):
+        return LlmUsage(model=model)
+    generation_id = payload.get("id")
+    generation_id = generation_id if isinstance(generation_id, str) else None
+    raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        return LlmUsage(
+            model=payload.get("model") or model,
+            generation_id=generation_id,
+            generation_ids=[generation_id] if generation_id else [],
+        )
+
+    prompt_details = raw.get("prompt_tokens_details") or {}
+    completion_details = raw.get("completion_tokens_details") or {}
+    if not isinstance(prompt_details, dict):
+        prompt_details = {}
+    if not isinstance(completion_details, dict):
+        completion_details = {}
+
+    cost: float | None = None
+    if raw.get("cost") is not None:
+        try:
+            cost = float(raw["cost"])
+        except (TypeError, ValueError):
+            cost = None
+
+    prompt = int(raw.get("prompt_tokens") or 0)
+    completion = int(raw.get("completion_tokens") or 0)
+    total = int(raw.get("total_tokens") or 0) or (prompt + completion)
+    return LlmUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_tokens=int(prompt_details.get("cached_tokens") or 0),
+        reasoning_tokens=int(completion_details.get("reasoning_tokens") or 0),
+        calls=1,
+        cost_usd=cost,
+        model=payload.get("model") or model,
+        generation_id=generation_id,
+        generation_ids=[generation_id] if generation_id else [],
+    )
+
+
 def _extract_content(payload: dict[str, Any]) -> str:
     choices = payload.get("choices") or []
     if not choices:
@@ -131,8 +187,12 @@ async def call_structured[T: BaseModel](
     temperature: float = 0.0,
     max_tokens: int | None = None,
     client: httpx.AsyncClient | None = None,
-) -> T:
-    """Call OpenRouter and return a validated instance of `response_model`."""
+) -> tuple[T, LlmUsage]:
+    """Call OpenRouter and return the model JSON plus OpenRouter's own usage.
+
+    Cost is copied from the same /chat/completions JSON: `usage.cost`.
+    No extra prompt, no extra completion, no GET /generation.
+    """
     model_name = model or openrouter_model()
     schema = strict_json_schema(response_model)
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
@@ -168,6 +228,7 @@ async def call_structured[T: BaseModel](
     http = client or httpx.AsyncClient(timeout=timeout)
     use_json_schema = True
     last_error: Exception | None = None
+    usage = LlmUsage(model=model_name)
 
     try:
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -200,8 +261,14 @@ async def call_structured[T: BaseModel](
                     )
 
                 response.raise_for_status()
-                content = _extract_content(response.json())
-                return response_model.model_validate(_parse_json(content))
+                payload = response.json()
+                if isinstance(payload, dict):
+                    usage = usage.plus(
+                        parse_openrouter_usage(payload, model=model_name)
+                    )
+                content = _extract_content(payload)
+                value = response_model.model_validate(_parse_json(content))
+                return value, usage
 
             except ValidationError as e:
                 last_error = e
@@ -238,5 +305,6 @@ async def call_structured[T: BaseModel](
             await http.aclose()
 
     raise LLMError(
-        f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}"
+        f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+        usage=usage,
     ) from last_error

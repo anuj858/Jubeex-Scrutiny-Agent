@@ -20,7 +20,7 @@ from workflows.resource import Resource
 
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
-from .llm import call_structured, openrouter_enabled, openrouter_model
+from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .scrutiny.prompts import (
     build_defect_prompt,
     build_evidence_queries,
@@ -41,6 +41,7 @@ from .scrutiny.schema import (
     build_finding,
     failed_finding,
     summarize,
+    summarize_usage,
 )
 from .vector_store import gather_filing_evidence, pinecone_enabled
 
@@ -156,7 +157,7 @@ async def _run_defect(
         evidence_complete=bool(chunks) and bool(record),
     )
 
-    raw = await call_structured(
+    raw, usage = await call_structured(
         system_prompt=build_system_prompt(catalogue, defect),
         user_prompt=build_defect_prompt(
             defect,
@@ -174,6 +175,7 @@ async def _run_defect(
         response,
         evidence_ids=[c["record_id"] for c in chunks if c.get("record_id")],
         coverage=coverage,
+        usage=usage,
     )
 
 
@@ -277,6 +279,15 @@ class ScrutinyWorkflow(Workflow):
                         top_k=top_k,
                         max_chunks=max_chunks,
                     )
+                except LLMError as e:
+                    logger.exception("[Scrutiny] %s failed", defect.check_id)
+                    ctx.write_event_to_stream(
+                        Status(
+                            level="error",
+                            message=f"{defect.check_id} could not be completed: {e}",
+                        )
+                    )
+                    return failed_finding(defect, str(e), usage=e.usage)
                 except Exception as e:
                     logger.exception("[Scrutiny] %s failed", defect.check_id)
                     ctx.write_event_to_stream(
@@ -312,17 +323,23 @@ class ScrutinyWorkflow(Workflow):
             disclaimer=catalogue.disclaimer,
             findings=findings,
             summary=summarize(findings),
+            usage=summarize_usage(findings, model=openrouter_model()),
         )
 
         await self._persist(llama_cloud_client, item, payload, report, ctx)
 
+        cost_note = ""
+        if report.usage and report.usage.cost_usd is not None:
+            cost_note = f", OpenRouter {report.usage.cost_usd:.6f} USD"
+        elif report.usage and report.usage.total_tokens:
+            cost_note = f", {report.usage.total_tokens} tokens"
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
                     f"Scrutiny complete: {report.summary.defects_found} defect(s), "
                     f"{report.summary.needs_review} needing review, "
-                    f"{report.summary.not_determined} undetermined"
+                    f"{report.summary.not_determined} undetermined{cost_note}"
                 ),
             )
         )

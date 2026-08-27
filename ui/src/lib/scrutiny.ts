@@ -24,6 +24,46 @@ export interface SubcheckResult {
   fix_rationale: string | null;
 }
 
+export interface LlmUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  calls?: number;
+  cost_usd?: number | null;
+  model?: string | null;
+  generation_id?: string | null;
+  generation_ids?: string[];
+}
+
+export interface UsageByCheck {
+  check_id: string;
+  serial_no: number;
+  cost_usd?: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  llm_calls: number;
+  share?: number | null;
+}
+
+export interface UsageSummary {
+  cost_usd?: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  llm_calls: number;
+  model?: string | null;
+  highest_cost_check_id?: string | null;
+  highest_cost_serial_no?: number | null;
+  highest_cost_usd?: number | null;
+  by_check?: UsageByCheck[];
+  note?: string;
+}
+
 export interface Coverage {
   chunks_reviewed: number;
   pages_reviewed: number[];
@@ -49,6 +89,7 @@ export interface DefectFinding {
   location_source?: string | null;
   evidence_ids?: string[];
   coverage: Coverage;
+  usage?: LlmUsage | null;
   error?: string | null;
   /** Present on reports saved before the flattened defect format. */
   severity?: string;
@@ -79,6 +120,7 @@ export interface ScrutinyReport {
   disclaimer: string | null;
   findings: DefectFinding[];
   summary: ScrutinySummary;
+  usage?: UsageSummary | null;
 }
 
 export const RESULT_LABELS: Record<ResultState, string> = {
@@ -120,6 +162,30 @@ export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
       : (a.serial_no ?? Number.MAX_SAFE_INTEGER) -
           (b.serial_no ?? Number.MAX_SAFE_INTEGER);
   });
+}
+
+export function formatUsd(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) {
+    return "—";
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1) {
+    return `$${value.toFixed(2)}`;
+  }
+  if (abs >= 0.01) {
+    return `$${value.toFixed(4)}`;
+  }
+  return `$${value.toFixed(6)}`;
+}
+
+export function formatTokens(value?: number | null): string {
+  if (value == null) {
+    return "—";
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}k`;
+  }
+  return String(value);
 }
 
 export function isApproved(item: AgentDataItem): boolean {
@@ -219,6 +285,36 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
     : new Date().toLocaleString();
   const title = report.file_name || "Filing";
 
+  const usage = report.usage;
+  const usageBlock =
+    usage && (usage.llm_calls || usage.total_tokens || usage.cost_usd != null)
+      ? `<h2 style="margin:24px 0 8px;font-size:14pt;">OpenRouter spend</h2>
+        <p><b>${escapeHtml(formatUsd(usage.cost_usd))}</b> · ${escapeHtml(formatTokens(usage.prompt_tokens))} in · ${escapeHtml(formatTokens(usage.completion_tokens))} out · ${usage.llm_calls} call${usage.llm_calls === 1 ? "" : "s"}${usage.model ? ` · ${escapeHtml(usage.model)}` : ""}</p>
+        ${usage.highest_cost_check_id ? `<p>Highest: S.No. ${usage.highest_cost_serial_no} ${escapeHtml(usage.highest_cost_check_id)} · ${escapeHtml(formatUsd(usage.highest_cost_usd))}</p>` : ""}
+        <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:10pt;">
+          <tr style="background:#F8FAFC;text-align:left;">
+            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">S.No.</th>
+            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Check</th>
+            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Charge</th>
+            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Tokens</th>
+            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Share</th>
+          </tr>
+          ${(usage.by_check ?? [])
+            .map(
+              (row) =>
+                `<tr>
+                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${row.serial_no}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(row.check_id)}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatUsd(row.cost_usd))}</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatTokens(row.total_tokens))} (${escapeHtml(formatTokens(row.prompt_tokens))} in / ${escapeHtml(formatTokens(row.completion_tokens))} out)</td>
+                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${row.share != null ? `${Math.round(row.share * 100)}%` : "—"}</td>
+                </tr>`,
+            )
+            .join("")}
+        </table>
+        ${usage.note ? `<p style="color:#64748B;font-size:9pt;">${escapeHtml(usage.note)}</p>` : ""}`
+      : "";
+
   const findingBlocks = findings
     .map((finding) => {
       const evidenceItems = finding.evidence ?? [];
@@ -276,7 +372,7 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
         .join("");
 
       return `<h2 style="margin:28px 0 8px;font-size:14pt;">${escapeHtml(heading)}</h2>
-        <p>${statusBadge(finding.status)} <span style="color:#64748B;">${Math.round(finding.confidence * 100)}% confident</span></p>
+        <p>${statusBadge(finding.status)} <span style="color:#64748B;">${Math.round(finding.confidence * 100)}% confident${finding.usage?.cost_usd != null ? ` · ${escapeHtml(formatUsd(finding.usage.cost_usd))}` : ""}</span></p>
         <p>${escapeHtml(finding.title)}</p>
         <p>${escapeHtml(finding.summary)}</p>
         ${finding.reasoning ? `<p>${escapeHtml(finding.reasoning)}</p>` : ""}
@@ -312,6 +408,8 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
       <td style="background:#D1FAE5;"><b style="font-size:18pt;">${report.summary.compliant}</b><br/>Compliant</td>
     </tr>
   </table>
+
+  ${usageBlock}
 
   ${report.disclaimer ? `<p style="background:#F8FAFC;border:1px solid #E2E8F0;padding:10px 12px;font-size:10pt;color:#475569;">${escapeHtml(report.disclaimer)}</p>` : ""}
 

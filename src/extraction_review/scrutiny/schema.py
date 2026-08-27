@@ -63,6 +63,85 @@ class Coverage(BaseModel):
     evidence_complete: bool = False
 
 
+class LlmUsage(BaseModel):
+    """Spend copied from OpenRouter `usage` on /chat/completions — never from the model JSON."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    calls: int = 0
+    cost_usd: float | None = None
+    model: str | None = None
+    generation_id: str | None = None
+    generation_ids: list[str] = Field(default_factory=list)
+
+    def plus(self, other: "LlmUsage") -> "LlmUsage":
+        cost: float | None = None
+        if self.cost_usd is not None or other.cost_usd is not None:
+            cost = (self.cost_usd or 0.0) + (other.cost_usd or 0.0)
+        total = self.total_tokens + other.total_tokens
+        if not total:
+            total = (
+                self.prompt_tokens
+                + other.prompt_tokens
+                + self.completion_tokens
+                + other.completion_tokens
+            )
+        ids = [*(self.generation_ids or []), *(other.generation_ids or [])]
+        last = other.generation_id or self.generation_id
+        if last and last not in ids:
+            ids.append(last)
+        return LlmUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=total,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            calls=self.calls + other.calls,
+            cost_usd=cost,
+            model=other.model or self.model,
+            generation_id=last,
+            generation_ids=ids,
+        )
+
+
+class UsageByCheck(BaseModel):
+    """One row in the cost breakdown, sorted highest charge first."""
+
+    check_id: str
+    serial_no: int
+    cost_usd: float | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+    share: float | None = None
+
+
+class UsageSummary(BaseModel):
+    """Roll-up of OpenRouter spend for the whole defect check."""
+
+    cost_usd: float | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    llm_calls: int = 0
+    model: str | None = None
+    highest_cost_check_id: str | None = None
+    highest_cost_serial_no: int | None = None
+    highest_cost_usd: float | None = None
+    by_check: list[UsageByCheck] = Field(default_factory=list)
+    note: str = (
+        "Exact OpenRouter usage.cost from each /chat/completions reply, "
+        "summed for this check. The model is not asked for cost. LlamaParse, "
+        "extract, classify, and Pinecone are billed separately."
+    )
+
+
 class DefectFinding(BaseModel):
     """Server-assembled finding for one catalogue defect."""
 
@@ -83,6 +162,7 @@ class DefectFinding(BaseModel):
     location_source: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
+    usage: LlmUsage | None = None
     error: str | None = None
 
 
@@ -109,6 +189,7 @@ class ScrutinyReport(BaseModel):
     disclaimer: str | None = None
     findings: list[DefectFinding] = Field(default_factory=list)
     summary: ScrutinySummary
+    usage: UsageSummary | None = None
 
 
 def build_finding(
@@ -117,6 +198,7 @@ def build_finding(
     *,
     evidence_ids: list[str],
     coverage: Coverage,
+    usage: LlmUsage | None = None,
 ) -> DefectFinding:
     suggested = response.suggested_fix if response.status == "defect_found" else None
     rationale = response.fix_rationale if response.status == "defect_found" else None
@@ -138,10 +220,13 @@ def build_finding(
         location_source=defect.location_source,
         evidence_ids=evidence_ids,
         coverage=coverage,
+        usage=usage,
     )
 
 
-def failed_finding(defect: Defect, error: str) -> DefectFinding:
+def failed_finding(
+    defect: Defect, error: str, usage: LlmUsage | None = None
+) -> DefectFinding:
     """Placeholder when a defect could not be evaluated at all."""
     return DefectFinding(
         check_id=defect.check_id,
@@ -160,6 +245,56 @@ def failed_finding(defect: Defect, error: str) -> DefectFinding:
         applicable_rule=defect.applicable_rule,
         location_source=defect.location_source,
         error=error,
+        usage=usage,
+    )
+
+
+def summarize_usage(findings: list[DefectFinding], *, model: str | None) -> UsageSummary:
+    combined = LlmUsage(model=model)
+    for finding in findings:
+        if finding.usage:
+            combined = combined.plus(finding.usage)
+
+    rows: list[UsageByCheck] = []
+    for finding in findings:
+        usage = finding.usage or LlmUsage()
+        share = None
+        if combined.cost_usd and usage.cost_usd is not None:
+            share = round(usage.cost_usd / combined.cost_usd, 4)
+        elif combined.total_tokens and usage.total_tokens:
+            share = round(usage.total_tokens / combined.total_tokens, 4)
+        rows.append(
+            UsageByCheck(
+                check_id=finding.check_id,
+                serial_no=finding.serial_no,
+                cost_usd=usage.cost_usd,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+                llm_calls=usage.calls,
+                share=share,
+            )
+        )
+
+    def _rank(row: UsageByCheck) -> tuple[float, int]:
+        return (row.cost_usd if row.cost_usd is not None else -1.0, row.total_tokens)
+
+    rows.sort(key=_rank, reverse=True)
+    top = rows[0] if rows else None
+    has_cost = top is not None and top.cost_usd is not None
+    return UsageSummary(
+        cost_usd=combined.cost_usd,
+        prompt_tokens=combined.prompt_tokens,
+        completion_tokens=combined.completion_tokens,
+        total_tokens=combined.total_tokens,
+        cached_tokens=combined.cached_tokens,
+        reasoning_tokens=combined.reasoning_tokens,
+        llm_calls=combined.calls,
+        model=combined.model or model,
+        highest_cost_check_id=top.check_id if has_cost else None,
+        highest_cost_serial_no=top.serial_no if has_cost else None,
+        highest_cost_usd=top.cost_usd if has_cost else None,
+        by_check=rows,
     )
 
 

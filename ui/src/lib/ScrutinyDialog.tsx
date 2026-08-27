@@ -12,6 +12,8 @@ import {
   sortFindings,
   downloadScrutinyReport,
   downloadScrutinyDoc,
+  formatUsd,
+  formatTokens,
 } from "./scrutiny";
 
 function StatusBadge({
@@ -116,6 +118,8 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
         <div className="flex shrink-0 items-center gap-2">
           <span className="text-xs text-muted-foreground">
             {Math.round(finding.confidence * 100)}%
+            {finding.usage?.cost_usd != null &&
+              ` · ${formatUsd(finding.usage.cost_usd)}`}
           </span>
           <StatusBadge status={finding.status} />
           <ChevronDown
@@ -139,6 +143,17 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               suggestedFix={finding.suggested_fix}
               rationale={finding.fix_rationale}
             />
+            {finding.usage &&
+              (finding.usage.calls || finding.usage.total_tokens) > 0 && (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  OpenRouter {formatUsd(finding.usage.cost_usd)} ·{" "}
+                  {formatTokens(finding.usage.prompt_tokens)} in /{" "}
+                  {formatTokens(finding.usage.completion_tokens)} out
+                  {finding.usage.calls && finding.usage.calls > 1
+                    ? ` · ${finding.usage.calls} calls`
+                    : ""}
+                </div>
+              )}
             {finding.how_to_cure && finding.how_to_cure.length > 0 && (
               <div className="mt-3">
                 <div className="text-xs font-semibold">How to cure</div>
@@ -191,6 +206,69 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function UsagePanel({ report }: { report: ScrutinyReport }) {
+  const usage = report.usage;
+  if (!usage || (!usage.llm_calls && !usage.total_tokens && usage.cost_usd == null)) {
+    return null;
+  }
+  const rows = usage.by_check ?? [];
+  return (
+    <div className="rounded-lg border border-border px-4 py-3 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            OpenRouter spend
+          </div>
+          <div className="mt-1 text-2xl font-semibold tabular-nums">
+            {formatUsd(usage.cost_usd)}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {formatTokens(usage.prompt_tokens)} in ·{" "}
+            {formatTokens(usage.completion_tokens)} out · {usage.llm_calls} call
+            {usage.llm_calls === 1 ? "" : "s"}
+            {usage.model ? ` · ${usage.model}` : ""}
+          </p>
+        </div>
+        {usage.highest_cost_check_id && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            Highest: S.No. {usage.highest_cost_serial_no}{" "}
+            {usage.highest_cost_check_id} · {formatUsd(usage.highest_cost_usd)}
+          </div>
+        )}
+      </div>
+      {rows.length > 0 && (
+        <div className="space-y-1.5">
+          {rows.map((row) => {
+            const pct = Math.round((row.share ?? 0) * 100);
+            return (
+              <div key={row.check_id} className="space-y-0.5">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="min-w-0 truncate">
+                    S.No. {row.serial_no} · {row.check_id}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    {formatUsd(row.cost_usd)} · {formatTokens(row.total_tokens)} ·{" "}
+                    {pct}%
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-amber-500/80"
+                    style={{ width: `${Math.min(100, Math.max(pct, pct > 0 ? 2 : 0))}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {usage.note && (
+        <p className="text-xs text-muted-foreground">{usage.note}</p>
       )}
     </div>
   );
@@ -294,6 +372,7 @@ export function ScrutinyDialog({
           {report && !busy && (
             <>
               <SummaryBar report={report} />
+              <UsagePanel report={report} />
 
               <div className="space-y-2">
                 {sortFindings(report.findings).map((finding) => (
