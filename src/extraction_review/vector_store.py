@@ -13,6 +13,8 @@ from typing import Any
 
 from pinecone import Pinecone
 
+from .document_parts import pool_search_queries
+
 logger = logging.getLogger(__name__)
 
 # Record field that Pinecone embeds (must match index field_map.text).
@@ -33,6 +35,7 @@ vector_backend = (os.getenv("VECTOR_BACKEND") or "pinecone").strip().lower()
 # Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
 DEFAULT_TOP_K = 8
 DEFAULT_MAX_CHUNKS = 12
+DEFAULT_POOL_MAX_CHUNKS = 60
 
 
 def _int_env(name: str, default: int) -> int:
@@ -48,6 +51,10 @@ def scrutiny_top_k() -> int:
 
 def scrutiny_max_chunks() -> int:
     return _int_env("SCRUTINY_MAX_CHUNKS", DEFAULT_MAX_CHUNKS)
+
+
+def scrutiny_pool_max_chunks() -> int:
+    return _int_env("SCRUTINY_POOL_MAX_CHUNKS", DEFAULT_POOL_MAX_CHUNKS)
 
 
 def pinecone_enabled() -> bool:
@@ -192,13 +199,16 @@ def build_page_records(
     base_id: str,
     page_markdown: dict[int, str],
     metadata: dict[str, Any] | None = None,
+    page_parts: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build Pinecone records from parse page markdown.
 
     Each page is window-chunked if longer than MAX_CHUNK_CHARS.
+    `page_parts` is the Split map (page number → Listing Proforma, …).
     """
     base_meta = metadata or {}
+    parts = page_parts or {}
     records: list[dict[str, Any]] = []
     empty_pages = 0
 
@@ -215,20 +225,24 @@ def build_page_records(
             len(page_text),
             len(windows),
         )
+        document_part = parts.get(page_num) or ""
         for chunk_idx, window in enumerate(windows):
             record_id = f"{base_id}:page:{page_num}:{chunk_idx}"
+            meta = {
+                **base_meta,
+                "chunk_kind": "page",
+                "page_start": page_num,
+                "page_end": page_num,
+                "pages": str(page_num),
+                "chunk_index": chunk_idx,
+            }
+            if document_part:
+                meta["document_part"] = document_part
             records.append(
                 {
                     "record_id": record_id,
                     "chunk_text": window,
-                    "metadata": {
-                        **base_meta,
-                        "chunk_kind": "page",
-                        "page_start": page_num,
-                        "page_end": page_num,
-                        "pages": str(page_num),
-                        "chunk_index": chunk_idx,
-                    },
+                    "metadata": meta,
                 }
             )
 
@@ -432,6 +446,7 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "page": page,
         "chunk_kind": fields.get("chunk_kind"),
         "file_name": fields.get("file_name"),
+        "document_part": fields.get("document_part"),
     }
 
 
@@ -467,7 +482,14 @@ def search_filing_chunks(
             "inputs": {"text": query},
             "filter": metadata_filter,
         },
-        fields=[text_field, "chunk_kind", "page_start", "page_end", "file_name"],
+        fields=[
+            text_field,
+            "chunk_kind",
+            "page_start",
+            "page_end",
+            "file_name",
+            "document_part",
+        ],
     )
 
     chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
@@ -534,3 +556,32 @@ def gather_filing_evidence(
         key=lambda c: (c.get("page") is None, c.get("page") or 0),
     )
     return summary + pages
+
+
+def gather_filing_evidence_pool(
+    *,
+    file_hash: str,
+    top_k: int | None = None,
+    max_chunks: int | None = None,
+) -> list[dict[str, Any]]:
+    """One Pinecone gather for the whole filing, reused by every defect.
+
+    Queries are form captions and split part names — not per-defect legal
+    sentences — so 78 checks do not repeat hundreds of searches.
+    """
+    cap = max_chunks if max_chunks is not None else scrutiny_pool_max_chunks()
+    queries = pool_search_queries()
+    chunks = gather_filing_evidence(
+        queries,
+        file_hash=file_hash,
+        top_k=top_k,
+        max_chunks=cap,
+    )
+    logger.info(
+        "[Pinecone] Shared evidence pool: %s chunk(s) from %s caption queries "
+        "for file_hash=%s",
+        len(chunks),
+        len(queries),
+        file_hash,
+    )
+    return chunks

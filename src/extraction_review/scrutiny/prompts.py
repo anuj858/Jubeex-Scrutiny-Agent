@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from .rules import Catalogue, Defect, DefectCategory, normalize_filing_type
+from ..document_parts import filing_type_label, match_terms_for_defect
 
 MAX_EVIDENCE_CHARS = 60_000
 
@@ -28,14 +29,18 @@ _SEARCH_PREFIX = re.compile(
 )
 
 
-def _system_prompt(catalogue: Catalogue, defect: Defect | None = None) -> str:
-    category = catalogue.category_for(defect) if defect else None
-    category_block = _format_category(defect, category) if defect else ""
+def _system_prompt(catalogue: Catalogue, filing_type: str | None = None) -> str:
+    label = filing_type_label(filing_type)
+    filing_block = (
+        f"\nThis filing is classified as {label}. Apply only the standards that "
+        "belong to this petition type. Checks that apply to every petition type "
+        "still apply. Do not treat this as a different kind of petition.\n"
+    )
 
     return f"""You are a pre-filing scrutiny assistant for the {catalogue.jurisdiction}. \
 A Scrutiny Assistant at the filing counter would use the same standard. You \
 are not the Registry and you do not decide legal validity.
-{category_block}
+{filing_block}
 Decide exactly one defect. Return one status:
 
 - defect_found: the excerpts positively show the required material is missing \
@@ -115,7 +120,8 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
         if kind == "summary":
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
-            header = f"[Page {page}]"
+            part = chunk.get("document_part")
+            header = f"[Page {page} — {part}]" if part else f"[Page {page}]"
         else:
             header = "[Document excerpt]"
 
@@ -419,6 +425,8 @@ def build_defect_prompt(
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     filing = _filing_phrase(defect.main_category)
+    category = catalogue.category_for(defect) if catalogue else None
+    category_block = _format_category(defect, category)
     search = "\n".join(
         f"{i}. {_search_step(step)}"
         for i, step in enumerate(defect.where_to_look, start=1)
@@ -448,6 +456,7 @@ def build_defect_prompt(
             f"For {filing}, decide one registry objection. Ignore every other "
             "defect, even if the excerpts mention it."
         ),
+        category_block.strip(),
         "",
         "## Standard",
         _format_standard(defect),
@@ -502,18 +511,13 @@ def build_defect_prompt(
     return "\n".join(sections)
 
 
-def build_system_prompt(catalogue: Catalogue, defect: Defect | None = None) -> str:
-    return _system_prompt(catalogue, defect)
+def build_system_prompt(
+    catalogue: Catalogue,
+    filing_type: str | None = None,
+) -> str:
+    return _system_prompt(catalogue, filing_type)
 
 
 def build_evidence_queries(defect: Defect) -> list[str]:
-    """Retrieval queries from the defect text, trigger words, and where-to-look."""
-    queries = [
-        defect.defect,
-        defect.requirement,
-        f"{defect.applicable_rule or ''} {defect.trigger_words or ''}".strip(),
-    ]
-    queries.extend(defect.where_to_look)
-    if defect.trigger_words:
-        queries.append(defect.trigger_words)
-    return queries
+    """Caption / heading queries for one defect (used for local scoring)."""
+    return match_terms_for_defect(defect)

@@ -83,7 +83,7 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
   - `parse` — LlamaParse tier/version
   - `classify` — rules, FAST mode, first 5 pages for classification
   - `extract-jubeex` — Core Filing Record JSON schema, agentic tier, source citations + confidence scores
-  - `split` — unused for now (kept for optional re-enable later)
+  - `split` — LlamaSplit categories; required when indexing Pinecone (`document_part` labels). A Split failure stops `process-file`.
 - Python models and collection name: `src/extraction_review/config.py`
 - Workflow registration: `[tool.llamadeploy]` in `pyproject.toml`
 
@@ -94,19 +94,20 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 3. **Start extraction**: Starts a LlamaExtract job with the JubeeX schema.
 4. **Classify (parallel)**: LlamaClassify picks petition type; on failure defaults to `other`.
 5. **Complete extraction**: Waits for extract, validates against `CoreFilingRecord`, stamps classification + parse metadata.
-6. **Store**: Dedupes by `file_hash`, then creates Agent Data in `jubeex-filing-extraction`.
-7. **Vector index** (when `VECTOR_BACKEND=pinecone`): Upserts a summary vector plus page chunks (long pages windowed to ~3500 chars); Pinecone embeds with the integrated model.
-8. **Review**: UI lists items for review/edit.
+6. **Split** (when Pinecone is on): LlamaSplit labels each page. Empty or failed Split stops the workflow before Agent Data is saved.
+7. **Store**: Dedupes by `file_hash`, then creates Agent Data in `jubeex-filing-extraction`.
+8. **Vector index**: Upserts a summary vector plus page chunks with `document_part`. Pinecone embeds with the integrated model.
+9. **Review**: UI lists items for review/edit.
 
-Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_page_records`, `search_filings`).
+Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_page_records`, `gather_filing_evidence_pool`).
 
 ### Workflows
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | parse → start extract → classify → store → Pinecone |
+| `process-file` | `src/extraction_review/process_file.py` | parse → start extract → classify → split (hard fail) → store → Pinecone |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
-| `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: catalogue defects, Pinecone evidence, OpenRouter, save on same Agent Data item |
+| `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: one Pinecone pool, sliced record, OpenRouter per defect, save on same Agent Data item |
 
 Progress is streamed to the UI via `Status` events (and extraction result events).
 

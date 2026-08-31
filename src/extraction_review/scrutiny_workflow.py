@@ -23,7 +23,6 @@ from .config import EXTRACTED_DATA_COLLECTION
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .scrutiny.prompts import (
     build_defect_prompt,
-    build_evidence_queries,
     build_system_prompt,
 )
 from .scrutiny.rules import (
@@ -43,7 +42,12 @@ from .scrutiny.schema import (
     summarize,
     summarize_usage,
 )
-from .vector_store import gather_filing_evidence, pinecone_enabled
+from .vector_store import (
+    gather_filing_evidence_pool,
+    pinecone_enabled,
+    scrutiny_max_chunks,
+)
+from .document_parts import select_chunks_for_defect, slice_record_for_defect
 
 logger = logging.getLogger(__name__)
 
@@ -131,18 +135,10 @@ async def _run_defect(
     *,
     catalogue: Catalogue,
     record: dict[str, Any] | None,
-    file_hash: str | None,
+    chunks: list[dict[str, Any]],
     file_name: str | None,
+    filing_type: str | None,
 ) -> DefectFinding:
-    chunks: list[dict[str, Any]] = []
-    if file_hash and pinecone_enabled():
-        queries = build_evidence_queries(defect)
-        chunks = await asyncio.to_thread(
-            gather_filing_evidence,
-            queries,
-            file_hash=file_hash,
-        )
-
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     coverage = Coverage(
         chunks_reviewed=len(chunks),
@@ -152,10 +148,10 @@ async def _run_defect(
     )
 
     raw, usage = await call_structured(
-        system_prompt=build_system_prompt(catalogue, defect),
+        system_prompt=build_system_prompt(catalogue, filing_type),
         user_prompt=build_defect_prompt(
             defect,
-            record=record,
+            record=slice_record_for_defect(record, defect),
             chunks=chunks,
             file_name=file_name,
             catalogue=catalogue,
@@ -227,7 +223,31 @@ class ScrutinyWorkflow(Workflow):
                 f"(enabled checks: {', '.join(enabled_defect_ids())})."
             )
 
-        if not pinecone_enabled():
+        evidence_pool: list[dict[str, Any]] = []
+        if pinecone_enabled() and file_hash:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Retrieving filing excerpts once for all defect checks",
+                )
+            )
+            try:
+                evidence_pool = await asyncio.to_thread(
+                    gather_filing_evidence_pool,
+                    file_hash=file_hash,
+                )
+            except Exception as e:
+                logger.warning("[Scrutiny] Shared Pinecone pool failed: %s", e)
+                ctx.write_event_to_stream(
+                    Status(
+                        level="warning",
+                        message=(
+                            "Could not retrieve document excerpts; checks will "
+                            f"run against the extracted record only. {e}"
+                        ),
+                    )
+                )
+        elif not pinecone_enabled():
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
@@ -252,6 +272,7 @@ class ScrutinyWorkflow(Workflow):
         semaphore = asyncio.Semaphore(
             _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
         )
+        max_chunks = scrutiny_max_chunks()
 
         async def guarded(defect: Defect) -> DefectFinding:
             async with semaphore:
@@ -262,12 +283,18 @@ class ScrutinyWorkflow(Workflow):
                     )
                 )
                 try:
+                    chunks = select_chunks_for_defect(
+                        evidence_pool,
+                        defect,
+                        max_chunks=max_chunks,
+                    )
                     finding = await _run_defect(
                         defect,
                         catalogue=catalogue,
                         record=record,
-                        file_hash=file_hash,
+                        chunks=chunks,
                         file_name=file_name,
+                        filing_type=filing_type,
                     )
                 except LLMError as e:
                     logger.exception("[Scrutiny] %s failed", defect.check_id)

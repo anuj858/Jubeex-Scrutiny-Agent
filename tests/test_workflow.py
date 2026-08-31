@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
 import pytest
-from extraction_review.config import EXTRACTED_DATA_COLLECTION
+from extraction_review.config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES
 from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataResponse
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import FileEvent, Status
@@ -9,7 +9,7 @@ from extraction_review.process_file import workflow as process_file_workflow
 from llama_cloud_fake import FakeLlamaCloudServer
 from workflows.events import StartEvent
 
-FILING_TYPES = {"10-K", "10-Q", "8-K", "other"}
+FILING_TYPES = set(JUBEEX_FILING_TYPES)
 FAKE_HAS_CLASSIFY_V2 = version("llama-cloud-fake") >= "0.1.1"
 
 

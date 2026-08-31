@@ -18,8 +18,10 @@ from .config import (
     ClassifyConfig,
     ExtractConfig,
     ParseConfig,
+    SplitConfig,
     get_extraction_schema,
 )
+from .document_parts import page_parts_from_split
 from .vector_store import (
     build_filing_chunk_text,
     build_page_records,
@@ -35,8 +37,12 @@ CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 300.0
 PARSE_POLL_INTERVAL_S = 2.0
 PARSE_POLL_MAX_S = 300.0
+SPLIT_POLL_INTERVAL_S = 2.0
+SPLIT_POLL_MAX_S = 180.0
 PARSE_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 PARSE_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
+SPLIT_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
+SPLIT_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 
 
 class FileEvent(StartEvent):
@@ -131,6 +137,78 @@ async def _wait_for_parse(client: AsyncLlamaCloud, job_id: str) -> None:
     raise TimeoutError(
         f"Parse job {job_id} did not complete within {PARSE_POLL_MAX_S}s"
     )
+
+
+async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
+    elapsed = 0.0
+    last_status: str | None = None
+    while elapsed <= SPLIT_POLL_MAX_S:
+        job = await client.split.get(job_id, project_id=project_id)
+        status = str(getattr(job, "status", "") or "").upper()
+        if status != last_status:
+            logger.info("[Split] job %s status=%s", job_id, status)
+            last_status = status
+        if status in SPLIT_DONE_STATUSES:
+            return job
+        if status in SPLIT_FAILED_STATUSES:
+            detail = getattr(job, "error_message", None) or status
+            raise RuntimeError(f"Split job {job_id} failed: {detail}")
+        await asyncio.sleep(SPLIT_POLL_INTERVAL_S)
+        elapsed += SPLIT_POLL_INTERVAL_S
+    raise TimeoutError(
+        f"Split job {job_id} did not complete within {SPLIT_POLL_MAX_S}s"
+    )
+
+
+async def _split_page_parts(
+    client: AsyncLlamaCloud,
+    *,
+    file_id: str | None,
+    parse_job_id: str | None,
+    split_config: SplitConfig | None,
+    filename: str | None = None,
+) -> dict[int, str]:
+    """Label parse pages with Split categories. Required when indexing Pinecone."""
+    label = filename or "filing"
+    if split_config is None:
+        raise RuntimeError(
+            f"Split config is missing, so document parts cannot be labelled for {label}."
+        )
+    if not getattr(client, "split", None):
+        raise RuntimeError(
+            f"LlamaCloud client has no split API, so document parts cannot be labelled for {label}."
+        )
+    file_input = parse_job_id or file_id
+    if not file_input:
+        raise RuntimeError(
+            f"No file or parse job id is available to split {label}."
+        )
+    if not split_config.configuration_id and not split_config.categories:
+        raise RuntimeError(
+            f"Split categories are empty, so document parts cannot be labelled for {label}."
+        )
+
+    create_kwargs: dict[str, Any] = {
+        "file_input": file_input,
+        "project_id": project_id,
+    }
+    if split_config.configuration_id:
+        create_kwargs["configuration_id"] = split_config.configuration_id
+    else:
+        create_kwargs["configuration"] = split_config.model_dump(
+            exclude={"configuration_id", "product_type"},
+            exclude_none=True,
+        )
+    job = await client.split.create(**create_kwargs)
+    completed = await _wait_for_split(client, job.id)
+    mapping = page_parts_from_split(completed)
+    if not mapping:
+        raise RuntimeError(
+            f"Split finished for {label} but labelled no pages. "
+            "Scrutiny cannot filter Listing Proforma / Petition / checklist parts."
+        )
+    logger.info("[Split] Labelled %s page(s) with document parts", len(mapping))
+    return mapping
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
@@ -424,6 +502,15 @@ class ProcessFileWorkflow(Workflow):
                 label="JubeeX Extraction",
             ),
         ],
+        split_config: Annotated[
+            SplitConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="split",
+                label="Document Parts",
+                description="LlamaSplit categories for petition bundle parts",
+            ),
+        ],
     ) -> StopEvent:
         """Wait for extraction, save Agent Data, and index pages in Pinecone."""
         state = await ctx.store.get_state()
@@ -503,6 +590,46 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(extracted_event)
 
         extracted_data = extracted_event.data
+        page_parts: dict[int, str] = {}
+        if pinecone_enabled():
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Labelling document parts for {state.filename}",
+                )
+            )
+            try:
+                page_parts = await _split_page_parts(
+                    llama_cloud_client,
+                    file_id=state.file_id,
+                    parse_job_id=state.parse_job_id,
+                    split_config=split_config,
+                    filename=state.filename,
+                )
+            except Exception as e:
+                logger.error(
+                    "[Split] Failed for %s: %s",
+                    state.filename,
+                    e,
+                    exc_info=True,
+                )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="error",
+                        message=f"Document-part split failed for {state.filename}: {e}",
+                    )
+                )
+                raise
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Labelled {len(page_parts)} page(s) "
+                        f"({len(set(page_parts.values()))} part(s))"
+                    ),
+                )
+            )
+
         data_dict = extracted_data.model_dump()
         if extracted_data.file_hash is not None:
             delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
@@ -593,6 +720,7 @@ class ProcessFileWorkflow(Workflow):
                     base_id=base_id,
                     page_markdown=state.page_markdown,
                     metadata=shared_meta,
+                    page_parts=page_parts,
                 )
                 pinecone_items.extend(page_records)
                 logger.info(

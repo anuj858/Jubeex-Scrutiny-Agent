@@ -1,0 +1,297 @@
+"""Document-part labels, record slicing, and local chunk selection.
+
+Split category names come from `configs/config.json` `split.categories`.
+Scrutiny uses the same labels to pick excerpts without a second Pinecone round.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from typing import Any
+
+from .scrutiny.rules import Defect, normalize_filing_type
+
+# Captions and headings as they appear on SCI forms — used for the one-time
+# Pinecone pool search (not the long legal objection sentences).
+FILING_CAPTION_QUERIES: tuple[str, ...] = (
+    "IN THE SUPREME COURT OF INDIA CIVIL APPELLATE JURISDICTION",
+    "SPECIAL LEAVE PETITION UNDER ARTICLE 136 Form 28",
+    "QUESTIONS OF LAW GROUNDS MAIN PRAYER INTERIM RELIEF",
+    "Listing Proforma Proforma for First Listing",
+    "Advocate's Check List Advocate-on-Record certificate",
+    "DECLARATION IN TERMS OF RULE 3(2) Affidavit",
+    "Cover Page Index Office Report on Limitation",
+    "Vakalatnama AOR Declaration Memo of Parties",
+)
+
+# Names must match configs/config.json split.categories.
+SPLIT_PART_NAMES: tuple[str, ...] = (
+    "Advocate's Checklist",
+    "Caveat Report",
+    "Cover Page",
+    "Record of Proceedings",
+    "AOR's Declaration",
+    "Index",
+    "Office Report on Limitation",
+    "Listing Proforma",
+    "Synopsis",
+    "List of Dates & Events",
+    "Petition",
+    "Affidavit",
+    "Annexures",
+    "Appendix",
+    "Memo of Parties",
+    "Memo of Appearance",
+    "Impugned Order",
+    "Vakalatnama + PoA/BR",
+    "Court Fees",
+)
+
+CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
+    "filing_formalities": ("Petition", "Affidavit"),
+    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR"),
+    "listing_proforma": ("Listing Proforma",),
+    "petition_presentation": ("Petition",),
+}
+
+# Structured CoreFilingRecord keys sent to the model for that category.
+# Always include court / petition_type; never dump unused party lists.
+CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
+    "filing_formalities": (
+        "court",
+        "petition_type",
+        "special_category",
+        "cause_title",
+        "impugned_order",
+        "filing_summary",
+    ),
+    "advocate_checklist": (
+        "court",
+        "petition_type",
+        "advocate_on_record",
+    ),
+    "listing_proforma": (
+        "court",
+        "petition_type",
+        "special_category",
+        "cause_title",
+        "matter_classification",
+    ),
+    "petition_presentation": (
+        "court",
+        "petition_type",
+        "filing_summary",
+    ),
+}
+
+ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
+
+# Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
+# do not need the global SCRUTINY_MAX_CHUNKS dump.
+CATEGORY_MAX_CHUNKS: dict[str, int] = {
+    "listing_proforma": 3,
+    "advocate_checklist": 3,
+    "filing_formalities": 10,
+    "petition_presentation": 6,
+}
+
+# Keep a page chunk only if ln(best_score / this_score) is below this.
+# 0.36 ≈ keep scores at least ~70% of the best hit; farther neighbours are dropped.
+MAX_SCORE_LOG_GAP = 0.36
+
+FILING_TYPE_LABELS: dict[str, str] = {
+    "slp_civil": "Special Leave Petition (Civil)",
+    "slp_criminal": "Special Leave Petition (Criminal)",
+    "arbitration_petition": "Arbitration Petition",
+    "writ_petition_civil": "Writ Petition (Civil)",
+    "writ_petition_criminal": "Writ Petition (Criminal)",
+}
+
+
+def normalize_part_name(name: str | None) -> str:
+    if not name:
+        return ""
+    text = name.replace("\u2019", "'").replace("\u2018", "'")
+    text = re.sub(r"\s+", " ", text).strip()
+    aliases = {
+        "advocate's check list": "Advocate's Checklist",
+        "advocates checklist": "Advocate's Checklist",
+        "aor declaration": "AOR's Declaration",
+        "vakalatnama": "Vakalatnama + PoA/BR",
+        "form 28": "Petition",
+        "main petition": "Petition",
+        "slp": "Petition",
+    }
+    return aliases.get(text.lower(), text)
+
+
+def filing_type_label(filing_type: str | None) -> str:
+    key = normalize_filing_type(filing_type)
+    if key in FILING_TYPE_LABELS:
+        return FILING_TYPE_LABELS[key]
+    raw = (filing_type or "").strip()
+    return raw or "this filing"
+
+
+def page_parts_from_split(job: Any) -> dict[int, str]:
+    """Map 1-indexed page number → split category name."""
+    result = getattr(job, "result", None) or job
+    segments = getattr(result, "segments", None)
+    if segments is None and isinstance(result, dict):
+        segments = result.get("segments")
+    if not segments:
+        return {}
+
+    mapping: dict[int, str] = {}
+    for segment in segments:
+        if isinstance(segment, dict):
+            category = segment.get("category")
+            pages = segment.get("pages") or []
+        else:
+            category = getattr(segment, "category", None)
+            pages = getattr(segment, "pages", None) or []
+        part = normalize_part_name(str(category or ""))
+        if not part:
+            continue
+        for page in pages:
+            try:
+                mapping[int(page)] = part
+            except (TypeError, ValueError):
+                continue
+    return mapping
+
+
+def preferred_parts_for_defect(defect: Defect) -> list[str]:
+    parts = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
+    blob = " ".join(defect.where_to_look).lower()
+    blob = blob.replace("\u2019", "'")
+    for name in SPLIT_PART_NAMES:
+        needle = name.lower()
+        short = needle.split("+", 1)[0].strip()
+        if needle in blob or short in blob:
+            if name not in parts:
+                parts.append(name)
+    return parts
+
+
+def pool_search_queries() -> list[str]:
+    """Short caption queries for the single shared Pinecone gather."""
+    seen: set[str] = set()
+    queries: list[str] = []
+    for query in (*FILING_CAPTION_QUERIES, *SPLIT_PART_NAMES):
+        key = query.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+    return queries
+
+
+def match_terms_for_defect(defect: Defect) -> list[str]:
+    """Phrases to score an in-memory chunk against this defect."""
+    terms: list[str] = []
+    if defect.trigger_words:
+        terms.extend(
+            p.strip()
+            for p in re.split(r"[;|]", defect.trigger_words)
+            if p.strip()
+        )
+    terms.extend(preferred_parts_for_defect(defect))
+    for step in defect.where_to_look:
+        heading = _heading_from_where_to_look(step)
+        if heading:
+            terms.append(heading)
+    # Dedup while preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in terms:
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(term)
+    return unique
+
+
+def _heading_from_where_to_look(step: str) -> str | None:
+    """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
+    text = re.sub(
+        r"^(check|read|look at|examine|verify|confirm|review)\s+(the\s+|for\s+the\s+)?",
+        "",
+        step.strip(),
+        flags=re.IGNORECASE,
+    )
+    for name in SPLIT_PART_NAMES:
+        if name.lower() in text.lower():
+            return name
+    # First clause before 'and' / comma, if it is short.
+    clause = re.split(r"[,.]|\band\b", text, maxsplit=1)[0].strip()
+    if 3 <= len(clause) <= 80:
+        return clause
+    return None
+
+
+def slice_record_for_defect(
+    record: dict[str, Any] | None,
+    defect: Defect,
+) -> dict[str, Any] | None:
+    if not record:
+        return record
+    fields = CATEGORY_RECORD_FIELDS.get(defect.category_id or "")
+    if not fields:
+        keys = list(ALWAYS_RECORD_FIELDS)
+        keys.extend(k for k in record if k not in keys)
+        fields = tuple(keys)
+    sliced = {key: record[key] for key in fields if key in record}
+    return sliced or record
+
+
+def _part_match(chunk: dict[str, Any], preferred: list[str]) -> bool:
+    part = normalize_part_name(str(chunk.get("document_part") or ""))
+    if not part or not preferred:
+        return False
+    part_l = part.lower()
+    return any(part_l == p.lower() or p.lower() in part_l for p in preferred)
+
+
+def _term_hits(chunk: dict[str, Any], terms: list[str]) -> int:
+    text = (chunk.get("text") or "").lower()
+    if not text:
+        return 0
+    return sum(1 for term in terms if term.lower() in text)
+
+
+def select_chunks_for_defect(
+    pool: list[dict[str, Any]],
+    defect: Defect,
+    *,
+    max_chunks: int,
+) -> list[dict[str, Any]]:
+    """Pick the best excerpts for one defect from a shared filing pool."""
+    if not pool:
+        return []
+
+    preferred = preferred_parts_for_defect(defect)
+    terms = match_terms_for_defect(defect)
+    summary = [c for c in pool if c.get("chunk_kind") == "summary"]
+    pages = [c for c in pool if c.get("chunk_kind") != "summary"]
+
+    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, float]:
+        part_hit = 1 if _part_match(chunk, preferred) else 0
+        hits = _term_hits(chunk, terms)
+        score = float(chunk.get("score") or 0)
+        return (part_hit, hits, score)
+
+    ranked = sorted(pages, key=rank_key, reverse=True)
+    focused = [
+        c
+        for c in ranked
+        if _part_match(c, preferred) or _term_hits(c, terms) > 0
+    ]
+    chosen_pages = focused if len(focused) >= 1 else ranked
+
+    room = max(0, max_chunks - len(summary[:1]))
+    chosen_pages = chosen_pages[:room]
+    chosen_pages.sort(key=lambda c: (c.get("page") is None, c.get("page") or 0))
+    return summary[:1] + chosen_pages
