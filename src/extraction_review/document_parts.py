@@ -53,6 +53,17 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR"),
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": ("Petition",),
+    "applications": ("Petition", "Annexures", "Index"),
+    "annexures": ("Annexures", "Index", "List of Dates & Events"),
+    "parties": ("Memo of Parties", "Cover Page", "Petition"),
+    "dates_execution": ("Petition", "Affidavit", "Vakalatnama + PoA/BR"),
+    "index_paper_book": ("Index",),
+    "limitation": ("Office Report on Limitation", "Petition"),
+    "affidavit": ("Affidavit", "Petition"),
+    "translations": ("Annexures", "Vakalatnama + PoA/BR"),
+    "vakalatnama": ("Vakalatnama + PoA/BR",),
+    "memo_of_appearance": ("Memo of Appearance",),
+    "list_of_dates": ("List of Dates & Events", "Synopsis"),
 }
 
 # Structured CoreFilingRecord keys sent to the model for that category.
@@ -83,6 +94,22 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "petition_type",
         "filing_summary",
     ),
+    "applications": ("court", "petition_type", "filing_summary"),
+    "annexures": ("court", "petition_type", "filing_summary"),
+    "parties": (
+        "court",
+        "petition_type",
+        "cause_title",
+        "impugned_order",
+    ),
+    "dates_execution": ("court", "petition_type"),
+    "index_paper_book": ("court", "petition_type", "filing_summary"),
+    "limitation": ("court", "petition_type", "impugned_order"),
+    "affidavit": ("court", "petition_type"),
+    "translations": ("court", "petition_type", "filing_summary"),
+    "vakalatnama": ("court", "petition_type", "advocate_on_record"),
+    "memo_of_appearance": ("court", "petition_type", "advocate_on_record"),
+    "list_of_dates": ("court", "petition_type", "filing_summary"),
 }
 
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
@@ -94,6 +121,17 @@ CATEGORY_MAX_CHUNKS: dict[str, int] = {
     "advocate_checklist": 3,
     "filing_formalities": 10,
     "petition_presentation": 6,
+    "applications": 4,
+    "annexures": 6,
+    "parties": 4,
+    "dates_execution": 3,
+    "index_paper_book": 4,
+    "limitation": 3,
+    "affidavit": 4,
+    "translations": 4,
+    "vakalatnama": 3,
+    "memo_of_appearance": 3,
+    "list_of_dates": 3,
 }
 
 # Keep a page chunk only if ln(best_score / this_score) is below this.
