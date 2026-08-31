@@ -1,5 +1,15 @@
 """Pinecone vector store with integrated embeddings (llama-text-embed-v2).
 
+Two jobs, kept separate:
+
+- Write (`process-file`): `build_page_records` / `upsert_records` store page text
+  plus metadata (`file_hash`, `document_part`, `chunk_kind`, page numbers).
+- Read (`scrutiny-check`): `search_filing_chunks` / `gather_filing_evidence_pool`
+  return hits for one filing. They do not decide what the LLM sees.
+
+What to send the model (log-gap cutoff, per-defect page budget) lives in
+`document_parts.select_chunks_for_defect`, not here.
+
 This project does not run a separate embedding model. When VECTOR_BACKEND=pinecone,
 text is upserted via Pinecone's integrated embedding index; Pinecone embeds server-side.
 """
@@ -457,10 +467,12 @@ def search_filing_chunks(
     top_k: int | None = None,
     chunk_kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Semantic search scoped to a single filing.
+    """Return Pinecone hits for one filing. No LLM packing or score cutoff.
 
     Unlike `search_filings`, this filters on `file_hash` metadata so scrutiny of
-    one document never pulls evidence out of a different filing.
+    one document never pulls evidence out of a different filing. `top_k` is
+    how many neighbours Pinecone fills; far hits are still returned. Dropping
+    them is `select_chunks_for_defect`, not this function.
     """
     if top_k is None:
         top_k = scrutiny_top_k()

@@ -384,10 +384,6 @@ def _trigger_cues(trigger_words: str | None) -> str | None:
 
 def _format_authority(defect: Defect, catalogue: Catalogue | None) -> str:
     lines: list[str] = []
-    if defect.applicable_rule:
-        lines.append(f"Apply this rule or clause only: {defect.applicable_rule}.")
-    else:
-        lines.append("No separate rule citation was given. Do not invent one.")
     if catalogue:
         cited = catalogue.sources_cited_by(defect)
         for source in cited:
@@ -451,12 +447,13 @@ def build_defect_prompt(
         seen_topics.add(topic)
         cure_lines.append(f"- {aim}")
     sections = [
+        category_block.strip(),
+        "",
         f"# Task {defect.check_id}",
         (
             f"For {filing}, decide one registry objection. Ignore every other "
             "defect, even if the excerpts mention it."
         ),
-        category_block.strip(),
         "",
         "## Standard",
         _format_standard(defect),

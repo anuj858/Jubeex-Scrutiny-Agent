@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 CATALOGUE_FILENAME = "sci_registry_defects.v1.json"
 SCHEMA_FILENAME = "sci_registry_defects.schema.v1.json"
 
-DEFAULT_ENABLED_DEFECTS = ("D001", "D002", "D003", "D004", "D005", "D006")
+DEFAULT_ENABLED_DEFECTS = ("D003", "D004", "D005", "D006")
 
 _DRIVE_FILE_MARKER = "/file/d/"
 
@@ -170,7 +170,7 @@ class Catalogue(_Strict):
         return next((s for s in self.sources if s.source_id == source_id), None)
 
     def sources_cited_by(self, defect: Defect) -> list[CatalogueSource]:
-        text = f"{defect.location_source} {defect.applicable_rule or ''}"
+        text = defect.location_source
         cited: list[CatalogueSource] = []
         for source in self.sources:
             if source.source_id and source.source_id in text:
@@ -259,6 +259,47 @@ def _applies_to_filing(defect: Defect, normalized_filing_type: str) -> bool:
     return category == "global" or category == normalized_filing_type
 
 
+def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
+    """Run each parent immediately before its children.
+
+    Consecutive OpenRouter calls then share a longer prompt prefix (same
+    petition-type system prompt, then the same category block) so the child
+    can reuse the cached parent prefix.
+    """
+    by_id = {d.check_id: d for d in defects}
+    children: dict[str, list[Defect]] = {}
+    for defect in defects:
+        parent_id = defect.parent_check_id
+        if parent_id and parent_id in by_id:
+            children.setdefault(parent_id, []).append(defect)
+    for kids in children.values():
+        kids.sort(key=lambda d: (d.serial_no, d.check_id))
+
+    roots = [
+        d
+        for d in defects
+        if not d.parent_check_id or d.parent_check_id not in by_id
+    ]
+    roots.sort(key=lambda d: (d.serial_no, d.check_id))
+
+    ordered: list[Defect] = []
+    seen: set[str] = set()
+
+    def emit(defect: Defect) -> None:
+        if defect.check_id in seen:
+            return
+        seen.add(defect.check_id)
+        ordered.append(defect)
+        for child in children.get(defect.check_id, []):
+            emit(child)
+
+    for root in roots:
+        emit(root)
+    for defect in defects:
+        emit(defect)
+    return ordered
+
+
 def defects_for_filing_type(filing_type: str | None) -> list[Defect]:
     catalogue = get_catalogue()
     normalized = normalize_filing_type(filing_type)
@@ -269,7 +310,7 @@ def defects_for_filing_type(filing_type: str | None) -> list[Defect]:
         for defect in catalogue.defects
         if defect.check_id in allowed and _applies_to_filing(defect, normalized)
     ]
-    selected.sort(key=lambda d: d.serial_no)
+    selected = order_parent_then_children(selected)
 
     unknown = allowed - {d.check_id for d in catalogue.defects}
     if unknown:

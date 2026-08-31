@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.0",
-  "catalogue_version": "2.0.0",
+  "catalogue_version": "2.0.1",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -128,58 +128,6 @@
   ],
   "defects": [
     {
-      "check_id": "D001",
-      "serial_no": 1,
-      "main_category": "SLP (Civil)",
-      "special_category": null,
-      "category_id": "filing_formalities",
-      "parent_check_id": null,
-      "overlap_note": null,
-      "defect": "The Civil SLP does not follow the official Form 28 petition body, or is missing the declarations and statements required by the current filing checklist",
-      "requirement": "Confirm that the Civil SLP follows the official Form 28 petition body and contains the declarations and statements required by the current filing checklist: court and jurisdiction caption, Article 136 / Special Leave Petition description, party positions, opening statement identifying the challenged court, case, date and result, Questions of Law, Rule 4(2) declaration, Rule 6 true-copy declaration, Grounds, Grounds for Interim Relief, Main Prayer, Interim Relief, place, date, advocate and settled-by fields, plus checklist statements about an earlier petition, identical Supreme Court matters and Order XIX Rule 3(1). A mere mention in an Index is not the required statement.",
-      "trigger_words": "IN THE SUPREME COURT OF INDIA; CIVIL APPELLATE JURISDICTION; SPECIAL LEAVE PETITION UNDER ARTICLE 136; QUESTIONS OF LAW; DECLARATION UNDER ORDER XXI RULE 4(2); true copies; GROUNDS; GROUNDS FOR INTERIM RELIEF; MAIN PRAYER; INTERIM RELIEF",
-      "where_to_look": [
-        "Read the exact Main Petition range, its headings and the active document outline.",
-        "Check the court and jurisdiction caption, Article 136 / Special Leave Petition description, and party positions.",
-        "Check the opening statement identifying the challenged court, case, date and result.",
-        "Check Questions of Law, the Rule 4(2) prior-petition declaration, and the Rule 6 true-copy declaration.",
-        "Check Grounds, Grounds for Interim Relief, Main Prayer and Interim Relief. No separate application for interim relief shall be filed outside Form 28; if interim relief is sought, it must be incorporated within the petition itself.",
-        "Check place, date, advocate and settled-by fields, and the checklist statements about an earlier petition, identical Supreme Court matters and Order XIX Rule 3(1). Do not treat a mere mention in an Index as the required statement."
-      ],
-      "how_to_cure": [
-        "Form 28 caption, parties and opening: Prompt the User to supply missing Supreme Court / Civil Appellate Jurisdiction / Article 136 caption, party positions, and the opening statement identifying the challenged court, case number, date and nature of the order. Option for Jubeex to draft and incorporate those Form 28 parts.",
-        "Questions of Law and declarations: Prompt the User for Questions of Law, the Rule 4(2) prior-petition declaration, and the Rule 6 true-copy declaration. Option for Jubeex to draft and insert those sections.",
-        "Grounds, prayers and interim relief: Prompt the User for Grounds, Grounds for Interim Relief, Main Prayer and Interim Relief to be incorporated within Form 28 (not as a separate interim-relief application). Option for Jubeex to draft and incorporate.",
-        "Place, date, advocate, settled-by and other checklist statements: Prompt the User for place, date, advocate, settled-by, identical Supreme Court matter particulars and the Order XIX Rule 3(1) statement. Option for the User to review and edit with Jubeex."
-      ],
-      "applicable_rule": "Form 28; Order XXI Rule 3(1)(a); Order XXI Rule 4(2); Order XXI Rule 6; Order XIX Rule 3(1)",
-      "location_source": "SCI_CHECKLIST_2025, Registry items 6, 15, 16 and Advocate items 1, 2"
-    },
-    {
-      "check_id": "D002",
-      "serial_no": 203,
-      "main_category": "SLP (Civil)",
-      "special_category": null,
-      "category_id": "filing_formalities",
-      "parent_check_id": "D001",
-      "overlap_note": "Narrower than D001. D001 is the whole Form 28 body. This check is only the Order XXI Rule 3(2) statement, duly supported by affidavit, on whether an earlier SLP was filed against the same order. Do not re-decide Form 28 as a whole.",
-      "defect": "Petition does not contain a statement, duly supported by affidavit, stating whether the petitioner has previously filed any petition for special leave to appeal against the impugned judgment or order and, if so, the result thereof",
-      "requirement": "No petition shall be entertained by the Registry unless it contains a statement (duly supported by affidavit) as to whether the petitioner had filed any petition for special leave to appeal against the impugned judgment or order earlier, and if so, with what result",
-      "trigger_words": "that no other Petition seeking leave to appeal has been filed by them against the impugned final Judgment and Order",
-      "where_to_look": [
-        "Check the portion headed 'DECLARATION IN TERMS OF RULE 3(2)' in the SLP for a statement as to whether an earlier SLP was filed against the same order.",
-        "Check the Affidavit filed after the SLP for verification of that statement."
-      ],
-      "how_to_cure": [
-        "Statement Regarding Earlier SLP \u2014 Prompt the User to provide details of whether any earlier SLP was filed against the impugned judgment/order and, if so, the result thereof, and option for Jubeex to draft and incorporate the required statement in the Petition.",
-        "Statement Regarding Earlier SLP \u2014 Option for the User to review and edit the statement with Jubeex.",
-        "Affidavit Supporting the Statement \u2014 Option for Jubeex to draft the supporting affidavit, and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
-        "Affidavit Supporting the Statement \u2014 Option for the User to upload the affidavit with Jubeex."
-      ],
-      "applicable_rule": "Order XXI, Rule 3(2)",
-      "location_source": "SCI_RULES_2013, Page 31 of the PDF Supreme Court Rules, 2013"
-    },
-    {
       "check_id": "D003",
       "serial_no": 76,
       "main_category": "General/Global",
@@ -199,29 +147,7 @@
         "Option for the User to upload the Advocate's Check List with Jubeex.",
         "Re-upload the petition along with the Advocate's Check List."
       ],
-      "applicable_rule": null,
       "location_source": "Page 5, SCI_CHECKLIST_2025"
-    },
-    {
-      "check_id": "D004",
-      "serial_no": 120,
-      "main_category": "General/Global",
-      "special_category": null,
-      "category_id": "listing_proforma",
-      "parent_check_id": null,
-      "overlap_note": null,
-      "defect": "Columns Nos.6 and 7 of Listing Proforma/Proforma for First Listing not duly filled in",
-      "requirement": "Columns Nos.6 and 7 of Listing Proforma/Proforma for First Listing must be duly filled in",
-      "trigger_words": null,
-      "where_to_look": [
-        "Check the Listing Proforma/Proforma for First Listing and check Columns 6 and 7 of the Proforma for First Listing are duly filled. Flag if these details are stated/filed"
-      ],
-      "how_to_cure": [
-        "Prompt the User to enter the information required for Columns 6 and 7 of the Listing Proforma/Proforma for First Listing, and option for Jubeex to fill the relevant columns using the information provided.",
-        "Option for the User to re-upload the Listing Proforma."
-      ],
-      "applicable_rule": null,
-      "location_source": "Page 3, SCI_CHECKLIST_2025"
     },
     {
       "check_id": "D005",
@@ -244,7 +170,6 @@
         "Option for the User to edit the Advocate-on-Record's code number in the certificate with Jubeex.",
         "Re-upload the duly certified Advocate's Check List."
       ],
-      "applicable_rule": null,
       "location_source": "Page 6, SCI_CHECKLIST_2025. End of Checklist contains signature block with Date, Signature of AOR, Name & Code of AOR"
     },
     {
@@ -273,8 +198,27 @@
         "Legible scans — Option for Jubeex to OCR and create legible, clear versions of the petition.",
         "Legible scans — Re-upload the petition."
       ],
-      "applicable_rule": "Order XV, Rule 1",
       "location_source": "SCI_RULES_2013, Page 19 of the PDF Supreme Court Rules, 2013"
+    },
+    {
+      "check_id": "D004",
+      "serial_no": 120,
+      "main_category": "General/Global",
+      "special_category": null,
+      "category_id": "listing_proforma",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Columns Nos.6 and 7 of Listing Proforma/Proforma for First Listing not duly filled in",
+      "requirement": "Columns Nos.6 and 7 of Listing Proforma/Proforma for First Listing must be duly filled in",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Listing Proforma/Proforma for First Listing and check Columns 6 and 7 of the Proforma for First Listing are duly filled. Flag if these details are stated/filed"
+      ],
+      "how_to_cure": [
+        "Prompt the User to enter the information required for Columns 6 and 7 of the Listing Proforma/Proforma for First Listing, and option for Jubeex to fill the relevant columns using the information provided.",
+        "Option for the User to re-upload the Listing Proforma."
+      ],
+      "location_source": "Page 3, SCI_CHECKLIST_2025"
     }
   ]
 }

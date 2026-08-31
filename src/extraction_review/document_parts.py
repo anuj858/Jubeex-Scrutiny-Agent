@@ -232,6 +232,61 @@ def _heading_from_where_to_look(step: str) -> str | None:
     return None
 
 
+def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
+    """How many page excerpts this defect is allowed, at most.
+
+    Listing / AOR-code checks are one form; Form 28 needs more pages.
+    A child defect is a single point, so it stays tighter than its parent.
+    """
+    budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
+    preferred = preferred_parts_for_defect(defect)
+    if len(defect.where_to_look) <= 2 and len(preferred) <= 1:
+        budget = min(budget, 3)
+    if defect.parent_check_id:
+        budget = min(budget, 4)
+    return max(1, min(budget, ceiling))
+
+
+def _chunk_score(chunk: dict[str, Any]) -> float:
+    try:
+        return float(chunk.get("score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def keep_nearby_scores(
+    chunks: list[dict[str, Any]],
+    *,
+    max_n: int,
+    max_log_gap: float = MAX_SCORE_LOG_GAP,
+) -> list[dict[str, Any]]:
+    """Drop neighbours that are far behind the best score.
+
+    Pinecone `top_k` always fills the quota. Rank 4–8 can be a different
+    document part with a much lower score; sending those invites the model
+    to quote the wrong page. The cutoff is logarithmic so it does not depend
+    on whether the best score is 0.9 or 0.3: keep if ln(best / score) ≤ gap.
+    """
+    if not chunks or max_n <= 0:
+        return []
+    best = max(_chunk_score(c) for c in chunks)
+    kept: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if len(kept) >= max_n:
+            break
+        score = _chunk_score(chunk)
+        if best <= 0:
+            kept.append(chunk)
+            continue
+        if score <= 0:
+            continue
+        log_gap = math.log(best) - math.log(score)
+        if log_gap > max_log_gap:
+            continue
+        kept.append(chunk)
+    return kept or chunks[:1]
+
+
 def slice_record_for_defect(
     record: dict[str, Any] | None,
     defect: Defect,
@@ -268,7 +323,14 @@ def select_chunks_for_defect(
     *,
     max_chunks: int,
 ) -> list[dict[str, Any]]:
-    """Pick the best excerpts for one defect from a shared filing pool."""
+    """Pick the best excerpts for one defect from a shared filing pool.
+
+    `max_chunks` is a global ceiling (SCRUTINY_MAX_CHUNKS). This then:
+    1. Prefers the labelled document part / trigger hits for this defect.
+    2. Caps to a smaller per-defect budget (one-form checks do not need 8 pages).
+    3. Drops neighbours whose Pinecone score is logarithmically far from the
+       best remaining hit, so a filled `top_k` does not ship unrelated pages.
+    """
     if not pool:
         return []
 
@@ -280,7 +342,7 @@ def select_chunks_for_defect(
     def rank_key(chunk: dict[str, Any]) -> tuple[int, int, float]:
         part_hit = 1 if _part_match(chunk, preferred) else 0
         hits = _term_hits(chunk, terms)
-        score = float(chunk.get("score") or 0)
+        score = _chunk_score(chunk)
         return (part_hit, hits, score)
 
     ranked = sorted(pages, key=rank_key, reverse=True)
@@ -289,9 +351,17 @@ def select_chunks_for_defect(
         for c in ranked
         if _part_match(c, preferred) or _term_hits(c, terms) > 0
     ]
-    chosen_pages = focused if len(focused) >= 1 else ranked
+    candidates = focused if focused else ranked
+    if not candidates:
+        return summary[:1]
 
-    room = max(0, max_chunks - len(summary[:1]))
-    chosen_pages = chosen_pages[:room]
+    # Score cutoff only among the leading relevance tier (preferred part, or
+    # term hits). Otherwise a high-scoring wrong part would drop the right page.
+    top_part = rank_key(candidates[0])[0]
+    leading = [c for c in candidates if rank_key(c)[0] == top_part] or candidates
+
+    page_ceiling = max(0, max_chunks - len(summary[:1]))
+    page_budget = max_chunks_for_defect(defect, ceiling=page_ceiling)
+    chosen_pages = keep_nearby_scores(leading, max_n=page_budget)
     chosen_pages.sort(key=lambda c: (c.get("page") is None, c.get("page") or 0))
     return summary[:1] + chosen_pages

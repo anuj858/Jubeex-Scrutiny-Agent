@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from extraction_review.document_parts import (
+    keep_nearby_scores,
     match_terms_for_defect,
+    max_chunks_for_defect,
     page_parts_from_split,
     pool_search_queries,
     select_chunks_for_defect,
@@ -16,7 +18,7 @@ from extraction_review.scrutiny.prompts import (
     build_defect_prompt,
     build_system_prompt,
 )
-from extraction_review.scrutiny.rules import get_catalogue
+from extraction_review.scrutiny.rules import defects_for_filing_type, get_catalogue
 from extraction_review.vector_store import build_page_records
 
 
@@ -121,11 +123,70 @@ def test_select_chunks_prefers_labelled_part() -> None:
     assert "p10" not in ids
 
 
-def test_match_terms_use_trigger_captions() -> None:
+def test_keep_nearby_scores_drops_far_neighbours() -> None:
+    chunks = [
+        {"record_id": "a", "score": 0.90},
+        {"record_id": "b", "score": 0.88},
+        {"record_id": "c", "score": 0.85},
+        {"record_id": "d", "score": 0.40},
+        {"record_id": "e", "score": 0.12},
+    ]
+    kept = keep_nearby_scores(chunks, max_n=8)
+    assert [c["record_id"] for c in kept] == ["a", "b", "c"]
+
+
+def test_max_chunks_is_tighter_for_single_point_defects() -> None:
     catalogue = get_catalogue()
-    terms = match_terms_for_defect(catalogue.defect("D001"))
-    assert any("QUESTIONS OF LAW" in t for t in terms)
-    assert all("does not follow the official Form 28" not in t for t in terms)
+    assert max_chunks_for_defect(catalogue.defect("D004"), ceiling=12) == 3
+    assert max_chunks_for_defect(catalogue.defect("D005"), ceiling=12) == 3
+    assert max_chunks_for_defect(catalogue.defect("D006"), ceiling=12) == 6
+
+
+def test_child_defects_run_immediately_after_parent() -> None:
+    ids = [d.check_id for d in defects_for_filing_type("SLP_CIVIL")]
+    assert "D001" not in ids
+    assert "D002" not in ids
+    assert ids.index("D003") + 1 == ids.index("D005")
+
+
+def test_match_terms_use_form_captions_not_objection_text() -> None:
+    catalogue = get_catalogue()
+    terms = match_terms_for_defect(catalogue.defect("D004"))
+    assert any("Listing Proforma" in t for t in terms)
+    assert all("not duly filled" not in t.lower() for t in terms)
+
+
+def test_select_chunks_drops_far_pages_and_respects_defect_budget() -> None:
+    catalogue = get_catalogue()
+    pool: list[dict] = [
+        {
+            "record_id": "s",
+            "chunk_kind": "summary",
+            "text": "SLP Civil summary",
+            "score": 0.1,
+            "page": None,
+        }
+    ]
+    # Two near hits, then a cliff — budget is 3, but far pages must not fill it.
+    scores = (0.91, 0.88, 0.35, 0.30, 0.22, 0.18, 0.12, 0.08)
+    for i, score in enumerate(scores, start=1):
+        pool.append(
+            {
+                "record_id": f"p{i}",
+                "chunk_kind": "page",
+                "page": i,
+                "document_part": "Listing Proforma",
+                "text": "Proforma for First Listing columns 6 and 7",
+                "score": score,
+            }
+        )
+    chunks = select_chunks_for_defect(
+        pool, catalogue.defect("D004"), max_chunks=12
+    )
+    ids = [c["record_id"] for c in chunks]
+    assert ids[0] == "s"
+    assert ids[1:] == ["p1", "p2"]
+    assert "p3" not in ids
 
 
 def test_system_prompt_stable_within_petition_type() -> None:
