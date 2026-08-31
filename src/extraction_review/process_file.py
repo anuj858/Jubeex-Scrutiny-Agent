@@ -33,6 +33,10 @@ DISCRIMINATOR_FIELD = "petition_type"
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 300.0
+PARSE_POLL_INTERVAL_S = 2.0
+PARSE_POLL_MAX_S = 300.0
+PARSE_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
+PARSE_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 
 
 class FileEvent(StartEvent):
@@ -82,6 +86,11 @@ class ExtractionState(BaseModel):
     page_markdown: dict[int, str] = Field(default_factory=dict)
 
 
+def _job_status(payload: Any) -> str:
+    job = getattr(payload, "job", payload)
+    return str(getattr(job, "status", "") or "").upper()
+
+
 async def _wait_for_classify(client: AsyncLlamaCloud, job_id: str) -> Any:
     """Poll `classify.get` until the job reaches a terminal state."""
     elapsed = 0.0
@@ -93,6 +102,34 @@ async def _wait_for_classify(client: AsyncLlamaCloud, job_id: str) -> Any:
         elapsed += CLASSIFY_POLL_INTERVAL_S
     raise TimeoutError(
         f"Classify job {job_id} did not complete within {CLASSIFY_POLL_MAX_S}s"
+    )
+
+
+async def _wait_for_parse(client: AsyncLlamaCloud, job_id: str) -> None:
+    """Poll parse status until done, failed, or timed out.
+
+    Do not use `parsing.parse()` / `wait_for_completion()` here: those poll for up
+    to 2 hours, treat only `COMPLETED` as done, and will keep GET-ing forever if
+    the API returns `SUCCESS`.
+    """
+    elapsed = 0.0
+    last_status: str | None = None
+    while elapsed <= PARSE_POLL_MAX_S:
+        result = await client.parsing.get(job_id, project_id=project_id)
+        status = _job_status(result)
+        if status != last_status:
+            logger.info("[Parse] job %s status=%s", job_id, status)
+            last_status = status
+        if status in PARSE_DONE_STATUSES:
+            return
+        if status in PARSE_FAILED_STATUSES:
+            job = getattr(result, "job", result)
+            detail = getattr(job, "error_message", None) or status
+            raise RuntimeError(f"Parse job {job_id} failed: {detail}")
+        await asyncio.sleep(PARSE_POLL_INTERVAL_S)
+        elapsed += PARSE_POLL_INTERVAL_S
+    raise TimeoutError(
+        f"Parse job {job_id} did not complete within {PARSE_POLL_MAX_S}s"
     )
 
 
@@ -174,39 +211,28 @@ class ProcessFileWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(level="info", message=f"Parsing file {filename}")
             )
-            parse_kwargs: dict[str, Any] = {
+            create_kwargs: dict[str, Any] = {
                 "file_id": file_id,
-                "expand": ["markdown"],
                 "project_id": project_id,
             }
             if parse_config.configuration_id:
-                parse_kwargs["configuration_id"] = parse_config.configuration_id
+                create_kwargs["configuration_id"] = parse_config.configuration_id
             else:
-                dumped = parse_config.model_dump(
-                    exclude={"configuration_id", "product_type"},
-                    exclude_none=True,
+                create_kwargs.update(
+                    parse_config.model_dump(
+                        exclude={"configuration_id", "product_type"},
+                        exclude_none=True,
+                    )
                 )
-                parse_kwargs.update(dumped)
 
-            # Prefer convenience parse(); fall back to create + wait + get
-            if hasattr(llama_cloud_client.parsing, "parse") and not parse_config.configuration_id:
-                parse_result = await llama_cloud_client.parsing.parse(**parse_kwargs)
-                parse_job_id = getattr(getattr(parse_result, "job", None), "id", None)
-            else:
-                create_kwargs = {
-                    k: v for k, v in parse_kwargs.items() if k != "expand"
-                }
-                parse_job = await llama_cloud_client.parsing.create(**create_kwargs)
-                parse_job_id = parse_job.id
-                await llama_cloud_client.parsing.wait_for_completion(
-                    parse_job.id,
-                    project_id=project_id,
-                )
-                parse_result = await llama_cloud_client.parsing.get(
-                    parse_job.id,
-                    expand=["markdown"],
-                    project_id=project_id,
-                )
+            parse_job = await llama_cloud_client.parsing.create(**create_kwargs)
+            parse_job_id = parse_job.id
+            await _wait_for_parse(llama_cloud_client, parse_job.id)
+            parse_result = await llama_cloud_client.parsing.get(
+                parse_job.id,
+                expand=["markdown"],
+                project_id=project_id,
+            )
 
             page_markdown = _extract_page_markdown(parse_result)
             ctx.write_event_to_stream(

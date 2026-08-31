@@ -1,4 +1,5 @@
 from typing import Annotated, Any
+import logging
 
 from llama_cloud.types.configuration_response import ExtractV2Parameters
 from workflows import Workflow, step
@@ -7,6 +8,8 @@ from workflows.resource import Resource, ResourceConfig
 
 from .clients import get_llama_cloud_client, project_id
 from .config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES, ExtractConfig, create_union_schema
+
+logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 
@@ -65,6 +68,7 @@ class MetadataWorkflow(Workflow):
         presentation: Annotated[dict[str, Any], Resource(get_presentation_schema)],
     ) -> MetadataResponse:
         """Return the data schemas and storage settings for the review interface."""
+        logger.info("[Metadata] Serving extraction schema to the UI")
         return MetadataResponse(
             json_schema=presentation["json_schema"],
             schemas=presentation["schemas"],

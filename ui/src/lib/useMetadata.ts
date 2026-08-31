@@ -12,31 +12,63 @@ export interface UseMetadataResult {
   error: string | undefined;
 }
 
+const METADATA_CACHE_KEY = "jubeex-metadata-v1";
+
+function readCachedMetadata(): Metadata | undefined {
+  try {
+    const raw = sessionStorage.getItem(METADATA_CACHE_KEY);
+    if (!raw) {
+      return undefined;
+    }
+    const parsed = JSON.parse(raw) as Metadata;
+    if (parsed?.schemas && parsed.extracted_data_collection) {
+      return parsed;
+    }
+  } catch {
+    /* ignore invalid cache */
+  }
+  return undefined;
+}
+
+function writeCachedMetadata(metadata: Metadata) {
+  try {
+    sessionStorage.setItem(METADATA_CACHE_KEY, JSON.stringify(metadata));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
 export function useMetadata() {
   const wf = useWorkflow("metadata");
+  const cached = useRef(readCachedMetadata()).current;
   const [error, setError] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
-  const [metadata, setMetadata] = useState<Metadata | undefined>(undefined);
+  const [loading, setLoading] = useState(!cached);
+  const [metadata, setMetadata] = useState<Metadata | undefined>(cached);
   const strictModeWorkaround = useRef(false);
   useEffect(() => {
     if (strictModeWorkaround.current) {
       return;
     }
     strictModeWorkaround.current = true;
-    setLoading(true);
+    if (!cached) {
+      setLoading(true);
+    }
     wf.runToCompletion({})
       .then((handler) => {
         if (handler.status === "completed") {
           const result = handler.result?.data as unknown as Metadata;
+          writeCachedMetadata(result);
           setMetadata(result);
-        } else {
+        } else if (!cached) {
           setError(
             handler.error || `Unexpected workflow status: ${handler.status}`,
           );
         }
       })
       .catch((error) => {
-        setError(error instanceof Error ? error.message : String(error));
+        if (!cached) {
+          setError(error instanceof Error ? error.message : String(error));
+        }
       })
       .finally(() => {
         setLoading(false);
