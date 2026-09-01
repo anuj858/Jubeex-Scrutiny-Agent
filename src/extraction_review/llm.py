@@ -26,6 +26,7 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #DEFAULT_MODEL = "openai/gpt-5.5"
 DEFAULT_MODEL = "google/gemini-3.7-flash"
 DEFAULT_TIMEOUT_S = 180.0
+DEFAULT_MAX_TOKENS = 4096
 MAX_ATTEMPTS = 3
 
 
@@ -170,13 +171,25 @@ def _parse_json(content: str) -> dict[str, Any]:
         text = text.strip("`").strip()
         text = text.removeprefix("json").strip()
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        raise LLMError(f"Response JSON was not an object: {content[:400]}")
     except json.JSONDecodeError:
-        # Fall back to the outermost JSON object in the response.
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
-            raise LLMError(f"Response was not JSON: {content[:400]}")
-        return json.loads(text[start : end + 1])
+            raise LLMError(
+                "Response was truncated or not JSON: " + content[:400]
+            )
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except json.JSONDecodeError as e:
+            raise LLMError(
+                "Response was truncated or not JSON: " + content[:400]
+            ) from e
+        if not isinstance(parsed, dict):
+            raise LLMError(f"Response JSON was not an object: {content[:400]}")
+        return parsed
 
 
 async def call_structured[T: BaseModel](
@@ -198,6 +211,10 @@ async def call_structured[T: BaseModel](
     schema = strict_json_schema(response_model)
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    token_limit = max_tokens
+    if token_limit is None:
+        raw_limit = os.getenv("OPENROUTER_MAX_TOKENS", "").strip()
+        token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -210,8 +227,8 @@ async def call_structured[T: BaseModel](
             "messages": messages,
             "temperature": temperature,
         }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
+        if token_limit:
+            payload["max_tokens"] = token_limit
         if use_json_schema:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -298,6 +315,18 @@ async def call_structured[T: BaseModel](
                     MAX_ATTEMPTS,
                     str(e)[:300],
                 )
+                if isinstance(e, LLMError) and attempt < MAX_ATTEMPTS:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was not valid JSON "
+                                "(it may have been cut off). Return one complete "
+                                "JSON object matching the schema. No prose, "
+                                "no markdown."
+                            ),
+                        }
+                    )
 
             if attempt < MAX_ATTEMPTS:
                 await asyncio.sleep(min(2**attempt, 8) + random.uniform(0, 0.5))
