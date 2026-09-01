@@ -38,6 +38,7 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_retrieval_policy,
     apply_status_policy,
     build_finding,
     failed_finding,
@@ -51,6 +52,8 @@ from .vector_store import (
 )
 from .document_parts import (
     max_chunks_for_defect,
+    missing_required_parts,
+    preferred_parts_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
 )
@@ -130,7 +133,11 @@ async def _load_item(
     )
 
 
-def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectResponse:
+def _sanitize_response(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
         logger.warning(
@@ -140,6 +147,7 @@ def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectRespon
         )
         response.check_id = defect.check_id
     response = apply_status_policy(response)
+    response = apply_retrieval_policy(defect, response, chunks)
     if response.status != "defect_found":
         response.suggested_fix = None
         response.fix_rationale = None
@@ -160,7 +168,7 @@ async def _run_defect(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=bool(chunks) and bool(record),
+        evidence_complete=bool(record) and not missing_required_parts(defect, chunks),
     )
 
     raw, usage = await call_structured(
@@ -174,7 +182,7 @@ async def _run_defect(
         ),
         response_model=DefectResponse,
     )
-    response = _sanitize_response(defect, raw)
+    response = _sanitize_response(defect, raw, chunks)
 
     return build_finding(
         defect,
@@ -198,12 +206,13 @@ async def _chunks_for_defect(
 
     queries = build_evidence_queries(defect)
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
+    gather_cap = max(max_chunks, len(preferred_parts_for_defect(defect)) * 4)
     try:
         pool = await asyncio.to_thread(
             gather_filing_evidence,
             queries,
             file_hash=file_hash,
-            max_chunks=max_chunks,
+            max_chunks=gather_cap,
         )
     except Exception as e:
         logger.warning(

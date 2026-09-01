@@ -21,7 +21,7 @@ from .config import (
     SplitConfig,
     get_extraction_schema,
 )
-from .document_parts import page_parts_from_split
+from .document_parts import overlay_split_documents, page_parts_from_split
 from .vector_store import (
     build_filing_chunk_text,
     build_page_records,
@@ -628,6 +628,8 @@ class ProcessFileWorkflow(Workflow):
                 raise
 
         data_dict = extracted_data.model_dump()
+        if page_parts:
+            overlay_split_documents(data_dict, page_parts)
         if extracted_data.file_hash is not None:
             delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
                 deployment_name=agent_name or "_public",

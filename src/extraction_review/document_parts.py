@@ -103,12 +103,12 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "cause_title",
         "impugned_order",
     ),
-    "dates_execution": ("court", "petition_type"),
+    "dates_execution": ("court", "petition_type", "filing_summary"),
     "index_paper_book": ("court", "petition_type", "filing_summary"),
-    "limitation": ("court", "petition_type", "impugned_order"),
+    "limitation": ("court", "petition_type", "impugned_order", "filing_summary"),
     "affidavit": ("court", "petition_type"),
     "translations": ("court", "petition_type", "filing_summary"),
-    "vakalatnama": ("court", "petition_type", "advocate_on_record"),
+    "vakalatnama": ("court", "petition_type", "advocate_on_record", "filing_summary"),
     "memo_of_appearance": ("court", "petition_type", "advocate_on_record"),
     "list_of_dates": ("court", "petition_type", "filing_summary"),
 }
@@ -125,9 +125,9 @@ CATEGORY_MAX_CHUNKS: dict[str, int] = {
     "applications": 4,
     "annexures": 6,
     "parties": 4,
-    "dates_execution": 3,
+    "dates_execution": 6,
     "index_paper_book": 4,
-    "limitation": 3,
+    "limitation": 4,
     "affidavit": 4,
     "translations": 4,
     "vakalatnama": 3,
@@ -163,6 +163,66 @@ def normalize_part_name(name: str | None) -> str:
         "slp": "Petition",
     }
     return aliases.get(text.lower(), text)
+
+
+def _format_page_span(pages: list[int]) -> str:
+    ordered = sorted(set(pages))
+    if not ordered:
+        return ""
+    groups: list[tuple[int, int]] = []
+    start = prev = ordered[0]
+    for number in ordered[1:]:
+        if number == prev + 1:
+            prev = number
+            continue
+        groups.append((start, prev))
+        start = prev = number
+    groups.append((start, prev))
+    bits = [str(a) if a == b else f"{a}–{b}" for a, b in groups]
+    prefix = "p. " if len(ordered) == 1 else "pp. "
+    return prefix + ", ".join(bits)
+
+
+def documents_from_page_parts(page_parts: dict[int, str]) -> dict[str, Any]:
+    """Build filing_summary.documents from Split labels, with page spans."""
+    order: list[str] = []
+    pages_by_part: dict[str, list[int]] = {}
+    for page in sorted(page_parts):
+        name = normalize_part_name(page_parts.get(page) or "")
+        if not name:
+            continue
+        if name not in pages_by_part:
+            pages_by_part[name] = []
+            order.append(name)
+        pages_by_part[name].append(page)
+    items = [
+        f"{name} ({_format_page_span(pages_by_part[name])})" for name in order
+    ]
+    return {"count": len(items), "items": items}
+
+
+def overlay_split_documents(
+    payload: dict[str, Any], page_parts: dict[int, str]
+) -> None:
+    """Replace Index slang (V/A) with Split part names and page sources."""
+    docs = documents_from_page_parts(page_parts)
+    if not docs["items"]:
+        return
+    record = payload
+    while (
+        isinstance(record, dict)
+        and "filing_summary" not in record
+        and "petition_type" not in record
+        and isinstance(record.get("data"), dict)
+    ):
+        record = record["data"]
+    if not isinstance(record, dict):
+        return
+    summary = record.get("filing_summary")
+    if not isinstance(summary, dict):
+        summary = {}
+        record["filing_summary"] = summary
+    summary["documents"] = docs
 
 
 def filing_type_label(filing_type: str | None) -> str:
@@ -253,6 +313,33 @@ def match_terms_for_defect(defect: Defect) -> list[str]:
     return unique
 
 
+def required_parts_for_defect(defect: Defect) -> list[str]:
+    """Preferred parts named in where-to-look; otherwise every preferred part."""
+    preferred = preferred_parts_for_defect(defect)
+    blob = " ".join(defect.where_to_look).lower().replace("\u2019", "'")
+    named: list[str] = []
+    for part in preferred:
+        needles = [part.lower(), part.split("+", 1)[0].strip().lower()]
+        if any(needle and needle in blob for needle in needles):
+            named.append(part)
+    return named or preferred
+
+
+def chunks_cover_part(chunks: list[dict[str, Any]], part: str) -> bool:
+    pages = [c for c in chunks if c.get("chunk_kind") != "summary"]
+    return any(_part_match(c, [part]) for c in pages)
+
+
+def missing_required_parts(
+    defect: Defect, chunks: list[dict[str, Any]]
+) -> list[str]:
+    return [
+        part
+        for part in required_parts_for_defect(defect)
+        if not chunks_cover_part(chunks, part)
+    ]
+
+
 def _heading_from_where_to_look(step: str) -> str | None:
     """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
     text = re.sub(
@@ -275,14 +362,16 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     """How many page excerpts this defect is allowed, at most.
 
     Listing / AOR-code checks are one form; Form 28 needs more pages.
-    A child defect is a single point, so it stays tighter than its parent.
+    A child defect stays tighter than its parent unless several document
+    parts must be compared (Vakalatnama vs petition drafting date).
     """
-    budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
     preferred = preferred_parts_for_defect(defect)
+    budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
     if len(defect.where_to_look) <= 2 and len(preferred) <= 1:
         budget = min(budget, 3)
     if defect.parent_check_id:
-        budget = min(budget, 4)
+        budget = min(budget, max(4, len(preferred)))
+    budget = max(budget, min(len(preferred), ceiling))
     return max(1, min(budget, ceiling))
 
 
@@ -365,10 +454,11 @@ def select_chunks_for_defect(
     """Pick the best excerpts for one defect from a shared filing pool.
 
     `max_chunks` is a global ceiling (SCRUTINY_MAX_CHUNKS). This then:
-    1. Prefers the labelled document part / trigger hits for this defect.
-    2. Caps to a smaller per-defect budget (one-form checks do not need 8 pages).
+    1. Takes at least one page from each preferred document part in the pool
+       so Affidavit cannot crowd out Vakalatnama on a date-comparison check.
+    2. Caps to a smaller per-defect budget.
     3. Drops neighbours whose Pinecone score is logarithmically far from the
-       best remaining hit, so a filled `top_k` does not ship unrelated pages.
+       best remaining hit among the leftover filler pages.
     """
     if not pool:
         return []
@@ -394,13 +484,35 @@ def select_chunks_for_defect(
     if not candidates:
         return summary[:1]
 
-    # Score cutoff only among the leading relevance tier (preferred part, or
-    # term hits). Otherwise a high-scoring wrong part would drop the right page.
-    top_part = rank_key(candidates[0])[0]
-    leading = [c for c in candidates if rank_key(c)[0] == top_part] or candidates
-
     page_ceiling = max(0, max_chunks - len(summary[:1]))
     page_budget = max_chunks_for_defect(defect, ceiling=page_ceiling)
-    chosen_pages = keep_nearby_scores(leading, max_n=page_budget)
-    chosen_pages.sort(key=lambda c: (c.get("page") is None, c.get("page") or 0))
-    return summary[:1] + chosen_pages
+
+    chosen: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for part in preferred:
+        if len(chosen) >= page_budget:
+            break
+        for chunk in ranked:
+            record_id = str(chunk.get("record_id") or "")
+            if record_id in used:
+                continue
+            if not _part_match(chunk, [part]):
+                continue
+            chosen.append(chunk)
+            if record_id:
+                used.add(record_id)
+            break
+
+    remaining = page_budget - len(chosen)
+    if remaining > 0:
+        leading = [c for c in candidates if str(c.get("record_id") or "") not in used]
+        for chunk in keep_nearby_scores(leading, max_n=remaining):
+            record_id = str(chunk.get("record_id") or "")
+            if record_id in used:
+                continue
+            chosen.append(chunk)
+            if record_id:
+                used.add(record_id)
+
+    chosen.sort(key=lambda c: (c.get("page") is None, c.get("page") or 0))
+    return summary[:1] + chosen

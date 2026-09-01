@@ -6,13 +6,20 @@ from unittest.mock import AsyncMock
 import pytest
 
 from extraction_review.document_parts import (
+    documents_from_page_parts,
     keep_nearby_scores,
     match_terms_for_defect,
     max_chunks_for_defect,
+    overlay_split_documents,
     page_parts_from_split,
     pool_search_queries,
     select_chunks_for_defect,
     slice_record_for_defect,
+)
+from extraction_review.scrutiny.schema import (
+    DefectResponse,
+    apply_retrieval_policy,
+    apply_status_policy,
 )
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import (
@@ -20,7 +27,6 @@ from extraction_review.scrutiny.prompts import (
     build_system_prompt,
 )
 from extraction_review.scrutiny.rules import defects_for_filing_type, get_catalogue
-from extraction_review.scrutiny.schema import DefectResponse, apply_status_policy
 from extraction_review.vector_store import build_page_records
 
 
@@ -214,6 +220,93 @@ def test_select_chunks_prefers_labelled_part() -> None:
     assert "p10" not in ids
 
 
+def test_select_chunks_keeps_vakalatnama_for_date_check() -> None:
+    catalogue = get_catalogue()
+    pool = [
+        {
+            "record_id": "s",
+            "chunk_kind": "summary",
+            "text": "SLP Civil summary",
+            "score": 0.1,
+            "page": None,
+        },
+        {
+            "record_id": "aff1",
+            "chunk_kind": "page",
+            "page": 39,
+            "document_part": "Affidavit",
+            "text": "I have gone through the accompanying petition",
+            "score": 0.99,
+        },
+        {
+            "record_id": "aff2",
+            "chunk_kind": "page",
+            "page": 40,
+            "document_part": "Affidavit",
+            "text": "Verified at Nainital",
+            "score": 0.98,
+        },
+        {
+            "record_id": "aff3",
+            "chunk_kind": "page",
+            "page": 41,
+            "document_part": "Affidavit",
+            "text": "Deponent",
+            "score": 0.97,
+        },
+        {
+            "record_id": "pet",
+            "chunk_kind": "page",
+            "page": 16,
+            "document_part": "Petition",
+            "text": "Place: New Delhi Dated 10.04.2026 below the prayer",
+            "score": 0.4,
+        },
+        {
+            "record_id": "vak",
+            "chunk_kind": "page",
+            "page": 50,
+            "document_part": "Vakalatnama + PoA/BR",
+            "text": "VAKALATNAMA Dated this on 10th day of April 2026",
+            "score": 0.2,
+        },
+    ]
+    chunks = select_chunks_for_defect(
+        pool, catalogue.defect("D013"), max_chunks=12
+    )
+    ids = {c["record_id"] for c in chunks}
+    assert "vak" in ids
+    assert "pet" in ids
+
+
+def test_documents_from_split_include_page_spans() -> None:
+    docs = documents_from_page_parts(
+        {
+            3: "Office Report on Limitation",
+            4: "Office Report on Limitation",
+            50: "Vakalatnama + PoA/BR",
+        }
+    )
+    assert docs["count"] == 2
+    assert docs["items"][0] == "Office Report on Limitation (pp. 3–4)"
+    assert docs["items"][1] == "Vakalatnama + PoA/BR (p. 50)"
+
+
+def test_overlay_split_documents_replaces_index_slang() -> None:
+    payload = {
+        "data": {
+            "petition_type": "SLP_CIVIL",
+            "filing_summary": {
+                "documents": {"count": 1, "items": ["V/A"]},
+            },
+        }
+    }
+    overlay_split_documents(payload, {50: "Vakalatnama + PoA/BR"})
+    items = payload["data"]["filing_summary"]["documents"]["items"]
+    assert items == ["Vakalatnama + PoA/BR (p. 50)"]
+    assert "V/A" not in items
+
+
 def test_keep_nearby_scores_drops_far_neighbours() -> None:
     chunks = [
         {"record_id": "a", "score": 0.90},
@@ -326,11 +419,10 @@ def test_user_prompt_carries_category_and_sliced_record() -> None:
     system = build_system_prompt(catalogue, "SLP_CIVIL")
     assert "Filing Formalities" not in system
     assert "Advocate's Check List" not in system
-    assert "Missing excerpts are not a defect" not in system
+    assert "retrieval gap" in system.lower()
     assert "stamps, signatures, seals" in system
-    assert "return defect_found" in system.lower() or "defect_found" in system
     prompt_l = prompt.lower()
-    assert "not found" in prompt_l
+    assert "needs_review" in prompt_l
     assert "stamp" in prompt_l
 
 
@@ -361,3 +453,28 @@ def test_confident_defect_stays_defect_found() -> None:
         fix_rationale="The rule requires it.",
     )
     assert apply_status_policy(strong).status == "defect_found"
+
+
+def test_missing_vakalatnama_excerpts_are_needs_review_not_defect() -> None:
+    catalogue = get_catalogue()
+    response = DefectResponse(
+        check_id="D013",
+        status="defect_found",
+        confidence=1.0,
+        summary="The Vakalatnama is missing from the extracted filing.",
+        reasoning="Neither the Vakalatnama nor the drafting date is present.",
+        evidence=[],
+        suggested_fix="File a Vakalatnama.",
+        fix_rationale="Required by the rule.",
+    )
+    affidavit_only = [
+        {
+            "record_id": "aff1",
+            "chunk_kind": "page",
+            "page": 39,
+            "document_part": "Affidavit",
+            "text": "I have gone through the petition",
+        }
+    ]
+    gated = apply_retrieval_policy(catalogue.defect("D013"), response, affidavit_only)
+    assert gated.status == "needs_review"

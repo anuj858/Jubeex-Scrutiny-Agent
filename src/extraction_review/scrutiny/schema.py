@@ -10,11 +10,12 @@ from __future__ import annotations
 import os
 from collections import Counter
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .rules import Defect
+from ..document_parts import missing_required_parts
 
 ResultState = Literal[
     "defect_found",
@@ -185,6 +186,20 @@ def apply_status_policy(response: DefectResponse) -> DefectResponse:
         response.status in ("defect_found", "compliant")
         and response.confidence < review_confidence_threshold()
     ):
+        response.status = "needs_review"
+    return response
+
+
+def apply_retrieval_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
+    """Do not treat a missing document part in the excerpt set as a defect."""
+    if response.status != "defect_found":
+        return response
+    missing = missing_required_parts(defect, chunks)
+    if missing:
         response.status = "needs_review"
     return response
 

@@ -43,33 +43,36 @@ are not the Registry and you do not decide legal validity.
 {filing_block}
 Decide exactly one defect. Return one status:
 
-- defect_found: the required text, heading, annexure, application, or \
-statement is missing or incomplete. If you searched the extracted filing and \
-the required material is not there, that is a defect (not found)
+- defect_found: the excerpts for the document part you were told to search \
+show the required material is missing or incomplete. If you searched those \
+parts and the required material is not there, that is a defect (not found)
 - compliant: the excerpts show the required material is present and complete
 - not_applicable: this defect does not apply to this filing
 - not_determined: the check cannot be decided from extracted text because it \
 depends on stamps, signatures, seals, wet-ink, or page layout. Do not use \
 this for missing text
 - needs_review: the excerpts conflict, the wording is legally ambiguous, an \
-Advocate-on-Record must decide, or you would mark defect_found or compliant \
-but confidence is low
+Advocate-on-Record must decide, confidence is low, OR the excerpts do not \
+include the document part you were told to search (for example Vakalatnama \
+or Office Report on Limitation)
 
 Rules:
 
-1. Quote the filing. If you cannot quote the required material, it has not \
-been found.
-2. Extracted text is the filing for textual requirements. If the required \
-content is not in the record or excerpts, return defect_found — not \
-not_determined.
-3. You are reading extracted text, not a scanned page. Do not infer stamps, \
+1. Quote the filing. If you cannot quote the required material from the \
+parts you were given, it has not been found in those excerpts.
+2. If the excerpts do not include a document part named in Where to search, \
+return needs_review — not defect_found. Missing excerpts are a retrieval \
+gap, not proof the filing lacks that document.
+3. If those parts ARE in the excerpts and the required content is still \
+missing, return defect_found.
+4. You are reading extracted text, not a scanned page. Do not infer stamps, \
 signatures, seals, or layout. Those checks alone are not_determined.
-4. Do not add requirements that are not in this task. Do not score sibling or \
+5. Do not add requirements that are not in this task. Do not score sibling or \
 parent defects.
-5. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
+6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.6, return \
 needs_review instead.
-6. suggested_fix is allowed only when status is defect_found. Describe what \
+7. suggested_fix is allowed only when status is defect_found. Describe what \
 the filing itself must contain or attach. Follow the cure aims. Never mention \
 Jubeex, auto-generation, uploads, or user-interface options. Otherwise set \
 suggested_fix and fix_rationale to null.
@@ -475,11 +478,12 @@ def build_defect_prompt(
         search,
         (
             "A heading without the required content is not compliance. If the "
-            "required content is not in the excerpts or the structured record, "
-            "return defect_found — the material is not found. Use "
-            "not_determined only when the check needs a stamp, signature, "
-            "seal, or layout that extracted text cannot show. If you suspect "
-            "a defect but confidence is below 0.6, return needs_review."
+            "excerpts do not include a part named above (Vakalatnama, Office "
+            "Report on Limitation, petition, …), return needs_review — not "
+            "defect_found. If those parts are in the excerpts and the required "
+            "content is still missing, return defect_found. Use not_determined "
+            "only for stamps, signatures, seals, or layout. If you suspect a "
+            "defect but confidence is below 0.6, return needs_review."
         ),
     ]
     if cues:
