@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from .rules import Catalogue, Defect, DefectCategory, normalize_filing_type
-from ..document_parts import filing_type_label, match_terms_for_defect
+from ..document_parts import filing_type_label, pinecone_queries_for_defect
 
 MAX_EVIDENCE_CHARS = 60_000
 
@@ -535,5 +535,5 @@ def build_system_prompt(
 
 
 def build_evidence_queries(defect: Defect) -> list[str]:
-    """Caption / heading queries for one defect (used for local scoring)."""
-    return match_terms_for_defect(defect)
+    """Pinecone queries for one defect, taken from where-to-look."""
+    return pinecone_queries_for_defect(defect)

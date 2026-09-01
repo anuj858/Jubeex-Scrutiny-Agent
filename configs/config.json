@@ -1083,61 +1083,80 @@
     "configuration_id": null,
     "categories": [
       {
-        "name": "Advocate's Checklist"
+        "name": "Advocate's Checklist",
+        "description": "Advocate's Check List or Proposed Advocate's Check List, usually a numbered YES/NO/N.A. list certified by the Advocate-on-Record."
       },
       {
-        "name": "Caveat Report"
+        "name": "Caveat Report",
+        "description": "Caveat or Caveat Report filed in the Supreme Court."
       },
       {
-        "name": "Cover Page"
+        "name": "Cover Page",
+        "description": "Outer cover or title sheet of the paper book. Do not use this for Office Report on Limitation, Vakalatnama, or Memo of Appearance even if the SLP caption is repeated at the top."
       },
       {
-        "name": "Record of Proceedings"
+        "name": "Record of Proceedings",
+        "description": "Record of Proceedings or court order sheets of this Court."
       },
       {
-        "name": "AOR's Declaration"
+        "name": "AOR's Declaration",
+        "description": "Advocate-on-Record declaration or certificate, other than the Advocate's Check List."
       },
       {
-        "name": "Index"
+        "name": "Index",
+        "description": "Index of the paper book listing document names and page numbers."
       },
       {
-        "name": "Office Report on Limitation"
+        "name": "Office Report on Limitation",
+        "description": "Page titled OFFICE REPORT ON LIMITATION (O/R on Limitation), including when the SLP caption and parties appear above that heading. Contains statements whether the petition is within time and delay in filing or re-filing. Not the Index line that merely names O/R on Limitation."
       },
       {
-        "name": "Listing Proforma"
+        "name": "Listing Proforma",
+        "description": "Listing Proforma or Proforma for First Listing (Proforma for First Listing) with numbered columns."
       },
       {
-        "name": "Synopsis"
+        "name": "Synopsis",
+        "description": "Synopsis of the case."
       },
       {
-        "name": "List of Dates & Events"
+        "name": "List of Dates & Events",
+        "description": "List of Dates and Events."
       },
       {
-        "name": "Petition"
+        "name": "Petition",
+        "description": "Main Special Leave Petition or writ/arbitration petition body (Form 28), grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, or Office Report on Limitation."
       },
       {
-        "name": "Affidavit"
+        "name": "Affidavit",
+        "description": "Supporting affidavit of the petitioner, usually headed AFFIDAVIT."
       },
       {
-        "name": "Annexures"
+        "name": "Annexures",
+        "description": "Annexures marked P-1, P-2, etc."
       },
       {
-        "name": "Appendix"
+        "name": "Appendix",
+        "description": "Appendix to the petition."
       },
       {
-        "name": "Memo of Parties"
+        "name": "Memo of Parties",
+        "description": "Memo of Parties listing petitioner and respondent names and addresses. Not Memo of Appearance."
       },
       {
-        "name": "Memo of Appearance"
+        "name": "Memo of Appearance",
+        "description": "Letter titled MEMO OF APPEARANCE addressed To the Registrar, Supreme Court of India, asking to enter appearance on behalf of a party, signed by the advocate. Distinct from Memo of Parties and from Vakalatnama."
       },
       {
-        "name": "Impugned Order"
+        "name": "Impugned Order",
+        "description": "Copy of the High Court or other court judgment or order under challenge."
       },
       {
-        "name": "Vakalatnama + PoA/BR"
+        "name": "Vakalatnama + PoA/BR",
+        "description": "Page titled VAKALATNAMA (V/A) appointing an advocate, with execution date and signatures. Include power of attorney or board resolution if attached to it. Not Memo of Appearance."
       },
       {
-        "name": "Court Fees"
+        "name": "Court Fees",
+        "description": "Court fee stamps or court fee endorsement pages."
       }
     ],
     "splitting_strategy": {

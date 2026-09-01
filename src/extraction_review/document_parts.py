@@ -1,17 +1,24 @@
 """Document-part labels, record slicing, and local chunk selection.
 
-Split category names come from `configs/config.json` `split.categories`.
-Each concurrent defect queries Pinecone with these captions, then this module
-picks the excerpts that defect is allowed to see.
+Pinecone stores `document_part` using LlamaSplit names from
+`configs/config.json` `split.categories`. This module does not invent extra
+parts: a new document type is added only in that Split list. Catalogue
+`where_to_look` is matched against those names (and nicknames written in the
+category description, e.g. `(V/A)`).
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from .scrutiny.rules import Defect, normalize_filing_type
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
 # Captions and headings as they appear on SCI forms — used as search text
 # (not the long legal objection sentences).
@@ -26,28 +33,7 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
     "Vakalatnama AOR Declaration Memo of Parties",
 )
 
-# Names must match configs/config.json split.categories.
-SPLIT_PART_NAMES: tuple[str, ...] = (
-    "Advocate's Checklist",
-    "Caveat Report",
-    "Cover Page",
-    "Record of Proceedings",
-    "AOR's Declaration",
-    "Index",
-    "Office Report on Limitation",
-    "Listing Proforma",
-    "Synopsis",
-    "List of Dates & Events",
-    "Petition",
-    "Affidavit",
-    "Annexures",
-    "Appendix",
-    "Memo of Parties",
-    "Memo of Appearance",
-    "Impugned Order",
-    "Vakalatnama + PoA/BR",
-    "Court Fees",
-)
+PINECONE_QUERY_MAX_CHARS = 110
 
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "filing_formalities": ("Petition", "Affidavit"),
@@ -148,21 +134,59 @@ FILING_TYPE_LABELS: dict[str, str] = {
 }
 
 
+@lru_cache(maxsize=1)
+def _split_categories() -> tuple[tuple[str, str], ...]:
+    """LlamaSplit (name, description) — same labels Pinecone stores."""
+    with _CONFIG_PATH.open(encoding="utf-8") as fh:
+        payload = json.load(fh)
+    categories = (payload.get("split") or {}).get("categories") or []
+    return tuple(
+        (str(item.get("name") or "").strip(), str(item.get("description") or ""))
+        for item in categories
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    )
+
+
+def split_part_names() -> tuple[str, ...]:
+    return tuple(name for name, _ in _split_categories())
+
+
+def _fold(text: str) -> str:
+    return re.sub(
+        r"\s+", " ", (text or "").replace("\u2019", "'").replace("\u2018", "'")
+    ).strip().lower()
+
+
+def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
+    """Search phrases for one Split part: official name plus description nicknames."""
+    needles: list[str] = []
+
+    def add(raw: str) -> None:
+        folded = _fold(raw)
+        if len(folded) >= 3 and folded not in needles:
+            needles.append(folded)
+
+    add(name)
+    left = name.split("+", 1)[0].strip()
+    if left != name:
+        add(left)
+    for nick in re.findall(r"\(([^)]{2,48})\)", description):
+        add(nick)
+    return tuple(needles)
+
+
 def normalize_part_name(name: str | None) -> str:
     if not name:
         return ""
-    text = name.replace("\u2019", "'").replace("\u2018", "'")
-    text = re.sub(r"\s+", " ", text).strip()
-    aliases = {
-        "advocate's check list": "Advocate's Checklist",
-        "advocates checklist": "Advocate's Checklist",
-        "aor declaration": "AOR's Declaration",
-        "vakalatnama": "Vakalatnama + PoA/BR",
-        "form 28": "Petition",
-        "main petition": "Petition",
-        "slp": "Petition",
-    }
-    return aliases.get(text.lower(), text)
+    text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
+    folded = _fold(text)
+    for canonical, description in _split_categories():
+        if folded == _fold(canonical):
+            return canonical
+        for needle in _needles_for_part(canonical, description):
+            if folded == needle:
+                return canonical
+    return text
 
 
 def _format_page_span(pages: list[int]) -> str:
@@ -261,16 +285,30 @@ def page_parts_from_split(job: Any) -> dict[int, str]:
     return mapping
 
 
+def parts_named_in_text(text: str) -> list[str]:
+    """Split parts whose name or description nickname appears in `text`."""
+    blob = _fold(text)
+    found: list[str] = []
+    for name, description in _split_categories():
+        if any(needle in blob for needle in _needles_for_part(name, description)):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def parts_named_in_where_to_look(defect: Defect) -> list[str]:
+    """Split parts the catalogue told this check to open."""
+    return parts_named_in_text(" ".join(defect.where_to_look))
+
+
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
-    parts = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
-    blob = " ".join(defect.where_to_look).lower()
-    blob = blob.replace("\u2019", "'")
-    for name in SPLIT_PART_NAMES:
-        needle = name.lower()
-        short = needle.split("+", 1)[0].strip()
-        if needle in blob or short in blob:
-            if name not in parts:
-                parts.append(name)
+    """Where-to-look parts first, then the rest of the category."""
+    named = parts_named_in_where_to_look(defect)
+    category = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
+    parts = list(named)
+    for name in category:
+        if name not in parts:
+            parts.append(name)
     return parts
 
 
@@ -278,7 +316,7 @@ def pool_search_queries() -> list[str]:
     """Short caption queries covering typical SCI filing parts."""
     seen: set[str] = set()
     queries: list[str] = []
-    for query in (*FILING_CAPTION_QUERIES, *SPLIT_PART_NAMES):
+    for query in (*FILING_CAPTION_QUERIES, *split_part_names()):
         key = query.strip().lower()
         if not key or key in seen:
             continue
@@ -287,42 +325,59 @@ def pool_search_queries() -> list[str]:
     return queries
 
 
-def match_terms_for_defect(defect: Defect) -> list[str]:
-    """Phrases to score an in-memory chunk against this defect."""
-    terms: list[str] = []
+def _clip_query(text: str, *, limit: int = PINECONE_QUERY_MAX_CHARS) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rsplit(" ", 1)[0].strip()
+
+
+def pinecone_queries_for_defect(defect: Defect) -> list[str]:
+    """Queries sent to Pinecone: where-to-look parts, headings, and cues."""
+    queries: list[str] = []
+    queries.extend(parts_named_in_where_to_look(defect))
     if defect.trigger_words:
-        terms.extend(
+        queries.extend(
             p.strip()
             for p in re.split(r"[;|]", defect.trigger_words)
             if p.strip()
         )
-    terms.extend(preferred_parts_for_defect(defect))
     for step in defect.where_to_look:
         heading = _heading_from_where_to_look(step)
         if heading:
-            terms.append(heading)
-    # Dedup while preserving order.
+            queries.append(heading)
+        clipped = _clip_query(_bare_where_to_look(step))
+        if clipped:
+            queries.append(clipped)
+    if not queries:
+        queries.extend(preferred_parts_for_defect(defect))
+    return _unique_terms(queries)
+
+
+def match_terms_for_defect(defect: Defect) -> list[str]:
+    """Phrases to score an in-memory chunk against this defect."""
+    terms = list(pinecone_queries_for_defect(defect))
+    terms.extend(preferred_parts_for_defect(defect))
+    return _unique_terms(terms)
+
+
+def _unique_terms(terms: list[str]) -> list[str]:
     seen: set[str] = set()
     unique: list[str] = []
     for term in terms:
-        key = term.lower()
-        if key in seen:
+        key = term.lower().strip()
+        if not key or key in seen:
             continue
         seen.add(key)
-        unique.append(term)
+        unique.append(term.strip())
     return unique
 
 
 def required_parts_for_defect(defect: Defect) -> list[str]:
-    """Preferred parts named in where-to-look; otherwise every preferred part."""
-    preferred = preferred_parts_for_defect(defect)
-    blob = " ".join(defect.where_to_look).lower().replace("\u2019", "'")
-    named: list[str] = []
-    for part in preferred:
-        needles = [part.lower(), part.split("+", 1)[0].strip().lower()]
-        if any(needle and needle in blob for needle in needles):
-            named.append(part)
-    return named or preferred
+    """Parts named in where-to-look; otherwise every preferred part."""
+    return parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
 
 
 def chunks_cover_part(chunks: list[dict[str, Any]], part: str) -> bool:
@@ -340,17 +395,22 @@ def missing_required_parts(
     ]
 
 
-def _heading_from_where_to_look(step: str) -> str | None:
-    """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
-    text = re.sub(
-        r"^(check|read|look at|examine|verify|confirm|review)\s+(the\s+|for\s+the\s+)?",
+def _bare_where_to_look(step: str) -> str:
+    return re.sub(
+        r"^(check|read|look at|look for|examine|verify|confirm|review|go to|search)\s+"
+        r"(the\s+|for\s+the\s+|for\s+|a\s+|for a\s+)?",
         "",
         step.strip(),
         flags=re.IGNORECASE,
     )
-    for name in SPLIT_PART_NAMES:
-        if name.lower() in text.lower():
-            return name
+
+
+def _heading_from_where_to_look(step: str) -> str | None:
+    """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
+    text = _bare_where_to_look(step)
+    named = parts_named_in_text(text)
+    if named:
+        return named[0]
     # First clause before 'and' / comma, if it is short.
     clause = re.split(r"[,.]|\band\b", text, maxsplit=1)[0].strip()
     if 3 <= len(clause) <= 80:
@@ -365,13 +425,15 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     A child defect stays tighter than its parent unless several document
     parts must be compared (Vakalatnama vs petition drafting date).
     """
+    named = parts_named_in_where_to_look(defect)
     preferred = preferred_parts_for_defect(defect)
     budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
     if len(defect.where_to_look) <= 2 and len(preferred) <= 1:
         budget = min(budget, 3)
     if defect.parent_check_id:
         budget = min(budget, max(4, len(preferred)))
-    budget = max(budget, min(len(preferred), ceiling))
+    need = len(named) or len(preferred)
+    budget = max(budget, min(need, ceiling))
     return max(1, min(budget, ceiling))
 
 
@@ -463,16 +525,18 @@ def select_chunks_for_defect(
     if not pool:
         return []
 
+    look_parts = parts_named_in_where_to_look(defect)
     preferred = preferred_parts_for_defect(defect)
     terms = match_terms_for_defect(defect)
     summary = [c for c in pool if c.get("chunk_kind") == "summary"]
     pages = [c for c in pool if c.get("chunk_kind") != "summary"]
 
-    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, float]:
+    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, int, float]:
+        look_hit = 1 if look_parts and _part_match(chunk, look_parts) else 0
         part_hit = 1 if _part_match(chunk, preferred) else 0
         hits = _term_hits(chunk, terms)
         score = _chunk_score(chunk)
-        return (part_hit, hits, score)
+        return (look_hit, part_hit, hits, score)
 
     ranked = sorted(pages, key=rank_key, reverse=True)
     focused = [
@@ -489,7 +553,8 @@ def select_chunks_for_defect(
 
     chosen: list[dict[str, Any]] = []
     used: set[str] = set()
-    for part in preferred:
+    reserve_order = look_parts + [p for p in preferred if p not in look_parts]
+    for part in reserve_order:
         if len(chosen) >= page_budget:
             break
         for chunk in ranked:

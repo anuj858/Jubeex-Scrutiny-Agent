@@ -12,6 +12,9 @@ from extraction_review.document_parts import (
     max_chunks_for_defect,
     overlay_split_documents,
     page_parts_from_split,
+    parts_named_in_text,
+    parts_named_in_where_to_look,
+    pinecone_queries_for_defect,
     pool_search_queries,
     select_chunks_for_defect,
     slice_record_for_defect,
@@ -338,6 +341,30 @@ def test_match_terms_use_form_captions_not_objection_text() -> None:
     terms = match_terms_for_defect(catalogue.defect("D004"))
     assert any("Listing Proforma" in t for t in terms)
     assert all("not duly filled" not in t.lower() for t in terms)
+
+
+def test_pinecone_queries_follow_where_to_look() -> None:
+    catalogue = get_catalogue()
+    d013 = pinecone_queries_for_defect(catalogue.defect("D013"))
+    assert any("Vakalatnama" in q for q in d013)
+    assert any("Petition" in q or "petition" in q.lower() for q in d013)
+    d047 = pinecone_queries_for_defect(catalogue.defect("D047"))
+    assert any("Memo of Appearance" in q for q in d047)
+    d017 = pinecone_queries_for_defect(catalogue.defect("D017"))
+    assert any("Office Report on Limitation" in q for q in d017)
+    named = parts_named_in_where_to_look(catalogue.defect("D013"))
+    assert "Vakalatnama + PoA/BR" in named
+    assert named[0] in {"Petition", "Vakalatnama + PoA/BR"}
+
+
+def test_split_nicknames_come_from_config_not_a_python_map() -> None:
+    assert "Vakalatnama + PoA/BR" in parts_named_in_text("Go to the V/A")
+    assert "Office Report on Limitation" in parts_named_in_text(
+        "Go to the O/R on Limitation"
+    )
+    assert "Listing Proforma" in parts_named_in_text(
+        "Check the Proforma for First Listing"
+    )
 
 
 def test_select_chunks_drops_far_pages_and_respects_defect_budget() -> None:

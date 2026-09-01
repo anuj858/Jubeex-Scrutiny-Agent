@@ -53,6 +53,7 @@ from .vector_store import (
 from .document_parts import (
     max_chunks_for_defect,
     missing_required_parts,
+    parts_named_in_where_to_look,
     preferred_parts_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
@@ -206,7 +207,12 @@ async def _chunks_for_defect(
 
     queries = build_evidence_queries(defect)
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
-    gather_cap = max(max_chunks, len(preferred_parts_for_defect(defect)) * 4)
+    gather_cap = max(
+        max_chunks,
+        len(queries) * 3,
+        len(parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect))
+        * 4,
+    )
     try:
         pool = await asyncio.to_thread(
             gather_filing_evidence,
