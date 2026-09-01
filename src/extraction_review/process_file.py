@@ -164,11 +164,10 @@ async def _split_page_parts(
     client: AsyncLlamaCloud,
     *,
     file_id: str | None,
-    parse_job_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
 ) -> dict[int, str]:
-    """Label parse pages with Split categories. Required when indexing Pinecone."""
+    """Label pages with Split categories. Required when indexing Pinecone."""
     label = filename or "filing"
     if split_config is None:
         raise RuntimeError(
@@ -178,28 +177,28 @@ async def _split_page_parts(
         raise RuntimeError(
             f"LlamaCloud client has no split API, so document parts cannot be labelled for {label}."
         )
-    file_input = parse_job_id or file_id
-    if not file_input:
-        raise RuntimeError(
-            f"No file or parse job id is available to split {label}."
-        )
+    if not file_id:
+        raise RuntimeError(f"No file id is available to split {label}.")
     if not split_config.configuration_id and not split_config.categories:
         raise RuntimeError(
             f"Split categories are empty, so document parts cannot be labelled for {label}."
         )
 
-    create_kwargs: dict[str, Any] = {
-        "file_input": file_input,
-        "project_id": project_id,
-    }
     if split_config.configuration_id:
-        create_kwargs["configuration_id"] = split_config.configuration_id
-    else:
-        create_kwargs["configuration"] = split_config.model_dump(
-            exclude={"configuration_id", "product_type"},
-            exclude_none=True,
+        job = await client.split.create(
+            file_input=file_id,
+            configuration_id=split_config.configuration_id,
+            project_id=project_id,
         )
-    job = await client.split.create(**create_kwargs)
+    else:
+        job = await client.split.create(
+            file_input=file_id,
+            configuration=split_config.model_dump(
+                exclude={"configuration_id", "product_type"},
+                exclude_none=True,
+            ),
+            project_id=project_id,
+        )
     completed = await _wait_for_split(client, job.id)
     mapping = page_parts_from_split(completed)
     if not mapping:
@@ -207,7 +206,6 @@ async def _split_page_parts(
             f"Split finished for {label} but labelled no pages. "
             "Scrutiny cannot filter Listing Proforma / Petition / checklist parts."
         )
-    logger.info("[Split] Labelled %s page(s) with document parts", len(mapping))
     return mapping
 
 
@@ -592,43 +590,42 @@ class ProcessFileWorkflow(Workflow):
         extracted_data = extracted_event.data
         page_parts: dict[int, str] = {}
         if pinecone_enabled():
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=f"Labelling document parts for {state.filename}",
-                )
-            )
             try:
+                logger.info(f"Splitting file {state.filename}")
+                ctx.write_event_to_stream(
+                    Status(level="info", message=f"Splitting file {state.filename}")
+                )
                 page_parts = await _split_page_parts(
                     llama_cloud_client,
                     file_id=state.file_id,
-                    parse_job_id=state.parse_job_id,
                     split_config=split_config,
                     filename=state.filename,
                 )
+                parts = sorted(set(page_parts.values()))
+                logger.info(
+                    f"Split {state.filename} into {len(page_parts)} page(s) "
+                    f"(parts: {', '.join(parts)})"
+                )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Split {state.filename} into {len(parts)} document part(s)"
+                        ),
+                    )
+                )
             except Exception as e:
                 logger.error(
-                    "[Split] Failed for %s: %s",
-                    state.filename,
-                    e,
+                    f"Error splitting file {state.filename}: {e}",
                     exc_info=True,
                 )
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
-                        message=f"Document-part split failed for {state.filename}: {e}",
+                        message=f"Error splitting file {state.filename}: {e}",
                     )
                 )
                 raise
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=(
-                        f"Labelled {len(page_parts)} page(s) "
-                        f"({len(set(page_parts.values()))} part(s))"
-                    ),
-                )
-            )
 
         data_dict = extracted_data.model_dump()
         if extracted_data.file_hash is not None:

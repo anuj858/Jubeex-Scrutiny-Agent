@@ -1,6 +1,7 @@
 """Shared Pinecone pool, record slicing, and petition-type system prompts."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -49,10 +50,39 @@ async def test_split_hard_fails_without_config() -> None:
         await _split_page_parts(
             SimpleNamespace(split=object()),
             file_id="file-1",
-            parse_job_id=None,
             split_config=None,
             filename="petition.pdf",
         )
+
+
+@pytest.mark.asyncio
+async def test_split_sends_file_uuid_not_parse_job_id() -> None:
+    created = SimpleNamespace(id="split-job-1")
+    completed = SimpleNamespace(
+        status="COMPLETED",
+        result=SimpleNamespace(
+            segments=[SimpleNamespace(category="Petition", pages=[1])]
+        ),
+    )
+    split_api = SimpleNamespace(
+        create=AsyncMock(return_value=created),
+        get=AsyncMock(return_value=completed),
+    )
+    split_config = SimpleNamespace(
+        configuration_id=None,
+        categories=[SimpleNamespace(name="Petition")],
+        model_dump=lambda **_kwargs: {"categories": [{"name": "Petition"}]},
+    )
+    mapping = await _split_page_parts(
+        SimpleNamespace(split=split_api),
+        file_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        split_config=split_config,
+        filename="petition.pdf",
+    )
+    split_api.create.assert_awaited_once()
+    kwargs = split_api.create.await_args.kwargs
+    assert kwargs["file_input"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert mapping == {1: "Petition"}
 
 
 def test_build_page_records_stamps_document_part() -> None:
