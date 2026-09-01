@@ -1,10 +1,9 @@
-"""Pytest configuration: install the LlamaCloud fake server for all tests."""
+"""Pytest configuration: install the LlamaCloud fake server when compatible."""
 
 import logging
 import sys
 
 import pytest
-from llama_cloud_fake import FakeLlamaCloudServer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,9 +11,18 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
-_fake = FakeLlamaCloudServer().install()
+_fake = None
+_fake_error: BaseException | None = None
+try:
+    from llama_cloud_fake import FakeLlamaCloudServer
+
+    _fake = FakeLlamaCloudServer().install()
+except Exception as exc:  # pragma: no cover - environment-dependent
+    _fake_error = exc
 
 
 @pytest.fixture
-def fake() -> FakeLlamaCloudServer:
+def fake():
+    if _fake is None:
+        pytest.skip(f"llama-cloud-fake is incompatible with this llama-cloud: {_fake_error}")
     return _fake

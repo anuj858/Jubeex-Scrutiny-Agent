@@ -68,6 +68,15 @@ class ScrutinyResponse(StopEvent):
     report: ScrutinyReport
 
 
+class ScrutinyPartial(Event):
+    """Live snapshot so the UI can show findings as each check finishes."""
+
+    report: ScrutinyReport
+    completed: int
+    total: int
+    stopped_early: bool = False
+
+
 class ScrutinyState(BaseModel):
     agent_data_id: str | None = None
     file_hash: str | None = None
@@ -169,6 +178,80 @@ async def _run_defect(
     )
 
 
+async def collect_defect_findings(
+    defects: list[Defect],
+    runner: Any,
+    *,
+    concurrency: int,
+    stop_on_error: bool = True,
+    on_update: Any = None,
+) -> tuple[list[DefectFinding], bool]:
+    """Run defect checks with a concurrency cap.
+
+    Completed findings are published immediately via `on_update`. On the first
+    failed check, remaining queued calls are cancelled so they do not spend
+    more tokens. In-flight calls that already finished are still kept.
+    """
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    abort = asyncio.Event()
+    findings: list[DefectFinding] = []
+    seen: set[str] = set()
+    stopped_early = False
+
+    async def guarded(defect: Defect) -> DefectFinding:
+        if abort.is_set():
+            raise asyncio.CancelledError
+        async with semaphore:
+            if abort.is_set():
+                raise asyncio.CancelledError
+            finding = await runner(defect)
+            if stop_on_error and getattr(finding, "error", None):
+                abort.set()
+            return finding
+
+    tasks = [asyncio.create_task(guarded(defect)) for defect in defects]
+    added_after_cancel = False
+    try:
+        for finished in asyncio.as_completed(tasks):
+            try:
+                finding = await finished
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                stopped_early = True
+                abort.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                break
+            if finding.check_id in seen:
+                continue
+            seen.add(finding.check_id)
+            findings.append(finding)
+            if on_update is not None:
+                await on_update(list(findings), False)
+            if stop_on_error and finding.error:
+                stopped_early = True
+                abort.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                break
+    finally:
+        leftovers = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in leftovers:
+            if (
+                isinstance(result, DefectFinding)
+                and result.check_id not in seen
+            ):
+                seen.add(result.check_id)
+                findings.append(result)
+                added_after_cancel = True
+        if on_update is not None and (stopped_early or added_after_cancel):
+            await on_update(list(findings), stopped_early)
+    return findings, stopped_early
+
+
 class ScrutinyWorkflow(Workflow):
     """Check an approved filing against the SCI registry defect catalogue."""
 
@@ -263,103 +346,144 @@ class ScrutinyWorkflow(Workflow):
                 level="info",
                 message=(
                     f"Checking {file_name or 'filing'} against "
-                    f"{len(defects)} defect(s): "
-                    f"{', '.join(d.check_id for d in defects)}"
+                    f"{len(defects)} defect(s) "
+                    f"({_int_env('SCRUTINY_CONCURRENCY', DEFAULT_CONCURRENCY)} at a time)"
                 ),
             )
         )
 
-        semaphore = asyncio.Semaphore(
-            _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
-        )
+        concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
         max_chunks = scrutiny_max_chunks()
+        planned = len(defects)
 
-        async def guarded(defect: Defect) -> DefectFinding:
-            async with semaphore:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
-                    )
+        def build_report(
+            current: list[DefectFinding], *, stopped_early: bool
+        ) -> ScrutinyReport:
+            snapshot = sorted(current, key=lambda f: f.serial_no)
+            return ScrutinyReport(
+                catalogue_id=catalogue.catalogue_id,
+                catalogue_version=catalogue.catalogue_version,
+                agent_data_id=str(getattr(item, "id", "") or "")
+                or event.agent_data_id,
+                file_hash=file_hash,
+                file_name=file_name,
+                petition_type=filing_type,
+                model=openrouter_model(),
+                disclaimer=catalogue.disclaimer,
+                findings=snapshot,
+                summary=summarize(snapshot),
+                usage=summarize_usage(snapshot, model=openrouter_model()),
+                planned_checks=planned,
+                stopped_early=stopped_early,
+            )
+
+        async def publish(
+            current: list[DefectFinding], stopped_early: bool
+        ) -> None:
+            report = build_report(current, stopped_early=stopped_early)
+            ctx.write_event_to_stream(
+                ScrutinyPartial(
+                    report=report,
+                    completed=len(current),
+                    total=planned,
+                    stopped_early=stopped_early,
                 )
-                try:
-                    chunks = select_chunks_for_defect(
-                        evidence_pool,
-                        defect,
-                        max_chunks=max_chunks,
-                    )
-                    finding = await _run_defect(
-                        defect,
-                        catalogue=catalogue,
-                        record=record,
-                        chunks=chunks,
-                        file_name=file_name,
-                        filing_type=filing_type,
-                    )
-                except LLMError as e:
-                    logger.exception("[Scrutiny] %s failed", defect.check_id)
-                    ctx.write_event_to_stream(
-                        Status(
-                            level="error",
-                            message=f"{defect.check_id} could not be completed: {e}",
-                        )
-                    )
-                    return failed_finding(defect, str(e), usage=e.usage)
-                except Exception as e:
-                    logger.exception("[Scrutiny] %s failed", defect.check_id)
-                    ctx.write_event_to_stream(
-                        Status(
-                            level="error",
-                            message=f"{defect.check_id} could not be completed: {e}",
-                        )
-                    )
-                    return failed_finding(defect, str(e))
+            )
+            await self._persist(llama_cloud_client, item, payload, report, ctx)
 
+        async def run_one(defect: Defect) -> DefectFinding:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
+                )
+            )
+            try:
+                chunks = select_chunks_for_defect(
+                    evidence_pool,
+                    defect,
+                    max_chunks=max_chunks,
+                )
+                finding = await _run_defect(
+                    defect,
+                    catalogue=catalogue,
+                    record=record,
+                    chunks=chunks,
+                    file_name=file_name,
+                    filing_type=filing_type,
+                )
+            except asyncio.CancelledError:
+                raise
+            except LLMError as e:
+                logger.exception("[Scrutiny] %s failed", defect.check_id)
                 ctx.write_event_to_stream(
                     Status(
-                        level="info",
+                        level="error",
                         message=(
-                            f"{defect.check_id} → {finding.status} "
-                            f"({finding.confidence:.0%} confidence)"
+                            f"{defect.check_id} failed; stopping remaining "
+                            f"checks so no more tokens are used. {e}"
                         ),
                     )
                 )
-                return finding
+                return failed_finding(defect, str(e), usage=e.usage)
+            except Exception as e:
+                logger.exception("[Scrutiny] %s failed", defect.check_id)
+                ctx.write_event_to_stream(
+                    Status(
+                        level="error",
+                        message=(
+                            f"{defect.check_id} failed; stopping remaining "
+                            f"checks so no more tokens are used. {e}"
+                        ),
+                    )
+                )
+                return failed_finding(defect, str(e))
 
-        findings = list(await asyncio.gather(*(guarded(d) for d in defects)))
-        findings.sort(key=lambda f: f.serial_no)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"{defect.check_id} → {finding.status} "
+                        f"({finding.confidence:.0%} confidence)"
+                    ),
+                )
+            )
+            return finding
 
-        report = ScrutinyReport(
-            catalogue_id=catalogue.catalogue_id,
-            catalogue_version=catalogue.catalogue_version,
-            agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
-            file_hash=file_hash,
-            file_name=file_name,
-            petition_type=filing_type,
-            model=openrouter_model(),
-            disclaimer=catalogue.disclaimer,
-            findings=findings,
-            summary=summarize(findings),
-            usage=summarize_usage(findings, model=openrouter_model()),
+        findings, stopped_early = await collect_defect_findings(
+            defects,
+            run_one,
+            concurrency=concurrency,
+            on_update=publish,
         )
-
-        await self._persist(llama_cloud_client, item, payload, report, ctx)
+        report = build_report(findings, stopped_early=stopped_early)
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:
             cost_note = f", OpenRouter {report.usage.cost_usd:.6f} USD"
         elif report.usage and report.usage.total_tokens:
             cost_note = f", {report.usage.total_tokens} tokens"
-        ctx.write_event_to_stream(
-            Status(
-                level="info",
-                message=(
-                    f"Scrutiny complete: {report.summary.defects_found} defect(s), "
-                    f"{report.summary.needs_review} needing review, "
-                    f"{report.summary.not_determined} undetermined{cost_note}"
-                ),
+        if stopped_early:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        f"Stopped early after {len(findings)} of {planned} "
+                        f"checks{cost_note}. Results below are what completed."
+                    ),
+                )
             )
-        )
+        else:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Scrutiny complete: {report.summary.defects_found} defect(s), "
+                        f"{report.summary.needs_review} needing review, "
+                        f"{report.summary.not_determined} undetermined{cost_note}"
+                    ),
+                )
+            )
         return ScrutinyResponse(report=report)
 
     async def _persist(
@@ -393,9 +517,11 @@ class ScrutinyWorkflow(Workflow):
         try:
             await client.beta.agent_data.update(item_id, data=updated)
             logger.info(
-                "[Scrutiny] Saved report on extraction item %s (%s)",
+                "[Scrutiny] Saved %s/%s finding(s) on extraction item %s%s",
+                len(report.findings),
+                report.planned_checks or len(report.findings),
                 item_id,
-                report.file_name,
+                " (stopped early)" if report.stopped_early else "",
             )
         except Exception as e:
             # A storage failure should not lose the results the user is waiting on.

@@ -190,6 +190,8 @@ class ScrutinyReport(BaseModel):
     findings: list[DefectFinding] = Field(default_factory=list)
     summary: ScrutinySummary
     usage: UsageSummary | None = None
+    planned_checks: int | None = None
+    stopped_early: bool = False
 
 
 def build_finding(
