@@ -1,7 +1,8 @@
 """Document-part labels, record slicing, and local chunk selection.
 
 Split category names come from `configs/config.json` `split.categories`.
-Scrutiny uses the same labels to pick excerpts without a second Pinecone round.
+Each concurrent defect queries Pinecone with these captions, then this module
+picks the excerpts that defect is allowed to see.
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from typing import Any
 
 from .scrutiny.rules import Defect, normalize_filing_type
 
-# Captions and headings as they appear on SCI forms — used for the one-time
-# Pinecone pool search (not the long legal objection sentences).
+# Captions and headings as they appear on SCI forms — used as search text
+# (not the long legal objection sentences).
 FILING_CAPTION_QUERIES: tuple[str, ...] = (
     "IN THE SUPREME COURT OF INDIA CIVIL APPELLATE JURISDICTION",
     "SPECIAL LEAVE PETITION UNDER ARTICLE 136 Form 28",
@@ -214,7 +215,7 @@ def preferred_parts_for_defect(defect: Defect) -> list[str]:
 
 
 def pool_search_queries() -> list[str]:
-    """Short caption queries for the single shared Pinecone gather."""
+    """Short caption queries covering typical SCI filing parts."""
     seen: set[str] = set()
     queries: list[str] = []
     for query in (*FILING_CAPTION_QUERIES, *SPLIT_PART_NAMES):

@@ -245,6 +245,98 @@ async def test_scrutiny_stops_on_llm_error_keeps_completed_results(
 
 
 @pytest.mark.asyncio
+async def test_each_check_retrieves_its_own_pinecone_excerpts(
+    scrutiny_env: FakeLlamaCloud,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.pinecone_enabled",
+        lambda: True,
+    )
+    gathers: list[tuple[str, tuple[str, ...]]] = []
+
+    def fake_gather(
+        queries: list[str],
+        *,
+        file_hash: str,
+        top_k: int | None = None,
+        max_chunks: int | None = None,
+    ) -> list[dict[str, Any]]:
+        gathers.append((file_hash, tuple(queries)))
+        return [
+            {
+                "record_id": f"p-{len(gathers)}",
+                "chunk_kind": "page",
+                "page": 1,
+                "document_part": "Petition",
+                "text": "SPECIAL LEAVE PETITION",
+                "score": 0.9,
+            }
+        ]
+
+    async def fake_llm(**kwargs: Any) -> tuple[DefectResponse, LlmUsage]:
+        check_id = _check_id_from_prompt(kwargs["user_prompt"])
+        return _ok(check_id)
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.gather_filing_evidence",
+        fake_gather,
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.call_structured",
+        fake_llm,
+    )
+
+    workflow = ScrutinyWorkflow(timeout=None)
+    handler = workflow.run(start_event=ScrutinyEvent(agent_data_id="item-e2e-1"))
+    async for _event in handler.stream_events():
+        pass
+    result = await handler
+
+    assert isinstance(result, ScrutinyResponse)
+    assert len(gathers) == 4
+    assert all(file_hash == "hash-e2e" for file_hash, _queries in gathers)
+    assert len({queries for _file_hash, queries in gathers}) >= 2
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_finding_is_needs_review(
+    scrutiny_env: FakeLlamaCloud,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_llm(**kwargs: Any) -> tuple[DefectResponse, LlmUsage]:
+        check_id = _check_id_from_prompt(kwargs["user_prompt"])
+        response, usage = _ok(check_id)
+        if check_id == "D004":
+            response = response.model_copy(
+                update={
+                    "status": "defect_found",
+                    "confidence": 0.2,
+                    "suggested_fix": "Add the missing heading.",
+                    "fix_rationale": "The rule requires it.",
+                }
+            )
+        return response, usage
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.call_structured",
+        fake_llm,
+    )
+
+    workflow = ScrutinyWorkflow(timeout=None)
+    handler = workflow.run(start_event=ScrutinyEvent(agent_data_id="item-e2e-1"))
+    async for _event in handler.stream_events():
+        pass
+    result = await handler
+
+    assert isinstance(result, ScrutinyResponse)
+    weak = next(f for f in result.report.findings if f.check_id == "D004")
+    assert weak.status == "needs_review"
+    assert weak.suggested_fix is None
+    assert result.report.summary.needs_review == 1
+
+
+@pytest.mark.asyncio
 async def test_all_defects_are_catalogue_sized() -> None:
     catalogue = get_catalogue()
     assert len(catalogue.defects) == 74

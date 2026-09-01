@@ -23,6 +23,7 @@ from .config import EXTRACTED_DATA_COLLECTION
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .scrutiny.prompts import (
     build_defect_prompt,
+    build_evidence_queries,
     build_system_prompt,
 )
 from .scrutiny.rules import (
@@ -37,17 +38,22 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_status_policy,
     build_finding,
     failed_finding,
     summarize,
     summarize_usage,
 )
 from .vector_store import (
-    gather_filing_evidence_pool,
+    gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
 )
-from .document_parts import select_chunks_for_defect, slice_record_for_defect
+from .document_parts import (
+    max_chunks_for_defect,
+    select_chunks_for_defect,
+    slice_record_for_defect,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +139,7 @@ def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectRespon
             defect.check_id,
         )
         response.check_id = defect.check_id
+    response = apply_status_policy(response)
     if response.status != "defect_found":
         response.suggested_fix = None
         response.fix_rationale = None
@@ -176,6 +183,37 @@ async def _run_defect(
         coverage=coverage,
         usage=usage,
     )
+
+
+async def _chunks_for_defect(
+    defect: Defect,
+    *,
+    file_hash: str | None,
+    max_chunks: int,
+    use_pinecone: bool,
+) -> list[dict[str, Any]]:
+    """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
+    if not use_pinecone or not file_hash:
+        return []
+
+    queries = build_evidence_queries(defect)
+    page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
+    try:
+        pool = await asyncio.to_thread(
+            gather_filing_evidence,
+            queries,
+            file_hash=file_hash,
+            max_chunks=max_chunks,
+        )
+    except Exception as e:
+        logger.warning(
+            "[Scrutiny] Pinecone retrieve failed for %s: %s",
+            defect.check_id,
+            e,
+        )
+        return []
+
+    return select_chunks_for_defect(pool, defect, max_chunks=page_budget)
 
 
 async def collect_defect_findings(
@@ -306,37 +344,37 @@ class ScrutinyWorkflow(Workflow):
                 f"(enabled checks: {', '.join(enabled_defect_ids())})."
             )
 
-        evidence_pool: list[dict[str, Any]] = []
-        if pinecone_enabled() and file_hash:
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message="Retrieving filing excerpts once for all defect checks",
-                )
-            )
-            try:
-                evidence_pool = await asyncio.to_thread(
-                    gather_filing_evidence_pool,
-                    file_hash=file_hash,
-                )
-            except Exception as e:
-                logger.warning("[Scrutiny] Shared Pinecone pool failed: %s", e)
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=(
-                            "Could not retrieve document excerpts; checks will "
-                            f"run against the extracted record only. {e}"
-                        ),
-                    )
-                )
-        elif not pinecone_enabled():
+        concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
+        max_chunks = scrutiny_max_chunks()
+        use_pinecone = pinecone_enabled() and bool(file_hash)
+
+        if not pinecone_enabled():
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
                     message=(
                         "Pinecone is disabled, so checks will run against the "
                         "extracted record only. Coverage will be incomplete."
+                    ),
+                )
+            )
+        elif not file_hash:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        "No file hash is available, so checks will run against "
+                        "the extracted record only. Coverage will be incomplete."
+                    ),
+                )
+            )
+        else:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Each concurrent check will retrieve its own excerpts "
+                        f"from Pinecone ({concurrency} at a time)"
                     ),
                 )
             )
@@ -347,13 +385,11 @@ class ScrutinyWorkflow(Workflow):
                 message=(
                     f"Checking {file_name or 'filing'} against "
                     f"{len(defects)} defect(s) "
-                    f"({_int_env('SCRUTINY_CONCURRENCY', DEFAULT_CONCURRENCY)} at a time)"
+                    f"({concurrency} at a time)"
                 ),
             )
         )
 
-        concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
-        max_chunks = scrutiny_max_chunks()
         planned = len(defects)
 
         def build_report(
@@ -399,10 +435,11 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             try:
-                chunks = select_chunks_for_defect(
-                    evidence_pool,
+                chunks = await _chunks_for_defect(
                     defect,
+                    file_hash=file_hash,
                     max_chunks=max_chunks,
+                    use_pinecone=use_pinecone,
                 )
                 finding = await _run_defect(
                     defect,
