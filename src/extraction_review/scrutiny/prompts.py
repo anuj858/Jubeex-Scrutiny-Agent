@@ -43,25 +43,32 @@ are not the Registry and you do not decide legal validity.
 {filing_block}
 Decide exactly one defect. Return one status:
 
-- defect_found: the excerpts positively show the required material is missing \
-or incomplete
+- defect_found: the required text, heading, annexure, application, or \
+statement is missing or incomplete. If you searched the extracted filing and \
+the required material is not there, that is a defect (not found)
 - compliant: the excerpts show the required material is present and complete
 - not_applicable: this defect does not apply to this filing
-- not_determined: the place you were told to search is not in the excerpts
-- needs_review: the excerpts conflict, the wording is legally ambiguous, or an \
-Advocate-on-Record must decide
+- not_determined: the check cannot be decided from extracted text because it \
+depends on stamps, signatures, seals, wet-ink, or page layout. Do not use \
+this for missing text
+- needs_review: the excerpts conflict, the wording is legally ambiguous, an \
+Advocate-on-Record must decide, or you would mark defect_found or compliant \
+but confidence is low
 
 Rules:
 
-1. Quote the filing. If you cannot quote it, you have not found it.
-2. Missing excerpts are not a defect. If the relevant part of the file is not \
-in the supplied text, return not_determined — not defect_found.
-3. You are reading extracted text, not a scanned page. Do not infer stamps, \
-signatures, seals, or layout. Anything that depends on how the page looks is \
+1. Quote the filing. If you cannot quote the required material, it has not \
+been found.
+2. Extracted text is the filing for textual requirements. If the required \
+content is not in the record or excerpts, return defect_found — not \
 not_determined.
+3. You are reading extracted text, not a scanned page. Do not infer stamps, \
+signatures, seals, or layout. Those checks alone are not_determined.
 4. Do not add requirements that are not in this task. Do not score sibling or \
 parent defects.
-5. confidence is 0.0 to 1.0. Partial evidence means lower confidence.
+5. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
+would mark defect_found or compliant but confidence is below 0.6, return \
+needs_review instead.
 6. suggested_fix is allowed only when status is defect_found. Describe what \
 the filing itself must contain or attach. Follow the cure aims. Never mention \
 Jubeex, auto-generation, uploads, or user-interface options. Otherwise set \
@@ -121,7 +128,12 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
             part = chunk.get("document_part")
-            header = f"[Page {page} — {part}]" if part else f"[Page {page}]"
+            page_end = chunk.get("page_end")
+            if page_end is not None and page_end != page:
+                loc = f"Pages {page}–{page_end}"
+            else:
+                loc = f"Page {page}"
+            header = f"[{loc} — {part}]" if part else f"[{loc}]"
         else:
             header = "[Document excerpt]"
 
@@ -463,8 +475,11 @@ def build_defect_prompt(
         search,
         (
             "A heading without the required content is not compliance. If the "
-            "part of the file you need is not in the excerpts, return "
-            "not_determined."
+            "required content is not in the excerpts or the structured record, "
+            "return defect_found — the material is not found. Use "
+            "not_determined only when the check needs a stamp, signature, "
+            "seal, or layout that extracted text cannot show. If you suspect "
+            "a defect but confidence is below 0.6, return needs_review."
         ),
     ]
     if cues:

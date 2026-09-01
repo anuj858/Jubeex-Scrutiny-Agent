@@ -134,7 +134,7 @@ export const RESULT_LABELS: Record<ResultState, string> = {
   defect_found: "Defect found",
   compliant: "Compliant",
   not_applicable: "Not applicable",
-  not_determined: "Not determined",
+  not_determined: "Visual / undetermined",
   needs_review: "Needs review",
 };
 
@@ -411,7 +411,7 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
     <tr>
       <td style="background:#FEE2E2;"><b style="font-size:18pt;">${report.summary.defects_found}</b><br/>Defects found</td>
       <td style="background:#FEF3C7;"><b style="font-size:18pt;">${report.summary.needs_review}</b><br/>Needs review</td>
-      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_determined}</b><br/>Undetermined</td>
+      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_determined}</b><br/>Visual / undetermined</td>
       <td style="background:#D1FAE5;"><b style="font-size:18pt;">${report.summary.compliant}</b><br/>Compliant</td>
     </tr>
   </table>

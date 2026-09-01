@@ -7,6 +7,7 @@ Python so they stay aligned with the defect API payload.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Literal
@@ -164,6 +165,28 @@ class DefectFinding(BaseModel):
     coverage: Coverage = Field(default_factory=Coverage)
     usage: LlmUsage | None = None
     error: str | None = None
+
+
+DEFAULT_REVIEW_CONFIDENCE = 0.6
+
+
+def review_confidence_threshold() -> float:
+    raw = os.getenv("SCRUTINY_REVIEW_CONFIDENCE", "")
+    try:
+        value = float(raw) if raw else DEFAULT_REVIEW_CONFIDENCE
+    except ValueError:
+        value = DEFAULT_REVIEW_CONFIDENCE
+    return min(1.0, max(0.0, value))
+
+
+def apply_status_policy(response: DefectResponse) -> DefectResponse:
+    """Move low-confidence defect/compliant calls to needs_review."""
+    if (
+        response.status in ("defect_found", "compliant")
+        and response.confidence < review_confidence_threshold()
+    ):
+        response.status = "needs_review"
+    return response
 
 
 class ScrutinySummary(BaseModel):

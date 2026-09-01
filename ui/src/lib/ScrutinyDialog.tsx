@@ -287,7 +287,7 @@ function SummaryBar({ report }: { report: ScrutinyReport }) {
       status: "needs_review",
     },
     {
-      label: "Undetermined",
+      label: "Visual / undetermined",
       value: report.summary.not_determined,
       status: "not_determined",
     },
