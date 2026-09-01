@@ -20,6 +20,7 @@ from extraction_review.scrutiny.prompts import (
     build_system_prompt,
 )
 from extraction_review.scrutiny.rules import defects_for_filing_type, get_catalogue
+from extraction_review.scrutiny.schema import DefectResponse, apply_status_policy
 from extraction_review.vector_store import build_page_records
 
 
@@ -95,6 +96,66 @@ def test_build_page_records_stamps_document_part() -> None:
     by_page = {r["metadata"]["page_start"]: r["metadata"] for r in records}
     assert "document_part" not in by_page[1]
     assert by_page[3]["document_part"] == "Listing Proforma"
+    assert "--- from page" not in records[0]["chunk_text"]
+    assert "--- from page" not in records[1]["chunk_text"]
+
+
+def test_page_records_borrow_same_part_neighbours_only() -> None:
+    listing_3 = "L3 " + ("a" * 40)
+    listing_4 = "L4 " + ("b" * 40)
+    petition = "Petition body " + ("c" * 40)
+    records = build_page_records(
+        base_id="abc",
+        page_markdown={
+            2: "Cover page heading",
+            3: listing_3,
+            4: listing_4,
+            5: petition,
+        },
+        page_parts={
+            2: "Cover Page",
+            3: "Listing Proforma",
+            4: "Listing Proforma",
+            5: "Petition",
+        },
+    )
+    by_page = {r["metadata"]["page_start"]: r for r in records}
+
+    cover = by_page[2]["chunk_text"]
+    assert cover == "Cover page heading"
+    assert "--- from page" not in cover
+    assert by_page[2]["metadata"]["page_end"] == 2
+
+    page3 = by_page[3]["chunk_text"]
+    assert page3.startswith(listing_3) or listing_3 in page3
+    assert "--- from page 4 ---" in page3
+    assert listing_4[:20] in page3
+    assert "Cover page" not in page3
+    assert "Petition body" not in page3
+    assert by_page[3]["metadata"]["page_start"] == 3
+    assert by_page[3]["metadata"]["page_end"] == 4
+    assert by_page[3]["metadata"]["pages"] == "3-4"
+
+    page4 = by_page[4]["chunk_text"]
+    assert "--- from page 3 ---" in page4
+    assert listing_3[-20:] in page4
+    assert "--- from page 5 ---" not in page4
+    assert "Petition body" not in page4
+    assert by_page[4]["metadata"]["page_end"] == 4
+
+    page5 = by_page[5]["chunk_text"]
+    assert page5 == petition
+    assert "--- from page" not in page5
+
+
+def test_unlabelled_pages_do_not_borrow_neighbours() -> None:
+    records = build_page_records(
+        base_id="abc",
+        page_markdown={1: "first page text", 2: "second page text"},
+        page_parts={},
+    )
+    texts = [r["chunk_text"] for r in records]
+    assert texts == ["first page text", "second page text"]
 
 
 def test_slice_record_drops_unrelated_blocks() -> None:
@@ -265,3 +326,38 @@ def test_user_prompt_carries_category_and_sliced_record() -> None:
     system = build_system_prompt(catalogue, "SLP_CIVIL")
     assert "Filing Formalities" not in system
     assert "Advocate's Check List" not in system
+    assert "Missing excerpts are not a defect" not in system
+    assert "stamps, signatures, seals" in system
+    assert "return defect_found" in system.lower() or "defect_found" in system
+    prompt_l = prompt.lower()
+    assert "not found" in prompt_l
+    assert "stamp" in prompt_l
+
+
+def test_low_confidence_defect_becomes_needs_review() -> None:
+    weak = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.4,
+        summary="Looks missing but the quote is thin.",
+        reasoning="Partial match only.",
+        evidence=[],
+        suggested_fix="Add the missing heading.",
+        fix_rationale="Required by the rule.",
+    )
+    gated = apply_status_policy(weak)
+    assert gated.status == "needs_review"
+
+
+def test_confident_defect_stays_defect_found() -> None:
+    strong = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.9,
+        summary="The required declaration is not in the filing.",
+        reasoning="Searched the affidavit excerpts; it is not there.",
+        evidence=[],
+        suggested_fix="File the declaration.",
+        fix_rationale="The rule requires it.",
+    )
+    assert apply_status_policy(strong).status == "defect_found"

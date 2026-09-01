@@ -4,8 +4,9 @@ Two jobs, kept separate:
 
 - Write (`process-file`): `build_page_records` / `upsert_records` store page text
   plus metadata (`file_hash`, `document_part`, `chunk_kind`, page numbers).
-- Read (`scrutiny-check`): `search_filing_chunks` / `gather_filing_evidence_pool`
-  return hits for one filing. They do not decide what the LLM sees.
+- Read (`scrutiny-check`): `search_filing_chunks` / `gather_filing_evidence`
+  return hits for one filing. Each concurrent defect queries Pinecone with
+  its own captions. They do not decide what the LLM sees.
 
 What to send the model (log-gap cutoff, per-defect page budget) lives in
 `document_parts.select_chunks_for_defect`, not here.
@@ -23,7 +24,7 @@ from typing import Any
 
 from pinecone import Pinecone
 
-from .document_parts import pool_search_queries
+from .document_parts import normalize_part_name, pool_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,51 @@ def split_text_windows(
     return [w for w in windows if w]
 
 
+def _same_split_part(left: str | None, right: str | None) -> bool:
+    """True only when Split labelled both pages as the same filing part."""
+    a = normalize_part_name(left)
+    b = normalize_part_name(right)
+    return bool(a) and a == b
+
+
+def _page_margin(text: str, *, from_end: bool, size: int = CHUNK_OVERLAP) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    if from_end:
+        return cleaned[-size:]
+    return cleaned[:size]
+
+
+def _labelled_page_margin(page_num: int, snippet: str) -> str:
+    snippet = snippet.strip()
+    if not snippet:
+        return ""
+    return f"--- from page {page_num} ---\n{snippet}"
+
+
+def _neighbor_margin(
+    *,
+    page_num: int,
+    neighbor: int,
+    page_markdown: dict[int, str],
+    parts: dict[int, str],
+    from_end: bool,
+) -> str:
+    """200 chars from an adjacent page, only when Split says it is the same part."""
+    if neighbor not in page_markdown:
+        return ""
+    neighbor_text = (page_markdown.get(neighbor) or "").strip()
+    if not neighbor_text:
+        return ""
+    if not _same_split_part(parts.get(page_num), parts.get(neighbor)):
+        return ""
+    return _labelled_page_margin(
+        neighbor,
+        _page_margin(page_markdown.get(neighbor) or "", from_end=from_end),
+    )
+
+
 def build_page_records(
     *,
     base_id: str,
@@ -216,6 +262,10 @@ def build_page_records(
 
     Each page is window-chunked if longer than MAX_CHUNK_CHARS.
     `page_parts` is the Split map (page number → Listing Proforma, …).
+    The first/last window of a page also takes CHUNK_OVERLAP characters from
+    the previous/next page when Split labelled both as the same part. Cover
+    Page is never glued onto Petition. Borrowed text is marked so citations
+    still point at this page (`page_start`).
     """
     base_meta = metadata or {}
     parts = page_parts or {}
@@ -236,14 +286,39 @@ def build_page_records(
             len(windows),
         )
         document_part = parts.get(page_num) or ""
+        prev_margin = _neighbor_margin(
+            page_num=page_num,
+            neighbor=page_num - 1,
+            page_markdown=page_markdown,
+            parts=parts,
+            from_end=True,
+        )
+        next_margin = _neighbor_margin(
+            page_num=page_num,
+            neighbor=page_num + 1,
+            page_markdown=page_markdown,
+            parts=parts,
+            from_end=False,
+        )
+        last_idx = len(windows) - 1
         for chunk_idx, window in enumerate(windows):
+            pieces = []
+            page_end = page_num
+            if chunk_idx == 0 and prev_margin:
+                pieces.append(prev_margin)
+            pieces.append(window)
+            if chunk_idx == last_idx and next_margin:
+                pieces.append(next_margin)
+                page_end = page_num + 1
             record_id = f"{base_id}:page:{page_num}:{chunk_idx}"
             meta = {
                 **base_meta,
                 "chunk_kind": "page",
                 "page_start": page_num,
-                "page_end": page_num,
-                "pages": str(page_num),
+                "page_end": page_end,
+                "pages": (
+                    str(page_num) if page_end == page_num else f"{page_num}-{page_end}"
+                ),
                 "chunk_index": chunk_idx,
             }
             if document_part:
@@ -251,7 +326,7 @@ def build_page_records(
             records.append(
                 {
                     "record_id": record_id,
-                    "chunk_text": window,
+                    "chunk_text": "\n\n".join(pieces),
                     "metadata": meta,
                 }
             )
@@ -444,16 +519,22 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         return None
 
     page = fields.get("page_start")
+    page_end = fields.get("page_end")
     try:
         page = int(page) if page is not None else None
     except (TypeError, ValueError):
         page = None
+    try:
+        page_end = int(page_end) if page_end is not None else page
+    except (TypeError, ValueError):
+        page_end = page
 
     return {
         "record_id": record_id,
         "score": score,
         "text": text,
         "page": page,
+        "page_end": page_end,
         "chunk_kind": fields.get("chunk_kind"),
         "file_name": fields.get("file_name"),
         "document_part": fields.get("document_part"),
@@ -576,10 +657,10 @@ def gather_filing_evidence_pool(
     top_k: int | None = None,
     max_chunks: int | None = None,
 ) -> list[dict[str, Any]]:
-    """One Pinecone gather for the whole filing, reused by every defect.
+    """Caption-wide gather for a filing (tests and fallbacks).
 
-    Queries are form captions and split part names — not per-defect legal
-    sentences — so 78 checks do not repeat hundreds of searches.
+    Live scrutiny queries per defect via `gather_filing_evidence` instead of
+    this shared dump, so 74 checks do not share one generic excerpt set.
     """
     cap = max_chunks if max_chunks is not None else scrutiny_pool_max_chunks()
     queries = pool_search_queries()
