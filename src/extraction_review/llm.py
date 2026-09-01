@@ -23,7 +23,8 @@ from .scrutiny.schema import LlmUsage
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "openai/gpt-5.5"
+#DEFAULT_MODEL = "openai/gpt-5.5"
+DEFAULT_MODEL = "google/gemini-3.7-flash"
 DEFAULT_TIMEOUT_S = 180.0
 MAX_ATTEMPTS = 3
 
