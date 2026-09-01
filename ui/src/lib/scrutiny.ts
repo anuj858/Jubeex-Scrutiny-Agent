@@ -1,5 +1,10 @@
-import { AgentDataItem, useCloudApiClient, useWorkflow } from "@llamaindex/ui";
-import { useCallback, useState } from "react";
+import {
+  AgentDataItem,
+  useCloudApiClient,
+  useHandlers,
+  useWorkflow,
+} from "@llamaindex/ui";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadFile, downloadJSON } from "./export";
 
 export type ResultState =
@@ -121,6 +126,8 @@ export interface ScrutinyReport {
   findings: DefectFinding[];
   summary: ScrutinySummary;
   usage?: UsageSummary | null;
+  planned_checks?: number | null;
+  stopped_early?: boolean;
 }
 
 export const RESULT_LABELS: Record<ResultState, string> = {
@@ -420,14 +427,30 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
 </html>`;
 }
 
+function stopSubscription(sub: {
+  disconnect?: () => void;
+  unsubscribe?: () => void;
+} | null) {
+  sub?.disconnect?.();
+  sub?.unsubscribe?.();
+}
+
 export function useScrutiny() {
   const wf = useWorkflow("scrutiny-check");
   const client = useCloudApiClient();
+  const handlersService = useHandlers({
+    query: { workflow_name: ["scrutiny-check"] },
+    sync: false,
+  });
   const [target, setTarget] = useState<ScrutinyTarget | undefined>();
+  const [handlerId, setHandlerId] = useState<string | undefined>();
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<ScrutinyReport | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [progress, setProgress] = useState<string | undefined>();
+  const reportRef = useRef<ScrutinyReport | undefined>(undefined);
+  const itemIdRef = useRef<string | undefined>(undefined);
 
   const busy = running || loading;
 
@@ -438,38 +461,98 @@ export function useScrutiny() {
         return;
       }
       const data = item.data as Record<string, unknown> | undefined;
+      itemIdRef.current = item.id;
+      reportRef.current = undefined;
       setTarget({ itemId: item.id, fileName: fileNameOf(item), mode: "run" });
       setReport(undefined);
       setError(undefined);
+      setProgress("Starting defect check…");
       setRunning(true);
+      setHandlerId(undefined);
 
       try {
-        const handler = await wf.runToCompletion({
+        // createHandler returns as soon as the run is queued. runToCompletion
+        // hits POST /run and is killed by the cloud nginx 60s gateway timeout
+        // once SCRUTINY_DEFECTS=all (~74 checks) is enabled.
+        const created = await wf.createHandler({
           agent_data_id: item.id,
           file_hash: (data?.file_hash as string | undefined) ?? null,
         });
-
-        if (handler.status !== "completed") {
-          setError(
-            handler.error || `Workflow ended with status: ${handler.status}`,
-          );
-          return;
-        }
-
-        const parsed = asReport(handler.result?.data);
-        if (!parsed) {
-          setError("The check finished but returned no findings.");
-          return;
-        }
-        setReport(parsed);
+        handlersService.setHandler(created);
+        setHandlerId(created.handler_id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
-      } finally {
         setRunning(false);
+        setProgress(undefined);
       }
     },
-    [wf],
+    [wf, handlersService],
   );
+
+  useEffect(() => {
+    if (!handlerId) {
+      return;
+    }
+    const sub = handlersService.actions(handlerId).subscribeToEvents({
+      onData(event) {
+        const payload = event.data as Record<string, unknown> | undefined;
+        if (
+          event.type === "Status" &&
+          payload &&
+          typeof payload.message === "string"
+        ) {
+          setProgress(payload.message);
+        }
+        if (
+          payload &&
+          typeof payload.completed === "number" &&
+          typeof payload.total === "number"
+        ) {
+          const stopped =
+            payload.stopped_early === true ? " — stopped after an error" : "";
+          setProgress(
+            `Completed ${payload.completed} of ${payload.total} checks${stopped}`,
+          );
+        }
+        const parsed = asReport(payload);
+        if (parsed) {
+          reportRef.current = parsed;
+          setReport(parsed);
+          if (parsed.stopped_early) {
+            setError(
+              "An earlier check failed. Remaining LLM calls were cancelled. Showing completed results.",
+            );
+          }
+        }
+      },
+      onComplete() {
+        void (async () => {
+          if (!reportRef.current && itemIdRef.current) {
+            try {
+              const fresh = await client.beta.agentData.get(itemIdRef.current);
+              const saved = reportFromItem(fresh as AgentDataItem);
+              if (saved) {
+                reportRef.current = saved;
+                setReport(saved);
+              }
+            } catch {
+              /* stream already ended; fall through to the empty-result error */
+            }
+          }
+          if (!reportRef.current) {
+            setError("The check finished but returned no findings.");
+          }
+          setRunning(false);
+          setProgress(undefined);
+        })();
+      },
+      onError(err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setRunning(false);
+      },
+    });
+    return () => stopSubscription(sub);
+  }, [handlerId, handlersService, client]);
 
   const viewSaved = useCallback(
     async (item: AgentDataItem) => {
@@ -480,6 +563,7 @@ export function useScrutiny() {
       setTarget({ itemId: item.id, fileName: fileNameOf(item), mode: "view" });
       setReport(undefined);
       setError(undefined);
+      setProgress(undefined);
       setLoading(true);
 
       try {
@@ -510,6 +594,10 @@ export function useScrutiny() {
     setTarget(undefined);
     setReport(undefined);
     setError(undefined);
+    setProgress(undefined);
+    setHandlerId(undefined);
+    setRunning(false);
+    setLoading(false);
   }, []);
 
   return {
@@ -519,6 +607,7 @@ export function useScrutiny() {
     busy,
     report,
     error,
+    progress,
     run,
     viewSaved,
     close,

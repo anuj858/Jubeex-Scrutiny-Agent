@@ -135,6 +135,7 @@ function TaskList() {
           loading={scrutiny.loading}
           report={scrutiny.report}
           error={scrutiny.error}
+          progress={scrutiny.progress}
           onClose={scrutiny.close}
         />
       </main>
