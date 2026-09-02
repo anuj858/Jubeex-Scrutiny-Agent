@@ -35,6 +35,12 @@ async function sha256Hex(file: File): Promise<string> {
     .join("");
 }
 
+function isPdf(file: File): boolean {
+  return (
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+  );
+}
+
 export function SplitUploadForm({
   onStarted,
 }: {
@@ -72,8 +78,17 @@ export function SplitUploadForm({
     if (!file) {
       return;
     }
+    if (!isPdf(file)) {
+      toast.error(`${slot.label} must be a PDF`);
+      const input = inputRefs.current[slot.id];
+      if (input) {
+        input.value = "";
+      }
+      return;
+    }
     setUploadingSlot(slot.id);
     try {
+      const fileHash = await sha256Hex(file);
       const created = await cloud.files.create({
         file,
         purpose: "extract",
@@ -82,7 +97,6 @@ export function SplitUploadForm({
       if (!fileId) {
         throw new Error("Upload did not return a file id");
       }
-      const fileHash = await sha256Hex(file);
       setUploads((prev) => ({
         ...prev,
         [slot.id]: {

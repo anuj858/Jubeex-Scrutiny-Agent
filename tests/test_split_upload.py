@@ -15,6 +15,8 @@ from extraction_review.split_upload import (
     SplitUploadError,
     build_extract_pack_markdown,
     bundle_file_hash,
+    coerce_page_markdown,
+    coerce_page_parts,
     extract_source_parts,
     inject_where_to_look,
     stitch_parsed_parts,
@@ -216,6 +218,25 @@ def test_empty_parse_still_stamps_document_part() -> None:
     ]
     assert len(petition_pages) == 1
     assert "No parse text" in page_markdown[petition_pages[0]]
+    pack = build_extract_pack_markdown(
+        page_markdown, page_parts, extract_source_parts(catalog)
+    )
+    assert "No parse text" not in pack
+
+
+def test_page_maps_survive_string_keys() -> None:
+    markdown = coerce_page_markdown({"1": "cover", "2": "petition body"})
+    parts = coerce_page_parts({"1": "Cover Page", "2": ["Petition"]})
+    assert markdown == {1: "cover", 2: "petition body"}
+    assert parts == {1: ["Cover Page"], 2: ["Petition"]}
+    records = build_page_records(
+        base_id="bundle",
+        page_markdown=markdown,
+        page_parts=parts,
+    )
+    by_page = {r["metadata"]["page_start"]: r["metadata"] for r in records}
+    assert by_page[1]["document_part"] == "Cover Page"
+    assert by_page[2]["document_part"] == "Petition"
 
 
 @pytest.mark.asyncio

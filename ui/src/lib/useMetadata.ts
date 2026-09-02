@@ -34,7 +34,11 @@ function readCachedMetadata(): Metadata | undefined {
       return undefined;
     }
     const parsed = JSON.parse(raw) as Metadata;
-    if (parsed?.schemas && parsed.extracted_data_collection) {
+    if (
+      parsed?.schemas &&
+      parsed.extracted_data_collection &&
+      parsed.split_upload_types
+    ) {
       return parsed;
     }
   } catch {

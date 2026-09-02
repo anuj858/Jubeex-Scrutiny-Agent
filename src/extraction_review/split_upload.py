@@ -22,6 +22,7 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 EXTRACT_PACK_EXCLUDED_PARTS = frozenset({"Annexures", "Appendix"})
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
+_PARSE_STUB_PREFIX = "(No parse text for"
 
 
 class SplitUploadError(ValueError):
@@ -255,7 +256,7 @@ def stitch_parsed_parts(
         local_numbers = sorted(int(page) for page in local)
         if not local_numbers:
             page_markdown[next_page] = (
-                f"(No parse text for {item.filename or item.slot_id})"
+                f"{_PARSE_STUB_PREFIX} {item.filename or item.slot_id})"
             )
             page_parts[next_page] = list(item.document_parts)
             next_page += 1
@@ -266,6 +267,31 @@ def stitch_parsed_parts(
             page_parts[next_page] = list(item.document_parts)
             next_page += 1
     return page_markdown, page_parts
+
+
+def coerce_page_markdown(raw: Mapping[Any, Any] | None) -> dict[int, str]:
+    """JSON round-trips can turn page numbers into strings."""
+    pages: dict[int, str] = {}
+    for key, value in (raw or {}).items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        pages[number] = str(value or "")
+    return pages
+
+
+def coerce_page_parts(raw: Mapping[Any, Any] | None) -> dict[int, list[str]]:
+    pages: dict[int, list[str]] = {}
+    for key, value in (raw or {}).items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        names = parts_on_page(value)
+        if names:
+            pages[number] = names
+    return pages
 
 
 def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
@@ -296,6 +322,8 @@ def build_extract_pack_markdown(
             continue
         label = " / ".join(names) or "Unknown"
         body = (page_markdown.get(page) or "").strip()
+        if body.startswith(_PARSE_STUB_PREFIX):
+            continue
         sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
     return "\n\n".join(sections).strip()
 

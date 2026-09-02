@@ -44,6 +44,8 @@ from .split_upload import (
     SplitUploadError,
     build_extract_pack_markdown,
     bundle_file_hash,
+    coerce_page_markdown,
+    coerce_page_parts,
     display_filename,
     extract_configuration,
     extract_source_parts,
@@ -196,10 +198,12 @@ class ProcessSplitFilesWorkflow(Workflow):
         catalog, _parts = validate_parts(
             state.filing_type, _as_part_inputs(state.parts)
         )
+        page_markdown = coerce_page_markdown(state.page_markdown)
+        page_parts = coerce_page_parts(state.page_parts)
 
         pack_text = build_extract_pack_markdown(
-            state.page_markdown,
-            state.page_parts,
+            page_markdown,
+            page_parts,
             extract_source_parts(catalog),
         )
         extract_file_id = state.petition_file_id
@@ -373,6 +377,8 @@ class ProcessSplitFilesWorkflow(Workflow):
             raise ValueError("Job ID cannot be null when waiting for its completion")
         filing_type = state.filing_type or "other"
         extract_config = extract_jubeex
+        page_markdown = coerce_page_markdown(state.page_markdown)
+        page_parts = coerce_page_parts(state.page_parts)
 
         await llama_cloud_client.extract.wait_for_completion(
             state.extract_job_id,
@@ -427,7 +433,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["classification_confidence"] = state.classification_confidence
             data.metadata["classification_reasoning"] = state.classification_reasoning
             data.metadata["parse_job_ids"] = state.parse_job_ids
-            data.metadata["page_count"] = len(state.page_markdown or {})
+            data.metadata["page_count"] = len(page_markdown)
             data.metadata["split_upload"] = True
             data.metadata["extract_pack_file_id"] = state.extract_pack_file_id
             data.metadata["split_files"] = {
@@ -453,8 +459,8 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(extracted_event)
         extracted_data = extracted_event.data
         data_dict = extracted_data.model_dump()
-        if state.page_parts:
-            overlay_split_documents(data_dict, state.page_parts)
+        if page_parts:
+            overlay_split_documents(data_dict, page_parts)
 
         if extracted_data.file_hash is not None:
             delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
@@ -487,6 +493,8 @@ class ProcessSplitFilesWorkflow(Workflow):
                     item_id=str(item.id),
                     state=state,
                     filing_type=filing_type,
+                    page_markdown=page_markdown,
+                    page_parts=page_parts,
                     ctx=ctx,
                 )
             except Exception as exc:
@@ -595,6 +603,8 @@ async def _index_split_upload(
     item_id: str,
     state: SplitFilesState,
     filing_type: str,
+    page_markdown: dict[int, str],
+    page_parts: dict[int, list[str]],
     ctx: Context[SplitFilesState],
 ) -> None:
     base_id = extracted_data.file_hash or state.petition_file_id or item_id
@@ -632,9 +642,9 @@ async def _index_split_upload(
         )
     page_records = build_page_records(
         base_id=base_id,
-        page_markdown=state.page_markdown,
+        page_markdown=page_markdown,
         metadata=shared_meta,
-        page_parts=state.page_parts,
+        page_parts=page_parts,
     )
     pinecone_items.extend(page_records)
     count = upsert_records(pinecone_items)
