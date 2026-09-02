@@ -16,6 +16,7 @@ from extraction_review.document_parts import (
     parts_named_in_where_to_look,
     pinecone_queries_for_defect,
     pool_search_queries,
+    required_parts_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
 )
@@ -879,6 +880,169 @@ def test_build_finding_says_page_missing_without_citation() -> None:
     assert finding.location == (
         "Filing page missing — no page was identified in the retrieved excerpts."
     )
+
+
+def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
+    catalogue = get_catalogue()
+    assert required_parts_for_defect(catalogue.defect("D021")) == ["Affidavit"]
+    d057 = required_parts_for_defect(catalogue.defect("D057"))
+    assert "AOR's Declaration" in d057
+    assert "Advocate's Checklist" in d057
+    assert "Listing Proforma" in d057
+    assert "Vakalatnama + PoA/BR" not in d057
+    assert "Annexures" not in d057
+    named = parts_named_in_where_to_look(catalogue.defect("D057"))
+    assert "AOR's Declaration" in named
+    assert "Impugned Order" in parts_named_in_where_to_look(catalogue.defect("D059"))
+
+
+def test_catalogue_inspect_parts_are_source_of_truth() -> None:
+    get_catalogue.cache_clear()
+    catalogue = get_catalogue()
+    d021 = catalogue.defect("D021")
+    assert d021.inspect_parts == ["Affidavit"]
+    assert d021.context_parts == ["Petition"]
+    assert d021.exclude_parts == ["Index"]
+    assert required_parts_for_defect(d021) == ["Affidavit"]
+    assert parts_named_in_where_to_look(d021) == ["Affidavit", "Petition"]
+
+    d073 = catalogue.defect("D073")
+    assert d073.inspect_parts == ["List of Dates & Events"]
+    assert required_parts_for_defect(d073) == ["List of Dates & Events"]
+
+    # Every General/Global row should author inspect_parts.
+    missing = [d.check_id for d in catalogue.defects if not d.inspect_parts]
+    assert missing == []
+
+
+def test_index_listing_is_not_affidavit_evidence() -> None:
+    catalogue = get_catalogue()
+    chunks = [
+        {
+            "record_id": "idx",
+            "chunk_kind": "page",
+            "page": 62,
+            "document_part": "Index",
+            "text": "2. SLP with Affidavit 1+3",
+        },
+        {
+            "record_id": "aff",
+            "chunk_kind": "page",
+            "page": 40,
+            "document_part": "Affidavit",
+            "text": "AFFIDAVIT I, the deponent, do hereby solemnly affirm",
+        },
+    ]
+    response = DefectResponse(
+        check_id="D021",
+        status="needs_review",
+        confidence=0.8,
+        summary="Affidavit coverage is unclear.",
+        reasoning="Quoted an index line.",
+        evidence=[EvidenceRef(page=62, quote="2. SLP with Affidavit 1+3")],
+        suggested_fix=None,
+        fix_rationale=None,
+    )
+    grounded = apply_evidence_pages(response, chunks, catalogue.defect("D021"))
+    assert grounded.evidence == []
+
+    response2 = DefectResponse(
+        check_id="D021",
+        status="defect_found",
+        confidence=0.9,
+        summary="Affidavit is incomplete.",
+        reasoning="Quoted the affidavit body.",
+        evidence=[
+            EvidenceRef(
+                page=62,
+                quote="AFFIDAVIT I, the deponent, do hereby solemnly affirm",
+            )
+        ],
+        suggested_fix="File a duly sworn affidavit.",
+        fix_rationale="Required.",
+    )
+    grounded2 = apply_evidence_pages(response2, chunks, catalogue.defect("D021"))
+    assert grounded2.evidence[0].page == 40
+
+
+def test_select_chunks_drops_index_for_affidavit_check() -> None:
+    catalogue = get_catalogue()
+    pool = [
+        {
+            "record_id": "idx",
+            "chunk_kind": "page",
+            "page": 62,
+            "document_part": "Index",
+            "text": "2. SLP with Affidavit 1+3",
+            "score": 0.99,
+        },
+        {
+            "record_id": "aff",
+            "chunk_kind": "page",
+            "page": 40,
+            "document_part": "Affidavit",
+            "text": "AFFIDAVIT sworn before notary",
+            "score": 0.8,
+        },
+    ]
+    chosen = select_chunks_for_defect(pool, catalogue.defect("D021"), max_chunks=4)
+    assert all(c.get("document_part") != "Index" for c in chosen)
+    assert any(c.get("page") == 40 for c in chosen)
+
+
+def test_affidavit_defect_not_blocked_when_petition_pages_missing() -> None:
+    catalogue = get_catalogue()
+    affidavit_only = [
+        {
+            "record_id": "aff",
+            "chunk_kind": "page",
+            "page": 40,
+            "document_part": "Affidavit",
+            "text": "AFFIDAVIT incomplete attestation",
+        }
+    ]
+    response = DefectResponse(
+        check_id="D021",
+        status="defect_found",
+        confidence=0.9,
+        summary="Supporting affidavit is not duly sworn.",
+        reasoning="The Affidavit excerpt has no notarial seal.",
+        evidence=[EvidenceRef(page=40, quote="AFFIDAVIT incomplete attestation")],
+        suggested_fix="File a duly sworn affidavit.",
+        fix_rationale="Required.",
+    )
+    gated = apply_retrieval_policy(catalogue.defect("D021"), response, affidavit_only)
+    assert gated.status == "defect_found"
+
+
+def test_build_finding_strips_jubeex_from_how_to_cure() -> None:
+    catalogue = get_catalogue()
+    finding = build_finding(
+        catalogue.defect("D021"),
+        DefectResponse(
+            check_id="D021",
+            status="defect_found",
+            confidence=0.9,
+            summary="Supporting affidavit is missing.",
+            reasoning="No Affidavit part was found after the petition.",
+            evidence=[EvidenceRef(page=40, quote="AFFIDAVIT")],
+            suggested_fix="File a duly sworn affidavit with the petition.",
+            fix_rationale="Required.",
+        ),
+        evidence_ids=["aff"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[40]),
+        chunks=[
+            {
+                "record_id": "aff",
+                "chunk_kind": "page",
+                "page": 40,
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT",
+            }
+        ],
+    )
+    assert finding.how_to_cure
+    assert all("jubeex" not in step.lower() for step in finding.how_to_cure)
 
 
 def test_build_finding_uses_chunk_pages_when_citation_has_none() -> None:

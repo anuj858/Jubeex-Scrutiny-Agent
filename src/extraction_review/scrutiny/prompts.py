@@ -88,6 +88,10 @@ suggested_fix and fix_rationale to null.
 excerpt header (“[Page 12 — Petition]” → 12). Never copy a page number \
 from Authority or location_source — those are official-rulebook locators, \
 not pages of this filing. If the quote is not in an excerpt, set page to null.
+9. Do not quote Index / paper-book listing lines (for example “SLP with \
+Affidavit 1+3”) as proof that a document was filed, sworn, or signed. \
+Quote the document part itself (Affidavit, Petition, Declaration, …). \
+If that part is not in the excerpts, return needs_review.
 
 Respond with JSON matching the required schema. No prose outside the JSON."""
 
@@ -393,6 +397,16 @@ def _cure_aim(step: str) -> str:
     if text:
         text = _sentence_case(text) + "."
     return text
+
+
+def display_cure_steps(steps: list[str] | None) -> list[str]:
+    """Catalogue how_to_cure for the UI — filing contents, not Jubeex product copy."""
+    cleaned: list[str] = []
+    for step in steps or []:
+        aim = _cure_aim(step)
+        if aim and aim not in cleaned:
+            cleaned.append(aim)
+    return cleaned
 
 
 def _trigger_cues(trigger_words: str | None) -> str | None:
@@ -734,7 +748,9 @@ def build_defect_prompt(
         "Use the structured record and the excerpts. Work through this plan:",
         (
             f"Inspect these filing parts (match the excerpt labels): "
-            f"{', '.join(parts_named_in_where_to_look(defect)) or 'the parts named below'}."
+            f"{', '.join(parts_named_in_where_to_look(defect)) or 'the parts named below'}. "
+            "Parts listed as inspect targets are required for a decisive result; "
+            "other named parts are context only."
         ),
         search,
         (
@@ -793,8 +809,10 @@ def build_defect_prompt(
                 "check_id. Each evidence item is {page, quote}. page MUST "
                 "be the integer from the excerpt header (“[Page 12 — "
                 "Petition]” → 12; for “Pages 12–13” use 12). Never use a "
-                "page from Authority / the rulebook locator. If the quote "
-                "is not from an excerpt, set page to null."
+                "page from Authority / the rulebook locator. Quote the "
+                "document part this task inspects — not an Index listing "
+                "line that merely names that document. If the quote is "
+                "not from an excerpt, set page to null."
             ),
         ]
     )

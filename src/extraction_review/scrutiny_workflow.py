@@ -149,7 +149,7 @@ def _sanitize_response(
             defect.check_id,
         )
     response.check_id = defect.check_id
-    response = apply_evidence_pages(response, chunks)
+    response = apply_evidence_pages(response, chunks, defect)
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)

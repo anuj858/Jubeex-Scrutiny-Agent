@@ -24,7 +24,7 @@ from typing import Any
 
 from pinecone import Pinecone
 
-from .document_parts import parts_on_page, pool_search_queries
+from .document_parts import _part_match, parts_on_page, pool_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -569,8 +569,8 @@ def search_filing_chunks(
     metadata_filter: dict[str, Any] = {"file_hash": {"$eq": file_hash}}
     if chunk_kind:
         metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
-    if document_part:
-        metadata_filter["document_part"] = {"$eq": document_part}
+    # Do not filter document_part in Pinecone: multi-label pages store an
+    # array and `$eq` misses them. Post-filter with parts_on_page instead.
 
     result = index.search(
         namespace=pinecone_namespace,
@@ -590,6 +590,9 @@ def search_filing_chunks(
     )
 
     chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
+    if document_part:
+        wanted = document_part.strip()
+        chunks = [c for c in chunks if _part_match(c, [wanted])]
     logger.info(
         "[Pinecone] Filing search returned %s chunk(s) for file_hash=%s (top_k=%s)",
         len(chunks),
@@ -673,15 +676,14 @@ def gather_filing_evidence(
         reserved: list[dict[str, Any]] = []
         used: set[str] = set()
         for part in document_parts or []:
-            want = (part or "").strip().lower()
+            want = (part or "").strip()
             if not want:
                 continue
             for chunk in chunks:
                 record_id = str(chunk.get("record_id") or "")
                 if not record_id or record_id in used:
                     continue
-                label = str(chunk.get("document_part") or "").strip().lower()
-                if label != want:
+                if not _part_match(chunk, [want]):
                     continue
                 reserved.append(chunk)
                 used.add(record_id)

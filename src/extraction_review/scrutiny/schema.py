@@ -17,13 +17,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .rules import Defect, get_catalogue
 from .prompts import (
+    display_cure_steps,
     finding_title,
     filing_location,
     readable_location_source,
     validated_reasoning,
     validated_summary,
 )
-from ..document_parts import missing_required_parts
+from ..document_parts import (
+    allows_index_evidence,
+    missing_required_parts,
+    parts_named_in_where_to_look,
+    parts_on_page,
+    preferred_parts_for_defect,
+)
 
 ResultState = Literal[
     "defect_found",
@@ -264,32 +271,64 @@ def _chunk_page_for_quote(quote: str, chunk: dict[str, Any]) -> int | None:
         return None
 
 
+def _chunk_part_rank(chunk: dict[str, Any], preferred: list[str]) -> int:
+    """Higher is better: target part beat Index listing lines."""
+    names = [n.lower() for n in parts_on_page(chunk.get("document_part"))]
+    if not names:
+        return 0
+    preferred_l = [p.lower() for p in preferred]
+    if any(n in preferred_l or any(p in n for p in preferred_l) for n in names):
+        return 2
+    if set(names) <= {"index"}:
+        return -1
+    return 1
+
+
 def apply_evidence_pages(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    defect: Defect | None = None,
 ) -> DefectResponse:
-    """Snap evidence.page to retrieved filing pages; drop rulebook pages."""
+    """Snap evidence.page to retrieved filing pages; drop rulebook / Index noise."""
     if not response.evidence:
         return response
-    allowed = _retrieved_pages(chunks)
     page_chunks = [c for c in chunks if c.get("chunk_kind") != "summary"]
+    preferred: list[str] = []
+    allow_index = True
+    if defect is not None:
+        preferred = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+            defect
+        )
+        allow_index = allows_index_evidence(defect)
     grounded: list[EvidenceRef] = []
     for ref in response.evidence:
         quote = ref.quote or ""
-        matched = [
-            page
+        matches = [
+            chunk
             for chunk in page_chunks
-            if (page := _chunk_page_for_quote(quote, chunk)) is not None
+            if _chunk_page_for_quote(quote, chunk) is not None
         ]
-        if matched:
-            if ref.page in matched:
-                page = ref.page
-            else:
-                page = matched[0]
-        elif ref.page is not None and ref.page in allowed:
-            page = ref.page
-        else:
-            page = None
+        if not allow_index:
+            content_matches = [
+                chunk
+                for chunk in matches
+                if _chunk_part_rank(chunk, preferred) >= 0
+            ]
+            # Index listing lines are not proof for content checks — drop them.
+            if matches and not content_matches:
+                continue
+            matches = content_matches
+        page: int | None = None
+        if matches:
+            matches.sort(
+                key=lambda chunk: (
+                    _chunk_part_rank(chunk, preferred),
+                    1 if ref.page == _chunk_page_for_quote(quote, chunk) else 0,
+                ),
+                reverse=True,
+            )
+            page = _chunk_page_for_quote(quote, matches[0])
+        # Do not keep a model page when the quote is not in any excerpt.
         grounded.append(EvidenceRef(page=page, quote=quote))
     response.evidence = grounded
     return response
@@ -460,7 +499,7 @@ def build_finding(
         evidence=response.evidence,
         suggested_fix=suggested,
         fix_rationale=rationale,
-        how_to_cure=list(defect.how_to_cure),
+        how_to_cure=display_cure_steps(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
         location=location,
         location_source=readable_location_source(defect, catalogue),
@@ -488,7 +527,7 @@ def failed_finding(
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
-        how_to_cure=list(defect.how_to_cure),
+        how_to_cure=display_cure_steps(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
         location="Filing page missing — this check did not run.",
         location_source=readable_location_source(defect, catalogue),
