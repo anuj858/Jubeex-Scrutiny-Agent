@@ -21,7 +21,7 @@ from .config import (
     SplitConfig,
     get_extraction_schema,
 )
-from .document_parts import overlay_split_documents, page_parts_from_split
+from .document_parts import overlay_split_documents, page_parts_from_split, parts_on_page
 from .vector_store import (
     build_filing_chunk_text,
     build_page_records,
@@ -160,13 +160,34 @@ async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
     )
 
 
+def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
+    """LlamaSplit accepts only category name + description."""
+    dumped = split_config.model_dump(
+        exclude={"configuration_id", "product_type"},
+        exclude_none=True,
+    )
+    dumped["categories"] = [
+        {
+            "name": item["name"],
+            **(
+                {"description": item["description"]}
+                if item.get("description")
+                else {}
+            ),
+        }
+        for item in dumped.get("categories") or []
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return dumped
+
+
 async def _split_page_parts(
     client: AsyncLlamaCloud,
     *,
     file_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
-) -> dict[int, str]:
+) -> dict[int, list[str]]:
     """Label pages with Split categories. Required when indexing Pinecone."""
     label = filename or "filing"
     if split_config is None:
@@ -193,10 +214,7 @@ async def _split_page_parts(
     else:
         job = await client.split.create(
             file_input=file_id,
-            configuration=split_config.model_dump(
-                exclude={"configuration_id", "product_type"},
-                exclude_none=True,
-            ),
+            configuration=_split_api_configuration(split_config),
             project_id=project_id,
         )
     completed = await _wait_for_split(client, job.id)
@@ -588,7 +606,7 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(extracted_event)
 
         extracted_data = extracted_event.data
-        page_parts: dict[int, str] = {}
+        page_parts: dict[int, list[str]] = {}
         if pinecone_enabled():
             try:
                 logger.info(f"Splitting file {state.filename}")
@@ -601,7 +619,13 @@ class ProcessFileWorkflow(Workflow):
                     split_config=split_config,
                     filename=state.filename,
                 )
-                parts = sorted(set(page_parts.values()))
+                parts = sorted(
+                    {
+                        name
+                        for names in page_parts.values()
+                        for name in parts_on_page(names)
+                    }
+                )
                 logger.info(
                     f"Split {state.filename} into {len(page_parts)} page(s) "
                     f"(parts: {', '.join(parts)})"

@@ -35,6 +35,9 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
 
 PINECONE_QUERY_MAX_CHARS = 110
 
+# One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
+PagePartMap = dict[int, list[str]]
+
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "filing_formalities": ("Petition", "Affidavit"),
     "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR"),
@@ -209,10 +212,33 @@ def normalize_part_name(name: str | None) -> str:
     return text
 
 
-def _format_page_span(pages: list[int]) -> str:
+def parts_on_page(value: Any) -> list[str]:
+    """Normalise a page's Split labels to a unique list."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        names = [value]
+    elif isinstance(value, (list, tuple, set)):
+        names = [str(item) for item in value]
+    else:
+        names = [str(value)]
+    found: list[str] = []
+    for name in names:
+        part = normalize_part_name(name)
+        if part and part not in found:
+            found.append(part)
+    return found
+
+
+def format_document_parts(value: Any) -> str:
+    names = parts_on_page(value)
+    return " / ".join(names)
+
+
+def _contiguous_groups(pages: list[int]) -> list[tuple[int, int]]:
     ordered = sorted(set(pages))
     if not ordered:
-        return ""
+        return []
     groups: list[tuple[int, int]] = []
     start = prev = ordered[0]
     for number in ordered[1:]:
@@ -222,23 +248,61 @@ def _format_page_span(pages: list[int]) -> str:
         groups.append((start, prev))
         start = prev = number
     groups.append((start, prev))
+    return groups
+
+
+def _format_page_span(pages: list[int]) -> str:
+    groups = _contiguous_groups(pages)
+    if not groups:
+        return ""
     bits = [str(a) if a == b else f"{a}–{b}" for a, b in groups]
-    prefix = "p. " if len(ordered) == 1 else "pp. "
+    prefix = "p. " if sum(b - a + 1 for a, b in groups) == 1 else "pp. "
     return prefix + ", ".join(bits)
 
 
-def documents_from_page_parts(page_parts: dict[int, str]) -> dict[str, Any]:
+# Later pages labelled the same part after this many skipped pages are a
+# mis-tag (second Index, second Cover), not a continuation.
+_FIRST_PART_GAP = 20
+
+
+def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
+    """Keep the first occurrence of each Split part, including nearby pages.
+
+    Index at 5–7 is kept; Index at 55–57 is dropped (that page is something
+    else). A mixed page can still keep its other label. Petition at 17 then
+    25–35 is kept (other documents sit in between).
+    """
+    pages_by_part: dict[str, list[int]] = {}
+    for page, names in page_parts.items():
+        for part in parts_on_page(names):
+            pages_by_part.setdefault(part, []).append(page)
+
+    keep: set[tuple[int, str]] = set()
+    for part, pages in pages_by_part.items():
+        last_kept: int | None = None
+        for page in sorted(set(pages)):
+            if last_kept is None or page - last_kept <= _FIRST_PART_GAP:
+                keep.add((page, part))
+                last_kept = page
+
+    collapsed: PagePartMap = {}
+    for page, names in page_parts.items():
+        kept = [part for part in parts_on_page(names) if (page, part) in keep]
+        if kept:
+            collapsed[page] = kept
+    return collapsed
+
+
+def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
     """Build filing_summary.documents from Split labels, with page spans."""
     order: list[str] = []
     pages_by_part: dict[str, list[int]] = {}
     for page in sorted(page_parts):
-        name = normalize_part_name(page_parts.get(page) or "")
-        if not name:
-            continue
-        if name not in pages_by_part:
-            pages_by_part[name] = []
-            order.append(name)
-        pages_by_part[name].append(page)
+        for name in parts_on_page(page_parts.get(page)):
+            if name not in pages_by_part:
+                pages_by_part[name] = []
+                order.append(name)
+            pages_by_part[name].append(page)
     items = [
         f"{name} ({_format_page_span(pages_by_part[name])})" for name in order
     ]
@@ -246,7 +310,7 @@ def documents_from_page_parts(page_parts: dict[int, str]) -> dict[str, Any]:
 
 
 def overlay_split_documents(
-    payload: dict[str, Any], page_parts: dict[int, str]
+    payload: dict[str, Any], page_parts: PagePartMap | dict[int, str]
 ) -> None:
     """Replace Index slang (V/A) with Split part names and page sources."""
     docs = documents_from_page_parts(page_parts)
@@ -277,8 +341,8 @@ def filing_type_label(filing_type: str | None) -> str:
     return raw or "this filing"
 
 
-def page_parts_from_split(job: Any) -> dict[int, str]:
-    """Map 1-indexed page number → split category name."""
+def page_parts_from_split(job: Any) -> PagePartMap:
+    """Map 1-indexed page number → one or more split category names."""
     result = getattr(job, "result", None) or job
     segments = getattr(result, "segments", None)
     if segments is None and isinstance(result, dict):
@@ -286,7 +350,7 @@ def page_parts_from_split(job: Any) -> dict[int, str]:
     if not segments:
         return {}
 
-    mapping: dict[int, str] = {}
+    mapping: PagePartMap = {}
     for segment in segments:
         if isinstance(segment, dict):
             category = segment.get("category")
@@ -299,10 +363,13 @@ def page_parts_from_split(job: Any) -> dict[int, str]:
             continue
         for page in pages:
             try:
-                mapping[int(page)] = part
+                number = int(page)
             except (TypeError, ValueError):
                 continue
-    return mapping
+            current = mapping.setdefault(number, [])
+            if part not in current:
+                current.append(part)
+    return collapse_repeated_split_pages(mapping)
 
 
 def parts_named_in_text(text: str) -> list[str]:
@@ -573,11 +640,15 @@ def slice_record_for_defect(
 
 
 def _part_match(chunk: dict[str, Any], preferred: list[str]) -> bool:
-    part = normalize_part_name(str(chunk.get("document_part") or ""))
-    if not part or not preferred:
+    names = parts_on_page(chunk.get("document_part"))
+    if not names or not preferred:
         return False
-    part_l = part.lower()
-    return any(part_l == p.lower() or p.lower() in part_l for p in preferred)
+    preferred_l = [p.lower() for p in preferred]
+    return any(
+        name.lower() == needle or needle in name.lower()
+        for name in names
+        for needle in preferred_l
+    )
 
 
 def _term_hits(chunk: dict[str, Any], terms: list[str]) -> int:

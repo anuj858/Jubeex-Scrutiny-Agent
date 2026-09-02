@@ -60,7 +60,76 @@ def test_page_parts_from_split_maps_pages() -> None:
             ]
         )
     )
-    assert page_parts_from_split(job) == {3: "Listing Proforma", 4: "Listing Proforma", 10: "Petition"}
+    assert page_parts_from_split(job) == {
+        3: ["Listing Proforma"],
+        4: ["Listing Proforma"],
+        10: ["Petition"],
+    }
+
+
+def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
+    job = SimpleNamespace(
+        result=SimpleNamespace(
+            segments=[
+                SimpleNamespace(category="Advocate's Checklist", pages=[1, 2, 51, 52]),
+                SimpleNamespace(category="Cover Page", pages=[3, 53]),
+                SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
+                SimpleNamespace(category="Office Report on Limitation", pages=[8, 58]),
+                SimpleNamespace(category="Listing Proforma", pages=[9, 10, 59, 60]),
+                SimpleNamespace(category="Petition", pages=[17, 25, 26, 35]),
+                SimpleNamespace(category="Record of Proceedings", pages=[4, 20, 21, 23, 54]),
+            ]
+        )
+    )
+    mapping = page_parts_from_split(job)
+    docs = documents_from_page_parts(mapping)
+    assert "Index (pp. 5–7)" in docs["items"]
+    assert all("55" not in item for item in docs["items"])
+    assert mapping[1] == ["Advocate's Checklist"]
+    assert 51 not in mapping
+    assert mapping[17] == ["Petition"]
+    assert mapping[25] == ["Petition"]
+    assert mapping[4] == ["Record of Proceedings"]
+    assert 54 not in mapping
+    assert mapping[20] == ["Record of Proceedings"]
+
+
+def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
+    job = SimpleNamespace(
+        result=SimpleNamespace(
+            segments=[
+                SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
+                SimpleNamespace(category="Petition", pages=[10]),
+            ]
+        )
+    )
+    mapping = page_parts_from_split(job)
+    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Petition"]}
+
+
+def test_one_page_can_carry_two_document_parts() -> None:
+    job = SimpleNamespace(
+        result=SimpleNamespace(
+            segments=[
+                SimpleNamespace(category="Affidavit", pages=[50]),
+                SimpleNamespace(category="Vakalatnama + PoA/BR", pages=[50]),
+            ]
+        )
+    )
+    mapping = page_parts_from_split(job)
+    assert mapping[50] == ["Affidavit", "Vakalatnama + PoA/BR"]
+    docs = documents_from_page_parts(mapping)
+    assert "Affidavit (p. 50)" in docs["items"]
+    assert "Vakalatnama + PoA/BR (p. 50)" in docs["items"]
+    records = build_page_records(
+        base_id="abc",
+        page_markdown={50: "affidavit then vakalatnama on the same leaf"},
+        page_parts=mapping,
+    )
+    assert records[0]["metadata"]["document_part"] == [
+        "Affidavit",
+        "Vakalatnama + PoA/BR",
+    ]
 
 
 @pytest.mark.asyncio
@@ -101,7 +170,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     split_api.create.assert_awaited_once()
     kwargs = split_api.create.await_args.kwargs
     assert kwargs["file_input"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    assert mapping == {1: "Petition"}
+    assert mapping == {1: ["Petition"]}
 
 
 def test_build_page_records_stamps_document_part() -> None:
