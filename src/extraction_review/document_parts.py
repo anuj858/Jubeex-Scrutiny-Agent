@@ -105,7 +105,8 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
-# do not need the global SCRUTINY_MAX_CHUNKS dump.
+# do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
+# raise this to PAGES_PER_TARGET_PART each.
 CATEGORY_MAX_CHUNKS: dict[str, int] = {
     "listing_proforma": 3,
     "advocate_checklist": 3,
@@ -123,6 +124,23 @@ CATEGORY_MAX_CHUNKS: dict[str, int] = {
     "memo_of_appearance": 3,
     "list_of_dates": 3,
 }
+
+# At least this many page excerpts per document part the check must open.
+PAGES_PER_TARGET_PART = 3
+
+# Placement phrases in where_to_look ("before the Cover Page") name other
+# documents as landmarks, not as extra parts this check must retrieve.
+_LANDMARK_PREP = re.compile(
+    r"\b(?:before|after|following|preceding|followed by)\s+(?:the\s+)?",
+    re.IGNORECASE,
+)
+_LANDMARK_STOP = re.compile(
+    r"\s+for\s+"
+    r"|,\s*(?:and\s+)?(?:check|look|verify|confirm|go\s+to|review)\b"
+    r"|[.;]",
+    re.IGNORECASE,
+)
+_PLACEMENT_PAREN = re.compile(r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I)
 
 # Keep a page chunk only if ln(best_score / this_score) is below this.
 # 0.36 ≈ keep scores at least ~70% of the best hit; farther neighbours are dropped.
@@ -170,6 +188,8 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
             needles.append(folded)
 
     add(name)
+    if re.search(r"checklist", name, re.IGNORECASE):
+        add(re.sub(r"checklist", "Check List", name, flags=re.IGNORECASE))
     left = name.split("+", 1)[0].strip()
     if left != name:
         add(left)
@@ -363,13 +383,39 @@ def parts_named_in_text(text: str) -> list[str]:
     return found
 
 
+def _strip_landmark_clauses(text: str) -> str:
+    """Drop paper-book locators so 'before the Cover Page' is not a target."""
+    cleaned = _PLACEMENT_PAREN.sub(" ", text or "")
+    pieces: list[str] = []
+    cursor = 0
+    for match in _LANDMARK_PREP.finditer(cleaned):
+        stop = _LANDMARK_STOP.search(cleaned, match.end())
+        end = stop.start() if stop else len(cleaned)
+        clause = cleaned[match.start() : end]
+        pieces.append(cleaned[cursor : match.start()])
+        if not parts_named_in_text(clause):
+            pieces.append(clause)
+        cursor = end
+    pieces.append(cleaned[cursor:])
+    return re.sub(r"[\s,]+", " ", "".join(pieces)).strip(" ,")
+
+
 def parts_named_in_where_to_look(defect: Defect) -> list[str]:
-    """Split parts the catalogue told this check to open."""
-    return parts_named_in_text(" ".join(defect.where_to_look))
+    """Split parts this check should open, ignoring paper-book landmarks.
+
+    "Check … before the Cover Page … for the Advocate's Checklist" names
+    Cover Page only as a locator. The target is the Checklist.
+    """
+    found: list[str] = []
+    for step in defect.where_to_look:
+        for name in parts_named_in_text(_strip_landmark_clauses(step)):
+            if name not in found:
+                found.append(name)
+    return found
 
 
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
-    """Where-to-look parts first, then the rest of the category."""
+    """Where-to-look targets first, then the rest of the category for retrieval."""
     named = parts_named_in_where_to_look(defect)
     category = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
     parts = list(named)
@@ -399,10 +445,43 @@ def _clip_query(text: str, *, limit: int = PINECONE_QUERY_MAX_CHARS) -> str:
     return cleaned[:limit].rsplit(" ", 1)[0].strip()
 
 
+# OCR phrases that often stand in for stamps, seals, signatures, and paper size.
+# Needles are matched as whole words against the catalogue row.
+_PRESENCE_QUERY_HINTS: tuple[tuple[str, str], ...] = (
+    ("stamp", "Advocates Welfare Fund stamp court fee stamp"),
+    ("seal", "notarial seal company seal"),
+    ("notary", "notary oath commissioner"),
+    ("signature", "Sd/- digitally signed signature"),
+    ("quarter margin", "quarter margin 4 cm 2 cm"),
+    ("4 cm", "4 cm 2 cm margin"),
+    ("a4", "A4 29.7 cm 21 cm"),
+    ("foolscap", "demy foolscap A4"),
+    ("times new roman", "Times New Roman font size 14"),
+    ("line spacing", "one and a half line spacing"),
+)
+
+
+def _presence_queries_for_defect(defect: Defect) -> list[str]:
+    """Extra Pinecone queries so stamps, seals and layout marks are retrieved."""
+    blob = " ".join(
+        [defect.defect, defect.requirement, *defect.where_to_look]
+    ).lower()
+    queries: list[str] = []
+    for needle, query in _PRESENCE_QUERY_HINTS:
+        if re.search(rf"\b{re.escape(needle)}\b", blob):
+            queries.append(query)
+    return queries
+
+
 def pinecone_queries_for_defect(defect: Defect) -> list[str]:
-    """Queries sent to Pinecone: where-to-look parts, headings, and cues."""
+    """Queries sent to Pinecone: target part names, short headings, and cues.
+
+    Long where-to-look sentences are not sent — they mention landmarks
+    ("before the Cover Page") and pull the wrong pages.
+    """
     queries: list[str] = []
     queries.extend(parts_named_in_where_to_look(defect))
+    queries.extend(_presence_queries_for_defect(defect))
     if defect.trigger_words:
         queries.extend(
             p.strip()
@@ -413,8 +492,8 @@ def pinecone_queries_for_defect(defect: Defect) -> list[str]:
         heading = _heading_from_where_to_look(step)
         if heading:
             queries.append(heading)
-        clipped = _clip_query(_bare_where_to_look(step))
-        if clipped:
+        clipped = _clip_query(_bare_where_to_look(_strip_landmark_clauses(step)))
+        if clipped and len(clipped) <= 80:
             queries.append(clipped)
     if not queries:
         queries.extend(preferred_parts_for_defect(defect))
@@ -441,7 +520,7 @@ def _unique_terms(terms: list[str]) -> list[str]:
 
 
 def required_parts_for_defect(defect: Defect) -> list[str]:
-    """Parts named in where-to-look; otherwise every preferred part."""
+    """Document parts this check inspects (landmarks are not required)."""
     return parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
         defect
     )
@@ -474,7 +553,7 @@ def _bare_where_to_look(step: str) -> str:
 
 def _heading_from_where_to_look(step: str) -> str | None:
     """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
-    text = _bare_where_to_look(step)
+    text = _bare_where_to_look(_strip_landmark_clauses(step))
     named = parts_named_in_text(text)
     if named:
         return named[0]
@@ -488,19 +567,20 @@ def _heading_from_where_to_look(step: str) -> str | None:
 def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     """How many page excerpts this defect is allowed, at most.
 
-    Listing / AOR-code checks are one form; Form 28 needs more pages.
-    A child defect stays tighter than its parent unless several document
-    parts must be compared (Vakalatnama vs petition drafting date).
+    One-form checks (Listing Proforma columns) stay at 3 pages. Checks that
+    must open several documents get PAGES_PER_TARGET_PART each so a
+    high-scoring Affidavit cannot crowd out Vakalatnama.
     """
-    named = parts_named_in_where_to_look(defect)
-    preferred = preferred_parts_for_defect(defect)
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
     budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
-    if len(defect.where_to_look) <= 2 and len(preferred) <= 1:
-        budget = min(budget, 3)
-    if defect.parent_check_id:
-        budget = min(budget, max(4, len(preferred)))
-    need = len(named) or len(preferred)
+    need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
+    if len(targets) <= 1 and len(defect.where_to_look) <= 2:
+        budget = min(budget, 3)
+    elif len(targets) <= 1 and defect.parent_check_id:
+        budget = min(budget, max(4, CATEGORY_MAX_CHUNKS.get(defect.category_id or "", 4)))
     return max(1, min(budget, ceiling))
 
 
