@@ -40,18 +40,24 @@ PagePartMap = dict[int, list[str]]
 
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "filing_formalities": ("Petition", "Affidavit"),
-    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR"),
+    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR", "Vakalatnama"),
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": ("Petition",),
     "applications": ("Petition", "Annexures", "Index"),
     "annexures": ("Annexures", "Index", "List of Dates & Events"),
     "parties": ("Memo of Parties", "Cover Page", "Petition"),
-    "dates_execution": ("Petition", "Affidavit", "Vakalatnama + PoA/BR"),
+    "dates_execution": (
+        "Petition",
+        "Affidavit",
+        "Vakalatnama + PoA/BR",
+        "Vakalatnama",
+        "PoA/BR",
+    ),
     "index_paper_book": ("Index",),
     "limitation": ("Office Report on Limitation", "Petition"),
     "affidavit": ("Affidavit", "Petition"),
-    "translations": ("Annexures", "Vakalatnama + PoA/BR"),
-    "vakalatnama": ("Vakalatnama + PoA/BR",),
+    "translations": ("Annexures", "Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
+    "vakalatnama": ("Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
     "memo_of_appearance": ("Memo of Appearance",),
     "list_of_dates": ("List of Dates & Events", "Synopsis"),
 }
@@ -183,9 +189,10 @@ def normalize_part_name(name: str | None) -> str:
         return ""
     text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
     folded = _fold(text)
-    for canonical, description in _split_categories():
+    for canonical, _description in _split_categories():
         if folded == _fold(canonical):
             return canonical
+    for canonical, description in _split_categories():
         for needle in _needles_for_part(canonical, description):
             if folded == needle:
                 return canonical

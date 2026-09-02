@@ -1151,8 +1151,16 @@
         "description": "Copy of the High Court or other court judgment or order under challenge."
       },
       {
+        "name": "Vakalatnama",
+        "description": "Page titled VAKALATNAMA (V/A) appointing an advocate, with execution date and signatures. Not Memo of Appearance and not a Power of Attorney or Board Resolution."
+      },
+      {
+        "name": "PoA/BR",
+        "description": "Power of Attorney or Board Resolution authorising the signatory. Distinct from the Vakalatnama."
+      },
+      {
         "name": "Vakalatnama + PoA/BR",
-        "description": "Page titled VAKALATNAMA (V/A) appointing an advocate, with execution date and signatures. Include power of attorney or board resolution if attached to it. Not Memo of Appearance."
+        "description": "Vakalatnama (V/A) and Power of Attorney or Board Resolution bound together as one document in a bundled PDF. Not Memo of Appearance."
       },
       {
         "name": "Court Fees",
@@ -1179,6 +1187,8 @@
         "Petition"
       ],
       "advocate_on_record": [
+        "Vakalatnama",
+        "PoA/BR",
         "Vakalatnama + PoA/BR",
         "AOR's Declaration",
         "Advocate's Checklist",
@@ -1203,10 +1213,11 @@
           {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
           {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
           {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
-          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": true},
+          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": false},
           {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
-          {"id": "vakalatnama", "label": "Vakalatnama + PoA/BR", "parts": ["Vakalatnama + PoA/BR"], "required": true},
-          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": true}
+          {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
+          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false},
+          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": false}
         ]
       },
       "SLP_CRIMINAL": {
@@ -1225,9 +1236,10 @@
           {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
           {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
           {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
-          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": true},
+          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": false},
           {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
-          {"id": "vakalatnama", "label": "Vakalatnama + PoA/BR", "parts": ["Vakalatnama + PoA/BR"], "required": true}
+          {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
+          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false}
         ]
       }
     }

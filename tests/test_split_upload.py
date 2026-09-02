@@ -59,18 +59,68 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert "court_fees" in civil_ids
     assert "court_fees" not in criminal_ids
     assert civil_ids[-1] == "court_fees"
+    civil_required = {
+        slot["id"]: slot["required"] for slot in catalog["SLP_CIVIL"]["slots"]
+    }
+    criminal_required = {
+        slot["id"]: slot["required"] for slot in catalog["SLP_CRIMINAL"]["slots"]
+    }
+    assert civil_required["memo_of_parties"] is False
+    assert civil_required["court_fees"] is False
+    assert civil_required["petition"] is True
+    assert criminal_required["memo_of_parties"] is False
+    assert criminal_required["vakalatnama"] is True
+    assert criminal_required["poa_br"] is False
+    assert "court_fees" not in criminal_required
+    assert civil_required["vakalatnama"] is True
+    assert civil_required["poa_br"] is False
+    assert "poa_br" in civil_ids
+    assert "poa_br" in criminal_ids
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     catalog, parts = validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL"))
     assert catalog.filing_type == "SLP_CIVIL"
-    assert all(item.slot_id != "annexures" for item in parts)
-    assert any(item.slot_id == "court_fees" for item in parts)
+    present = {item.slot_id for item in parts}
+    assert "annexures" not in present
+    assert "memo_of_parties" not in present
+    assert "court_fees" not in present
+    assert "poa_br" not in present
+    assert "vakalatnama" in present
+
+
+def test_slp_civil_allows_optional_memo_of_parties_and_court_fees() -> None:
+    extra = [
+        {
+            "slot_id": "memo_of_parties",
+            "file_id": "file-memo-of-parties",
+        },
+        {
+            "slot_id": "court_fees",
+            "file_id": "file-court-fees",
+        },
+        {
+            "slot_id": "poa_br",
+            "file_id": "file-poa-br",
+        },
+    ]
+    _, parts = validate_parts(
+        "SLP_CIVIL",
+        _required_parts("SLP_CIVIL", extra=extra),
+    )
+    present = {item.slot_id for item in parts}
+    assert "memo_of_parties" in present
+    assert "court_fees" in present
+    assert "poa_br" in present
 
 
 def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
     _, parts = validate_parts("SLP_CRIMINAL", _required_parts("SLP_CRIMINAL"))
-    assert all(item.slot_id != "court_fees" for item in parts)
+    present = {item.slot_id for item in parts}
+    assert "court_fees" not in present
+    assert "memo_of_parties" not in present
+    assert "poa_br" not in present
+    assert "vakalatnama" in present
     with pytest.raises(SplitUploadError, match="Unknown slot"):
         validate_parts(
             "SLP_CRIMINAL",
@@ -101,6 +151,25 @@ def test_duplicate_slot_fails() -> None:
     parts.append({"slot_id": "petition", "file_id": "file-petition-2"})
     with pytest.raises(SplitUploadError, match="Duplicate slot"):
         validate_parts("SLP_CRIMINAL", parts)
+
+
+def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
+    extra = [{"slot_id": "poa_br", "file_id": "file-poa-br"}]
+    catalog, parts = validate_parts(
+        "SLP_CRIMINAL",
+        _required_parts("SLP_CRIMINAL", extra=extra),
+    )
+    pages_by_slot = {
+        item.slot_id: {1: f"text for {item.slot_id}"} for item in parts
+    }
+    _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
+    vakalatnama_pages = [
+        page for page, names in page_parts.items() if names == ["Vakalatnama"]
+    ]
+    poa_pages = [page for page, names in page_parts.items() if names == ["PoA/BR"]]
+    assert len(vakalatnama_pages) == 1
+    assert len(poa_pages) == 1
+    assert vakalatnama_pages[0] != poa_pages[0]
 
 
 def test_synopsis_slot_stamps_both_document_parts() -> None:
