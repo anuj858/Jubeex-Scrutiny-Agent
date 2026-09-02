@@ -199,7 +199,53 @@
       "prompt": "Assess the List of Dates and Events named in this task. Decide only the objection in this message. Do not score sibling defects in this area."
     }
   ],
-  "defects":[{
+  "defects":[
+    {
+      "check_id": "D003",
+      "serial_no": 76,
+      "main_category": "General/Global",
+      "special_category": null,
+      "category_id": "advocate_checklist",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "The Advocate-on-Record has not filed the requisite checklist in the prescribed format along with the petition or appeal.",
+      "requirement": "The Advocate-on-Record must file a checklist along with every petition. The checklist must be in accordance with the prescribed format.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the front of the case file, before the Cover Page and the Office Report on Limitation, for the Advocate's Checklist.",
+        "Check whether it is in the prescribed format, i.e. the numbered list of requirements each marked YES/NO/N.A., followed by the AOR's declaration."
+      ],
+      "how_to_cure": [
+        "Option for Jubeex to auto-generate the Advocate's Check List in the prescribed format.",
+        "Option for the User to upload the Advocate's Check List with Jubeex.",
+        "Re-upload the petition along with the Advocate's Check List."
+      ],
+      "location_source": "Page 5, SCI_CHECKLIST_2025"
+    },
+    {
+      "check_id": "D021",
+      "serial_no": 79,
+      "main_category": "General/Global",
+      "special_category": null,
+      "category_id": "affidavit",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "The petition, appeal or interlocutory application is not accompanied by a proper and duly sworn affidavit in support of the allegations of fact made therein.",
+      "requirement": "No petition, appeal or interlocutory application is to be registered unless it is accompanied by a proper and duly sworn affidavit in support of the allegations of fact made therein.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check for an affidavit filed immediately after the main petition or application (after the Advocate-on-Record's certificate) in support of the allegations of fact made in it.",
+        "Check the attestation and the notarial seal at the end of the affidavit to confirm it is duly sworn.",
+        "If an affidavit is filed separately along with an interlocutory application that is not part of the main petition, check the cause title; it should identify that interlocutory application in the main case."
+      ],
+      "how_to_cure": [
+        "Option for Jubeex to auto-generate the affidavit in support of the allegations of fact and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
+        "Option for the User to upload the affidavit with Jubeex.",
+        "Re-upload the petition, appeal or interlocutory application along with the affidavit."
+      ],
+      "location_source": "F.No.57/Judl./2009 dated 3 August 2009, Page 5 of the PDF 2024042339.pdf"
+    },
+    {
     "check_id": "D057",
     "serial_no": 103,
     "main_category": "General/Global",
@@ -224,23 +270,27 @@
     "location_source": "SCI_CHECKLIST_2025, Page 2"
   },
   {
-    "check_id": "D020",
-    "serial_no": 104,
+    "check_id": "D059",
+    "serial_no": 107,
     "main_category": "General/Global",
     "special_category": null,
     "category_id": "parties",
-    "parent_check_id": "D019",
-    "overlap_note": "Narrower than D019. D019 covers complete residential or office addresses of the parties. This check is only whether those addresses (and representatives' addresses) are complete and properly set out with relationship, locality and PIN code. Do not re-decide the parent.",
-    "defect": "Addresses of the parties and their representatives are not complete and are set out improperly.",
-    "requirement": "Addresses of the parties and their representatives must be complete and set out properly.",
+    "parent_check_id": "D058",
+    "overlap_note": "Narrower than D058. D058 covers whether a Memo of Parties was filed (or cause-title particulars stand in its place). This check is only whether the cause title matches the impugned judgment's parties. Do not re-decide the parent.",
+    "defect": "The cause title does not correspond to the impugned judgment and the names of the parties therein.",
+    "requirement": "The cause title must correspond to the impugned judgment and the names of the parties therein.",
     "trigger_words": null,
     "where_to_look": [
       "Check the cause title on the first page of the main petition.",
-      "Check the Memo of Parties for complete addresses of the parties and of their representatives, properly set out with the relationship (S/o, W/o), house or ward number, locality, city and PIN code."
+      "Compare the names, order and description of the parties in the main petition with the cause title of the impugned judgment, usually placed after the Synopsis and List of Dates.",
+      "While comparing, check for spelling variations, omitted or dropped respondents, and parties described as “through LRs”.",
+      "Also verify the status of the parties, as the roles of petitioner and respondent may change depending on which party has challenged the impugned judgment."
     ],
     "how_to_cure": [
-      "Option for Jubeex to identify incomplete or improperly formatted addresses of the parties and their representatives, prompt the User to complete or correct the missing particulars, and auto-format the addresses in the prescribed format in the Memo of Parties.",
-      "Option for the User to re-upload the Memo of Parties."
+      "Option for Jubeex to compare the cause title with the impugned judgment, identify any discrepancies in the names of the parties, and, upon confirmation by the User, update the cause title accordingly.",
+      "If the cause title is not disclosing all the details, ask the User to upload the Memo of Parties of the impugned case, then allow an option to edit or auto-edit.",
+      "Option for the User to review and edit the cause title with Jubeex.",
+      "Re-upload the required page."
     ],
     "location_source": "SCI_CHECKLIST_2025, Page 2"
   }]
