@@ -24,7 +24,7 @@ from typing import Any
 
 from pinecone import Pinecone
 
-from .document_parts import normalize_part_name, pool_search_queries
+from .document_parts import parts_on_page, pool_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -205,11 +205,11 @@ def split_text_windows(
     return [w for w in windows if w]
 
 
-def _same_split_part(left: str | None, right: str | None) -> bool:
-    """True only when Split labelled both pages as the same filing part."""
-    a = normalize_part_name(left)
-    b = normalize_part_name(right)
-    return bool(a) and a == b
+def _same_split_part(left: Any, right: Any) -> bool:
+    """True when Split labelled both pages with at least one shared filing part."""
+    left_names = set(parts_on_page(left))
+    right_names = set(parts_on_page(right))
+    return bool(left_names) and bool(left_names & right_names)
 
 
 def _page_margin(text: str, *, from_end: bool, size: int = CHUNK_OVERLAP) -> str:
@@ -233,7 +233,7 @@ def _neighbor_margin(
     page_num: int,
     neighbor: int,
     page_markdown: dict[int, str],
-    parts: dict[int, str],
+    parts: dict[int, Any],
     from_end: bool,
 ) -> str:
     """200 chars from an adjacent page, only when Split says it is the same part."""
@@ -255,7 +255,7 @@ def build_page_records(
     base_id: str,
     page_markdown: dict[int, str],
     metadata: dict[str, Any] | None = None,
-    page_parts: dict[int, str] | None = None,
+    page_parts: dict[int, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build Pinecone records from parse page markdown.
@@ -285,7 +285,8 @@ def build_page_records(
             len(page_text),
             len(windows),
         )
-        document_part = parts.get(page_num) or ""
+        names = parts_on_page(parts.get(page_num))
+        document_part: Any = names[0] if len(names) == 1 else names
         prev_margin = _neighbor_margin(
             page_num=page_num,
             neighbor=page_num - 1,

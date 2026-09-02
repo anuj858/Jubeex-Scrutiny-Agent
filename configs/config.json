@@ -1104,7 +1104,7 @@
       },
       {
         "name": "Index",
-        "description": "Index of the paper book listing document names and page numbers."
+        "description": "Index of the paper book listing document names and page numbers. This part appears once, near the front (usually after the Cover Page). Do not label a later similar contents list as Index; that later list is a different document."
       },
       {
         "name": "Office Report on Limitation",

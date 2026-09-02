@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from .rules import Catalogue, Defect, DefectCategory, normalize_filing_type
-from ..document_parts import filing_type_label, pinecone_queries_for_defect
+from ..document_parts import filing_type_label, format_document_parts, pinecone_queries_for_defect
 
 MAX_EVIDENCE_CHARS = 60_000
 
@@ -130,7 +130,7 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
         if kind == "summary":
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
-            part = chunk.get("document_part")
+            part = format_document_parts(chunk.get("document_part"))
             page_end = chunk.get("page_end")
             if page_end is not None and page_end != page:
                 loc = f"Pages {page}–{page_end}"
