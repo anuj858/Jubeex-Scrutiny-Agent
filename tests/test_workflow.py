@@ -70,3 +70,8 @@ async def test_metadata_workflow() -> None:
     assert result.discriminator_field == DISCRIMINATOR_FIELD
     assert set(result.schemas.keys()) == FILING_TYPES
     assert DISCRIMINATOR_FIELD in result.json_schema.get("properties", {})
+    assert set(result.split_upload_types.keys()) == {"SLP_CIVIL", "SLP_CRIMINAL"}
+    criminal_ids = [
+        slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
+    ]
+    assert "court_fees" not in criminal_ids

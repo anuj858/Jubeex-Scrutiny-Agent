@@ -13,6 +13,7 @@ import { ShieldCheck, History } from "lucide-react";
 import { WorkflowProgress } from "@/lib/WorkflowProgress";
 import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
+import { SplitUploadForm } from "@/lib/SplitUploadForm";
 
 export default function HomePage() {
   return <TaskList />;
@@ -24,7 +25,8 @@ function TaskList() {
     navigate(`/item/${item.id}`);
   };
   const [reloadSignal, setReloadSignal] = useState(0);
-  const [handlers, setHandlers] = useState<HandlerState[]>([]);
+  const [fileHandlers, setFileHandlers] = useState<HandlerState[]>([]);
+  const [splitHandlers, setSplitHandlers] = useState<HandlerState[]>([]);
   const scrutiny = useScrutiny();
   const { run: runScrutiny, viewSaved, busy: scrutinyBusy } = scrutiny;
 
@@ -96,7 +98,14 @@ function TaskList() {
         <div className={styles.commandBar}>
           <WorkflowProgress
             workflowName="process-file"
-            handlers={handlers}
+            handlers={fileHandlers}
+            onWorkflowCompletion={() => {
+              setReloadSignal(reloadSignal + 1);
+            }}
+          />
+          <WorkflowProgress
+            workflowName="process-split-files"
+            handlers={splitHandlers}
             onWorkflowCompletion={() => {
               setReloadSignal(reloadSignal + 1);
             }}
@@ -111,10 +120,16 @@ function TaskList() {
               };
             }}
             onSuccess={(handler) => {
-              setHandlers([...handlers, handler]);
+              setFileHandlers([...fileHandlers, handler]);
             }}
           />
         </div>
+
+        <SplitUploadForm
+          onStarted={(handler) => {
+            setSplitHandlers([...splitHandlers, handler]);
+          }}
+        />
 
         <ExtractedDataItemGrid
           key={reloadSignal}

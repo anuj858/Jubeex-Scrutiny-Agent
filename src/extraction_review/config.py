@@ -169,9 +169,25 @@ class SplitConfig(SplitV1Parameters):
     categories: list[SplitCategory] = []
     configuration_id: str | None = None
 
+class SplitUploadSlot(BaseModel):
+    id: str
+    label: str
+    parts: list[str]
+    required: bool = True
+
+class SplitUploadType(BaseModel):
+    label: str
+    slots: list[SplitUploadSlot] = Field(default_factory=list)
+    extract_field_sources: dict[str, list[str]] | None = None
+
+class SplitUploadConfig(BaseModel):
+    extract_field_sources: dict[str, list[str]] = Field(default_factory=dict)
+    types: dict[str, SplitUploadType] = Field(default_factory=dict)
+
 class Config(BaseModel):
     """Root configuration model for configs/config.json."""
     classify: ClassifyConfig
     extract_jubeex: ExtractConfig = Field(alias="extract-jubeex")
     parse: ParseConfig | None = None
     split: SplitConfig | None = None
+    split_upload: SplitUploadConfig | None = None

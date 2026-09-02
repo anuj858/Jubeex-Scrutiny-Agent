@@ -1132,7 +1132,7 @@
       },
       {
         "name": "Annexures",
-        "description": "Annexures marked P-1, P-2, etc."
+        "description": "Annexures marked P1, P2,P3,P4,P5 or P-1, P-2, P-3, P-4, P-5 etc."
       },
       {
         "name": "Appendix",
@@ -1161,6 +1161,75 @@
     ],
     "splitting_strategy": {
       "allow_uncategorized": "include"
+    }
+  },
+  "split_upload": {
+    "extract_field_sources": {
+      "court": ["Cover Page", "Petition", "Listing Proforma"],
+      "petition_type": ["Cover Page", "Petition", "Listing Proforma"],
+      "special_category": ["Listing Proforma"],
+      "matter_classification": ["Listing Proforma"],
+      "cause_title": ["Memo of Parties", "Cover Page", "Petition"],
+      "petitioners": ["Memo of Parties", "Cover Page", "Petition"],
+      "respondents": ["Memo of Parties", "Cover Page", "Petition"],
+      "impugned_order": [
+        "Impugned Order",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Petition"
+      ],
+      "advocate_on_record": [
+        "Vakalatnama + PoA/BR",
+        "AOR's Declaration",
+        "Advocate's Checklist",
+        "Memo of Appearance"
+      ],
+      "filing_summary": ["Index", "Cover Page", "Listing Proforma"]
+    },
+    "types": {
+      "SLP_CIVIL": {
+        "label": "SLP (Civil)",
+        "slots": [
+          {"id": "advocates_checklist", "label": "Advocate's Checklist", "parts": ["Advocate's Checklist"], "required": true},
+          {"id": "cover_page", "label": "Cover Page", "parts": ["Cover Page"], "required": true},
+          {"id": "record_of_proceedings", "label": "Record of Proceedings", "parts": ["Record of Proceedings"], "required": true},
+          {"id": "aors_declaration", "label": "AOR's Declaration", "parts": ["AOR's Declaration"], "required": true},
+          {"id": "index", "label": "Index", "parts": ["Index"], "required": true},
+          {"id": "office_report_on_limitation", "label": "Office Report on Limitation", "parts": ["Office Report on Limitation"], "required": true},
+          {"id": "listing_proforma", "label": "Listing Proforma", "parts": ["Listing Proforma"], "required": true},
+          {"id": "synopsis_lod", "label": "Synopsis + List of Dates & Events", "parts": ["Synopsis", "List of Dates & Events"], "required": true},
+          {"id": "impugned_order", "label": "Impugned Order", "parts": ["Impugned Order"], "required": true},
+          {"id": "petition", "label": "Petition", "parts": ["Petition"], "required": true},
+          {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
+          {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
+          {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
+          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": true},
+          {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
+          {"id": "vakalatnama", "label": "Vakalatnama + PoA/BR", "parts": ["Vakalatnama + PoA/BR"], "required": true},
+          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": true}
+        ]
+      },
+      "SLP_CRIMINAL": {
+        "label": "SLP (Criminal)",
+        "slots": [
+          {"id": "advocates_checklist", "label": "Advocate's Checklist", "parts": ["Advocate's Checklist"], "required": true},
+          {"id": "cover_page", "label": "Cover Page", "parts": ["Cover Page"], "required": true},
+          {"id": "record_of_proceedings", "label": "Record of Proceedings", "parts": ["Record of Proceedings"], "required": true},
+          {"id": "aors_declaration", "label": "AOR's Declaration", "parts": ["AOR's Declaration"], "required": true},
+          {"id": "index", "label": "Index", "parts": ["Index"], "required": true},
+          {"id": "office_report_on_limitation", "label": "Office Report on Limitation", "parts": ["Office Report on Limitation"], "required": true},
+          {"id": "listing_proforma", "label": "Listing Proforma", "parts": ["Listing Proforma"], "required": true},
+          {"id": "synopsis_lod", "label": "Synopsis + List of Dates & Events", "parts": ["Synopsis", "List of Dates & Events"], "required": true},
+          {"id": "impugned_order", "label": "Impugned Order", "parts": ["Impugned Order"], "required": true},
+          {"id": "petition", "label": "Petition", "parts": ["Petition"], "required": true},
+          {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
+          {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
+          {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
+          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": true},
+          {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
+          {"id": "vakalatnama", "label": "Vakalatnama + PoA/BR", "parts": ["Vakalatnama + PoA/BR"], "required": true}
+        ]
+      }
     }
   }
 }

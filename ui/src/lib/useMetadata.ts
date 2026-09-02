@@ -1,9 +1,22 @@
 import { useWorkflow } from "@llamaindex/ui";
 import { useEffect, useRef, useState } from "react";
 
+export interface SplitUploadSlot {
+  id: string;
+  label: string;
+  parts: string[];
+  required: boolean;
+}
+
+export interface SplitUploadType {
+  label: string;
+  slots: SplitUploadSlot[];
+}
+
 export interface Metadata {
   schemas: Record<string, any>;
   extracted_data_collection: string;
+  split_upload_types?: Record<string, SplitUploadType>;
 }
 
 export interface UseMetadataResult {
@@ -12,7 +25,7 @@ export interface UseMetadataResult {
   error: string | undefined;
 }
 
-const METADATA_CACHE_KEY = "jubeex-metadata-v1";
+const METADATA_CACHE_KEY = "jubeex-metadata-v2";
 
 function readCachedMetadata(): Metadata | undefined {
   try {
