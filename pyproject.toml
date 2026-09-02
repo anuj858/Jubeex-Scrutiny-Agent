@@ -87,4 +87,5 @@ scrutiny-check = "extraction_review.scrutiny_workflow:workflow"
 
 [tool.llamadeploy.ui]
 directory = "ui"
+package_manager = "npm"
 

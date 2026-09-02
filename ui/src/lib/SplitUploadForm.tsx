@@ -1,7 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import {
   Button,
-  hashFile,
   useCloudApiClient,
   useWorkflow,
   type HandlerState,
@@ -25,6 +24,16 @@ type CloudFileCreate = {
     }) => Promise<{ id?: string; fileId?: string }>;
   };
 };
+
+async function sha256Hex(file: File): Promise<string> {
+  const digest = await window.crypto.subtle.digest(
+    "SHA-256",
+    await file.arrayBuffer(),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 function isPdf(file: File): boolean {
   return (
@@ -79,7 +88,7 @@ export function SplitUploadForm({
     }
     setUploadingSlot(slot.id);
     try {
-      const fileHash = await hashFile(file);
+      const fileHash = await sha256Hex(file);
       const created = await cloud.files.create({
         file,
         purpose: "extract",
