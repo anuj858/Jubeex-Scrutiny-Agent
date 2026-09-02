@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from "react";
 import {
   Button,
-  HandlerState,
+  hashFile,
   useCloudApiClient,
   useWorkflow,
+  type HandlerState,
 } from "@llamaindex/ui";
 import { toast } from "sonner";
 import { useMetadataContext } from "./MetadataProvider";
@@ -24,16 +25,6 @@ type CloudFileCreate = {
     }) => Promise<{ id?: string; fileId?: string }>;
   };
 };
-
-async function sha256Hex(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    await file.arrayBuffer(),
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 function isPdf(file: File): boolean {
   return (
@@ -88,7 +79,7 @@ export function SplitUploadForm({
     }
     setUploadingSlot(slot.id);
     try {
-      const fileHash = await sha256Hex(file);
+      const fileHash = await hashFile(file);
       const created = await cloud.files.create({
         file,
         purpose: "extract",
@@ -134,22 +125,30 @@ export function SplitUploadForm({
     }
     setSubmitting(true);
     try {
-      const parts = slots
-        .filter((slot) => uploads[slot.id])
-        .map((slot) => {
-          const uploaded = uploads[slot.id];
-          return {
-            slot_id: slot.id,
-            document_parts: slot.parts,
-            file_id: uploaded.fileId,
-            file_hash: uploaded.fileHash,
-            filename: uploaded.filename,
-          };
+      const parts: {
+        slot_id: string;
+        document_parts: string[];
+        file_id: string;
+        file_hash: string | null;
+        filename: string;
+      }[] = [];
+      for (const slot of slots) {
+        const uploaded = uploads[slot.id];
+        if (!uploaded) {
+          continue;
+        }
+        parts.push({
+          slot_id: slot.id,
+          document_parts: slot.parts,
+          file_id: uploaded.fileId,
+          file_hash: uploaded.fileHash,
+          filename: uploaded.filename,
         });
-      const created = (await wf.createHandler({
+      }
+      const created = await wf.createHandler({
         filing_type: filingType,
         parts,
-      })) as HandlerState;
+      });
       onStarted(created);
       toast.success(`Started ${catalog.label} split upload`);
     } catch (error) {

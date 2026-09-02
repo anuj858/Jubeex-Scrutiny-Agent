@@ -23,8 +23,9 @@
     /* Path mapping */
     "paths": {
       "@/*": ["./src/*"]
-    }
+    },
+    "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts", "src/vite-env.d.ts"],
+  "include": ["src"],
   "exclude": ["node_modules"]
 }
