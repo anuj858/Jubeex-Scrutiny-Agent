@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import inspect
+from io import BytesIO
 
 import pytest
+from pypdf import PdfReader, PdfWriter
 from workflows.events import StartEvent
 
-from extraction_review.document_parts import overlay_split_documents
+from extraction_review.bundle_slicer import (
+    extract_pdf_pages,
+    map_slot_pages,
+    slice_bundle_pdf,
+)
+from extraction_review.document_parts import format_page_span, overlay_split_documents
 from extraction_review.metadata_workflow import workflow as metadata_workflow
+from extraction_review.process_file import ProcessFileWorkflow
 from extraction_review.process_split_files import ProcessSplitFilesWorkflow
 from extraction_review.split_upload import (
     SplitPartInput,
@@ -159,9 +167,7 @@ def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
         "SLP_CRIMINAL",
         _required_parts("SLP_CRIMINAL", extra=extra),
     )
-    pages_by_slot = {
-        item.slot_id: {1: f"text for {item.slot_id}"} for item in parts
-    }
+    pages_by_slot = {item.slot_id: {1: f"text for {item.slot_id}"} for item in parts}
     _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
     vakalatnama_pages = [
         page for page, names in page_parts.items() if names == ["Vakalatnama"]
@@ -328,3 +334,148 @@ def test_process_split_files_does_not_call_llama_split() -> None:
     )
     assert "llama_cloud_client.split" not in module
     assert ".split.create" not in module
+
+
+def test_process_split_files_does_not_classify() -> None:
+    source = inspect.getsource(ProcessSplitFilesWorkflow)
+    assert "classify.create" not in source
+    assert "_wait_for_classify" not in source
+    module = inspect.getsource(
+        __import__("extraction_review.process_split_files", fromlist=["workflow"])
+    )
+    assert "classify.create" not in module
+    assert "classify_file" not in source
+
+
+def test_process_file_prepare_does_not_extract() -> None:
+    source = inspect.getsource(ProcessFileWorkflow)
+    module = inspect.getsource(
+        __import__("extraction_review.process_file", fromlist=["workflow"])
+    )
+    assert "extract.create" not in source
+    assert "extract.create" not in module
+    assert "InputRequired" not in source
+    assert "InputRequired" not in module
+    assert "agent_data.create" not in source
+    assert "classify.create" in source
+    assert "_split_page_parts" in source
+    assert "slice_bundle_pdf" in source
+
+
+def _blank_pdf(page_count: int) -> bytes:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=72, height=72)
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def test_combined_vakalatnama_maps_to_vakalatnama_slot_only() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            50: ["Vakalatnama + PoA/BR"],
+            51: ["PoA/BR"],
+        },
+    )
+    assert pages["vakalatnama"] == [50]
+    assert pages["poa_br"] == [51]
+    assert 50 not in pages.get("poa_br", [])
+
+
+def test_mixed_label_page_is_copied_into_both_slots() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {20: ["Affidavit", "Vakalatnama"]},
+    )
+    assert pages["affidavit"] == [20]
+    assert pages["vakalatnama"] == [20]
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            _blank_pdf(20), catalog, {20: ["Affidavit", "Vakalatnama"]}
+        )
+    }
+    assert len(PdfReader(BytesIO(slices["affidavit"].pdf_bytes)).pages) == 1
+    assert len(PdfReader(BytesIO(slices["vakalatnama"].pdf_bytes)).pages) == 1
+
+
+def test_unmatched_pages_are_dropped() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            1: ["Cover Page"],
+            99: ["Caveat"],
+            100: ["Uncategorized"],
+        },
+    )
+    assert pages == {"cover_page": [1]}
+
+
+def test_synopsis_slot_unions_synopsis_and_list_of_dates() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            10: ["Synopsis"],
+            11: ["List of Dates & Events"],
+            12: ["Synopsis", "List of Dates & Events"],
+        },
+    )
+    assert pages["synopsis_lod"] == [10, 11, 12]
+    assert format_page_span(pages["synopsis_lod"]) == "pp. 10–12"
+
+
+def test_slice_uses_one_indexed_split_pages() -> None:
+    pdf_bytes = _blank_pdf(3)
+    sliced = extract_pdf_pages(pdf_bytes, [1, 3])
+    reader = PdfReader(BytesIO(sliced))
+    assert len(reader.pages) == 2
+    skipped = extract_pdf_pages(pdf_bytes, [9])
+    assert skipped == b""
+
+
+def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pdf_bytes = _blank_pdf(6)
+    slices = slice_bundle_pdf(
+        pdf_bytes,
+        catalog,
+        {
+            1: ["Advocate's Checklist"],
+            2: ["Cover Page"],
+            3: ["Record of Proceedings"],
+            4: ["AOR's Declaration"],
+            5: ["Index"],
+            6: ["Office Report on Limitation"],
+        },
+    )
+    by_id = {item.slot_id: item for item in slices}
+    assert by_id["cover_page"].filename == "Cover Page.pdf"
+    assert by_id["cover_page"].page_span == "p. 2"
+    assert by_id["cover_page"].file_hash
+    required = _required_parts("SLP_CIVIL")
+    payload = []
+    for item in required:
+        slot_id = item["slot_id"]
+        if slot_id in by_id:
+            payload.append(
+                {
+                    "slot_id": slot_id,
+                    "file_id": f"file-{slot_id}",
+                    "file_hash": by_id[slot_id].file_hash,
+                    "filename": by_id[slot_id].filename,
+                }
+            )
+        else:
+            payload.append(item)
+    _, parts = validate_parts("SLP_CIVIL", payload)
+    assert {item.slot_id for item in parts} >= {
+        "cover_page",
+        "petition",
+        "vakalatnama",
+    }

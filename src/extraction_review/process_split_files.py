@@ -20,7 +20,6 @@ from workflows.resource import Resource, ResourceConfig
 from .clients import agent_name, get_llama_cloud_client, project_id
 from .config import (
     EXTRACTED_DATA_COLLECTION,
-    ClassifyConfig,
     ExtractConfig,
     ParseConfig,
     get_extraction_schema,
@@ -31,11 +30,9 @@ from .process_file import (
     ExtractedEvent,
     ExtractedInvalidEvent,
     ExtractJobStartedEvent,
-    FileClassifiedEvent,
     ParsedEvent,
     Status,
     _extract_page_markdown,
-    _wait_for_classify,
     _wait_for_parse,
 )
 from .split_upload import (
@@ -89,10 +86,6 @@ class SplitFilesState(BaseModel):
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
-    classification_confidence: float | None = None
-    classification_reasoning: str | None = None
-    classified_as: str | None = None
-    classification_mismatch: bool = False
 
 
 class ProcessSplitFilesWorkflow(Workflow):
@@ -260,105 +253,9 @@ class ProcessSplitFilesWorkflow(Workflow):
         return ExtractJobStartedEvent()
 
     @step()
-    async def classify_file(
-        self,
-        event: ExtractJobStartedEvent,
-        ctx: Context[SplitFilesState],
-        llama_cloud_client: Annotated[
-            AsyncLlamaCloud, Resource(get_llama_cloud_client)
-        ],
-        classify_config: Annotated[
-            ClassifyConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="classify",
-                label="Classification Rules",
-                description="Rules for classifying JubeeX filing types",
-            ),
-        ],
-    ) -> FileClassifiedEvent:
-        state = await ctx.store.get_state()
-        ui_type = state.filing_type or "other"
-        classify_file_id = state.petition_file_id
-        if not classify_file_id:
-            async with ctx.store.edit_state() as state:
-                state.classified_as = None
-            return FileClassifiedEvent(filing_type=ui_type)
-
-        try:
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=f"Classifying Petition as a check on {ui_type}",
-                )
-            )
-            if classify_config.configuration_id:
-                classify_job = await llama_cloud_client.classify.create(
-                    file_input=classify_file_id,
-                    configuration_id=classify_config.configuration_id,
-                    project_id=project_id,
-                )
-            else:
-                classify_job = await llama_cloud_client.classify.create(
-                    file_input=classify_file_id,
-                    configuration=classify_config.model_dump(
-                        exclude={"configuration_id", "product_type"},
-                        exclude_none=True,
-                    ),
-                    project_id=project_id,
-                )
-            completed = await _wait_for_classify(llama_cloud_client, classify_job.id)
-            classified = "other"
-            confidence = None
-            reasoning = None
-            if completed.status != "FAILED" and completed.result is not None:
-                classified = completed.result.type or "other"
-                confidence = completed.result.confidence
-                reasoning = completed.result.reasoning
-            mismatch = classified != ui_type
-            if mismatch:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=(
-                            f"Classifier returned {classified}; "
-                            f"keeping selected {ui_type}"
-                        ),
-                    )
-                )
-            else:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=f"Classified as {classified} JubeeX filing",
-                    )
-                )
-            async with ctx.store.edit_state() as state:
-                state.classified_as = classified
-                state.classification_mismatch = mismatch
-                state.classification_confidence = confidence
-                state.classification_reasoning = reasoning
-            return FileClassifiedEvent(
-                filing_type=ui_type,
-                confidence=confidence,
-                reasoning=reasoning,
-            )
-        except Exception as exc:
-            logger.exception("Classification failed for split upload")
-            ctx.write_event_to_stream(
-                Status(
-                    level="warning",
-                    message=f"Classification failed; keeping selected {ui_type}: {exc}",
-                )
-            )
-            async with ctx.store.edit_state() as state:
-                state.classified_as = "other"
-            return FileClassifiedEvent(filing_type=ui_type)
-
-    @step()
     async def complete_extraction(
         self,
-        event: FileClassifiedEvent,
+        event: ExtractJobStartedEvent,
         ctx: Context[SplitFilesState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
@@ -428,10 +325,6 @@ class ProcessSplitFilesWorkflow(Workflow):
             if data.metadata is None:
                 data.metadata = {}
             data.metadata["classification"] = filing_type
-            data.metadata["classified_as"] = state.classified_as
-            data.metadata["classification_mismatch"] = state.classification_mismatch
-            data.metadata["classification_confidence"] = state.classification_confidence
-            data.metadata["classification_reasoning"] = state.classification_reasoning
             data.metadata["parse_job_ids"] = state.parse_job_ids
             data.metadata["page_count"] = len(page_markdown)
             data.metadata["split_upload"] = True

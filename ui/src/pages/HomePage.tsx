@@ -27,6 +27,9 @@ function TaskList() {
   const [reloadSignal, setReloadSignal] = useState(0);
   const [fileHandlers, setFileHandlers] = useState<HandlerState[]>([]);
   const [splitHandlers, setSplitHandlers] = useState<HandlerState[]>([]);
+  const [prepareHandler, setPrepareHandler] = useState<HandlerState | null>(
+    null,
+  );
   const scrutiny = useScrutiny();
   const { run: runScrutiny, viewSaved, busy: scrutinyBusy } = scrutiny;
 
@@ -121,11 +124,13 @@ function TaskList() {
             }}
             onSuccess={(handler) => {
               setFileHandlers([...fileHandlers, handler]);
+              setPrepareHandler(handler);
             }}
           />
         </div>
 
         <SplitUploadForm
+          prepareHandler={prepareHandler}
           onStarted={(handler) => {
             setSplitHandlers([...splitHandlers, handler]);
           }}

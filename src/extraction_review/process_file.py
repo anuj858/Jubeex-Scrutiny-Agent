@@ -1,33 +1,29 @@
+"""Classify and LlamaSplit a bundled PDF, then slice it into labeled files.
+
+Extract, overlay, Agent Data, and Pinecone run only in process-split-files
+after the user Submits the same split-upload form.
+"""
+
+from __future__ import annotations
+
 import asyncio
-import json
+import io
 import logging
-import os
 from typing import Annotated, Any, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
-from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
-from llama_cloud.types.configuration_response import ExtractV2Parameters
+from llama_cloud.types.beta.extracted_data import ExtractedData
 from pydantic import BaseModel, Field
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .clients import agent_name, get_llama_cloud_client, project_id
-from .config import (
-    EXTRACTED_DATA_COLLECTION,
-    ClassifyConfig,
-    ExtractConfig,
-    ParseConfig,
-    SplitConfig,
-    get_extraction_schema,
-)
-from .document_parts import overlay_split_documents, page_parts_from_split, parts_on_page
-from .vector_store import (
-    build_filing_chunk_text,
-    build_page_records,
-    pinecone_enabled,
-    upsert_records,
-)
+from .bundle_slicer import slice_bundle_pdf
+from .clients import get_llama_cloud_client, project_id
+from .config import ClassifyConfig, SplitConfig
+from .document_parts import page_parts_from_split, parts_on_page
+from .split_upload import SplitUploadError, type_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +39,7 @@ PARSE_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 PARSE_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 SPLIT_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 SPLIT_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
+FILE_DOWNLOAD_TIMEOUT_S = 120.0
 
 
 class FileEvent(StartEvent):
@@ -52,8 +49,6 @@ class FileEvent(StartEvent):
 
 class ParsedEvent(Event):
     """Parse finished (or soft-failed); extraction may proceed."""
-
-    pass
 
 
 class FileClassifiedEvent(Event):
@@ -79,17 +74,30 @@ class ExtractedInvalidEvent(Event):
     data: ExtractedData[dict[str, Any]]
 
 
-class ExtractionState(BaseModel):
+class PreparedPart(BaseModel):
+    slot_id: str
+    file_id: str
+    file_hash: str | None = None
+    filename: str | None = None
+
+
+class BundlePrepared(StopEvent):
+    filing_type: str
+    parts: list[PreparedPart] = Field(default_factory=list)
+    slot_pages: dict[str, str] = Field(default_factory=dict)
+
+
+class PrepareState(BaseModel):
     file_id: str | None = None
     filename: str | None = None
     file_hash: str | None = None
-    extract_job_id: str | None = None
-    parse_job_id: str | None = None
     filing_type: str | None = None
     classification_confidence: float | None = None
     classification_reasoning: str | None = None
-    # page_number (1-indexed) -> markdown text
-    page_markdown: dict[int, str] = Field(default_factory=dict)
+
+
+# Kept for callers that still type the old bundled-extract store.
+ExtractionState = PrepareState
 
 
 def _job_status(payload: Any) -> str:
@@ -169,11 +177,7 @@ def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
     dumped["categories"] = [
         {
             "name": item["name"],
-            **(
-                {"description": item["description"]}
-                if item.get("description")
-                else {}
-            ),
+            **({"description": item["description"]} if item.get("description") else {}),
         }
         for item in dumped.get("categories") or []
         if isinstance(item, dict) and item.get("name")
@@ -188,7 +192,7 @@ async def _split_page_parts(
     split_config: SplitConfig | None,
     filename: str | None = None,
 ) -> dict[int, list[str]]:
-    """Label pages with Split categories. Required when indexing Pinecone."""
+    """Label pages with Split categories."""
     label = filename or "filing"
     if split_config is None:
         raise RuntimeError(
@@ -249,164 +253,44 @@ def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
     return pages
 
 
+async def _download_file_bytes(client: AsyncLlamaCloud, file_id: str) -> bytes:
+    """Download original PDF bytes via the files content presigned URL."""
+    presigned = await client.files.content(file_id, project_id=project_id)
+    url = getattr(presigned, "url", None)
+    if not url:
+        raise RuntimeError(f"No download URL for file {file_id}")
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(str(url))
+        response.raise_for_status()
+        return response.content
+
+
+async def _upload_slot_pdf(
+    client: AsyncLlamaCloud,
+    *,
+    filename: str,
+    pdf_bytes: bytes,
+) -> str:
+    uploaded = await client.files.create(
+        file=(filename, io.BytesIO(pdf_bytes), "application/pdf"),
+        purpose="extract",
+        project_id=project_id,
+    )
+    file_id = getattr(uploaded, "id", None)
+    if not file_id:
+        raise RuntimeError(f"Upload of {filename} did not return a file id")
+    return str(file_id)
+
+
 class ProcessFileWorkflow(Workflow):
-    """Parse, classify, and extract a JubeeX filing."""
-
-    @step()
-    async def parse_file(
-        self,
-        event: FileEvent,
-        ctx: Context[ExtractionState],
-        llama_cloud_client: Annotated[
-            AsyncLlamaCloud, Resource(get_llama_cloud_client)
-        ],
-        parse_config: Annotated[
-            ParseConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="parse",
-                label="Parse Settings",
-                description="LlamaParse settings for JubeeX filings",
-            ),
-        ],
-    ) -> ParsedEvent:
-        """Parse the PDF to markdown pages for Pinecone indexing."""
-        file_id = event.file_id
-        logger.info(f"Running file {file_id}")
-
-        try:
-            file_metadata = None
-            async for f in llama_cloud_client.files.list(file_ids=[file_id]):
-                file_metadata = f
-                break
-            if file_metadata is None:
-                raise ValueError(f"File {file_id} not found")
-            filename = file_metadata.name
-        except Exception as e:
-            logger.error(f"Error fetching file metadata {file_id}: {e}", exc_info=True)
-            ctx.write_event_to_stream(
-                Status(
-                    level="error",
-                    message=f"Error fetching file metadata {file_id}: {e}",
-                )
-            )
-            raise e
-
-        file_hash = event.file_hash or file_metadata.external_file_id
-        async with ctx.store.edit_state() as state:
-            state.file_id = file_id
-            state.filename = filename
-            state.file_hash = file_hash
-
-        # --- Parse ---
-        page_markdown: dict[int, str] = {}
-        parse_job_id: str | None = None
-        try:
-            ctx.write_event_to_stream(
-                Status(level="info", message=f"Parsing file {filename}")
-            )
-            create_kwargs: dict[str, Any] = {
-                "file_id": file_id,
-                "project_id": project_id,
-            }
-            if parse_config.configuration_id:
-                create_kwargs["configuration_id"] = parse_config.configuration_id
-            else:
-                create_kwargs.update(
-                    parse_config.model_dump(
-                        exclude={"configuration_id", "product_type"},
-                        exclude_none=True,
-                    )
-                )
-
-            parse_job = await llama_cloud_client.parsing.create(**create_kwargs)
-            parse_job_id = parse_job.id
-            await _wait_for_parse(llama_cloud_client, parse_job.id)
-            parse_result = await llama_cloud_client.parsing.get(
-                parse_job.id,
-                expand=["markdown"],
-                project_id=project_id,
-            )
-
-            page_markdown = _extract_page_markdown(parse_result)
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=f"Parsed {len(page_markdown)} page(s) from {filename}",
-                )
-            )
-        except Exception as e:
-            logger.error(f"Parse failed for {filename}: {e}", exc_info=True)
-            ctx.write_event_to_stream(
-                Status(
-                    level="warning",
-                    message=f"Parse failed; continuing without page text: {e}",
-                )
-            )
-
-        async with ctx.store.edit_state() as state:
-            state.parse_job_id = parse_job_id
-            state.page_markdown = page_markdown
-
-        return ParsedEvent()
-
-    @step()
-    async def start_extraction(
-        self,
-        event: ParsedEvent,
-        ctx: Context[ExtractionState],
-        llama_cloud_client: Annotated[
-            AsyncLlamaCloud, Resource(get_llama_cloud_client)
-        ],
-        extract_config: Annotated[
-            ExtractConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="extract-jubeex",
-                label="Default Extraction Settings",
-                description="Extraction config for JubeeX core filing record",
-            ),
-        ],
-    ) -> ExtractJobStartedEvent:
-        """Start extraction job for the document."""
-        state = await ctx.store.get_state()
-        if state.file_id is None or state.filename is None:
-            raise ValueError("File ID or filename is not set")
-
-        logger.info(f"Extracting data from file {state.filename}")
-        ctx.write_event_to_stream(
-            Status(
-                level="info",
-                message=f"Extracting data from file {state.filename}",
-            )
-        )
-
-        if extract_config.configuration_id:
-            extract_job = await llama_cloud_client.extract.create(
-                file_input=state.file_id,
-                configuration_id=extract_config.configuration_id,
-                project_id=project_id,
-            )
-        else:
-            extract_job = await llama_cloud_client.extract.create(
-                file_input=state.file_id,
-                configuration=extract_config.model_dump(
-                    exclude={"configuration_id", "product_type"},
-                    exclude_none=True,
-                ),
-                project_id=project_id,
-            )
-
-        async with ctx.store.edit_state() as state:
-            state.extract_job_id = extract_job.id
-
-        return ExtractJobStartedEvent()
+    """Classify and split a bundled PDF into catalog-slot files. Does not extract."""
 
     @step()
     async def classify_file(
         self,
-        event: ExtractJobStartedEvent,
-        ctx: Context[ExtractionState],
+        event: FileEvent,
+        ctx: Context[PrepareState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
@@ -420,103 +304,108 @@ class ProcessFileWorkflow(Workflow):
             ),
         ],
     ) -> FileClassifiedEvent:
-        """Classify the JubeeX filing document type in parallel with extraction."""
-        state = await ctx.store.get_state()
-        if state.file_id is None or state.filename is None:
-            raise ValueError("File ID or filename is not set")
+        file_id = event.file_id
+        logger.info("Preparing bundled file %s", file_id)
 
         try:
-            logger.info(f"Classifying file {state.filename}")
-            ctx.write_event_to_stream(
-                Status(level="info", message=f"Classifying file {state.filename}")
+            file_metadata = await llama_cloud_client.files.retrieve(
+                file_id, project_id=project_id
             )
-
-            if classify_config.configuration_id:
-                classify_job = await llama_cloud_client.classify.create(
-                    file_input=state.file_id,
-                    configuration_id=classify_config.configuration_id,
-                    project_id=project_id,
-                )
-            else:
-                classify_job = await llama_cloud_client.classify.create(
-                    file_input=state.file_id,
-                    configuration=classify_config.model_dump(
-                        exclude={"configuration_id", "product_type"},
-                        exclude_none=True,
-                    ),
-                    project_id=project_id,
-                )
-
-            completed = await _wait_for_classify(llama_cloud_client, classify_job.id)
-
-            if completed.status == "FAILED" or completed.result is None:
-                logger.warning(
-                    f"Classification did not resolve for {state.filename}, defaulting to 'other'"
-                )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message="Classification uncertain, using default schema",
-                    )
-                )
-                async with ctx.store.edit_state() as state:
-                    state.filing_type = "other"
-                return FileClassifiedEvent(filing_type="other")
-
-            result = completed.result
-            filing_type = result.type or "other"
-            confidence = result.confidence
-            reasoning = result.reasoning
-
-            logger.info(
-                f"Classified {state.filename} as {filing_type} "
-                f"(confidence: {confidence}, reasoning: {reasoning})"
-            )
+            filename = file_metadata.name
+        except Exception as exc:
+            logger.exception("Error fetching file metadata %s", file_id)
             ctx.write_event_to_stream(
                 Status(
-                    level="info",
-                    message=f"Classified as {filing_type} JubeeX filing",
+                    level="error",
+                    message=f"Error fetching file metadata {file_id}: {exc}",
                 )
             )
+            raise
 
-            async with ctx.store.edit_state() as state:
-                state.filing_type = filing_type
-                state.classification_confidence = confidence
-                state.classification_reasoning = reasoning
+        file_hash = event.file_hash or file_metadata.external_file_id
+        async with ctx.store.edit_state() as state:
+            state.file_id = file_id
+            state.filename = filename
+            state.file_hash = file_hash
 
-            return FileClassifiedEvent(
-                filing_type=filing_type,
-                confidence=confidence,
-                reasoning=reasoning,
+        ctx.write_event_to_stream(
+            Status(level="info", message=f"Classifying file {filename}")
+        )
+        if classify_config.configuration_id:
+            classify_job = await llama_cloud_client.classify.create(
+                file_input=file_id,
+                configuration_id=classify_config.configuration_id,
+                project_id=project_id,
+            )
+        else:
+            classify_job = await llama_cloud_client.classify.create(
+                file_input=file_id,
+                configuration=classify_config.model_dump(
+                    exclude={"configuration_id", "product_type"},
+                    exclude_none=True,
+                ),
+                project_id=project_id,
             )
 
-        except Exception as e:
-            logger.error(f"Error classifying file {state.filename}: {e}", exc_info=True)
-            ctx.write_event_to_stream(
-                Status(
-                    level="warning",
-                    message=f"Classification failed, using default schema: {e}",
-                )
+        completed = await _wait_for_classify(llama_cloud_client, classify_job.id)
+        if completed.status == "FAILED" or completed.result is None:
+            message = f"Classification did not resolve for {filename}"
+            ctx.write_event_to_stream(Status(level="error", message=message))
+            raise RuntimeError(message)
+
+        result = completed.result
+        filing_type = result.type or "other"
+        confidence = result.confidence
+        reasoning = result.reasoning
+
+        try:
+            catalog = type_catalog(filing_type)
+        except SplitUploadError:
+            message = (
+                f"No split-upload catalog for {filing_type}; "
+                "cannot prepare sliced files"
             )
-            async with ctx.store.edit_state() as state:
-                state.filing_type = "other"
-            return FileClassifiedEvent(filing_type="other")
+            ctx.write_event_to_stream(Status(level="error", message=message))
+            raise RuntimeError(message)
+
+        logger.info(
+            "Classified %s as %s (confidence: %s, reasoning: %s)",
+            filename,
+            filing_type,
+            confidence,
+            reasoning,
+        )
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=f"Classified as {filing_type} JubeeX filing",
+            )
+        )
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=f"Using {catalog.label} document slots",
+            )
+        )
+
+        async with ctx.store.edit_state() as state:
+            state.filing_type = filing_type
+            state.classification_confidence = confidence
+            state.classification_reasoning = reasoning
+
+        return FileClassifiedEvent(
+            filing_type=filing_type,
+            confidence=confidence,
+            reasoning=reasoning,
+        )
 
     @step()
-    async def complete_extraction(
+    async def prepare_bundle(
         self,
         event: FileClassifiedEvent,
-        ctx: Context[ExtractionState],
+        ctx: Context[PrepareState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
-        ],
-        extract_jubeex: Annotated[
-            ExtractConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="extract-jubeex",
-                label="JubeeX Extraction",
-            ),
         ],
         split_config: Annotated[
             SplitConfig,
@@ -527,276 +416,83 @@ class ProcessFileWorkflow(Workflow):
                 description="LlamaSplit categories for petition bundle parts",
             ),
         ],
-    ) -> StopEvent:
-        """Wait for extraction, save Agent Data, and index pages in Pinecone."""
+    ) -> BundlePrepared:
         state = await ctx.store.get_state()
-        if state.extract_job_id is None:
-            raise ValueError("Job ID cannot be null when waiting for its completion")
+        if not state.file_id or not state.filename:
+            raise ValueError("File ID or filename is not set")
+        filing_type = event.filing_type or state.filing_type
+        if not filing_type:
+            raise ValueError("Filing type is not set")
+        catalog = type_catalog(filing_type)
 
-        filing_type = state.filing_type or "other"
-        extract_config = extract_jubeex
-
-        await llama_cloud_client.extract.wait_for_completion(
-            state.extract_job_id,
-            project_id=project_id,
+        ctx.write_event_to_stream(
+            Status(level="info", message=f"Splitting file {state.filename}")
         )
-        job = await llama_cloud_client.extract.get(
-            state.extract_job_id,
-            expand=["extract_metadata"],
-            project_id=project_id,
+        page_parts = await _split_page_parts(
+            llama_cloud_client,
+            file_id=state.file_id,
+            split_config=split_config,
+            filename=state.filename,
         )
-
-        extracted_event: ExtractedEvent | ExtractedInvalidEvent
-        try:
-            logger.info(
-                f"Extracted data: {json.dumps(job.model_dump(mode='json'), indent=2, default=str)}"
-            )
-            if extract_config.configuration_id:
-                config_resp = await llama_cloud_client.configurations.retrieve(
-                    extract_config.configuration_id,
-                    project_id=project_id,
-                )
-                params = config_resp.parameters
-                if not isinstance(params, ExtractV2Parameters):
-                    raise ValueError(
-                        f"Configuration {extract_config.configuration_id} is not extract_v2"
-                    )
-                schema_class = get_extraction_schema(
-                    dict(params.data_schema),
-                    discriminator_field=DISCRIMINATOR_FIELD,
-                    discriminator_value=filing_type,
-                )
-            else:
-                schema_class = get_extraction_schema(
-                    dict(extract_config.data_schema),
-                    discriminator_field=DISCRIMINATOR_FIELD,
-                    discriminator_value=filing_type,
-                )
-
-            data = ExtractedData.from_extract_job(
-                job=job,
-                schema=schema_class,
-                file_name=state.filename,
-                file_id=state.file_id,
-                file_hash=state.file_hash,
-            )
-            if data.metadata is None:
-                data.metadata = {}
-            data.metadata["classification"] = filing_type
-            data.metadata["classification_confidence"] = state.classification_confidence
-            data.metadata["classification_reasoning"] = state.classification_reasoning
-            data.metadata["parse_job_id"] = state.parse_job_id
-            data.metadata["page_count"] = len(state.page_markdown or {})
-            extracted_event = ExtractedEvent(data=data)
-        except InvalidExtractionData as e:
-            logger.error(f"Error validating extracted data: {e}", exc_info=True)
-            extracted_event = ExtractedInvalidEvent(data=e.invalid_item)
-        except Exception as e:
-            logger.error(
-                f"Error extracting data from file {state.filename}: {e}", exc_info=True
-            )
-            ctx.write_event_to_stream(
-                Status(
-                    level="error",
-                    message=f"Error extracting data from file {state.filename}: {e}",
-                )
-            )
-            raise e
-
-        ctx.write_event_to_stream(extracted_event)
-
-        extracted_data = extracted_event.data
-        page_parts: dict[int, list[str]] = {}
-        if pinecone_enabled():
-            try:
-                logger.info(f"Splitting file {state.filename}")
-                ctx.write_event_to_stream(
-                    Status(level="info", message=f"Splitting file {state.filename}")
-                )
-                page_parts = await _split_page_parts(
-                    llama_cloud_client,
-                    file_id=state.file_id,
-                    split_config=split_config,
-                    filename=state.filename,
-                )
-                parts = sorted(
-                    {
-                        name
-                        for names in page_parts.values()
-                        for name in parts_on_page(names)
-                    }
-                )
-                logger.info(
-                    f"Split {state.filename} into {len(page_parts)} page(s) "
-                    f"(parts: {', '.join(parts)})"
-                )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Split {state.filename} into {len(parts)} document part(s)"
-                        ),
-                    )
-                )
-            except Exception as e:
-                logger.error(
-                    f"Error splitting file {state.filename}: {e}",
-                    exc_info=True,
-                )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="error",
-                        message=f"Error splitting file {state.filename}: {e}",
-                    )
-                )
-                raise
-
-        data_dict = extracted_data.model_dump()
-        if page_parts:
-            overlay_split_documents(data_dict, page_parts)
-        if extracted_data.file_hash is not None:
-            delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
-                deployment_name=agent_name or "_public",
-                collection=EXTRACTED_DATA_COLLECTION,
-                filter={
-                    "file_hash": {
-                        "eq": extracted_data.file_hash,
-                    },
-                },
-            )
-            if delete_result.deleted_count > 0:
-                logger.info(
-                    f"Removed {delete_result.deleted_count} existing record(s) "
-                    f"for file {extracted_data.file_name}"
-                )
-        item = await llama_cloud_client.beta.agent_data.create(
-            data=data_dict,
-            deployment_name=agent_name or "_public",
-            collection=EXTRACTED_DATA_COLLECTION,
-        )
-        logger.info(
-            f"Recorded extracted data for file {extracted_data.file_name or ''}"
+        parts_found = sorted(
+            {name for names in page_parts.values() for name in parts_on_page(names)}
         )
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=f"Recorded extracted data for file {extracted_data.file_name or ''}",
+                message=(
+                    f"Split {state.filename} into {len(parts_found)} document part(s)"
+                ),
             )
         )
 
-        if pinecone_enabled():
-            try:
-                base_id = extracted_data.file_hash or state.file_id or str(item.id)
-                shared_meta = {
-                    "agent_data_id": str(item.id),
-                    "file_id": state.file_id,
-                    "file_name": state.filename,
-                    "file_hash": extracted_data.file_hash,
-                    "petition_type": filing_type,
-                }
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=f"Downloading {state.filename} to slice labeled pages",
+            )
+        )
+        pdf_bytes = await _download_file_bytes(llama_cloud_client, state.file_id)
+        slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    f"Sliced {len(slices)} document file(s) from {state.filename}"
+                ),
+            )
+        )
 
-                logger.info(
-                    "[Pinecone] Indexing start for %s (base_id=%s, pages=%s)",
-                    state.filename,
-                    base_id,
-                    len(state.page_markdown or {}),
+        prepared: list[PreparedPart] = []
+        slot_pages: dict[str, str] = {}
+        for item in slices:
+            file_id = await _upload_slot_pdf(
+                llama_cloud_client,
+                filename=item.filename,
+                pdf_bytes=item.pdf_bytes,
+            )
+            prepared.append(
+                PreparedPart(
+                    slot_id=item.slot_id,
+                    file_id=file_id,
+                    file_hash=item.file_hash,
+                    filename=item.filename,
                 )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Indexing vectors in Pinecone for {state.filename} "
-                            f"(integrated embeddings)"
-                        ),
-                    )
+            )
+            if item.page_span:
+                slot_pages[item.slot_id] = item.page_span
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Ready {item.label} ({item.page_span or 'pages unknown'})",
                 )
-
-                pinecone_items: list[dict[str, Any]] = []
-
-                # 1) Filing-level summary vector
-                filing_payload = getattr(extracted_data, "data", None)
-                summary_text = build_filing_chunk_text(
-                    filing_payload,
-                    filename=state.filename,
-                    filing_type=filing_type,
-                )
-                if summary_text.strip():
-                    pinecone_items.append(
-                        {
-                            "record_id": f"{base_id}:summary",
-                            "chunk_text": summary_text,
-                            "metadata": {
-                                **shared_meta,
-                                "chunk_kind": "summary",
-                            },
-                        }
-                    )
-                    logger.info(
-                        "[Pinecone] Built summary chunk (%s chars)",
-                        len(summary_text),
-                    )
-                else:
-                    logger.warning("[Pinecone] Summary chunk empty; skipping")
-
-                # 2) Page vectors from Parse markdown
-                page_records = build_page_records(
-                    base_id=base_id,
-                    page_markdown=state.page_markdown,
-                    metadata=shared_meta,
-                    page_parts=page_parts,
-                )
-                pinecone_items.extend(page_records)
-                logger.info(
-                    "[Pinecone] Built %s page chunk(s) from %s page(s)",
-                    len(page_records),
-                    len(state.page_markdown or {}),
-                )
-                if not page_records:
-                    logger.warning(
-                        "[Pinecone] No page markdown available — "
-                        "only summary vector will be indexed"
-                    )
-
-                count = upsert_records(pinecone_items)
-                logger.info(
-                    "[Pinecone] Indexed %s vector(s) for %s "
-                    "(1 summary + %s page chunks)",
-                    count,
-                    state.filename,
-                    len(page_records),
-                )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Indexed {count} vector(s) in Pinecone "
-                            f"(summary + {len(page_records)} page chunks)"
-                        ),
-                    )
-                )
-            except Exception as e:
-                logger.error(
-                    "[Pinecone] Indexing failed for %s: %s",
-                    state.filename,
-                    e,
-                    exc_info=True,
-                )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=f"Pinecone indexing failed: {e}",
-                    )
-                )
-        else:
-            logger.info(
-                "[Pinecone] Skipped indexing for %s "
-                "(VECTOR_BACKEND=%s, PINECONE_API_KEY set=%s)",
-                state.filename,
-                os.getenv("VECTOR_BACKEND") or "pinecone",
-                bool(os.getenv("PINECONE_API_KEY")),
             )
 
-        return StopEvent(result=item.id)
+        return BundlePrepared(
+            filing_type=catalog.filing_type,
+            parts=prepared,
+            slot_pages=slot_pages,
+        )
 
 
 workflow = ProcessFileWorkflow(timeout=None)
@@ -811,7 +507,7 @@ if __name__ == "__main__":
 
     async def main():
         file = await get_llama_cloud_client().files.create(
-            file=Path("test.pdf").open("rb"),
+            file=Path("test.pdf"),
             purpose="extract",
         )
         await workflow.run(start_event=FileEvent(file_id=file.id))

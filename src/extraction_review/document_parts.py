@@ -238,13 +238,18 @@ def _contiguous_groups(pages: list[int]) -> list[tuple[int, int]]:
     return groups
 
 
-def _format_page_span(pages: list[int]) -> str:
+def format_page_span(pages: list[int]) -> str:
+    """Human-readable page span, e.g. 'p. 3' or 'pp. 3–5, 9'."""
     groups = _contiguous_groups(pages)
     if not groups:
         return ""
     bits = [str(a) if a == b else f"{a}–{b}" for a, b in groups]
     prefix = "p. " if sum(b - a + 1 for a, b in groups) == 1 else "pp. "
     return prefix + ", ".join(bits)
+
+
+def _format_page_span(pages: list[int]) -> str:
+    return format_page_span(pages)
 
 
 # Later pages labelled the same part after this many skipped pages are a

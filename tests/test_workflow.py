@@ -4,7 +4,7 @@ import pytest
 from extraction_review.config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES
 from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataResponse
 from extraction_review.metadata_workflow import workflow as metadata_workflow
-from extraction_review.process_file import FileEvent, Status
+from extraction_review.process_file import BundlePrepared, FileEvent, Status
 from extraction_review.process_file import workflow as process_file_workflow
 from llama_cloud_fake import FakeLlamaCloudServer
 from workflows.events import StartEvent
@@ -25,8 +25,8 @@ async def test_process_file_workflow(
     except Exception:
         result = None
     assert result is not None
-    assert isinstance(result, str)
-    assert len(result) == 7
+    assert isinstance(result, BundlePrepared)
+    assert result.filing_type
 
 
 @pytest.mark.asyncio
