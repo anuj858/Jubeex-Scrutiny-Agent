@@ -20,14 +20,23 @@ from extraction_review.document_parts import (
     slice_record_for_defect,
 )
 from extraction_review.scrutiny.schema import (
+    Coverage,
     DefectResponse,
+    EvidenceRef,
+    apply_evidence_pages,
     apply_retrieval_policy,
     apply_status_policy,
+    apply_undetermined_policy,
+    build_finding,
 )
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import (
     build_defect_prompt,
     build_system_prompt,
+    finding_title,
+    filing_location,
+    readable_location_source,
+    validated_reasoning,
 )
 from extraction_review.scrutiny.rules import defects_for_filing_type, get_catalogue
 from extraction_review.vector_store import build_page_records
@@ -325,7 +334,7 @@ def test_keep_nearby_scores_drops_far_neighbours() -> None:
 def test_max_chunks_is_tighter_for_single_point_defects() -> None:
     catalogue = get_catalogue()
     assert max_chunks_for_defect(catalogue.defect("D004"), ceiling=12) == 3
-    assert max_chunks_for_defect(catalogue.defect("D005"), ceiling=12) == 3
+    assert max_chunks_for_defect(catalogue.defect("D005"), ceiling=12) == 6
     assert max_chunks_for_defect(catalogue.defect("D006"), ceiling=12) == 6
 
 
@@ -355,6 +364,20 @@ def test_pinecone_queries_follow_where_to_look() -> None:
     named = parts_named_in_where_to_look(catalogue.defect("D013"))
     assert "Vakalatnama + PoA/BR" in named
     assert named[0] in {"Petition", "Vakalatnama + PoA/BR"}
+    assert "Memo of Parties" not in named
+
+
+def test_landmarks_are_not_required_parts() -> None:
+    catalogue = get_catalogue()
+    d003 = parts_named_in_where_to_look(catalogue.defect("D003"))
+    assert d003 == ["Advocate's Checklist"]
+    d005 = parts_named_in_where_to_look(catalogue.defect("D005"))
+    assert "Advocate's Checklist" in d005
+    assert "Vakalatnama + PoA/BR" in d005
+    queries = pinecone_queries_for_defect(catalogue.defect("D003"))
+    assert any("Checklist" in q or "Check List" in q for q in queries)
+    assert all("Cover Page" not in q for q in queries)
+    assert all("Office Report on Limitation" not in q for q in queries)
 
 
 def test_split_nicknames_come_from_config_not_a_python_map() -> None:
@@ -447,10 +470,17 @@ def test_user_prompt_carries_category_and_sliced_record() -> None:
     assert "Filing Formalities" not in system
     assert "Advocate's Check List" not in system
     assert "retrieval gap" in system.lower()
-    assert "stamps, signatures, seals" in system
+    assert "stamps, seals, signatures" in system.lower() or "stamp" in system.lower()
+    assert "those checks alone are not_determined" not in system.lower()
+    assert "evidence.page" in system.lower() or "excerpt header" in system.lower()
     prompt_l = prompt.lower()
     assert "needs_review" in prompt_l
-    assert "stamp" in prompt_l
+    assert "return defect_found" in prompt_l
+    assert "rulebook locator" in prompt_l
+    assert "not pages of this filing" in prompt_l
+    assert "place in that source" not in prompt_l
+    assert "[page 1 — advocate's checklist]" in prompt_l
+    assert "excerpt header" in prompt_l
 
 
 def test_low_confidence_defect_becomes_needs_review() -> None:
@@ -505,3 +535,310 @@ def test_missing_vakalatnama_excerpts_are_needs_review_not_defect() -> None:
     ]
     gated = apply_retrieval_policy(catalogue.defect("D013"), response, affidavit_only)
     assert gated.status == "needs_review"
+
+
+def test_checklist_defect_does_not_need_cover_page_excerpts() -> None:
+    catalogue = get_catalogue()
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.95,
+        summary="The Advocate's Check List is not in the prescribed format.",
+        reasoning="The checklist excerpt has no YES/NO/N.A. rows.",
+        evidence=[
+            EvidenceRef(page=2, quote="ADVOCATE'S CHECK LIST without YES/NO columns")
+        ],
+        suggested_fix="File the checklist in the prescribed format.",
+        fix_rationale="Required by the rule.",
+    )
+    checklist_only = [
+        {
+            "record_id": "cl1",
+            "chunk_kind": "page",
+            "page": 2,
+            "document_part": "Advocate's Checklist",
+            "text": "ADVOCATE'S CHECK LIST without YES/NO columns",
+        }
+    ]
+    gated = apply_retrieval_policy(catalogue.defect("D003"), response, checklist_only)
+    assert gated.status == "defect_found"
+
+
+def test_evidence_pages_snap_to_excerpt_not_rulebook() -> None:
+    chunks = [
+        {
+            "record_id": "cl1",
+            "chunk_kind": "page",
+            "page": 2,
+            "page_end": 2,
+            "document_part": "Advocate's Checklist",
+            "text": "ADVOCATE'S CHECK LIST\n1. Whether the petition is in Form 28  YES",
+        }
+    ]
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.9,
+        summary="Checklist format is incomplete.",
+        reasoning="Quoted the checklist excerpt.",
+        evidence=[
+            EvidenceRef(
+                page=5,
+                quote="Whether the petition is in Form 28  YES",
+            )
+        ],
+        suggested_fix="File the prescribed checklist.",
+        fix_rationale="Required.",
+    )
+    grounded = apply_evidence_pages(response, chunks)
+    assert grounded.evidence[0].page == 2
+
+
+def test_invented_evidence_page_becomes_null() -> None:
+    chunks = [
+        {
+            "record_id": "cl1",
+            "chunk_kind": "page",
+            "page": 2,
+            "document_part": "Advocate's Checklist",
+            "text": "ADVOCATE'S CHECK LIST",
+        }
+    ]
+    response = DefectResponse(
+        check_id="D003",
+        status="needs_review",
+        confidence=0.7,
+        summary="Unclear.",
+        reasoning="The quote is not in the excerpts.",
+        evidence=[EvidenceRef(page=19, quote="something that was never retrieved")],
+        suggested_fix=None,
+        fix_rationale=None,
+    )
+    grounded = apply_evidence_pages(response, chunks)
+    assert grounded.evidence[0].page is None
+    assert grounded.evidence[0].quote == "something that was never retrieved"
+
+
+def test_missing_stamp_is_defect_not_undetermined() -> None:
+    catalogue = get_catalogue()
+    vakalatnama = [
+        {
+            "record_id": "vak1",
+            "chunk_kind": "page",
+            "page": 50,
+            "document_part": "Vakalatnama + PoA/BR",
+            "text": "VAKALATNAMA I appoint the advocate",
+        }
+    ]
+    timid = DefectResponse(
+        check_id="D040",
+        status="not_determined",
+        confidence=0.4,
+        summary="Cannot see whether a welfare stamp is affixed.",
+        reasoning="Stamps are visual.",
+        evidence=[],
+        suggested_fix=None,
+        fix_rationale=None,
+    )
+    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, vakalatnama)
+    assert gated.status == "defect_found"
+
+
+def test_undetermined_without_the_part_stays_needs_review() -> None:
+    catalogue = get_catalogue()
+    petition_only = [
+        {
+            "record_id": "p1",
+            "chunk_kind": "page",
+            "page": 10,
+            "document_part": "Petition",
+            "text": "SPECIAL LEAVE PETITION",
+        }
+    ]
+    timid = DefectResponse(
+        check_id="D040",
+        status="not_determined",
+        confidence=0.5,
+        summary="No Vakalatnama excerpts.",
+        reasoning="Cannot see a stamp.",
+        evidence=[],
+        suggested_fix=None,
+        fix_rationale=None,
+    )
+    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, petition_only)
+    assert gated.status == "needs_review"
+
+
+def test_visual_defects_query_stamp_and_margin_cues() -> None:
+    catalogue = get_catalogue()
+    stamp_queries = pinecone_queries_for_defect(catalogue.defect("D040"))
+    assert any("stamp" in q.lower() for q in stamp_queries)
+    margin_queries = pinecone_queries_for_defect(catalogue.defect("D006"))
+    assert any("margin" in q.lower() or "a4" in q.lower() for q in margin_queries)
+
+
+def test_visual_prompt_treats_missing_marks_as_defects() -> None:
+    catalogue = get_catalogue()
+    system = build_system_prompt(catalogue, "SLP_CIVIL")
+    assert "not not_determined" in system.lower() or "defect_found, not not_determined" in system.lower()
+    prompt = build_defect_prompt(
+        catalogue.defect("D006"),
+        record={"petition_type": "SLP_CIVIL"},
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": 12,
+                "document_part": "Petition",
+                "text": "1. The petitioner states",
+            }
+        ],
+        catalogue=catalogue,
+    )
+    prompt_l = prompt.lower()
+    assert "stamp, seal, signature, paper size, margin" in prompt_l
+    assert "use not_determined only for stamps" not in prompt_l
+
+
+def test_finding_title_is_short_and_named_for_the_defect() -> None:
+    catalogue = get_catalogue()
+    d003 = finding_title(catalogue.defect("D003"), catalogue)
+    assert d003.startswith("Advocate's Check List:")
+    assert "checklist" in d003.lower() or "check list" in d003.lower()
+    assert len(d003) < len(catalogue.defect("D003").defect) + 40
+    d004 = finding_title(catalogue.defect("D004"), catalogue)
+    assert d004.startswith("Listing Proforma:")
+    assert "6" in d004 and "7" in d004
+
+
+def test_location_source_is_official_not_filing_page() -> None:
+    catalogue = get_catalogue()
+    loc = readable_location_source(catalogue.defect("D003"), catalogue)
+    assert loc.startswith("Official source (not a page of this filing):")
+    assert "SCI_CHECKLIST_2025" not in loc
+    assert "Check List" in loc or "checklist" in loc.lower()
+    assert "page 5" in loc.lower()
+
+
+def test_filing_location_states_page_or_page_missing() -> None:
+    assert (
+        filing_location(
+            evidence_pages=[2],
+            reviewed_pages=[2],
+            document_parts=["Advocate's Checklist"],
+        )
+        == "Filing page 2 — Advocate's Checklist."
+    )
+    assert (
+        filing_location(evidence_pages=[], reviewed_pages=[3, 4], document_parts=[])
+        == "Filing page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
+    )
+    assert (
+        filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
+        == "Filing page missing — no page was identified in the retrieved excerpts."
+    )
+
+
+def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D040")
+    rewritten = validated_reasoning(
+        defect,
+        "Stamps are visual. See SCI_CHECKLIST_2025 Page 5 of the PDF.",
+        "defect_found",
+        pages=[50],
+        evidence_pages=[50],
+    )
+    assert "SCI_CHECKLIST" not in rewritten
+    assert "welfare stamp" in rewritten.lower() or "vakalatnama" in rewritten.lower()
+    assert "filing page 50" in rewritten.lower()
+
+
+def test_build_finding_validates_title_reasoning_and_source() -> None:
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D003")
+    finding = build_finding(
+        defect,
+        DefectResponse(
+            check_id="D003",
+            status="defect_found",
+            confidence=0.9,
+            summary="Cannot see the checklist.",
+            reasoning="Visual / not_determined. Page 5 of the PDF SCI_CHECKLIST_2025.",
+            evidence=[EvidenceRef(page=2, quote="ADVOCATE'S CHECK LIST")],
+            suggested_fix="File the prescribed checklist.",
+            fix_rationale="Required.",
+        ),
+        evidence_ids=["cl1"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[2]),
+        chunks=[
+            {
+                "record_id": "cl1",
+                "chunk_kind": "page",
+                "page": 2,
+                "document_part": "Advocate's Checklist",
+                "text": "ADVOCATE'S CHECK LIST",
+            }
+        ],
+    )
+    assert finding.title.startswith("Advocate's Check List:")
+    assert finding.location == "Filing page 2 — Advocate's Checklist."
+    assert finding.location_source and finding.location_source.startswith(
+        "Official source (not a page of this filing):"
+    )
+    assert "SCI_CHECKLIST_2025" not in (finding.reasoning or "")
+    assert "checklist" in finding.reasoning.lower() or "check list" in finding.reasoning.lower()
+    assert "filing page 2" in finding.reasoning.lower()
+
+
+def test_build_finding_says_page_missing_without_citation() -> None:
+    catalogue = get_catalogue()
+    finding = build_finding(
+        catalogue.defect("D003"),
+        DefectResponse(
+            check_id="D003",
+            status="needs_review",
+            confidence=0.7,
+            summary="The checklist excerpts are incomplete.",
+            reasoning="The Advocate's Check List excerpts do not identify a page.",
+            evidence=[EvidenceRef(page=None, quote="ADVOCATE'S CHECK LIST")],
+            suggested_fix=None,
+            fix_rationale=None,
+        ),
+        evidence_ids=[],
+        coverage=Coverage(chunks_reviewed=0, pages_reviewed=[]),
+    )
+    assert finding.location == (
+        "Filing page missing — no page was identified in the retrieved excerpts."
+    )
+
+
+def test_build_finding_uses_chunk_pages_when_citation_has_none() -> None:
+    catalogue = get_catalogue()
+    finding = build_finding(
+        catalogue.defect("D003"),
+        DefectResponse(
+            check_id="D003",
+            status="needs_review",
+            confidence=0.7,
+            summary="The checklist excerpts are incomplete.",
+            reasoning="The Advocate's Check List excerpts do not identify a page.",
+            evidence=[EvidenceRef(page=None, quote="ADVOCATE'S CHECK LIST")],
+            suggested_fix=None,
+            fix_rationale=None,
+        ),
+        evidence_ids=["cl1"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[]),
+        chunks=[
+            {
+                "record_id": "cl1",
+                "chunk_kind": "page",
+                "page": 4,
+                "document_part": "Advocate's Checklist",
+                "text": "ADVOCATE'S CHECK LIST",
+            }
+        ],
+    )
+    assert finding.location == (
+        "Filing page missing — no page number on the citation. "
+        "Excerpts were reviewed on page 4 — Advocate's Checklist."
+    )

@@ -8,13 +8,21 @@ Python so they stay aligned with the defect API payload.
 from __future__ import annotations
 
 import os
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .rules import Defect
+from .rules import Defect, get_catalogue
+from .prompts import (
+    finding_title,
+    filing_location,
+    readable_location_source,
+    validated_reasoning,
+    validated_summary,
+)
 from ..document_parts import missing_required_parts
 
 ResultState = Literal[
@@ -31,7 +39,14 @@ class EvidenceRef(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    page: int | None = Field(description="1-indexed page number, or null if unknown")
+    page: int | None = Field(
+        description=(
+            "1-indexed PDF page of THIS filing, copied from the excerpt "
+            "header such as '[Page 12 — Petition]'. Null if the quote is "
+            "not from an excerpt. Never use a page number from Authority "
+            "or location_source (those are official-rulebook locators)."
+        )
+    )
     quote: str = Field(description="Verbatim excerpt supporting the finding")
 
 
@@ -43,8 +58,20 @@ class DefectResponse(BaseModel):
     check_id: str
     status: ResultState
     confidence: float = Field(ge=0.0, le=1.0)
-    summary: str = Field(description="One or two sentences covering the whole defect")
-    reasoning: str = Field(description="Why this status was chosen, citing evidence")
+    summary: str = Field(
+        description=(
+            "One plain sentence about this filing and this one defect. "
+            "Do not copy the Standard paragraph or mention rulebook pages."
+        )
+    )
+    reasoning: str = Field(
+        description=(
+            "2-4 plain sentences: which filing part and excerpt page were "
+            "checked, and why this defect's requirement is met or not. "
+            "Quote the filing. Do not mention location_source, handbook "
+            "PDF pages, or catalogue check ids."
+        )
+    )
     evidence: list[EvidenceRef]
     suggested_fix: str | None = Field(
         description="What should be there instead. Null unless status is defect_found."
@@ -161,6 +188,13 @@ class DefectFinding(BaseModel):
     fix_rationale: str | None = None
     how_to_cure: list[str] = Field(default_factory=list)
     applicable_rule: str | None = None
+    location: str | None = Field(
+        default=None,
+        description=(
+            "Petition PDF page for this finding, e.g. 'Filing page 12 — "
+            "Vakalatnama.' If the page is unknown: 'Filing page missing — …'."
+        ),
+    )
     location_source: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
@@ -178,6 +212,87 @@ def review_confidence_threshold() -> float:
     except ValueError:
         value = DEFAULT_REVIEW_CONFIDENCE
     return min(1.0, max(0.0, value))
+
+
+def _norm_quote(text: str) -> str:
+    collapsed = re.sub(r"\s+", " ", (text or "").replace("…", " ").replace("...", " "))
+    return collapsed.strip().lower()
+
+
+def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
+    pages: set[int] = set()
+    for chunk in chunks:
+        if chunk.get("chunk_kind") == "summary":
+            continue
+        start = chunk.get("page")
+        if start is None:
+            continue
+        try:
+            start_i = int(start)
+        except (TypeError, ValueError):
+            continue
+        end = chunk.get("page_end")
+        try:
+            end_i = int(end) if end is not None else start_i
+        except (TypeError, ValueError):
+            end_i = start_i
+        if end_i < start_i:
+            end_i = start_i
+        pages.update(range(start_i, end_i + 1))
+    return pages
+
+
+def _quote_in_text(quote: str, text: str) -> bool:
+    needle = _norm_quote(quote)
+    haystack = _norm_quote(text)
+    if not needle or not haystack:
+        return False
+    if needle in haystack:
+        return True
+    snippet = needle[:80].strip()
+    return len(snippet) >= 12 and snippet in haystack
+
+
+def _chunk_page_for_quote(quote: str, chunk: dict[str, Any]) -> int | None:
+    text = chunk.get("text") or ""
+    if not _quote_in_text(quote, text):
+        return None
+    start = chunk.get("page")
+    try:
+        return int(start) if start is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_evidence_pages(
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
+    """Snap evidence.page to retrieved filing pages; drop rulebook pages."""
+    if not response.evidence:
+        return response
+    allowed = _retrieved_pages(chunks)
+    page_chunks = [c for c in chunks if c.get("chunk_kind") != "summary"]
+    grounded: list[EvidenceRef] = []
+    for ref in response.evidence:
+        quote = ref.quote or ""
+        matched = [
+            page
+            for chunk in page_chunks
+            if (page := _chunk_page_for_quote(quote, chunk)) is not None
+        ]
+        if matched:
+            if ref.page in matched:
+                page = ref.page
+            else:
+                page = matched[0]
+        elif ref.page is not None and ref.page in allowed:
+            page = ref.page
+        else:
+            page = None
+        grounded.append(EvidenceRef(page=page, quote=quote))
+    response.evidence = grounded
+    return response
 
 
 def apply_status_policy(response: DefectResponse) -> DefectResponse:
@@ -201,6 +316,27 @@ def apply_retrieval_policy(
     missing = missing_required_parts(defect, chunks)
     if missing:
         response.status = "needs_review"
+    return response
+
+
+def apply_undetermined_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
+    """Stamps, seals, margins and other marks are defects when not found.
+
+    `not_determined` is reserved for checks that never ran. If the model
+    used it because a visual/layout requirement was hard to see, treat
+    absence in the inspected part as a defect. If that part was never
+    retrieved, keep needs_review.
+    """
+    if response.status != "not_determined":
+        return response
+    if missing_required_parts(defect, chunks):
+        response.status = "needs_review"
+        return response
+    response.status = "defect_found"
     return response
 
 
@@ -232,6 +368,53 @@ class ScrutinyReport(BaseModel):
     stopped_early: bool = False
 
 
+def _pages_from_chunks(chunks: list[dict[str, Any]] | None) -> list[int]:
+    pages: list[int] = []
+    for chunk in chunks or []:
+        if chunk.get("chunk_kind") == "summary":
+            continue
+        try:
+            page = chunk.get("page")
+            if page is None:
+                continue
+            page_i = int(page)
+        except (TypeError, ValueError):
+            continue
+        if page_i not in pages:
+            pages.append(page_i)
+    return pages
+
+
+def _parts_for_pages(
+    chunks: list[dict[str, Any]] | None, pages: list[int]
+) -> list[str]:
+    if not chunks or not pages:
+        names: list[str] = []
+        for chunk in chunks or []:
+            if chunk.get("chunk_kind") == "summary":
+                continue
+            name = str(chunk.get("document_part") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+    wanted = set(pages)
+    names: list[str] = []
+    for chunk in chunks:
+        if chunk.get("chunk_kind") == "summary":
+            continue
+        page = chunk.get("page")
+        try:
+            page_i = int(page) if page is not None else None
+        except (TypeError, ValueError):
+            page_i = None
+        if page_i not in wanted:
+            continue
+        name = str(chunk.get("document_part") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def build_finding(
     defect: Defect,
     response: DefectResponse,
@@ -239,25 +422,48 @@ def build_finding(
     evidence_ids: list[str],
     coverage: Coverage,
     usage: LlmUsage | None = None,
+    chunks: list[dict[str, Any]] | None = None,
 ) -> DefectFinding:
     suggested = response.suggested_fix if response.status == "defect_found" else None
     rationale = response.fix_rationale if response.status == "defect_found" else None
+    catalogue = get_catalogue()
+    evidence_pages = [ref.page for ref in response.evidence if ref.page is not None]
+    pages = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
+    parts = _parts_for_pages(chunks, evidence_pages or pages)
+    location = filing_location(
+        evidence_pages=evidence_pages,
+        reviewed_pages=pages,
+        document_parts=parts,
+    )
     return DefectFinding(
         check_id=defect.check_id,
         serial_no=defect.serial_no,
-        title=defect.title,
+        title=finding_title(defect, catalogue),
         main_category=defect.main_category,
         special_category=defect.special_category,
         status=response.status,
-        summary=response.summary,
+        summary=validated_summary(
+            defect,
+            response.summary,
+            response.status,
+            pages=pages,
+            evidence_pages=evidence_pages,
+        ),
         confidence=response.confidence,
-        reasoning=response.reasoning,
+        reasoning=validated_reasoning(
+            defect,
+            response.reasoning,
+            response.status,
+            pages=pages,
+            evidence_pages=evidence_pages,
+        ),
         evidence=response.evidence,
         suggested_fix=suggested,
         fix_rationale=rationale,
         how_to_cure=list(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
-        location_source=defect.location_source,
+        location=location,
+        location_source=readable_location_source(defect, catalogue),
         evidence_ids=evidence_ids,
         coverage=coverage,
         usage=usage,
@@ -268,22 +474,24 @@ def failed_finding(
     defect: Defect, error: str, usage: LlmUsage | None = None
 ) -> DefectFinding:
     """Placeholder when a defect could not be evaluated at all."""
+    catalogue = get_catalogue()
     return DefectFinding(
         check_id=defect.check_id,
         serial_no=defect.serial_no,
-        title=defect.title,
+        title=finding_title(defect, catalogue),
         main_category=defect.main_category,
         special_category=defect.special_category,
         status="not_determined",
         summary=f"This check could not be completed: {error}",
         confidence=0.0,
-        reasoning=f"Check did not run: {error}",
+        reasoning=f"This check did not run: {error}",
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
         how_to_cure=list(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
-        location_source=defect.location_source,
+        location="Filing page missing — this check did not run.",
+        location_source=readable_location_source(defect, catalogue),
         error=error,
         usage=usage,
     )

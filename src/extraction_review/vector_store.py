@@ -547,6 +547,7 @@ def search_filing_chunks(
     file_hash: str,
     top_k: int | None = None,
     chunk_kind: str | None = None,
+    document_part: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return Pinecone hits for one filing. No LLM packing or score cutoff.
 
@@ -567,6 +568,8 @@ def search_filing_chunks(
     metadata_filter: dict[str, Any] = {"file_hash": {"$eq": file_hash}}
     if chunk_kind:
         metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
+    if document_part:
+        metadata_filter["document_part"] = {"$eq": document_part}
 
     result = index.search(
         namespace=pinecone_namespace,
@@ -601,12 +604,16 @@ def gather_filing_evidence(
     file_hash: str,
     top_k: int | None = None,
     max_chunks: int | None = None,
+    document_parts: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Union the results of several queries into one deduped evidence set.
 
     Absence-type criteria ("the declaration is missing") are sensitive to
     retrieval recall, so each where-to-look / trigger-word query contributes
     rather than relying on a single top-k over the whole defect.
+
+    `document_parts` runs an extra search per Split label filtered to that
+    metadata value so Cover Page hits cannot stand in for the Checklist.
     """
     if top_k is None:
         top_k = scrutiny_top_k()
@@ -614,21 +621,43 @@ def gather_filing_evidence(
         max_chunks = scrutiny_max_chunks()
 
     seen: dict[str, dict[str, Any]] = {}
+
+    def _absorb(chunk: dict[str, Any]) -> None:
+        record_id = chunk.get("record_id")
+        if not record_id:
+            return
+        existing = seen.get(record_id)
+        if existing is None or (chunk.get("score") or 0) > (
+            existing.get("score") or 0
+        ):
+            seen[record_id] = chunk
+
     for query in queries:
         if not query or not query.strip():
             continue
         try:
             for chunk in search_filing_chunks(query, file_hash=file_hash, top_k=top_k):
-                record_id = chunk.get("record_id")
-                if not record_id:
-                    continue
-                existing = seen.get(record_id)
-                if existing is None or (chunk.get("score") or 0) > (
-                    existing.get("score") or 0
-                ):
-                    seen[record_id] = chunk
+                _absorb(chunk)
         except Exception as e:
             logger.warning("[Pinecone] Query failed (%s): %s", query[:60], e)
+
+    for part in document_parts or []:
+        label = (part or "").strip()
+        if not label:
+            continue
+        try:
+            for chunk in search_filing_chunks(
+                label,
+                file_hash=file_hash,
+                top_k=top_k,
+                chunk_kind="page",
+                document_part=label,
+            ):
+                _absorb(chunk)
+        except Exception as e:
+            logger.warning(
+                "[Pinecone] Part-filtered query failed (%s): %s", label[:60], e
+            )
 
     chunks = sorted(
         seen.values(),
@@ -640,7 +669,25 @@ def gather_filing_evidence(
             len(chunks),
             max_chunks,
         )
-        chunks = chunks[:max_chunks]
+        reserved: list[dict[str, Any]] = []
+        used: set[str] = set()
+        for part in document_parts or []:
+            want = (part or "").strip().lower()
+            if not want:
+                continue
+            for chunk in chunks:
+                record_id = str(chunk.get("record_id") or "")
+                if not record_id or record_id in used:
+                    continue
+                label = str(chunk.get("document_part") or "").strip().lower()
+                if label != want:
+                    continue
+                reserved.append(chunk)
+                used.add(record_id)
+                break
+        leftover = max(0, max_chunks - len(reserved))
+        rest = [c for c in chunks if str(c.get("record_id") or "") not in used]
+        chunks = reserved + rest[:leftover]
 
     # Present page chunks in reading order; keep the summary chunk first.
     summary = [c for c in chunks if c.get("chunk_kind") == "summary"]
