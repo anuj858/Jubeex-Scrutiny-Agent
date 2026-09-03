@@ -83,7 +83,3 @@ SCRUTINY_MAX_CHUNKS = "12"
 process-file = "extraction_review.process_file:workflow"
 metadata = "extraction_review.metadata_workflow:workflow"
 scrutiny-check = "extraction_review.scrutiny_workflow:workflow"
-
-[tool.llamadeploy.ui]
-directory = "ui"
-

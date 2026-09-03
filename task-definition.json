@@ -1,0 +1,21 @@
+{
+  "family": "jubeex-scrutiny-agent",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "jubeex-scrutiny-agent",
+      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 4501,
+          "protocol": "tcp"
+        }
+      ]
+    }
+  ]
+}
