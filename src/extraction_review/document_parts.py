@@ -40,7 +40,7 @@ PagePartMap = dict[int, list[str]]
 
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "filing_formalities": ("Petition", "Affidavit"),
-    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR", "Vakalatnama"),
+    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama"),
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": (
         "Petition",
@@ -54,7 +54,6 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "dates_execution": (
         "Petition",
         "Affidavit",
-        "Vakalatnama + PoA/BR",
         "Vakalatnama",
         "PoA/BR",
     ),
@@ -62,8 +61,8 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "limitation": ("Office Report on Limitation", "Petition"),
     # Affidavit is the inspect target; Petition is only retrieval context.
     "affidavit": ("Affidavit", "Petition"),
-    "translations": ("Annexures", "Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
-    "vakalatnama": ("Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
+    "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
+    "vakalatnama": ("Vakalatnama", "PoA/BR"),
     "memo_of_appearance": ("Memo of Appearance",),
     "list_of_dates": ("List of Dates & Events", "Synopsis"),
 }
@@ -82,6 +81,10 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
         "impugned judgment",
         "impugned order",
         "judgment under challenge",
+    ),
+    "PoA/BR": (
+        "power of attorney",
+        "board resolution",
     ),
 }
 
@@ -248,6 +251,17 @@ def normalize_part_name(name: str | None) -> str:
     return text
 
 
+# Old LlamaSplit jobs used one label for both documents. Expand it so
+# bundled pages fill the Vakalatnama and PoA/BR slots, not a combined slot.
+_LEGACY_COMBINED_VAKALATNAMA = "vakalatnama + poa/br"
+
+
+def _expanded_parts(part: str) -> tuple[str, ...]:
+    if _fold(part) == _LEGACY_COMBINED_VAKALATNAMA:
+        return ("Vakalatnama", "PoA/BR")
+    return (part,)
+
+
 def parts_on_page(value: Any) -> list[str]:
     """Normalise a page's Split labels to a unique list."""
     if not value:
@@ -261,8 +275,9 @@ def parts_on_page(value: Any) -> list[str]:
     found: list[str] = []
     for name in names:
         part = normalize_part_name(name)
-        if part and part not in found:
-            found.append(part)
+        for item in _expanded_parts(part):
+            if item and item not in found:
+                found.append(item)
     return found
 
 
@@ -399,17 +414,15 @@ def page_parts_from_split(job: Any) -> PagePartMap:
         else:
             category = getattr(segment, "category", None)
             pages = getattr(segment, "pages", None) or []
-        part = normalize_part_name(str(category or ""))
-        if not part:
-            continue
-        for page in pages:
-            try:
-                number = int(page)
-            except (TypeError, ValueError):
-                continue
-            current = mapping.setdefault(number, [])
-            if part not in current:
-                current.append(part)
+        for part in parts_on_page(category):
+            for page in pages:
+                try:
+                    number = int(page)
+                except (TypeError, ValueError):
+                    continue
+                current = mapping.setdefault(number, [])
+                if part not in current:
+                    current.append(part)
     return collapse_repeated_split_pages(mapping)
 
 

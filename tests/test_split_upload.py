@@ -201,29 +201,49 @@ def test_synopsis_slot_stamps_both_document_parts() -> None:
     ]
 
 
-def test_extract_pack_excludes_annexures_and_appendix() -> None:
+def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     catalog = type_catalog("SLP_CIVIL")
     page_markdown = {
-        1: "listing columns",
-        2: "petition grounds",
-        3: "annexure p-1",
-        4: "appendix text",
+        1: "cover caption",
+        2: "index listing",
+        3: "listing columns",
+        4: "petition grounds",
+        5: "annexure p-1",
+        6: "appendix text",
     }
     page_parts = {
-        1: ["Listing Proforma"],
-        2: ["Petition"],
-        3: ["Annexures"],
-        4: ["Appendix"],
+        1: ["Cover Page"],
+        2: ["Index"],
+        3: ["Listing Proforma"],
+        4: ["Petition"],
+        5: ["Annexures"],
+        6: ["Appendix"],
     }
     pack = build_extract_pack_markdown(
         page_markdown, page_parts, extract_source_parts(catalog)
     )
+    assert "[Cover Page]" in pack
     assert "[Listing Proforma]" in pack
-    assert "[Petition]" in pack
+    assert "[Petition]" not in pack
+    assert "[Index]" not in pack
+    assert "petition grounds" not in pack
+    assert "index listing" not in pack
     assert "annexure p-1" not in pack
     assert "appendix text" not in pack
     assert "Annexures" not in pack
     assert "Appendix" not in pack
+
+
+def test_extract_source_parts_omit_index_and_petition() -> None:
+    parts = extract_source_parts(type_catalog("SLP_CIVIL"))
+    assert parts == {
+        "Cover Page",
+        "Listing Proforma",
+        "Memo of Parties",
+        "Impugned Order",
+        "Vakalatnama",
+        "AOR's Declaration",
+    }
 
 
 def test_inject_where_to_look_appends_field_guidance() -> None:
@@ -371,7 +391,7 @@ def _blank_pdf(page_count: int) -> bytes:
     return buffer.getvalue()
 
 
-def test_combined_vakalatnama_maps_to_vakalatnama_slot_only() -> None:
+def test_combined_vakalatnama_maps_to_vakalatnama_and_poa_slots() -> None:
     catalog = type_catalog("SLP_CIVIL")
     pages = map_slot_pages(
         catalog,
@@ -381,8 +401,23 @@ def test_combined_vakalatnama_maps_to_vakalatnama_slot_only() -> None:
         },
     )
     assert pages["vakalatnama"] == [50]
+    assert pages["poa_br"] == [50, 51]
+
+
+def test_vakalatnama_and_poa_are_separate_slots() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    slots = {slot.id: slot for slot in catalog.slots}
+    assert slots["vakalatnama"].parts == ("Vakalatnama",)
+    assert slots["poa_br"].parts == ("PoA/BR",)
+    assert all("+" not in part for slot in catalog.slots for part in slot.parts)
+    criminal = type_catalog("SLP_CRIMINAL")
+    assert {slot.id for slot in criminal.slots} >= {"vakalatnama", "poa_br"}
+    pages = map_slot_pages(
+        catalog,
+        {50: ["Vakalatnama"], 51: ["PoA/BR"]},
+    )
+    assert pages["vakalatnama"] == [50]
     assert pages["poa_br"] == [51]
-    assert 50 not in pages.get("poa_br", [])
 
 
 def test_mixed_label_page_is_copied_into_both_slots() -> None:

@@ -16,8 +16,6 @@ from pypdf import PdfReader, PdfWriter
 from .document_parts import format_page_span, parts_on_page
 from .split_upload import UploadSlot, UploadTypeCatalog
 
-COMBINED_VAKALATNAMA = "Vakalatnama + PoA/BR"
-
 
 @dataclass(frozen=True)
 class SlotSlice:
@@ -32,13 +30,7 @@ class SlotSlice:
 
 def _labels_match_slot(labels: Sequence[str], slot: UploadSlot) -> bool:
     slot_parts = set(slot.parts)
-    for name in labels:
-        if name in slot_parts:
-            return True
-        # Combined LlamaSplit label fills the Vakalatnama slot only.
-        if name == COMBINED_VAKALATNAMA and "Vakalatnama" in slot_parts:
-            return True
-    return False
+    return any(name in slot_parts for name in labels)
 
 
 def map_slot_pages(
@@ -48,8 +40,8 @@ def map_slot_pages(
     """Map 1-indexed LlamaSplit pages onto catalog slots.
 
     A page is copied into every matching slot. Pages that match no slot are
-    dropped. Combined ``Vakalatnama + PoA/BR`` maps to the Vakalatnama slot
-    only.
+    dropped. A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
+    expanded to Vakalatnama and PoA/BR so both slots receive those pages.
     """
     pages_by_slot: dict[str, list[int]] = {slot.id: [] for slot in catalog.slots}
     for page, raw_labels in page_parts.items():

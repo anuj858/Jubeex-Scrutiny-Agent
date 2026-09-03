@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.1",
-  "catalogue_version": "2.2.0",
+  "catalogue_version": "2.2.1",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -428,7 +428,7 @@
         "Advocate's Checklist"
       ],
       "context_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "exclude_parts": [
         "Index"
@@ -1020,7 +1020,7 @@
         "Where the power of attorney is in a vernacular or foreign language, check the annexures accompanying it for the corresponding English translated copy. Any portion other than English has to be translated and appended along with the original power of attorney."
       ],
       "inspect_parts": [
-        "Petition",
+        "PoA/BR",
         "Annexures"
       ],
       "context_parts": [],
@@ -1085,7 +1085,7 @@
       "inspect_parts": [
         "Cover Page",
         "Petition",
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1118,7 +1118,7 @@
         "Check below the executant's signature for the Advocate's endorsement accepting the Vakalatnama and identifying the executant."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1147,7 +1147,7 @@
         "Check for the Advocate-on-Record's certification that the Vakalatnama was executed in his presence, or an endorsement that he has satisfied himself about its due execution before a notary or advocate."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1174,7 +1174,7 @@
         "Check the top or margin of the Vakalatnama for the affixed Advocates' Welfare Fund stamp."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1205,9 +1205,11 @@
       "inspect_parts": [
         "Petition",
         "Memo of Parties",
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
-      "context_parts": [],
+      "context_parts": [
+        "PoA/BR"
+      ],
       "exclude_parts": [
         "Index"
       ],
@@ -1235,7 +1237,7 @@
         "Check below or adjacent to the signature for either the seal of the entity or the name and designation or authority of the executant."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1265,7 +1267,7 @@
         "Check below each signature that the person's name is stated in brackets for identification of the signature."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR",
+        "Vakalatnama",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -1294,7 +1296,7 @@
         "Check the execution or signature portion for an express statement that the Vakalatnama is being executed on behalf of both persons, identifying both."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1323,10 +1325,12 @@
         "Check the Index for an annexure containing the power of attorney, and verify that a copy is actually filed and corresponds to the person or entity on whose behalf the Vakalatnama is executed."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR",
+        "Vakalatnama",
         "Index"
       ],
-      "context_parts": [],
+      "context_parts": [
+        "PoA/BR"
+      ],
       "exclude_parts": [],
       "how_to_cure": [
         "Option for Jubeex to auto-edit the Vakalatnama to disclose execution by the power of attorney holder.",
@@ -1351,7 +1355,7 @@
         "Examine the signature portion and verify that the signatures are affixed seriatim, with the serial number or name of each person in brackets against or near the respective signature, so that each person can be individually identified."
       ],
       "inspect_parts": [
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1579,7 +1583,7 @@
       "inspect_parts": [
         "Petition",
         "Affidavit",
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1668,7 +1672,7 @@
       ],
       "inspect_parts": [
         "Petition",
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1796,7 +1800,7 @@
         "Petition",
         "Memo of Parties",
         "Memo of Appearance",
-        "Vakalatnama + PoA/BR"
+        "Vakalatnama"
       ],
       "exclude_parts": [
         "Index"
@@ -2068,7 +2072,8 @@
         "Annexures"
       ],
       "context_parts": [
-        "Vakalatnama + PoA/BR",
+        "PoA/BR",
+        "Vakalatnama",
         "Petition"
       ],
       "exclude_parts": [

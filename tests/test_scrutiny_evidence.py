@@ -19,6 +19,7 @@ from extraction_review.document_parts import (
     required_parts_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
+    split_part_names,
 )
 from extraction_review.scrutiny.schema import (
     Coverage,
@@ -113,15 +114,15 @@ def test_one_page_can_carry_two_document_parts() -> None:
         result=SimpleNamespace(
             segments=[
                 SimpleNamespace(category="Affidavit", pages=[50]),
-                SimpleNamespace(category="Vakalatnama + PoA/BR", pages=[50]),
+                SimpleNamespace(category="Vakalatnama", pages=[50]),
             ]
         )
     )
     mapping = page_parts_from_split(job)
-    assert mapping[50] == ["Affidavit", "Vakalatnama + PoA/BR"]
+    assert mapping[50] == ["Affidavit", "Vakalatnama"]
     docs = documents_from_page_parts(mapping)
     assert "Affidavit (p. 50)" in docs["items"]
-    assert "Vakalatnama + PoA/BR (p. 50)" in docs["items"]
+    assert "Vakalatnama (p. 50)" in docs["items"]
     records = build_page_records(
         base_id="abc",
         page_markdown={50: "affidavit then vakalatnama on the same leaf"},
@@ -129,8 +130,22 @@ def test_one_page_can_carry_two_document_parts() -> None:
     )
     assert records[0]["metadata"]["document_part"] == [
         "Affidavit",
-        "Vakalatnama + PoA/BR",
+        "Vakalatnama",
     ]
+
+
+def test_legacy_combined_vakalatnama_expands_to_separate_parts() -> None:
+    job = SimpleNamespace(
+        result=SimpleNamespace(
+            segments=[
+                SimpleNamespace(category="Vakalatnama + PoA/BR", pages=[50]),
+            ]
+        )
+    )
+    mapping = page_parts_from_split(job)
+    assert mapping[50] == ["Vakalatnama", "PoA/BR"]
+    docs = documents_from_page_parts(mapping)
+    assert docs["items"] == ["Vakalatnama (p. 50)", "PoA/BR (p. 50)"]
 
 
 @pytest.mark.asyncio
@@ -348,7 +363,7 @@ def test_select_chunks_keeps_vakalatnama_for_date_check() -> None:
             "record_id": "vak",
             "chunk_kind": "page",
             "page": 50,
-            "document_part": "Vakalatnama + PoA/BR",
+            "document_part": "Vakalatnama",
             "text": "VAKALATNAMA Dated this on 10th day of April 2026",
             "score": 0.2,
         },
@@ -366,12 +381,12 @@ def test_documents_from_split_include_page_spans() -> None:
         {
             3: "Office Report on Limitation",
             4: "Office Report on Limitation",
-            50: "Vakalatnama + PoA/BR",
+            50: "Vakalatnama",
         }
     )
     assert docs["count"] == 2
     assert docs["items"][0] == "Office Report on Limitation (pp. 3–4)"
-    assert docs["items"][1] == "Vakalatnama + PoA/BR (p. 50)"
+    assert docs["items"][1] == "Vakalatnama (p. 50)"
 
 
 def test_overlay_split_documents_replaces_index_slang() -> None:
@@ -383,9 +398,9 @@ def test_overlay_split_documents_replaces_index_slang() -> None:
             },
         }
     }
-    overlay_split_documents(payload, {50: "Vakalatnama + PoA/BR"})
+    overlay_split_documents(payload, {50: "Vakalatnama"})
     items = payload["data"]["filing_summary"]["documents"]["items"]
-    assert items == ["Vakalatnama + PoA/BR (p. 50)"]
+    assert items == ["Vakalatnama (p. 50)"]
     assert "V/A" not in items
 
 
@@ -432,8 +447,8 @@ def test_pinecone_queries_follow_where_to_look() -> None:
     d017 = pinecone_queries_for_defect(catalogue.defect("D017"))
     assert any("Office Report on Limitation" in q for q in d017)
     named = parts_named_in_where_to_look(catalogue.defect("D013"))
-    assert "Vakalatnama + PoA/BR" in named
-    assert named[0] in {"Petition", "Vakalatnama + PoA/BR"}
+    assert "Vakalatnama" in named
+    assert named[0] in {"Petition", "Vakalatnama"}
     assert "Memo of Parties" not in named
 
 
@@ -443,7 +458,7 @@ def test_landmarks_are_not_required_parts() -> None:
     assert d003 == ["Advocate's Checklist"]
     d005 = parts_named_in_where_to_look(catalogue.defect("D005"))
     assert "Advocate's Checklist" in d005
-    assert "Vakalatnama + PoA/BR" in d005
+    assert "Vakalatnama" in d005
     queries = pinecone_queries_for_defect(catalogue.defect("D003"))
     assert any("Checklist" in q or "Check List" in q for q in queries)
     assert all("Cover Page" not in q for q in queries)
@@ -451,7 +466,7 @@ def test_landmarks_are_not_required_parts() -> None:
 
 
 def test_split_nicknames_come_from_config_not_a_python_map() -> None:
-    assert "Vakalatnama + PoA/BR" in parts_named_in_text("Go to the V/A")
+    assert "Vakalatnama" in parts_named_in_text("Go to the V/A")
     assert "Office Report on Limitation" in parts_named_in_text(
         "Go to the O/R on Limitation"
     )
@@ -696,7 +711,7 @@ def test_missing_stamp_is_defect_not_undetermined() -> None:
             "record_id": "vak1",
             "chunk_kind": "page",
             "page": 50,
-            "document_part": "Vakalatnama + PoA/BR",
+            "document_part": "Vakalatnama",
             "text": "VAKALATNAMA I appoint the advocate",
         }
     ]
@@ -889,7 +904,8 @@ def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     assert "AOR's Declaration" in d057
     assert "Advocate's Checklist" in d057
     assert "Listing Proforma" in d057
-    assert "Vakalatnama + PoA/BR" not in d057
+    assert "Vakalatnama" not in d057
+    assert "PoA/BR" not in d057
     assert "Annexures" not in d057
     named = parts_named_in_where_to_look(catalogue.defect("D057"))
     assert "AOR's Declaration" in named
@@ -913,6 +929,15 @@ def test_catalogue_inspect_parts_are_source_of_truth() -> None:
     # Every General/Global row should author inspect_parts.
     missing = [d.check_id for d in catalogue.defects if not d.inspect_parts]
     assert missing == []
+
+    known = set(split_part_names())
+    assert "Vakalatnama" in known
+    assert "PoA/BR" in known
+    assert "Vakalatnama + PoA/BR" not in known
+    for defect in catalogue.defects:
+        for part in defect.inspect_parts + defect.context_parts + (defect.exclude_parts or []):
+            assert part in known, f"{defect.check_id} uses unknown part {part!r}"
+            assert part != "Vakalatnama + PoA/BR", defect.check_id
 
 
 def test_index_listing_is_not_affidavit_evidence() -> None:

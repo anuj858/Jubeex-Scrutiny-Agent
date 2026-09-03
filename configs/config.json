@@ -69,7 +69,7 @@
         },
         "special_category": {
           "title": "Special Category",
-          "description": "Special category of the petition (e.g. Appeal (Armed Forces) ,Civil Appeal with High Court Certificate , Indigent Person, Criminal Appeal with High Court Certificate, SLP (Civil) with respect to Motor Vehicles Act, Jail Petition, Matters Involving / Pertaining to Minors, Demolition Matters, Eviction Matters, Bail Applications / Bail Matters, Tax Matters, PIL).",
+          "description": "Special category as printed on the Listing Proforma. Copy it verbatim. Leave null if none is printed. Do not pick a category from memory.",
           "anyOf": [
             {
               "type": "string"
@@ -128,7 +128,7 @@
                 },
                 "formatted_title": {
                   "title": "Formatted Title",
-                  "description": "A strictly formatted version of the cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. You MUST append 'And ors.' if there are multiple petitioners or multiple respondents.",
+                  "description": "Formatted cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. Append 'And ors.' only when the source text shows more than one petitioner or respondent. Do not invent extra parties.",
                   "anyOf": [
                     {
                       "type": "string"
@@ -1159,10 +1159,6 @@
         "description": "Power of Attorney or Board Resolution authorising the signatory. Distinct from the Vakalatnama."
       },
       {
-        "name": "Vakalatnama + PoA/BR",
-        "description": "Vakalatnama (V/A) and Power of Attorney or Board Resolution bound together as one document in a bundled PDF. Not Memo of Appearance."
-      },
-      {
         "name": "Court Fees",
         "description": "Court fee stamps or court fee endorsement pages."
       }
@@ -1173,28 +1169,16 @@
   },
   "split_upload": {
     "extract_field_sources": {
-      "court": ["Cover Page", "Petition", "Listing Proforma"],
-      "petition_type": ["Cover Page", "Petition", "Listing Proforma"],
+      "court": ["Cover Page"],
+      "petition_type": ["Cover Page"],
       "special_category": ["Listing Proforma"],
       "matter_classification": ["Listing Proforma"],
-      "cause_title": ["Memo of Parties", "Cover Page", "Petition"],
-      "petitioners": ["Memo of Parties", "Cover Page", "Petition"],
-      "respondents": ["Memo of Parties", "Cover Page", "Petition"],
-      "impugned_order": [
-        "Impugned Order",
-        "Office Report on Limitation",
-        "Listing Proforma",
-        "Petition"
-      ],
-      "advocate_on_record": [
-        "Vakalatnama",
-        "PoA/BR",
-        "Vakalatnama + PoA/BR",
-        "AOR's Declaration",
-        "Advocate's Checklist",
-        "Memo of Appearance"
-      ],
-      "filing_summary": ["Index", "Cover Page", "Listing Proforma"]
+      "cause_title": ["Memo of Parties", "Cover Page"],
+      "petitioners": ["Memo of Parties", "Cover Page"],
+      "respondents": ["Memo of Parties", "Cover Page"],
+      "impugned_order": ["Impugned Order"],
+      "advocate_on_record": ["Vakalatnama", "AOR's Declaration"],
+      "filing_summary": ["Cover Page", "Listing Proforma"]
     },
     "types": {
       "SLP_CIVIL": {
