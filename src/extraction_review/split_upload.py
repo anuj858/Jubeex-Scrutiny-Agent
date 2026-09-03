@@ -22,6 +22,7 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 EXTRACT_PACK_EXCLUDED_PARTS = frozenset({"Annexures", "Appendix"})
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
+UNDEFINED_SLOT_ID = "undefined"
 _PARSE_STUB_PREFIX = "(No parse text for"
 
 

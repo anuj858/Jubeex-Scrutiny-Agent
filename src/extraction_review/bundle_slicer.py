@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pypdf import PdfReader, PdfWriter
 
 from .document_parts import format_page_span, parts_on_page
-from .split_upload import UploadSlot, UploadTypeCatalog
+from .split_upload import UNDEFINED_SLOT_ID, UploadSlot, UploadTypeCatalog
 
 
 @dataclass(frozen=True)
@@ -39,8 +39,9 @@ def map_slot_pages(
 ) -> dict[str, list[int]]:
     """Map 1-indexed LlamaSplit pages onto catalog slots.
 
-    A page is copied into every matching slot. Pages that match no slot are
-    dropped. A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
+    A page is copied into every matching slot. Pages that match no known slot
+    are leftover; ``slice_bundle_pdf`` puts them in the optional Undefined
+    slot. A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
     expanded to Vakalatnama and PoA/BR so both slots receive those pages.
     """
     pages_by_slot: dict[str, list[int]] = {slot.id: [] for slot in catalog.slots}
@@ -53,11 +54,30 @@ def map_slot_pages(
         if not labels:
             continue
         for slot in catalog.slots:
+            if slot.id == UNDEFINED_SLOT_ID:
+                continue
             if _labels_match_slot(labels, slot):
                 pages_by_slot[slot.id].append(number)
     return {
         slot_id: sorted(set(pages)) for slot_id, pages in pages_by_slot.items() if pages
     }
+
+
+def leftover_pages(
+    page_count: int,
+    pages_by_slot: Mapping[str, Sequence[int]],
+) -> list[int]:
+    """1-indexed PDF pages that were not copied into any known document slot."""
+    assigned: set[int] = set()
+    for slot_id, pages in pages_by_slot.items():
+        if slot_id == UNDEFINED_SLOT_ID:
+            continue
+        for page in pages:
+            try:
+                assigned.add(int(page))
+            except (TypeError, ValueError):
+                continue
+    return [number for number in range(1, int(page_count) + 1) if number not in assigned]
 
 
 def extract_pdf_pages(pdf_bytes: bytes, pages: Sequence[int]) -> bytes:
@@ -86,8 +106,18 @@ def slice_bundle_pdf(
     catalog: UploadTypeCatalog,
     page_parts: Mapping[int, Sequence[str] | str | None],
 ) -> list[SlotSlice]:
-    """Cut the bundle into one PDF per catalog slot that LlamaSplit found."""
-    pages_by_slot = map_slot_pages(catalog, page_parts)
+    """Cut the bundle into one PDF per catalog slot that LlamaSplit found.
+
+    Pages that match no known slot are copied into Undefined when that slot
+    exists and leftover pages remain.
+    """
+    pages_by_slot = dict(map_slot_pages(catalog, page_parts))
+    if pdf_bytes and any(slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots):
+        leftover = leftover_pages(
+            len(PdfReader(io.BytesIO(pdf_bytes)).pages), pages_by_slot
+        )
+        if leftover:
+            pages_by_slot[UNDEFINED_SLOT_ID] = leftover
     slices: list[SlotSlice] = []
     for slot in catalog.slots:
         pages = pages_by_slot.get(slot.id) or []

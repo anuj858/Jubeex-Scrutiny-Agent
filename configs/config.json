@@ -1201,7 +1201,8 @@
           {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
           {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
           {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false},
-          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": false}
+          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": false},
+          {"id": "undefined", "label": "Undefined", "parts": ["Undefined"], "required": false}
         ]
       },
       "SLP_CRIMINAL": {
@@ -1223,7 +1224,8 @@
           {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": false},
           {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
           {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
-          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false}
+          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false},
+          {"id": "undefined", "label": "Undefined", "parts": ["Undefined"], "required": false}
         ]
       }
     }

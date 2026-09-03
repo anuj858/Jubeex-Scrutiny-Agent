@@ -11,6 +11,7 @@ from workflows.events import StartEvent
 
 from extraction_review.bundle_slicer import (
     extract_pdf_pages,
+    leftover_pages,
     map_slot_pages,
     slice_bundle_pdf,
 )
@@ -66,7 +67,8 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     criminal_ids = [slot["id"] for slot in catalog["SLP_CRIMINAL"]["slots"]]
     assert "court_fees" in civil_ids
     assert "court_fees" not in criminal_ids
-    assert civil_ids[-1] == "court_fees"
+    assert civil_ids[-1] == "undefined"
+    assert criminal_ids[-1] == "undefined"
     civil_required = {
         slot["id"]: slot["required"] for slot in catalog["SLP_CIVIL"]["slots"]
     }
@@ -75,10 +77,12 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     }
     assert civil_required["memo_of_parties"] is False
     assert civil_required["court_fees"] is False
+    assert civil_required["undefined"] is False
     assert civil_required["petition"] is True
     assert criminal_required["memo_of_parties"] is False
     assert criminal_required["vakalatnama"] is True
     assert criminal_required["poa_br"] is False
+    assert criminal_required["undefined"] is False
     assert "court_fees" not in criminal_required
     assert civil_required["vakalatnama"] is True
     assert civil_required["poa_br"] is False
@@ -94,6 +98,7 @@ def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     assert "memo_of_parties" not in present
     assert "court_fees" not in present
     assert "poa_br" not in present
+    assert "undefined" not in present
     assert "vakalatnama" in present
 
 
@@ -244,6 +249,7 @@ def test_extract_source_parts_omit_index_and_petition() -> None:
         "Vakalatnama",
         "AOR's Declaration",
     }
+    assert "Undefined" not in parts
 
 
 def test_inject_where_to_look_appends_field_guidance() -> None:
@@ -438,7 +444,7 @@ def test_mixed_label_page_is_copied_into_both_slots() -> None:
     assert len(PdfReader(BytesIO(slices["vakalatnama"].pdf_bytes)).pages) == 1
 
 
-def test_unmatched_pages_are_dropped() -> None:
+def test_unmatched_labels_are_not_mapped_to_known_slots() -> None:
     catalog = type_catalog("SLP_CIVIL")
     pages = map_slot_pages(
         catalog,
@@ -449,6 +455,40 @@ def test_unmatched_pages_are_dropped() -> None:
         },
     )
     assert pages == {"cover_page": [1]}
+
+
+def test_leftover_pages_go_to_undefined_slot() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            _blank_pdf(5),
+            catalog,
+            {
+                1: ["Cover Page"],
+                4: ["Caveat"],
+                5: ["Uncategorized"],
+            },
+        )
+    }
+    assert slices["cover_page"].pages == (1,)
+    assert slices["undefined"].pages == (2, 3, 4, 5)
+    assert slices["undefined"].filename == "Undefined.pdf"
+    assert slices["undefined"].page_span == "pp. 2–5"
+    assert len(PdfReader(BytesIO(slices["undefined"].pdf_bytes)).pages) == 4
+    assert leftover_pages(5, {"cover_page": [1]}) == [2, 3, 4, 5]
+
+
+def test_no_undefined_slice_when_every_page_has_a_slot() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    slices = slice_bundle_pdf(
+        _blank_pdf(2),
+        catalog,
+        {1: ["Cover Page"], 2: ["Petition"]},
+    )
+    by_id = {item.slot_id: item for item in slices}
+    assert "undefined" not in by_id
+    assert leftover_pages(2, {"cover_page": [1], "petition": [2]}) == []
 
 
 def test_synopsis_slot_unions_synopsis_and_list_of_dates() -> None:
