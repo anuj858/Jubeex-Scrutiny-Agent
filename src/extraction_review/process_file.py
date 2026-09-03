@@ -1,13 +1,17 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
 from typing import Annotated, Any, Literal
+from urllib.parse import unquote, urlparse
+from pathlib import PurePosixPath
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
 from llama_cloud.types.configuration_response import ExtractV2Parameters
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -46,8 +50,23 @@ SPLIT_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 
 
 class FileEvent(StartEvent):
-    file_id: str
+    """Start process-file from a LlamaCloud file id and/or a remote PDF URL.
+
+    Backend integration (no Llama UI): send ``file_url`` (e.g. S3 presigned URL).
+    The workflow downloads the PDF, uploads it to LlamaCloud, then continues.
+    ``file_id`` remains supported for the existing UI upload path.
+    """
+
+    file_id: str | None = None
+    file_url: str | None = None
     file_hash: str | None = None
+    filename: str | None = None
+
+    @model_validator(mode="after")
+    def _require_file_id_or_url(self) -> "FileEvent":
+        if not (self.file_id or "").strip() and not (self.file_url or "").strip():
+            raise ValueError("Provide file_id or file_url in start_event")
+        return self
 
 
 class ParsedEvent(Event):
@@ -95,6 +114,62 @@ class ExtractionState(BaseModel):
 def _job_status(payload: Any) -> str:
     job = getattr(payload, "job", payload)
     return str(getattr(job, "status", "") or "").upper()
+
+
+def _filename_from_url(url: str) -> str:
+    path = unquote(urlparse(url).path or "")
+    name = PurePosixPath(path).name
+    if name and "." in name:
+        return name
+    return "filing.pdf"
+
+
+async def ingest_remote_file(
+    client: AsyncLlamaCloud,
+    file_url: str,
+    *,
+    filename: str | None = None,
+    external_file_id: str | None = None,
+) -> tuple[str, str | None, str]:
+    """Download a remote PDF and upload it to LlamaCloud.
+
+    Returns ``(file_id, content_sha256, filename)``.
+    """
+    url = (file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+
+    name = (filename or "").strip() or _filename_from_url(url)
+    content_hash = hashlib.sha256(data).hexdigest()
+    create_kwargs: dict[str, Any] = {
+        "file": (name, data, "application/pdf"),
+        "purpose": "extract",
+    }
+    if project_id:
+        create_kwargs["project_id"] = project_id
+    if external_file_id:
+        create_kwargs["external_file_id"] = external_file_id
+
+    created = await client.files.create(**create_kwargs)
+    file_id = getattr(created, "id", None)
+    if not file_id:
+        raise RuntimeError("LlamaCloud files.create returned no id")
+    logger.info(
+        "[process-file] Ingested remote file url=%s → file_id=%s name=%s bytes=%s",
+        url[:120],
+        file_id,
+        name,
+        len(data),
+    )
+    return str(file_id), content_hash, name
 
 
 async def _wait_for_classify(client: AsyncLlamaCloud, job_id: str) -> Any:
@@ -271,7 +346,40 @@ class ProcessFileWorkflow(Workflow):
         ],
     ) -> ParsedEvent:
         """Parse the PDF to markdown pages for Pinecone indexing."""
-        file_id = event.file_id
+        file_id = (event.file_id or "").strip() or None
+        content_hash: str | None = None
+        filename = (event.filename or "").strip() or None
+
+        # Backend path: S3/HTTPS URL → LlamaCloud file, then same pipeline as UI.
+        if not file_id and event.file_url:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Downloading filing from file_url and uploading to LlamaCloud",
+                )
+            )
+            try:
+                file_id, content_hash, filename = await ingest_remote_file(
+                    llama_cloud_client,
+                    event.file_url,
+                    filename=filename,
+                    external_file_id=event.file_hash,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to ingest file_url %s: %s", event.file_url, e, exc_info=True
+                )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="error",
+                        message=f"Failed to ingest file_url: {e}",
+                    )
+                )
+                raise
+
+        if not file_id:
+            raise ValueError("Provide file_id or file_url in start_event")
+
         logger.info(f"Running file {file_id}")
 
         try:
@@ -281,7 +389,7 @@ class ProcessFileWorkflow(Workflow):
                 break
             if file_metadata is None:
                 raise ValueError(f"File {file_id} not found")
-            filename = file_metadata.name
+            filename = filename or file_metadata.name
         except Exception as e:
             logger.error(f"Error fetching file metadata {file_id}: {e}", exc_info=True)
             ctx.write_event_to_stream(
@@ -292,7 +400,11 @@ class ProcessFileWorkflow(Workflow):
             )
             raise e
 
-        file_hash = event.file_hash or file_metadata.external_file_id
+        file_hash = (
+            event.file_hash
+            or content_hash
+            or getattr(file_metadata, "external_file_id", None)
+        )
         async with ctx.store.edit_state() as state:
             state.file_id = file_id
             state.filename = filename

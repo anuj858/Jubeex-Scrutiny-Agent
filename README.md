@@ -89,7 +89,7 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 
 ## How it works
 
-1. **Upload**: User uploads a petition PDF through the UI (`process-file` workflow).
+1. **Upload / ingest**: UI uploads a PDF to LlamaCloud, **or** your backend starts `process-file` with `file_url` (S3/HTTPS). The workflow downloads the PDF, uploads it to LlamaCloud, then continues.
 2. **Parse**: LlamaParse converts the PDF to per-page markdown.
 3. **Start extraction**: Starts a LlamaExtract job with the JubeeX schema.
 4. **Classify (parallel)**: LlamaClassify picks petition type; on failure defaults to `other`.
@@ -105,7 +105,33 @@ Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `buil
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | parse → start extract → classify → split (hard fail) → store → Pinecone |
+| `process-file` | `src/extraction_review/process_file.py` | ingest (`file_id` or `file_url`) → parse → extract → classify → split → store → Pinecone |
+
+### Backend integration (no Llama UI)
+
+Your app already has the PDF on S3 (or any HTTPS URL). Call the deployment directly:
+
+```bash
+curl -X POST \
+  'http://YOUR_HOST:4501/deployments/jubeex-llamaindex-test/workflows/process-file/run-nowait' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "start_event": {
+      "file_url": "https://your-bucket.s3.amazonaws.com/path/filing.pdf",
+      "filename": "filing.pdf",
+      "file_hash": "optional-stable-id-from-your-backend"
+    }
+  }'
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `file_url` | one of url/id | Public or presigned HTTPS URL to the PDF |
+| `file_id` | one of url/id | Existing LlamaCloud file id (UI path) |
+| `filename` | no | Override name when the URL has no useful basename |
+| `file_hash` | no | Your stable document id for Agent Data dedupe; otherwise SHA-256 of bytes |
+
+Prefer **`run-nowait`**, then poll `GET .../handlers/{handler_id}` or stream `GET .../events/{handler_id}`. The ECS host must be able to download `file_url` (presign if the bucket is private).
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
 | `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: one Pinecone pool, sliced record, OpenRouter per defect, save on same Agent Data item |
 
