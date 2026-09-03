@@ -38,8 +38,10 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_evidence_pages,
     apply_retrieval_policy,
     apply_status_policy,
+    apply_undetermined_policy,
     build_finding,
     failed_finding,
     summarize,
@@ -146,8 +148,10 @@ def _sanitize_response(
             response.check_id,
             defect.check_id,
         )
-        response.check_id = defect.check_id
+    response.check_id = defect.check_id
+    response = apply_evidence_pages(response, chunks, defect)
     response = apply_status_policy(response)
+    response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
     if response.status != "defect_found":
         response.suggested_fix = None
@@ -191,6 +195,7 @@ async def _run_defect(
         evidence_ids=[c["record_id"] for c in chunks if c.get("record_id")],
         coverage=coverage,
         usage=usage,
+        chunks=chunks,
     )
 
 
@@ -206,12 +211,14 @@ async def _chunks_for_defect(
         return []
 
     queries = build_evidence_queries(defect)
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
     gather_cap = max(
         max_chunks,
         len(queries) * 3,
-        len(parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect))
-        * 4,
+        len(targets) * 6,
     )
     try:
         pool = await asyncio.to_thread(
@@ -219,6 +226,7 @@ async def _chunks_for_defect(
             queries,
             file_hash=file_hash,
             max_chunks=gather_cap,
+            document_parts=targets,
         )
     except Exception as e:
         logger.warning(

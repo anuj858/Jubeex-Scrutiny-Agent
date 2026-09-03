@@ -91,6 +91,7 @@ export interface DefectFinding {
   fix_rationale?: string | null;
   how_to_cure?: string[];
   applicable_rule?: string | null;
+  location?: string | null;
   location_source?: string | null;
   evidence_ids?: string[];
   coverage: Coverage;
@@ -346,6 +347,7 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
           : finding.check_id;
       const meta = [
         finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
+        finding.location,
         finding.applicable_rule,
         finding.location_source,
         finding.main_category,

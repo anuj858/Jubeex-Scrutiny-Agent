@@ -87,6 +87,9 @@ class Defect(_Strict):
     requirement: str
     trigger_words: str | None = None
     where_to_look: list[str]
+    inspect_parts: list[str] = Field(default_factory=list)
+    context_parts: list[str] = Field(default_factory=list)
+    exclude_parts: list[str] | None = None
     how_to_cure: list[str]
     applicable_rule: str | None = None
     location_source: str
@@ -113,9 +116,18 @@ class Defect(_Strict):
             return int(value.strip())
         return value
 
-    @field_validator("where_to_look", "how_to_cure", mode="before")
+    @field_validator(
+        "where_to_look",
+        "how_to_cure",
+        "inspect_parts",
+        "context_parts",
+        "exclude_parts",
+        mode="before",
+    )
     @classmethod
     def _as_string_list(cls, value: object) -> object:
+        if value is None:
+            return value
         if isinstance(value, str):
             parts = [p.strip() for p in re.split(r"\n+", value) if p.strip()]
             return parts or [value.strip()]
