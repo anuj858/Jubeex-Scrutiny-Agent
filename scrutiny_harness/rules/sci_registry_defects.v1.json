@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
-  "schema_version": "2.0",
-  "catalogue_version": "2.1.0",
+  "schema_version": "2.1",
+  "catalogue_version": "2.2.0",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -215,6 +215,13 @@
         "Check the Record of Proceedings or order in the main case for the date of the order, and compare it with the date of filing of the interlocutory or miscellaneous application.",
         "Check the applications placed after the Annexures for an application for condonation of delay filed along with that application."
       ],
+      "inspect_parts": [
+        "Record of Proceedings"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to confirm whether the interlocutory or miscellaneous application is being filed beyond the prescribed period. If so, option for Jubeex to auto-generate the application for condonation of delay.",
         "Option for the User to upload the application for condonation of delay with Jubeex."
@@ -236,6 +243,13 @@
         "Check the Impugned Order for any judgment referred to in it and note its citation, parties and date.",
         "Check the Index and the Annexures for a photocopy or typed authenticated copy of that reported judgment."
       ],
+      "inspect_parts": [
+        "Impugned Order",
+        "Index",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Option for the User to upload the photocopy or typed authenticated copy of the judgment referred to in the impugned order and reported in a local law journal."
       ],
@@ -255,6 +269,16 @@
       "where_to_look": [
         "Check the cause title on the first page of the main petition and the Memo of Parties for the array of respondents.",
         "Check whether any respondent is described as a Judge, Judicial Officer or Presiding Officer of the court below; cross-check the name against the judge who passed the impugned order."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [
+        "Impugned Order"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to auto-edit and remove the name of such judicial officer, where arrayed as a contesting respondent.",
@@ -278,6 +302,11 @@
         "Check whether the documents forming Part I and the applications to be listed in Part II are placed in their respective parts, as shown in the Index columns.",
         "Check the page numbers running through the file against the Index."
       ],
+      "inspect_parts": [
+        "Index"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Common index with running pagination: option for Jubeex to auto-generate the common index and pagination.",
         "Option for the User to edit with Jubeex.",
@@ -304,6 +333,11 @@
         "Check the first volume for a common index covering all volumes.",
         "Check each volume for its own separate index placed at its beginning."
       ],
+      "inspect_parts": [
+        "Index"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Common index in the first volume: option for Jubeex to auto-generate the common index for all volumes and place it in the first volume.",
         "Option for the User to upload the common index with Jubeex.",
@@ -327,6 +361,13 @@
         "Check the front of the case file, before the Cover Page and the Office Report on Limitation, for the Advocate's Checklist.",
         "Check whether it is in the prescribed format, i.e. the numbered list of requirements each marked YES/NO/N.A., followed by the AOR's declaration."
       ],
+      "inspect_parts": [
+        "Advocate's Checklist"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-generate the Advocate's Check List in the prescribed format.",
         "Option for the User to upload the Advocate's Check List with Jubeex.",
@@ -349,6 +390,15 @@
         "Check the Advocate's Check List at the very front of the case file (before the Cover Page).",
         "Check the declaration at the end of the Check List for the Advocate-on-Record's certification that he has personally verified the petition and that it conforms to the Supreme Court Rules, 2013.",
         "Check that the declaration is signed by the Advocate-on-Record and dated."
+      ],
+      "inspect_parts": [
+        "Advocate's Checklist",
+        "AOR's Declaration",
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Advocate's Check List: option for Jubeex to auto-generate and populate the Advocate's Check List.",
@@ -374,6 +424,15 @@
         "Check for the Advocate-on-Record's code number stated alongside the Advocate-on-Record's name. Cross-check the same code against the Vakalatnama at the end of the file.",
         "Also check the certificate found after the Main Prayer clause."
       ],
+      "inspect_parts": [
+        "Advocate's Checklist"
+      ],
+      "context_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to provide the Advocate-on-Record's code number and auto-fill it in the Advocate-on-Record's certificate on the Advocate's Check List.",
         "Option for the User to edit the Advocate-on-Record's code number in the certificate with Jubeex.",
@@ -397,6 +456,14 @@
         "Check the front of the case file, after the Court Fees, for the Office Report on Limitation containing the statements as to whether the petition is within time and as to delay in filing and re-filing.",
         "Follow the universal format for the Office Report."
       ],
+      "inspect_parts": [
+        "Office Report on Limitation",
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for the User to upload the Office Report on Limitation."
       ],
@@ -416,6 +483,16 @@
       "where_to_look": [
         "Check the Office Report on Limitation at the front of the case file and compare the date of the impugned order with the date of filing to determine whether the petition is time-barred.",
         "Check the applications placed after the Annexures for the application for condonation of delay, and verify that it states the number of days of delay."
+      ],
+      "inspect_parts": [
+        "Office Report on Limitation"
+      ],
+      "context_parts": [
+        "Petition",
+        "Impugned Order"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to confirm the relevant dates, and option for Jubeex to calculate the number of days of delay (where feasible) and draft the application for condonation of delay using the calculated delay.",
@@ -437,6 +514,14 @@
       "where_to_look": [
         "Check the cause title on the first page of the main petition and of the interlocutory application.",
         "Check the Memo of Parties for the complete residential or office addresses of all parties, including street, city and PIN code."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to provide the complete residential and/or office addresses of all the parties, and auto-fill the same in the petition or interlocutory application with Jubeex.",
@@ -460,6 +545,14 @@
         "Check the cause title on the first page of the main petition.",
         "Check the Memo of Parties for complete addresses of the parties and of their representatives, properly set out with the relationship (S/o, W/o), house or ward number, locality, city and PIN code."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to identify incomplete or improperly formatted addresses of the parties and their representatives, prompt the User to complete or correct the missing particulars, and auto-format the addresses in the prescribed format in the Memo of Parties.",
         "Option for the User to re-upload the Memo of Parties."
@@ -480,6 +573,14 @@
       "where_to_look": [
         "Check the cause title of the main petition and the details of parties stated in the Memo of Parties for any respondent described as the Union of India or a State Government.",
         "Check whether the specific Ministry or Department and its complete address, through which notice is to be served, is stated."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to enter the proper department and address of the Union of India or the State Government on whom notice is required to be served, and option for Jubeex to fill the Memo of Parties or cause title (or other relevant document) using the information provided.",
@@ -502,6 +603,15 @@
         "Check for an affidavit filed immediately after the main petition or application (after the Advocate-on-Record's certificate) in support of the allegations of fact made in it.",
         "Check the attestation and the notarial seal at the end of the affidavit to confirm it is duly sworn.",
         "If an affidavit is filed separately along with an interlocutory application that is not part of the main petition, check the cause title; it should identify that interlocutory application in the main case."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [
+        "Petition"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to auto-generate the affidavit in support of the allegations of fact and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
@@ -526,6 +636,13 @@
         "Check the opening line of the affidavit for first-person drafting ('I, [name]…') and for the deponent's description, occupation and true place of abode.",
         "Check that the body of the affidavit is divided into consecutively numbered paragraphs."
       ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to draft a fresh affidavit, prompt the User to have it duly sworn, and provide an option for the User to upload the duly sworn affidavit."
       ],
@@ -545,6 +662,15 @@
       "where_to_look": [
         "Look for an affidavit, usually following the main petition.",
         "Check the body of the affidavit for a statement that the facts are within the deponent's personal knowledge (for example that the deponent has gone through the accompanying petition and that the statements of fact are true to knowledge, and legal submissions are believed true on legal advice)."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [
+        "Petition"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to draft a fresh affidavit, prompt the User to have it duly sworn, and provide an option for the User to upload the duly sworn affidavit."
@@ -567,6 +693,13 @@
         "Go to the attestation or sworn portion and identify the authority before whom it was sworn.",
         "Verify that the authority is one permitted by the stated rule, and that the affidavit is attested at the same place where the deponent is situated."
       ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to ensure that the affidavit is sworn before a Notary, an authority specified under Section 139 of the Code, a duly authorised Registrar of the Supreme Court, or an Oath Commissioner authorised by the Chief Justice, and upload the duly sworn affidavit with Jubeex."
       ],
@@ -586,6 +719,15 @@
       "where_to_look": [
         "Look for the exhibits or annexures to the affidavit.",
         "Check each such exhibit for the marking, initials and date of the authority before whom the affidavit was sworn (usually at the top or foot of each exhibit page)."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [
+        "Annexures"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Marking of exhibits: option for Jubeex to auto-mark each exhibit annexed to the affidavit with the title and number of the cause, appeal or matter.",
@@ -611,6 +753,13 @@
         "Where an interlineation or alteration exists, check for the authority's initials.",
         "Where there is an erasure, check that the words or figures are rewritten in the margin and initialled by the authority."
       ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to flag any interlineations, alterations or erasures in the affidavit and prompt the User to have them duly initialled by the authority before whom the affidavit is sworn.",
         "Option for the User to prepare a fresh affidavit with Jubeex and upload the re-sworn affidavit.",
@@ -634,6 +783,13 @@
         "If the date is not on the first page, check the subsequent or final page containing the deponent's signature and the Oath Commissioner, Notary or authorised officer.",
         "Repeat the same check for each affidavit filed in the matter, including an affidavit in opposition, rejoinder, additional affidavit or any other affidavit."
       ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Flag that the date of swearing is missing from the affidavit, prompt the User to have the affidavit re-sworn with the date duly mentioned, and provide an option to upload the duly re-sworn affidavit with Jubeex."
       ],
@@ -654,6 +810,13 @@
         "Review every page of the affidavit, including the body and the final page containing the verification or affirmation and attestation.",
         "In the body, look for blank spaces, empty fields, underscores, brackets, dotted lines or placeholders, including names, dates, case numbers, paragraph references, parties, amounts or places.",
         "Check the affirmation or verification clause for any blank relating to the date, place, name of the deponent or other particulars."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for the User to upload the duly completed and re-sworn affidavit with Jubeex."
@@ -677,6 +840,15 @@
         "Verify that the cause, appeal or matter stated in the affidavit corresponds to the case in which it has been filed.",
         "Cross-check the case number and party names against the main petition or appeal."
       ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [
+        "Petition"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-generate a fresh affidavit with the correct case particulars and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
         "Option for the User to upload a re-sworn affidavit."
@@ -696,6 +868,16 @@
       "trigger_words": null,
       "where_to_look": [
         "Check if a caveat on behalf of the respondent has been attached to the file."
+      ],
+      "inspect_parts": [
+        "Caveat Report"
+      ],
+      "context_parts": [
+        "Petition",
+        "Cover Page"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to confirm whether the matter has been admitted or notice has been issued. If not, and a caveat is permissible, option for Jubeex to auto-generate the caveat.",
@@ -719,6 +901,14 @@
         "Check the main petition, the affidavit and every other document in the case file (except original exhibits and certified copies of public documents).",
         "Check that each is fairly and legibly written or typed in double-line spacing, and is not a faint, skewed or partially cut scan.",
         "For originals, it is advisable that a clear typed copy is annexed along with the original."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Double spacing: option for Jubeex to auto-apply double spacing.",
@@ -744,6 +934,13 @@
         "Check the petition and all documents in the case file for the page size.",
         "Check that the paper is demy-foolscap or 29.7 cm × 21 cm (A4), and that the petition carries the prescribed quarter margin."
       ],
+      "inspect_parts": [
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-reformat the petition.",
         "Re-upload the petition."
@@ -765,6 +962,12 @@
         "Check the Annexures for any document, or any portion or line within a document, that is in a vernacular language.",
         "Check whether a translation of such document or portion is filed alongside it and is described as a translated copy in the Index and List of Dates."
       ],
+      "inspect_parts": [
+        "Annexures",
+        "Index"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Option for the User to upload the translated document with Jubeex.",
         "Re-upload the petition along with the translated document."
@@ -785,6 +988,14 @@
       "where_to_look": [
         "Check the Annexures for the official translation of any vernacular document.",
         "If the translation filed is not an official one, check the applications placed after the Annexures for an application seeking exemption from filing the official translation, along with its supporting affidavit and the court fee."
+      ],
+      "inspect_parts": [
+        "Annexures",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to draft the application for exemption from filing official translation and the supporting affidavit (with an option for the User to review and edit them).",
@@ -808,6 +1019,14 @@
         "Check whether the power of attorney is in English.",
         "Where the power of attorney is in a vernacular or foreign language, check the annexures accompanying it for the corresponding English translated copy. Any portion other than English has to be translated and appended along with the original power of attorney."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for the User to upload the translated copy of the power of attorney."
       ],
@@ -828,6 +1047,13 @@
         "Review the petition pages.",
         "Verify that paragraphs and pages are numbered consecutively.",
         "Check that the petition is fairly and legibly typed, lithographed or printed on both sides of standard A4 paper with the required quarter margin."
+      ],
+      "inspect_parts": [
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Consecutive numbering of paragraphs — Option for Jubeex to auto-number the paragraphs consecutively.",
@@ -856,6 +1082,15 @@
         "Check the Cover Page or main page of the main petition for the details of the court appealed from, full cause title, and Supreme Court case number of the present petition.",
         "Check the Vakalatnama for the Advocate-on-Record's name, registered address and e-mail address."
       ],
+      "inspect_parts": [
+        "Cover Page",
+        "Petition",
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Details of the court appealed from: option for Jubeex to auto-fill the name of the court appealed from in the petition.",
         "Option for the User to add and edit those details with Jubeex.",
@@ -882,6 +1117,13 @@
         "Check that it has been accepted by the Advocate-on-Record (look for a line such as 'Satisfied, certified, identified and accepted' on the Vakalatnama).",
         "Check below the executant's signature for the Advocate's endorsement accepting the Vakalatnama and identifying the executant."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Execution of the Vakalatnama by the petitioner(s): prompt the User to ensure that the Vakalatnama is duly executed by all the petitioner(s) and upload the same with Jubeex.",
         "Acceptance of the Vakalatnama by the Advocate-on-Record: prompt the User to obtain the Advocate-on-Record's acceptance on the Vakalatnama and upload the duly accepted Vakalatnama with Jubeex.",
@@ -904,6 +1146,13 @@
         "Go to the Vakalatnama (usually at the end of the case file, after the Memo of Parties) and verify that it is signed or executed by the petitioner(s).",
         "Check for the Advocate-on-Record's certification that the Vakalatnama was executed in his presence, or an endorsement that he has satisfied himself about its due execution before a notary or advocate."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to obtain the Advocate-on-Record's certification that the Vakalatnama was executed in the Advocate-on-Record's presence, or the endorsement that they have satisfied themselves about its due execution before a Notary or an Advocate, and upload the duly certified or endorsed Vakalatnama with Jubeex."
       ],
@@ -923,6 +1172,13 @@
       "where_to_look": [
         "Check the Vakalatnama placed at the end of the case file.",
         "Check the top or margin of the Vakalatnama for the affixed Advocates' Welfare Fund stamp."
+      ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for the User to re-upload the updated Vakalatnama with the welfare stamp affixed."
@@ -945,6 +1201,15 @@
         "Check the Vakalatnama placed at the end of the case file, in the signature block of the executant.",
         "Where it is executed on behalf of a company, society or other body, check that the executant's capacity or designation (Director, authorised signatory, and so on) is stated and the seal is affixed below the signature.",
         "Look for a board resolution or other authority letter following the Vakalatnama."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties",
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to specify the capacity of the executant (for example authorised signatory, director, partner, proprietor, or other representative), and option for Jubeex to update the same.",
@@ -969,6 +1234,13 @@
         "Locate the signature of the person executing it on behalf of the grantor.",
         "Check below or adjacent to the signature for either the seal of the entity or the name and designation or authority of the executant."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to enter the name, designation or authority of the person executing the Vakalatnama, and option for Jubeex to update the Vakalatnama using the information provided, along with an option for the User to re-upload the signed Vakalatnama.",
         "Option for the User to upload the Vakalatnama with Jubeex."
@@ -992,6 +1264,14 @@
         "Verify that the names correspond with the Memo of Parties or cause title, wherever applicable.",
         "Check below each signature that the person's name is stated in brackets for identification of the signature."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to enter the names of the persons executing the Vakalatnama and complete the relevant columns, and option for Jubeex to update the Vakalatnama using the information provided.",
         "Option for the User to upload the duly completed Vakalatnama."
@@ -1012,6 +1292,13 @@
       "where_to_look": [
         "Go to the Vakalatnama and identify whether the same person has signed for self and on behalf of another person.",
         "Check the execution or signature portion for an express statement that the Vakalatnama is being executed on behalf of both persons, identifying both."
+      ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to auto-edit the Vakalatnama to disclose that it is executed for oneself and on behalf of another.",
@@ -1035,6 +1322,12 @@
         "Check the Vakalatnama for a statement disclosing that the executant is acting as a power of attorney holder.",
         "Check the Index for an annexure containing the power of attorney, and verify that a copy is actually filed and corresponds to the person or entity on whose behalf the Vakalatnama is executed."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR",
+        "Index"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Option for Jubeex to auto-edit the Vakalatnama to disclose execution by the power of attorney holder.",
         "Re-upload option for the corrected Vakalatnama.",
@@ -1057,6 +1350,13 @@
         "Go to the Vakalatnama and determine whether several persons have signed the same Vakalatnama.",
         "Examine the signature portion and verify that the signatures are affixed seriatim, with the serial number or name of each person in brackets against or near the respective signature, so that each person can be individually identified."
       ],
+      "inspect_parts": [
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Edit option for the Vakalatnama to number the signatures seriatim and add names in brackets.",
         "Upload option for the corrected Vakalatnama."
@@ -1078,6 +1378,13 @@
         "Check for a Memo of Appearance towards the end of the case file, usually after the Vakalatnama or after the Memo of Parties and before the Vakalatnama.",
         "Check that it is addressed to the Registrar and signed by the Advocate-on-Record."
       ],
+      "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-generate or draft the Memo of Appearance.",
         "Option for the User to upload the Memo of Appearance with Jubeex."
@@ -1097,6 +1404,13 @@
       "trigger_words": null,
       "where_to_look": [
         "Check the case file after the Memo of Parties and before the Vakalatnama for the Memo of Appearance addressed to the Registrar and signed by the Advocate-on-Record."
+      ],
+      "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to add the signature with Jubeex.",
@@ -1119,6 +1433,13 @@
         "Check the case file after the Memo of Parties and before the Vakalatnama for the Memo of Appearance.",
         "Check the addressee section at the beginning of the Memo of Appearance."
       ],
+      "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to automatically insert the prescribed addressee, “Registrar, Supreme Court of India, New Delhi,” in the Memo of Appearance.",
         "Option for the User to upload the Memo of Appearance with Jubeex."
@@ -1140,6 +1461,13 @@
         "Check the case file after the Memo of Parties and before the Vakalatnama for the Memo of Appearance.",
         "Check the portion immediately preceding the advocate's name or signature for the date of execution."
       ],
+      "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to prompt the User to enter the date of execution and automatically insert the date in the prescribed place in the Memo of Appearance.",
         "Option for the User to upload the Memo of Appearance with Jubeex."
@@ -1160,6 +1488,13 @@
       "where_to_look": [
         "Check the case file after the Memo of Parties and before the Vakalatnama for the Memo of Appearance.",
         "Check the designation below the Advocate's name or signature at the end of the Memo of Appearance."
+      ],
+      "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to prompt the User to select the party on whose behalf the Advocate is appearing and automatically insert the appropriate designation, for example “Advocate for Petitioner”, below the Advocate's name or signature.",
@@ -1183,6 +1518,13 @@
         "Check each document for clarity, sharpness and legibility (faint scans, cut edges and handwritten orders are the usual problems).",
         "Where the document is not clearly legible, check whether a typed or written copy certified as a true copy by the Advocate-on-Record or party-in-person is filed alongside it."
       ],
+      "inspect_parts": [
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Legible scans: option for Jubeex to OCR and create legible, clear versions of the document.",
         "Re-upload the document.",
@@ -1205,6 +1547,12 @@
         "Check the first page of each annexure for the marking itself — P-1, P-2, P-3 and so on for the petitioner or appellant; R-I/1, R-I/2 and so on for Respondent No. 1; R-II/1, R-II/2 and so on for Respondent No. 2.",
         "Cross-check the markings against those referred to in the List of Dates, the Index and the body of the main petition."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Index"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Option for Jubeex to auto-mark the annexures in the prescribed format (for example P-1, P-2, P-3 for the petitioner or appellant; R-I/1, R-I/2 for Respondent No. 1; R-II/1, R-II/2 for Respondent No. 2).",
         "Option for the User to edit the annexure markings with Jubeex.",
@@ -1228,6 +1576,15 @@
         "Check the affidavit for its own date (which must be the same or subsequent) and for the date, number of paragraphs and number of pages of the petition stated in its body.",
         "Check the Vakalatnama for its date of execution, which must not be later than the date of drafting of the petition."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Affidavit",
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to provide or confirm the date of drafting of the petition. Where the petition is drafted using Jubeex, auto-fill the date of drafting.",
         "Option for the User to review and edit the date of drafting with Jubeex."
@@ -1249,6 +1606,14 @@
         "Check the end of the main petition, immediately below the prayer and next to the Advocate-on-Record's signature, for the date of drafting.",
         "Compare that date with the date of filing shown on the Cover Page or Filing Memo.",
         "Check the drawn-on date; it cannot be before the date on which the Vakalatnama was signed."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Cover Page"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to auto-edit the document to insert the date.",
@@ -1272,6 +1637,14 @@
         "Check the affidavit filed after the main petition for its own date; it must be the same as or subsequent to the drafting of the petition.",
         "Check the body of the affidavit for the date, number of paragraphs and number of pages of the petition, and cross-check the paragraph and page count against the main petition."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Date of the affidavit: option to upload a fresh affidavit of the same or a subsequent date.",
         "Number of paragraphs and pages of the petition: re-upload an amended affidavit stating the date, number of paragraphs and pages of the petition."
@@ -1293,6 +1666,14 @@
         "Check the date of drafting at the end of the main petition, below the prayer.",
         "Check the Vakalatnama (placed at the end of the file, after the Memo of Parties and Filing Memo) for its date of execution; the date must be the same as or prior to the date of drafting of the petition."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Vakalatnama + PoA/BR"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-edit the Vakalatnama to correct the date.",
         "Option to upload a fresh Vakalatnama bearing a valid date.",
@@ -1313,6 +1694,13 @@
       "trigger_words": null,
       "where_to_look": [
         "Check the Memo of Parties for any mention of the caste or religion of any party (for example as part of a party's description or address)."
+      ],
+      "inspect_parts": [
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to identify any reference to the caste or religion of the parties in the Memo of Parties, prompt the User to review the same, and provide an option to remove such references.",
@@ -1336,6 +1724,14 @@
         "Review the petition and other filing documents (except annexures).",
         "Verify Times New Roman, size 14, with one-and-a-half line spacing; for quotations and indents, verify size 12 with single-line spacing."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Font style and font size: option for Jubeex to auto-format the document in Times New Roman, with font size 14 for the main text and font size 12 for quotations and indented text.",
         "Option for the User to edit the font style and font size with Jubeex.",
@@ -1358,6 +1754,14 @@
       "where_to_look": [
         "Review the petition and other filing documents (except annexures).",
         "Check for a margin of 4 cm on the left and right and 2 cm at the top and bottom."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to auto-format the document with 4 cm left and right margins and 2 cm top and bottom margins.",
@@ -1383,6 +1787,20 @@
         "Check the last page of each annexure for the Advocate-on-Record's digital signature.",
         "Verify that the signatures are digitally affixed through Adobe Sign and appear at the prescribed signature locations."
       ],
+      "inspect_parts": [
+        "AOR's Declaration",
+        "Advocate's Checklist",
+        "Listing Proforma"
+      ],
+      "context_parts": [
+        "Petition",
+        "Memo of Parties",
+        "Memo of Appearance",
+        "Vakalatnama + PoA/BR"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for the User to allow Jubeex to auto-fill a saved signature at the relevant places as specified, after User approval.",
         "Option for the User to re-upload the petition."
@@ -1404,6 +1822,14 @@
         "Check the cause title of the main petition for the complete particulars of all parties, including their address and e-mail address. A phone number may be ignored.",
         "Check the Memo of Parties for the complete particulars of all parties.",
         "If a Memo of Parties has not been separately filed, but the cause title of the main petition contains complete particulars of all parties, including address and e-mail address (or an indication that the e-mail address is unavailable), treat the requirement of filing the Memo of Parties as complied with."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to fill the Memo of Parties using the information available in the case database and the details provided by the User.",
@@ -1428,6 +1854,16 @@
         "While comparing, check for spelling variations, omitted or dropped respondents, and parties described as “through LRs”.",
         "Also verify the status of the parties, as the roles of petitioner and respondent may change depending on which party has challenged the impugned judgment."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Impugned Order"
+      ],
+      "context_parts": [
+        "Memo of Parties"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to compare the cause title with the impugned judgment, identify any discrepancies in the names of the parties, and, upon confirmation by the User, update the cause title accordingly.",
         "If the cause title is not disclosing all the details, ask the User to upload the Memo of Parties of the impugned case, then allow an option to edit or auto-edit.",
@@ -1451,6 +1887,14 @@
         "Check the facts of the main petition and the details of parties in the Memo of Parties for any indication that a party in the court below has died (for example a party described as 'deceased' or 'through LRs').",
         "Check the applications placed after the Annexures for an application for bringing legal representatives on record."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to draft the application for bringing legal representatives on record (with an option for the User to review and edit it).",
         "Option for the User to upload the duly completed application and the supporting death certificate with Jubeex."
@@ -1473,6 +1917,14 @@
         "If a party is deceased, check the main petition and Memo of Parties for the date of death and determine whether there has been any delay in seeking substitution.",
         "Check the applications placed after the Annexures for an application seeking condonation of delay in filing the application for substitution."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to draft the application for condonation of delay in seeking substitution.",
         "Option for the User to upload the duly completed application with Jubeex."
@@ -1493,6 +1945,14 @@
       "where_to_look": [
         "Check the application for condonation of delay in seeking substitution.",
         "Check the body of that application for the date of death and for the complete addresses of the parties."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to enter the date of death, relationship, age and addresses of the legal representatives, and option for Jubeex to fill the application using the information provided.",
@@ -1517,6 +1977,14 @@
         "Check the application for the name and relationship of each proposed legal representative with the deceased party.",
         "Check the particulars of each proposed legal representative for their age and complete address."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to enter the date of death, relationship, age and addresses of the legal representatives, and option for Jubeex to fill the application using the information provided.",
         "Option for the User to review and edit the application with Jubeex.",
@@ -1539,6 +2007,14 @@
         "Check the application for setting aside abatement.",
         "Check the body of that application for the date of death, and for the relationship, age and complete addresses of the parties."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to enter the date of death, relationship, age and addresses of the legal representatives, and option for Jubeex to fill the application using the information provided.",
         "Option for the User to re-upload the updated application."
@@ -1560,6 +2036,14 @@
         "Look for the application for substitution, condonation of delay and setting aside abatement.",
         "Check each such application for a supporting affidavit filed immediately after it. If filed with the main petition, check whether the affidavit includes a line as to the veracity of the application; if the application is filed separately, check that an affidavit is attached with it."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-generate the affidavit and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
         "Option for the User to upload the affidavit with Jubeex."
@@ -1579,6 +2063,16 @@
       "trigger_words": "Power of Attorney",
       "where_to_look": [
         "Check the applications placed after the Annexures for an application by the power of attorney holder seeking permission to appear."
+      ],
+      "inspect_parts": [
+        "Annexures"
+      ],
+      "context_parts": [
+        "Vakalatnama + PoA/BR",
+        "Petition"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to draft the application for permission to appear by the power of attorney holder.",
@@ -1602,6 +2096,13 @@
         "Check the applications placed after the Annexures for an application seeking permission to appear and argue in person.",
         "Check that the application states the reasons why the petitioner cannot engage an advocate and whether he is willing to accept an advocate appointed by the Court."
       ],
+      "inspect_parts": [
+        "Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to draft the application for permission to appear and argue in person.",
         "Option for the User to upload the duly completed application with Jubeex."
@@ -1623,6 +2124,18 @@
         "Note the particulars of the impugned judgment from the cause title of the main petition.",
         "Compare those particulars with the Index, Cover Page, Synopsis, List of Dates, Listing Proforma (Proforma for First Listing) and prayer clause.",
         "Cross-check all of them against the Impugned Judgment itself placed after the Synopsis and List of Dates."
+      ],
+      "inspect_parts": [
+        "Petition",
+        "Impugned Order"
+      ],
+      "context_parts": [
+        "Cover Page",
+        "Listing Proforma",
+        "Synopsis"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to compare the particulars of the impugned judgment across all filing documents, identify and display any inconsistencies, and, upon confirmation by the User, synchronise the particulars across the Index, cause title, Synopsis, petition and other relevant documents.",
@@ -1646,6 +2159,12 @@
         "Check the List of Dates and Events for the annexures referred to, with their markings and page numbers.",
         "Check the annexures actually filed against that list, verifying that each referred annexure exists, carries the same marking and falls at the stated page range."
       ],
+      "inspect_parts": [
+        "Index",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
       "how_to_cure": [
         "Edit the Index or List of Dates with Jubeex: the User may choose to edit and correct the Index or List of Dates directly through Jubeex.",
         "Re-upload corrected documents: the User may choose to re-upload the corrected Index or List of Dates and the corresponding annexures after making the necessary corrections."
@@ -1668,6 +2187,14 @@
         "Trace each annexure and verify that the document filed corresponds to the document referred to in the petition.",
         "Check the annexures in sequence and verify that they are arranged chronologically in accordance with the List of Dates."
       ],
+      "inspect_parts": [
+        "Petition",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for Jubeex to auto-arrange and place the annexures in chronological order as per the List of Dates, and rename and paginate annexures in accordance with Index sync.",
         "Option to re-upload annexures."
@@ -1687,6 +2214,15 @@
       "trigger_words": null,
       "where_to_look": [
         "Check the case file before the Impugned Order for the List of Dates and Events set out date-wise in chronological order."
+      ],
+      "inspect_parts": [
+        "List of Dates & Events"
+      ],
+      "context_parts": [
+        "Synopsis"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Option for Jubeex to draft the List of Dates and Events using the information available from the petition and uploaded documents.",
@@ -1710,6 +2246,15 @@
         "If it exceeds the prescribed page limit, check for an application titled or containing the words “Application for Permission to file lengthy LOD”, seeking exemption from filing a lengthy List of Dates and Events.",
         "Go through the applications placed after the Annexures and look for an application with the subject “Application for Exemption”."
       ],
+      "inspect_parts": [
+        "List of Dates & Events"
+      ],
+      "context_parts": [
+        "Synopsis"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Brief List of Dates and Events: option for Jubeex to review the List of Dates and Events and shorten it to a brief and concise format.",
         "Option for the User to upload the List of Dates and Events with Jubeex.",
@@ -1732,6 +2277,17 @@
       "where_to_look": [
         "Check at all required places for the signature and name of the counsel along with disclosure of whom they are representing."
       ],
+      "inspect_parts": [
+        "Petition"
+      ],
+      "context_parts": [
+        "Listing Proforma",
+        "Advocate's Checklist",
+        "AOR's Declaration"
+      ],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Option for the User to auto-edit with Jubeex.",
         "Option for the User to edit with Jubeex."
@@ -1751,6 +2307,15 @@
       "trigger_words": null,
       "where_to_look": [
         "Check each annexure for an endorsement or certification that it is a true copy of the document filed before the court below."
+      ],
+      "inspect_parts": [
+        "Annexures"
+      ],
+      "context_parts": [
+        "Petition"
+      ],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Re-upload option for the correct true copy.",
@@ -1772,6 +2337,13 @@
       "where_to_look": [
         "Check the Proforma for First Listing at the front of the case file, after the Office Report on Limitation.",
         "Check that every column is filled and that it bears the signature of the Advocate-on-Record with the date."
+      ],
+      "inspect_parts": [
+        "Listing Proforma"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "If the Listing Proforma is missing: option for Jubeex to auto-add and fill it.",
@@ -1796,6 +2368,13 @@
         "Check the Listing Proforma (Proforma for First Listing).",
         "Confirm columns 6 and 7 of the Proforma for First Listing are duly filled."
       ],
+      "inspect_parts": [
+        "Listing Proforma"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
       "how_to_cure": [
         "Prompt the User to enter the information required for Columns 6 and 7 of the Listing Proforma/Proforma for First Listing, and option for Jubeex to fill the relevant columns using the information provided.",
         "Option for the User to re-upload the Listing Proforma."
@@ -1815,6 +2394,13 @@
       "trigger_words": "Listing Proforma (Column 6)",
       "where_to_look": [
         "Check column 6 of the Proforma for First Listing for the complete particulars of identical matters pending before or disposed of by this Court, including citation and case details."
+      ],
+      "inspect_parts": [
+        "Listing Proforma"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "Prompt the User to provide the complete particulars of any identical matters pending before or disposed of by the Supreme Court, and option for Jubeex to incorporate the particulars in the listing proforma.",

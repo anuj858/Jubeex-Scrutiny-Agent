@@ -42,7 +42,12 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "filing_formalities": ("Petition", "Affidavit"),
     "advocate_checklist": ("Advocate's Checklist", "Vakalatnama + PoA/BR", "Vakalatnama"),
     "listing_proforma": ("Listing Proforma",),
-    "petition_presentation": ("Petition",),
+    "petition_presentation": (
+        "Petition",
+        "AOR's Declaration",
+        "Listing Proforma",
+        "Advocate's Checklist",
+    ),
     "applications": ("Petition", "Annexures", "Index"),
     "annexures": ("Annexures", "Index", "List of Dates & Events"),
     "parties": ("Memo of Parties", "Cover Page", "Petition"),
@@ -55,12 +60,34 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     ),
     "index_paper_book": ("Index",),
     "limitation": ("Office Report on Limitation", "Petition"),
+    # Affidavit is the inspect target; Petition is only retrieval context.
     "affidavit": ("Affidavit", "Petition"),
     "translations": ("Annexures", "Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
     "vakalatnama": ("Vakalatnama + PoA/BR", "Vakalatnama", "PoA/BR"),
     "memo_of_appearance": ("Memo of Appearance",),
     "list_of_dates": ("List of Dates & Events", "Synopsis"),
 }
+
+# Extra catalogue phrases → Split labels (beyond the config name/description).
+_PART_ALIASES: dict[str, tuple[str, ...]] = {
+    # Prefer "check the declaration" so "below the declaration" on the
+    # checklist form does not pull AOR's Declaration into other checks.
+    "AOR's Declaration": (
+        "check the declaration",
+        "declaration in terms of rule",
+        "advocate-on-record declaration",
+        "advocate on record declaration",
+    ),
+    "Impugned Order": (
+        "impugned judgment",
+        "impugned order",
+        "judgment under challenge",
+    ),
+}
+
+# Paper-book Index lists document names; quoting those lines is not proof
+# that the named document was filed or signed.
+_NON_CONTENT_PARTS = frozenset({"Index"})
 
 # Structured CoreFilingRecord keys sent to the model for that category.
 # Always include court / petition_type; never dump unused party lists.
@@ -111,24 +138,42 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
-# do not need the global SCRUTINY_MAX_CHUNKS dump.
+# do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
+# raise this to PAGES_PER_TARGET_PART each.
 CATEGORY_MAX_CHUNKS: dict[str, int] = {
     "listing_proforma": 3,
     "advocate_checklist": 3,
     "filing_formalities": 10,
-    "petition_presentation": 6,
+    "petition_presentation": 12,
     "applications": 4,
     "annexures": 6,
-    "parties": 4,
+    "parties": 6,
     "dates_execution": 6,
     "index_paper_book": 4,
     "limitation": 4,
-    "affidavit": 4,
+    "affidavit": 6,
     "translations": 4,
     "vakalatnama": 3,
     "memo_of_appearance": 3,
     "list_of_dates": 3,
 }
+
+# At least this many page excerpts per document part the check must open.
+PAGES_PER_TARGET_PART = 3
+
+# Placement phrases in where_to_look ("before the Cover Page") name other
+# documents as landmarks, not as extra parts this check must retrieve.
+_LANDMARK_PREP = re.compile(
+    r"\b(?:before|after|following|preceding|followed by)\s+(?:the\s+)?",
+    re.IGNORECASE,
+)
+_LANDMARK_STOP = re.compile(
+    r"\s+for\s+"
+    r"|,\s*(?:and\s+)?(?:check|look|verify|confirm|go\s+to|review)\b"
+    r"|[.;]",
+    re.IGNORECASE,
+)
+_PLACEMENT_PAREN = re.compile(r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I)
 
 # Keep a page chunk only if ln(best_score / this_score) is below this.
 # 0.36 ≈ keep scores at least ~70% of the best hit; farther neighbours are dropped.
@@ -176,11 +221,15 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
             needles.append(folded)
 
     add(name)
+    if re.search(r"checklist", name, re.IGNORECASE):
+        add(re.sub(r"checklist", "Check List", name, flags=re.IGNORECASE))
     left = name.split("+", 1)[0].strip()
     if left != name:
         add(left)
     for nick in re.findall(r"\(([^)]{2,48})\)", description):
         add(nick)
+    for alias in _PART_ALIASES.get(name, ()):
+        add(alias)
     return tuple(needles)
 
 
@@ -375,13 +424,79 @@ def parts_named_in_text(text: str) -> list[str]:
     return found
 
 
+def _strip_landmark_clauses(text: str) -> str:
+    """Drop paper-book locators so 'before the Cover Page' is not a target."""
+    cleaned = _PLACEMENT_PAREN.sub(" ", text or "")
+    pieces: list[str] = []
+    cursor = 0
+    for match in _LANDMARK_PREP.finditer(cleaned):
+        stop = _LANDMARK_STOP.search(cleaned, match.end())
+        end = stop.start() if stop else len(cleaned)
+        clause = cleaned[match.start() : end]
+        pieces.append(cleaned[cursor : match.start()])
+        if not parts_named_in_text(clause):
+            pieces.append(clause)
+        cursor = end
+    pieces.append(cleaned[cursor:])
+    return re.sub(r"[\s,]+", " ", "".join(pieces)).strip(" ,")
+
+
+def _normalize_part_list(names: list[str] | None) -> list[str]:
+    found: list[str] = []
+    for raw in names or []:
+        part = normalize_part_name(str(raw or "").strip())
+        if part and part not in found:
+            found.append(part)
+    return found
+
+
+def catalogue_inspect_parts(defect: Defect) -> list[str]:
+    """Explicit inspect_parts from the catalogue, if authored."""
+    return _normalize_part_list(getattr(defect, "inspect_parts", None))
+
+
+def catalogue_context_parts(defect: Defect) -> list[str]:
+    """Explicit context_parts from the catalogue, if authored."""
+    return _normalize_part_list(getattr(defect, "context_parts", None))
+
+
+def catalogue_exclude_parts(defect: Defect) -> list[str] | None:
+    """Explicit exclude_parts, or None when the catalogue omitted the field."""
+    raw = getattr(defect, "exclude_parts", None)
+    if raw is None:
+        return None
+    return _normalize_part_list(raw)
+
+
+def _parts_parsed_from_where_to_look(defect: Defect) -> list[str]:
+    """Fallback: parse Split names from where_to_look, ignoring landmarks."""
+    found: list[str] = []
+    for step in defect.where_to_look:
+        for name in parts_named_in_text(_strip_landmark_clauses(step)):
+            if name not in found:
+                found.append(name)
+    return found
+
+
 def parts_named_in_where_to_look(defect: Defect) -> list[str]:
-    """Split parts the catalogue told this check to open."""
-    return parts_named_in_text(" ".join(defect.where_to_look))
+    """Split parts this check should open for retrieval.
+
+    Prefers catalogue inspect_parts + context_parts. Falls back to parsing
+    where_to_look when those fields are empty (legacy rows).
+    """
+    inspect = catalogue_inspect_parts(defect)
+    context = catalogue_context_parts(defect)
+    if inspect or context:
+        parts = list(inspect)
+        for name in context:
+            if name not in parts:
+                parts.append(name)
+        return parts
+    return _parts_parsed_from_where_to_look(defect)
 
 
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
-    """Where-to-look parts first, then the rest of the category."""
+    """Retrieval targets: catalogue/parsed parts first, then category defaults."""
     named = parts_named_in_where_to_look(defect)
     category = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
     parts = list(named)
@@ -411,10 +526,43 @@ def _clip_query(text: str, *, limit: int = PINECONE_QUERY_MAX_CHARS) -> str:
     return cleaned[:limit].rsplit(" ", 1)[0].strip()
 
 
+# OCR phrases that often stand in for stamps, seals, signatures, and paper size.
+# Needles are matched as whole words against the catalogue row.
+_PRESENCE_QUERY_HINTS: tuple[tuple[str, str], ...] = (
+    ("stamp", "Advocates Welfare Fund stamp court fee stamp"),
+    ("seal", "notarial seal company seal"),
+    ("notary", "notary oath commissioner"),
+    ("signature", "Sd/- digitally signed signature"),
+    ("quarter margin", "quarter margin 4 cm 2 cm"),
+    ("4 cm", "4 cm 2 cm margin"),
+    ("a4", "A4 29.7 cm 21 cm"),
+    ("foolscap", "demy foolscap A4"),
+    ("times new roman", "Times New Roman font size 14"),
+    ("line spacing", "one and a half line spacing"),
+)
+
+
+def _presence_queries_for_defect(defect: Defect) -> list[str]:
+    """Extra Pinecone queries so stamps, seals and layout marks are retrieved."""
+    blob = " ".join(
+        [defect.defect, defect.requirement, *defect.where_to_look]
+    ).lower()
+    queries: list[str] = []
+    for needle, query in _PRESENCE_QUERY_HINTS:
+        if re.search(rf"\b{re.escape(needle)}\b", blob):
+            queries.append(query)
+    return queries
+
+
 def pinecone_queries_for_defect(defect: Defect) -> list[str]:
-    """Queries sent to Pinecone: where-to-look parts, headings, and cues."""
+    """Queries sent to Pinecone: target part names, short headings, and cues.
+
+    Long where-to-look sentences are not sent — they mention landmarks
+    ("before the Cover Page") and pull the wrong pages.
+    """
     queries: list[str] = []
     queries.extend(parts_named_in_where_to_look(defect))
+    queries.extend(_presence_queries_for_defect(defect))
     if defect.trigger_words:
         queries.extend(
             p.strip()
@@ -425,8 +573,8 @@ def pinecone_queries_for_defect(defect: Defect) -> list[str]:
         heading = _heading_from_where_to_look(step)
         if heading:
             queries.append(heading)
-        clipped = _clip_query(_bare_where_to_look(step))
-        if clipped:
+        clipped = _clip_query(_bare_where_to_look(_strip_landmark_clauses(step)))
+        if clipped and len(clipped) <= 80:
             queries.append(clipped)
     if not queries:
         queries.extend(preferred_parts_for_defect(defect))
@@ -453,10 +601,54 @@ def _unique_terms(terms: list[str]) -> list[str]:
 
 
 def required_parts_for_defect(defect: Defect) -> list[str]:
-    """Parts named in where-to-look; otherwise every preferred part."""
-    return parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
+    """Parts that must be in excerpts before defect_found is allowed.
+
+    Catalogue inspect_parts is the source of truth. When absent, fall back to
+    parsed where_to_look with a few legacy category heuristics.
+    """
+    inspect = catalogue_inspect_parts(defect)
+    if inspect:
+        return inspect
+
+    named = _parts_parsed_from_where_to_look(defect)
+    if not named:
+        return preferred_parts_for_defect(defect)
+
+    category = defect.category_id or ""
+    if category == "affidavit":
+        primary = [p for p in named if p == "Affidavit"]
+        return primary or named[:1]
+    if category == "parties":
+        primary = [p for p in named if p in {"Petition", "Memo of Parties"}]
+        return primary or named[:1]
+    if len(named) > 3 and defect.where_to_look:
+        first = parts_named_in_text(_strip_landmark_clauses(defect.where_to_look[0]))
+        if first:
+            return first
+    return named
+
+
+def excluded_parts_for_defect(defect: Defect) -> list[str]:
+    """Parts that must not be used as evidence / Index-only filler."""
+    explicit = catalogue_exclude_parts(defect)
+    if explicit is not None:
+        return explicit
+    if allows_index_evidence(defect):
+        return []
+    return ["Index"]
+
+
+def allows_index_evidence(defect: Defect) -> bool:
+    """Whether Index listing lines may be used as evidence for this check."""
+    explicit = catalogue_exclude_parts(defect)
+    if explicit is not None:
+        return "Index" not in explicit
+    inspect = catalogue_inspect_parts(defect)
+    if inspect:
+        return "Index" in inspect
+    if (defect.category_id or "") == "index_paper_book":
+        return True
+    return "Index" in _parts_parsed_from_where_to_look(defect)
 
 
 def chunks_cover_part(chunks: list[dict[str, Any]], part: str) -> bool:
@@ -486,7 +678,7 @@ def _bare_where_to_look(step: str) -> str:
 
 def _heading_from_where_to_look(step: str) -> str | None:
     """Pull a form title out of a 'Check the Listing Proforma…' sentence."""
-    text = _bare_where_to_look(step)
+    text = _bare_where_to_look(_strip_landmark_clauses(step))
     named = parts_named_in_text(text)
     if named:
         return named[0]
@@ -500,19 +692,23 @@ def _heading_from_where_to_look(step: str) -> str | None:
 def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     """How many page excerpts this defect is allowed, at most.
 
-    Listing / AOR-code checks are one form; Form 28 needs more pages.
-    A child defect stays tighter than its parent unless several document
-    parts must be compared (Vakalatnama vs petition drafting date).
+    One-form checks (Listing Proforma columns) stay at 3 pages. Checks that
+    must open several documents get PAGES_PER_TARGET_PART each so a
+    high-scoring Affidavit cannot crowd out Vakalatnama.
     """
-    named = parts_named_in_where_to_look(defect)
-    preferred = preferred_parts_for_defect(defect)
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
     budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
-    if len(defect.where_to_look) <= 2 and len(preferred) <= 1:
-        budget = min(budget, 3)
-    if defect.parent_check_id:
-        budget = min(budget, max(4, len(preferred)))
-    need = len(named) or len(preferred)
+    need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
+    # One document part stays small even when the category budget is large
+    # (signature audits raise petition_presentation to 12 pages).
+    if len(targets) <= 1:
+        tight = 3 if len(defect.where_to_look) <= 2 else 6
+        if defect.parent_check_id:
+            tight = max(tight, 4)
+        budget = min(budget, tight)
     return max(1, min(budget, ceiling))
 
 
@@ -613,6 +809,19 @@ def select_chunks_for_defect(
     terms = match_terms_for_defect(defect)
     summary = [c for c in pool if c.get("chunk_kind") == "summary"]
     pages = [c for c in pool if c.get("chunk_kind") != "summary"]
+    excluded = {p.lower() for p in excluded_parts_for_defect(defect)}
+    if excluded:
+        pages = [
+            c
+            for c in pages
+            if not (
+                parts_on_page(c.get("document_part"))
+                and {
+                    name.lower() for name in parts_on_page(c.get("document_part"))
+                }
+                <= excluded
+            )
+        ]
 
     def rank_key(chunk: dict[str, Any]) -> tuple[int, int, int, float]:
         look_hit = 1 if look_parts and _part_match(chunk, look_parts) else 0

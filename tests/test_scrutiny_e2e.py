@@ -261,6 +261,8 @@ async def test_each_check_retrieves_its_own_pinecone_excerpts(
         file_hash: str,
         top_k: int | None = None,
         max_chunks: int | None = None,
+        document_parts: list[str] | None = None,
+        **_: Any,
     ) -> list[dict[str, Any]]:
         gathers.append((file_hash, tuple(queries)))
         return [

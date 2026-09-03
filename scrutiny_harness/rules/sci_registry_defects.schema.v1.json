@@ -185,7 +185,31 @@
             "type": "string",
             "minLength": 5
           },
-          "description": "Where to Look steps"
+          "description": "Where to Look steps (human/LLM instructions). Not the retrieval source of truth."
+        },
+        "inspect_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "LlamaSplit document_part labels that must be retrieved before defect_found is allowed. Use configs/config.json split.categories names."
+        },
+        "context_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "Extra Split labels to retrieve for comparison/context. Missing these does not force needs_review."
+        },
+        "exclude_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "Split labels that must not be used as evidence (e.g. Index listing lines). Defaults to Index when omitted on non-index checks."
         },
         "how_to_cure": {
           "type": "array",

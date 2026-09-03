@@ -191,18 +191,32 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
             </div>
           )}
           {(finding.serial_no != null ||
+            finding.location ||
             finding.applicable_rule ||
             finding.location_source ||
             (finding.authority_refs ?? []).length > 0) && (
             <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              {[
-                finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
-                finding.applicable_rule,
-                finding.location_source,
-                ...(finding.authority_refs ?? []),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+              <div>
+                {[
+                  finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
+                  finding.location,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+              {(finding.applicable_rule ||
+                finding.location_source ||
+                (finding.authority_refs ?? []).length > 0) && (
+                <div className="mt-1">
+                  {[
+                    finding.applicable_rule,
+                    finding.location_source,
+                    ...(finding.authority_refs ?? []),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              )}
             </div>
           )}
         </div>
