@@ -188,14 +188,14 @@ async def test_scrutiny_all_seventy_four_checks_mocked(
     assert isinstance(result, ScrutinyResponse)
     report = result.report
     catalogue = get_catalogue()
-    assert report.planned_checks == len(catalogue.defects) == 74
+    assert report.planned_checks == len(catalogue.defects) == 75
     assert report.stopped_early is False
-    assert len(report.findings) == 74
-    assert len(calls) == 74
-    assert len(partials) == 74
-    assert [p.completed for p in partials] == list(range(1, 75))
+    assert len(report.findings) == 75
+    assert len(calls) == 75
+    assert len(partials) == 75
+    assert [p.completed for p in partials] == list(range(1, 76))
     last = scrutiny_env.beta.agent_data.updates[-1]["metadata"]["scrutiny_report"]
-    assert len(last["findings"]) == 74
+    assert len(last["findings"]) == 75
 
 
 @pytest.mark.asyncio
@@ -341,7 +341,7 @@ async def test_low_confidence_finding_is_needs_review(
 @pytest.mark.asyncio
 async def test_all_defects_are_catalogue_sized() -> None:
     catalogue = get_catalogue()
-    assert len(catalogue.defects) == 74
+    assert len(catalogue.defects) == 75
     assert catalogue.defect("D018").check_id == "D018"
 
 

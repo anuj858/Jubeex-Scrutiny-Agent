@@ -32,6 +32,7 @@ from .scrutiny.rules import (
     defects_for_filing_type,
     enabled_defect_ids,
     get_catalogue,
+    serial_sort_key,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -418,7 +419,7 @@ class ScrutinyWorkflow(Workflow):
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
         ) -> ScrutinyReport:
-            snapshot = sorted(current, key=lambda f: f.serial_no)
+            snapshot = sorted(current, key=lambda f: serial_sort_key(f.serial_no))
             return ScrutinyReport(
                 catalogue_id=catalogue.catalogue_id,
                 catalogue_version=catalogue.catalogue_version,

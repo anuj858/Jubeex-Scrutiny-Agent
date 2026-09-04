@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.1",
-  "catalogue_version": "2.2.1",
+  "catalogue_version": "2.2.8",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -120,6 +120,102 @@
         "page_102": "Page 102, affidavit swearing date and blanks",
         "page_103": "Page 103, caveat with respondent Vakalatnama"
       }
+    },
+    {
+      "source_id": "SCI_COMPENDIUM_CIRCULARS",
+      "title": "Supreme Court of India Compendium of Circulars, Guidelines and Practice Directions",
+      "authority_type": "official_compendium",
+      "url": "https://drive.google.com/file/d/1BunoqM82tgNnTfz3ZWA5xT4NzWyhiyaX/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "page_187": "Page 187, circular dated 19.9.1997",
+        "page_195": "Pages 195-196, circular dated 28.5.1999",
+        "page_198": "Page 198, circulars dated 13.3.2000 and 27.9.2001",
+        "page_218": "Page 218, circular dated 4.5.2006",
+        "page_219": "Page 219, circular dated 4.5.2006"
+      }
+    },
+    {
+      "source_id": "SCI_CIRCULAR_2020",
+      "title": "Supreme Court of India Circular F.No.01/Judl./2020",
+      "authority_type": "official_circular",
+      "url": "https://drive.google.com/file/d/1oBgd5XH4YsRLeeOqS-dUE6tyPPhnRzqS/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": "2020-03-12",
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "page_1": "Page 1, F.No.01/Judl./2020",
+        "page_2": "Page 2, F.No.01/Judl./2020"
+      }
+    },
+    {
+      "source_id": "SCBA_ADVOCATE_CHECKLIST",
+      "title": "SCBA Circular - Advocate's checklist",
+      "authority_type": "official_circular",
+      "url": "https://drive.google.com/file/d/11IwAga5_lnzVKU3F9PhUKZ2yr6zPSjQh/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "page_1": "Page 1, Advocate's checklist"
+      }
+    },
+    {
+      "source_id": "SCI_CIRCULAR_2017_06_02",
+      "title": "Supreme Court of India Circular F. No. 172/Judl./2017 dated 02.06.2017",
+      "authority_type": "official_circular",
+      "url": "https://drive.google.com/file/d/1D7BTH9OM9N-XO2p0-jVjTuvp5XCGDV-0/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": "2017-06-02",
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "index_format": "F. No. 172/Judl./2017, common index and Part I / Part II"
+      }
+    },
+    {
+      "source_id": "SCI_JUDICIAL_I_COMPENDIUM",
+      "title": "Compendium Judicial-I Circulars from 19.01.2012 to 11.12.2017",
+      "authority_type": "official_compendium",
+      "url": "https://drive.google.com/file/d/1uu_f2VaTURt0REasJq-8XZtWw5sYMPI4/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "page_130": "Page 130, F.No. 94/Judl./2012 dated 23 April 2012"
+      }
+    },
+    {
+      "source_id": "SCI_CIRCULARS_GUIDELINES_COMPENDIUM",
+      "title": "Supreme Court of India Compendium of Circulars, Guidelines and Practice Directions",
+      "authority_type": "official_compendium",
+      "url": "https://drive.google.com/file/d/1lprO-DmTHC2SneoLD-vGNsrqjFeYyXJM/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": null,
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "page_5": "Page 5, F.No.57/Judl./2009 dated 3 August 2009"
+      }
+    },
+    {
+      "source_id": "SCI_CIRCULAR_2024_02_07",
+      "title": "Supreme Court of India Circular F.No. 3/Judl./2024 dated 07.02.2024",
+      "authority_type": "official_circular",
+      "url": "https://drive.google.com/file/d/1R2ap_dhyUsalvi42fMDDua-BVPFJ8pQh/view?usp=sharing",
+      "alternate_urls": [],
+      "issued_date": "2024-02-07",
+      "effective_date": null,
+      "checksum": null,
+      "locators": {
+        "caste_religion": "F.No. 3/Judl./2024, caste or religion not to be mentioned in the memo of parties"
+      }
     }
   ],
   "categories": [
@@ -186,7 +282,7 @@
     {
       "id": "vakalatnama",
       "label": "Vakalatnama",
-      "prompt": "Assess the Vakalatnama: execution, acceptance, stamps, executant particulars and related endorsements. Decide only the objection in this message. Do not score sibling defects in this area."
+      "prompt": "Assess the Vakalatnama: execution, acceptance, executant particulars and related endorsements. Decide only the objection in this message. Do not score sibling defects in this area."
     },
     {
       "id": "memo_of_appearance",
@@ -315,7 +411,7 @@
         "Option for the User to rearrange the documents.",
         "Re-upload the amended document."
       ],
-      "location_source": "SCI_COURT_PROCESSES_HANDBOOK, Pages 83-84 of the PDF (index format). Also F. No. 172/Judl./2017, circular_02.06.2017.pdf"
+      "location_source": "F. No. 172/Judl./2017, SCI_CIRCULAR_2017_06_02"
     },
     {
       "check_id": "D015",
@@ -344,7 +440,7 @@
         "Separate index for each volume: option for Jubeex to auto-generate a separate index for each volume.",
         "Option for the User to upload the index of each volume with Jubeex."
       ],
-      "location_source": "F.No.01/Judl./2020, 12032020_071455.pdf, Page 2 of the PDF"
+      "location_source": "F.No.01/Judl./2020, SCI_CIRCULAR_2020, Page 2 of the PDF"
     },
     {
       "check_id": "D003",
@@ -406,7 +502,7 @@
         "Upload the completed Advocate's Check List with Jubeex.",
         "Advocate-on-Record's certification: prompt the User to obtain the Advocate-on-Record's certification and signature on the Advocate's Check List confirming personal verification of the petition, compliance with the Supreme Court Rules, 2013, compliance with the Check List, and that all necessary documents have been filed, and upload the duly certified Advocate's Check List with Jubeex."
       ],
-      "location_source": "Page 1, SCBA Circular - Advocate's checklist.pdf"
+      "location_source": "Page 1, SCBA_ADVOCATE_CHECKLIST"
     },
     {
       "check_id": "D005",
@@ -528,7 +624,7 @@
         "Option for the User to edit the addresses of the parties with Jubeex.",
         "Re-upload the petition or interlocutory application."
       ],
-      "location_source": "F.No. 94/Judl./2012 dated 23 April 2012, Pg.130 of the PDF Compendium Judicial-I Circulars from 19 01 2012 to 11 12 2017 OCR.pdf"
+      "location_source": "F.No. 94/Judl./2012 dated 23 April 2012, Page 130 of the PDF SCI_JUDICIAL_I_COMPENDIUM"
     },
     {
       "check_id": "D020",
@@ -618,7 +714,7 @@
         "Option for the User to upload the affidavit with Jubeex.",
         "Re-upload the petition, appeal or interlocutory application along with the affidavit."
       ],
-      "location_source": "F.No.57/Judl./2009 dated 3 August 2009, Page 5 of the PDF 2024042339.pdf"
+      "location_source": "F.No.57/Judl./2009 dated 3 August 2009, Page 5 of the PDF SCI_CIRCULARS_GUIDELINES_COMPENDIUM"
     },
     {
       "check_id": "D022",
@@ -717,7 +813,7 @@
       "requirement": "Every exhibit annexed to an affidavit shall be marked with the title and number of the cause, appeal or matter and shall be initialled and dated by the authority before whom it is sworn.",
       "trigger_words": null,
       "where_to_look": [
-        "Look for the exhibits or annexures to the affidavit.",
+        "Look for the exhibits to the Affidavit.",
         "Check each such exhibit for the marking, initials and date of the authority before whom the affidavit was sworn (usually at the top or foot of each exhibit page)."
       ],
       "inspect_parts": [
@@ -733,9 +829,11 @@
         "Marking of exhibits: option for Jubeex to auto-mark each exhibit annexed to the affidavit with the title and number of the cause, appeal or matter.",
         "Option for the User to review and edit the exhibit markings with Jubeex.",
         "Re-upload the affidavit along with the marked exhibits.",
-        "Prompt the User to ensure that each exhibit is initialled and dated by the authority before whom the affidavit is sworn, and upload the duly initialled and dated exhibits with Jubeex."
+        "Prompt the User to ensure that each exhibit annexed to the affidavit is initialled and dated by the authority before whom the affidavit is sworn, and upload the duly initialled and dated exhibits with Jubeex.",
+        "Re-upload the affidavit along with the duly initialled and dated exhibits."
       ],
-      "location_source": "SCI_RULES_2013, Page 15 of the PDF"
+      "applicable_rule": "Order IX, Rule 9",
+      "location_source": "SCR, 2013, Page 15 of the PDF SCI_RULES_2013"
     },
     {
       "check_id": "D026",
@@ -1159,33 +1257,6 @@
       "location_source": "SCI_RULES_2013, Page 6 of the PDF"
     },
     {
-      "check_id": "D040",
-      "serial_no": 123,
-      "main_category": "General/Global",
-      "special_category": null,
-      "category_id": "vakalatnama",
-      "parent_check_id": "D038",
-      "overlap_note": "Narrower than D038. D038 covers execution and acceptance of the Vakalatnama. This check is only whether the Advocates' Welfare Fund stamp is affixed. Do not re-decide the parent.",
-      "defect": "A welfare stamp is not affixed on the Vakalatnama.",
-      "requirement": "A welfare stamp must be affixed on the Vakalatnama.",
-      "trigger_words": null,
-      "where_to_look": [
-        "Check the Vakalatnama placed at the end of the case file.",
-        "Check the top or margin of the Vakalatnama for the affixed Advocates' Welfare Fund stamp."
-      ],
-      "inspect_parts": [
-        "Vakalatnama"
-      ],
-      "context_parts": [],
-      "exclude_parts": [
-        "Index"
-      ],
-      "how_to_cure": [
-        "Option for the User to re-upload the updated Vakalatnama with the welfare stamp affixed."
-      ],
-      "location_source": "Advocate_welfare_act.pdf, Page 9"
-    },
-    {
       "check_id": "D041",
       "serial_no": 124,
       "main_category": "General/Global",
@@ -1247,7 +1318,7 @@
         "Prompt the User to enter the name, designation or authority of the person executing the Vakalatnama, and option for Jubeex to update the Vakalatnama using the information provided, along with an option for the User to re-upload the signed Vakalatnama.",
         "Option for the User to upload the Vakalatnama with Jubeex."
       ],
-      "location_source": "Circular dated 4.5.2006, Page 218 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 4.5.2006, Page 218 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D042",
@@ -1278,7 +1349,7 @@
         "Prompt the User to enter the names of the persons executing the Vakalatnama and complete the relevant columns, and option for Jubeex to update the Vakalatnama using the information provided.",
         "Option for the User to upload the duly completed Vakalatnama."
       ],
-      "location_source": "Circular dated 4.5.2006, Page 218 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 4.5.2006, Page 218 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D044",
@@ -1306,7 +1377,7 @@
         "Option for Jubeex to auto-edit the Vakalatnama to disclose that it is executed for oneself and on behalf of another.",
         "Option for the User to re-upload the corrected Vakalatnama."
       ],
-      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D045",
@@ -1337,7 +1408,7 @@
         "Re-upload option for the corrected Vakalatnama.",
         "Upload option for a copy of the power of attorney."
       ],
-      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D046",
@@ -1365,7 +1436,7 @@
         "Edit option for the Vakalatnama to number the signatures seriatim and add names in brackets.",
         "Upload option for the corrected Vakalatnama."
       ],
-      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 4.5.2006, Page 219 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D047",
@@ -1534,7 +1605,7 @@
         "Re-upload the document.",
         "Prompt the User to upload a clearly typed or written copy of the original or certified document, certified as a true copy by the Advocate-on-Record or the party-in-person, where the original or certified copy is of dim impression."
       ],
-      "location_source": "Circulars dated 13.3.2000 and 27.9.2001, Page 198 of the PDF 2024042371.pdf"
+      "location_source": "Circulars dated 13.3.2000 and 27.9.2001, Page 198 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D053",
@@ -1562,27 +1633,81 @@
         "Option for the User to edit the annexure markings with Jubeex.",
         "Re-upload the correctly marked annexures."
       ],
-      "location_source": "Circular dated 19.9.1997, Page 187 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 19.9.1997, Page 187 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D010",
-      "serial_no": 96,
+      "serial_no": "96A",
       "main_category": "General/Global",
       "special_category": null,
       "category_id": "dates_execution",
       "parent_check_id": null,
-      "overlap_note": null,
-      "defect": "The Advocate-on-Record has not given the required particulars of the petition drafting date, the supporting affidavit date with paragraph and page counts, and the Vakalatnama date relative to drafting.",
-      "requirement": "The Advocate-on-Record must give: (1) the petition's date of drafting, which may be the same as or prior to the date of filing; (2) that the affidavit enclosed with the petition is of the same or a subsequent date to drafting and states the date, number of paragraphs and number of pages of the petition; and (3) that the Vakalatnama is not dated later than the date of drafting of the petition.",
-      "trigger_words": "date of drafting; affidavit same or subsequent date; Vakalatnama subsequent to drafting",
+      "overlap_note": "This check is only whether the Main Petition contains a date of drafting. Affidavit and Vakalatnama dates are D077 and D078.",
+      "defect": "The petition fails to contain the date of drafting, which may be the same as or prior to the date of filing.",
+      "requirement": "The petition must contain the date of drafting, which may be the same as or prior to the date of filing.",
+      "trigger_words": "AOR has not given the following information:- 1) Date of drafting (Same or Prior date of filing)",
       "where_to_look": [
-        "Check the date of drafting at the end of the main petition, below the prayer.",
-        "Check the affidavit for its own date (which must be the same or subsequent) and for the date, number of paragraphs and number of pages of the petition stated in its body.",
+        "Check the date of drafting at the end of the Main Petition, below the prayer."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
+      "how_to_cure": [
+        "Prompt the User to provide or confirm the date of drafting of the petition. Where the petition is drafted using Jubeex, auto-fill the date of drafting.",
+        "Option for the User to review and edit the date of drafting with Jubeex."
+      ],
+      "location_source": "Circular dated 28.5.1999, Pages 195-196 of the PDF SCI_COMPENDIUM_CIRCULARS"
+    },
+    {
+      "check_id": "D077",
+      "serial_no": "96B",
+      "main_category": "General/Global",
+      "special_category": null,
+      "category_id": "dates_execution",
+      "parent_check_id": null,
+      "overlap_note": "This check is only whether the affidavit date is the same as or subsequent to the Main Petition drafting date. Drafting date itself is D010. Vakalatnama date is D078.",
+      "defect": "The affidavit enclosed with the petition is not of the same or a subsequent date to the drafting of the petition.",
+      "requirement": "The affidavit enclosed with the petition must be of the same or a subsequent date to the drafting of the petition.",
+      "trigger_words": "AOR has not given the following information:- 2) Affidavit (same or subsequent date of the drafting)",
+      "where_to_look": [
+        "Check the date of drafting at the end of the Main Petition, below the prayer.",
+        "Check the Affidavit for its own date (which must be the same or subsequent) and for the date, number of paragraphs and number of pages of the petition stated in its body."
+      ],
+      "inspect_parts": [
+        "Main Petition",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [
+        "Index"
+      ],
+      "how_to_cure": [
+        "Prompt the User to provide or confirm the date of drafting of the petition. Where the petition is drafted using Jubeex, auto-fill the date of drafting.",
+        "Option for the User to review and edit the date of drafting with Jubeex."
+      ],
+      "location_source": "Circular dated 28.5.1999, Pages 195-196 of the PDF SCI_COMPENDIUM_CIRCULARS"
+    },
+    {
+      "check_id": "D078",
+      "serial_no": "96C",
+      "main_category": "General/Global",
+      "special_category": null,
+      "category_id": "dates_execution",
+      "parent_check_id": null,
+      "overlap_note": "This check is only whether the Vakalatnama is dated later than the Main Petition drafting date. Drafting date itself is D010. Affidavit date is D077.",
+      "defect": "The Vakalatnama is dated later than the date of drafting of the petition.",
+      "requirement": "The Vakalatnama must not be dated later than the date of drafting of the petition.",
+      "trigger_words": "AOR has not given the following information:- 3) Vakalatnama (subsequent to the date of drafting)",
+      "where_to_look": [
+        "Check the date of drafting at the end of the Main Petition, below the prayer.",
         "Check the Vakalatnama for its date of execution, which must not be later than the date of drafting of the petition."
       ],
       "inspect_parts": [
         "Main Petition",
-        "Affidavit",
         "Vakalatnama"
       ],
       "context_parts": [],
@@ -1593,7 +1718,7 @@
         "Prompt the User to provide or confirm the date of drafting of the petition. Where the petition is drafted using Jubeex, auto-fill the date of drafting.",
         "Option for the User to review and edit the date of drafting with Jubeex."
       ],
-      "location_source": "Circular dated 28.5.1999, Pages 195-196 of the PDF 2024042371.pdf"
+      "location_source": "Circular dated 28.5.1999, Pages 195-196 of the PDF SCI_COMPENDIUM_CIRCULARS"
     },
     {
       "check_id": "D011",
@@ -1602,7 +1727,7 @@
       "special_category": null,
       "category_id": "dates_execution",
       "parent_check_id": "D010",
-      "overlap_note": "Narrower than D010. D010 covers the three date particulars the Advocate-on-Record must give. This check is only whether the petition itself bears a correct drafting date. Do not re-decide the parent.",
+      "overlap_note": "Narrower than D010 (S.No. 96A). D010 is whether the Main Petition bears a date of drafting. This check is only whether that drafting date is correct relative to filing and the Vakalatnama. Do not re-decide the parent.",
       "defect": "The case does not contain the correct date of drafting.",
       "requirement": "The case shall contain the date of drafting, which may be the same as or prior to the date of filing.",
       "trigger_words": null,
@@ -1631,8 +1756,8 @@
       "main_category": "General/Global",
       "special_category": null,
       "category_id": "dates_execution",
-      "parent_check_id": "D010",
-      "overlap_note": "Narrower than D010. D010 covers the three date particulars the Advocate-on-Record must give. This check is only the affidavit date and the paragraph and page particulars of the petition stated in the affidavit. Do not re-decide the parent.",
+      "parent_check_id": "D077",
+      "overlap_note": "Narrower than D077 (S.No. 96B). D077 is whether the affidavit date is the same as or subsequent to drafting. This check is only the affidavit date plus the paragraph and page particulars of the petition stated in the affidavit. Do not re-decide the parent.",
       "defect": "The affidavit enclosed with the petition is not of the same or a subsequent date to the drafting of the petition, or does not contain the date, number of paragraphs and pages of the petition.",
       "requirement": "The affidavit enclosed with the petition shall be of the same or a subsequent date to the drafting of the petition and shall contain the date, number of paragraphs and pages of the petition.",
       "trigger_words": null,
@@ -1661,8 +1786,8 @@
       "main_category": "General/Global",
       "special_category": null,
       "category_id": "dates_execution",
-      "parent_check_id": "D010",
-      "overlap_note": "Narrower than D010. D010 covers the three date particulars the Advocate-on-Record must give. This check is only whether the Vakalatnama date is the same as or prior to drafting. Do not re-decide the parent.",
+      "parent_check_id": "D078",
+      "overlap_note": "Narrower than D078 (S.No. 96C). D078 is whether the Vakalatnama is dated later than drafting. This check is only whether the Vakalatnama date is the same as or prior to drafting. Do not re-decide the parent.",
       "defect": "The Vakalatnama is not of the same date as, or a date prior to, drafting the petition.",
       "requirement": "The Vakalatnama shall be of the same date as, or a date prior to, the drafting date of the petition.",
       "trigger_words": null,
@@ -1711,7 +1836,7 @@
         "Option for the User to remove or edit the references to caste or religion with Jubeex.",
         "Re-upload the revised Memo of Parties."
       ],
-      "location_source": "2024021053.pdf, F.No. 3/Judl./2024"
+      "location_source": "F.No. 3/Judl./2024, SCI_CIRCULAR_2024_02_07"
     },
     {
       "check_id": "D055",
@@ -1742,7 +1867,7 @@
         "Line spacing: option for Jubeex to auto-format the document in one-and-a-half line spacing, with single line spacing for quotations and indented text.",
         "Option for the User to edit the line spacing with Jubeex."
       ],
-      "location_source": "F.No.01/Judl./2020, 12032020_071455.pdf, Page 1 of the PDF"
+      "location_source": "F.No.01/Judl./2020, SCI_CIRCULAR_2020, Page 1 of the PDF"
     },
     {
       "check_id": "D056",
@@ -1771,7 +1896,7 @@
         "Option for Jubeex to auto-format the document with 4 cm left and right margins and 2 cm top and bottom margins.",
         "Option for the User to edit the page margins with Jubeex."
       ],
-      "location_source": "F.No.01/Judl./2020, 12032020_071455.pdf, Page 1 of the PDF"
+      "location_source": "F.No.01/Judl./2020, SCI_CIRCULAR_2020, Page 1 of the PDF"
     },
     {
       "check_id": "D057",

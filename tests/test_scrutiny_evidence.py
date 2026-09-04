@@ -704,7 +704,7 @@ def test_invented_evidence_page_becomes_null() -> None:
     assert grounded.evidence[0].quote == "something that was never retrieved"
 
 
-def test_missing_stamp_is_defect_not_undetermined() -> None:
+def test_missing_visual_mark_is_defect_not_undetermined() -> None:
     catalogue = get_catalogue()
     vakalatnama = [
         {
@@ -716,16 +716,16 @@ def test_missing_stamp_is_defect_not_undetermined() -> None:
         }
     ]
     timid = DefectResponse(
-        check_id="D040",
+        check_id="D038",
         status="not_determined",
         confidence=0.4,
-        summary="Cannot see whether a welfare stamp is affixed.",
-        reasoning="Stamps are visual.",
+        summary="Cannot see whether the Vakalatnama is executed.",
+        reasoning="Signatures are visual.",
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
     )
-    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, vakalatnama)
+    gated = apply_undetermined_policy(catalogue.defect("D038"), timid, vakalatnama)
     assert gated.status == "defect_found"
 
 
@@ -741,23 +741,23 @@ def test_undetermined_without_the_part_stays_needs_review() -> None:
         }
     ]
     timid = DefectResponse(
-        check_id="D040",
+        check_id="D038",
         status="not_determined",
         confidence=0.5,
         summary="No Vakalatnama excerpts.",
-        reasoning="Cannot see a stamp.",
+        reasoning="Cannot see a signature.",
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
     )
-    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, petition_only)
+    gated = apply_undetermined_policy(catalogue.defect("D038"), timid, petition_only)
     assert gated.status == "needs_review"
 
 
-def test_visual_defects_query_stamp_and_margin_cues() -> None:
+def test_visual_defects_query_seal_and_margin_cues() -> None:
     catalogue = get_catalogue()
-    stamp_queries = pinecone_queries_for_defect(catalogue.defect("D040"))
-    assert any("stamp" in q.lower() for q in stamp_queries)
+    seal_queries = pinecone_queries_for_defect(catalogue.defect("D021"))
+    assert any("seal" in q.lower() for q in seal_queries)
     margin_queries = pinecone_queries_for_defect(catalogue.defect("D006"))
     assert any("margin" in q.lower() or "a4" in q.lower() for q in margin_queries)
 
@@ -825,7 +825,7 @@ def test_filing_location_states_page_or_page_missing() -> None:
 
 def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
     catalogue = get_catalogue()
-    defect = catalogue.defect("D040")
+    defect = catalogue.defect("D038")
     rewritten = validated_reasoning(
         defect,
         "Stamps are visual. See SCI_CHECKLIST_2025 Page 5 of the PDF.",
@@ -834,7 +834,7 @@ def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
         evidence_pages=[50],
     )
     assert "SCI_CHECKLIST" not in rewritten
-    assert "welfare stamp" in rewritten.lower() or "vakalatnama" in rewritten.lower()
+    assert "vakalatnama" in rewritten.lower() or "executed" in rewritten.lower()
     assert "filing page 50" in rewritten.lower()
 
 
@@ -910,6 +910,24 @@ def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     named = parts_named_in_where_to_look(catalogue.defect("D057"))
     assert "AOR's Declaration" in named
     assert "Impugned Order" in parts_named_in_where_to_look(catalogue.defect("D059"))
+
+
+def test_serial_96_is_split_into_three_date_checks() -> None:
+    get_catalogue.cache_clear()
+    catalogue = get_catalogue()
+    drafting = catalogue.defect("D010")
+    affidavit = catalogue.defect("D077")
+    vakalatnama = catalogue.defect("D078")
+    assert drafting.serial_no == "96A"
+    assert affidavit.serial_no == "96B"
+    assert vakalatnama.serial_no == "96C"
+    assert drafting.inspect_parts == ["Main Petition"]
+    assert affidavit.inspect_parts == ["Main Petition", "Affidavit"]
+    assert vakalatnama.inspect_parts == ["Main Petition", "Vakalatnama"]
+    exhibits = catalogue.defect("D025")
+    assert exhibits.serial_no == 92
+    assert exhibits.applicable_rule == "Order IX, Rule 9"
+    assert "SCI_RULES_2013" in exhibits.location_source
 
 
 def test_catalogue_inspect_parts_are_source_of_truth() -> None:
