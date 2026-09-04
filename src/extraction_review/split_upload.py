@@ -193,6 +193,8 @@ def validate_parts(
     filing_type: str,
     parts: Sequence[Mapping[str, Any] | SplitPartInput],
     payload: Mapping[str, Any] | None = None,
+    *,
+    require_all_slots: bool = True,
 ) -> tuple[UploadTypeCatalog, list[SplitPartInput]]:
     catalog = type_catalog(filing_type, payload)
     allowed = catalog.slot_by_id()
@@ -226,8 +228,12 @@ def validate_parts(
     missing = [
         slot.label for slot in catalog.slots if slot.required and slot.id not in seen
     ]
-    if missing:
+    if require_all_slots and missing:
         raise SplitUploadError("Missing required documents: " + ", ".join(missing))
+    if not parsed:
+        raise SplitUploadError(
+            "No labeled documents were sliced from the compiled PDF"
+        )
     return catalog, parsed
 
 

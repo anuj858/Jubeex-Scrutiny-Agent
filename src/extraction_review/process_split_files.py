@@ -82,6 +82,7 @@ class SplitFilesEvent(StartEvent):
     workspace_id: str | None = None
     user_id: str | None = None
     parts: list[SplitPartEvent]
+    require_all_slots: bool = True
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -107,6 +108,7 @@ class SplitFilesState(BaseModel):
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
+    require_all_slots: bool = True
     parts: list[SplitPartEvent] = Field(default_factory=list)
     filename: str | None = None
     file_hash: str | None = None
@@ -174,7 +176,9 @@ class ProcessSplitFilesWorkflow(Workflow):
 
         try:
             catalog, parts = validate_parts(
-                event.filing_type, _as_part_inputs(ingested)
+                event.filing_type,
+                _as_part_inputs(ingested),
+                require_all_slots=event.require_all_slots,
             )
         except SplitUploadError as exc:
             ctx.write_event_to_stream(Status(level="error", message=str(exc)))
@@ -203,6 +207,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         async with ctx.store.edit_state() as state:
             state.filing_type = catalog.filing_type
             state.job_type = event.job_type
+            state.require_all_slots = event.require_all_slots
             state.organization_id = event.organization_id or event.org_id
             state.org_id = state.organization_id
             state.workspace_id = event.workspace_id
@@ -265,7 +270,9 @@ class ProcessSplitFilesWorkflow(Workflow):
         if not state.filing_type:
             raise ValueError("Filing type is not set")
         catalog, _parts = validate_parts(
-            state.filing_type, _as_part_inputs(state.parts)
+            state.filing_type,
+            _as_part_inputs(state.parts),
+            require_all_slots=state.require_all_slots,
         )
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)

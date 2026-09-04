@@ -116,7 +116,7 @@ Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `buil
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | Backend entry: `job_type=upload_compiled` classifies/slices a compiled PDF; `job_type=upload_separate` runs extract on labeled files |
+| `process-file` | `src/extraction_review/process_file.py` | Backend entry: `job_type=upload_compiled` classifies/slices a compiled PDF then runs extract; `job_type=upload_separate` runs extract on labeled files |
 | `process-split-files` | `src/extraction_review/process_split_files.py` | extract / overlay / Agent Data / Pinecone (UI submit, or nested from `process-file`) |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
 | `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: one Pinecone pool, sliced record, OpenRouter per defect, save on same Agent Data item |
@@ -161,13 +161,22 @@ POST /v1/filings
 { "job_id": "…", "status": "accepted", "poll_url": "/v1/jobs/…" }
 ```
 
-Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path.
+Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract).
 
 **2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`.
 
 **3. Fetch the record** `GET /v1/filings/{agent_data_id}` — filing JSON is in `data` (ids also in `data.metadata`).
 
-**4. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` then poll `GET /v1/jobs/{job_id}` again. The report is `result.report`.
+**4. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` with an optional body:
+
+```json
+{
+  "file_hash": "8adf76ba0ba44d4561ab5a4ad88e3d6e97e56a32010ac8c08f39b5f8c1d01340",
+  "file_url": "https://storage.example/filings/Defect_SLP_Civil.pdf"
+}
+```
+
+Send both, either, or `{}`. `download_url` is accepted as an alias of `file_url`. Then poll `GET /v1/jobs/{job_id}` again. The report is `result.report`.
 
 Job state is in-memory on this process. Poll until complete; do not assume jobs survive a restart.
 

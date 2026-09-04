@@ -154,6 +154,19 @@ def test_missing_required_petition_fails() -> None:
         validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
 
 
+def test_compiled_slices_skip_missing_required_slots() -> None:
+    catalog, parts = validate_parts(
+        "SLP_CIVIL",
+        [
+            {"slot_id": "cover_page", "file_id": "file-cover"},
+            {"slot_id": "petition", "file_id": "file-petition"},
+        ],
+        require_all_slots=False,
+    )
+    assert catalog.filing_type == "SLP_CIVIL"
+    assert {item.slot_id for item in parts} == {"cover_page", "petition"}
+
+
 def test_unknown_filing_type_fails() -> None:
     with pytest.raises(SplitUploadError, match="Unknown filing type"):
         validate_parts("WRIT_PETITION_CIVIL", [])
@@ -386,6 +399,7 @@ def test_process_file_prepare_does_not_extract() -> None:
     assert "classify.create" in source
     assert "_split_page_parts" in source
     assert "slice_bundle_pdf" in source
+    assert "_extract_sliced_parts" in source
 
 
 def _blank_pdf(page_count: int) -> bytes:

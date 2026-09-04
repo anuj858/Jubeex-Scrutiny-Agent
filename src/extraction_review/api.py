@@ -19,16 +19,29 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .clients import get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES
-from .process_file import FileEvent
+from .process_file import (
+    FileEvent,
+    blank_or_placeholder,
+    intake_mode,
+    normalize_job_type,
+)
 from .process_file import workflow as process_file_workflow
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
-from .split_upload import ui_catalog
+from .split_upload import type_catalog, ui_catalog
 
 load_dotenv()
 
@@ -41,28 +54,126 @@ JobStatus = Literal["running", "completed", "failed"]
 class DocumentIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = None
-    document_id: str | None = None
-    download_url: str | None = None
+    name: str | None = Field(default=None, examples=["01_Petition.pdf"])
+    document_id: str | None = Field(
+        default=None, examples=["11aa22bb-33cc-44dd-85ee-66ff77889900"]
+    )
+    download_url: str | None = Field(
+        default=None,
+        examples=["https://storage.example/filings/01_Petition.pdf"],
+    )
     slot_id: str | None = None
     file_id: str | None = None
     filename: str | None = None
     file_url: str | None = None
 
+    @field_validator(
+        "name",
+        "document_id",
+        "download_url",
+        "slot_id",
+        "file_id",
+        "filename",
+        "file_url",
+        mode="before",
+    )
+    @classmethod
+    def _drop_swagger_placeholders(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
+
 
 class CreateFilingRequest(BaseModel):
     """Body for POST /v1/filings — same fields as process-file start_event."""
 
-    job_type: str
-    filing_type: str | None = None
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "job_type": "upload_separate",
+                    "filing_type": "SLP_CIVIL",
+                    "organization_id": "3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11",
+                    "workspace_id": "b20c7d91-4e55-48aa-a013-9d6e2f88c104",
+                    "user_id": "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447",
+                    "documents": [
+                        {
+                            "name": "01_Petition.pdf",
+                            "document_id": "11aa22bb-33cc-44dd-85ee-66ff77889900",
+                            "download_url": "https://storage.example/01_Petition.pdf",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    job_type: str = Field(examples=["upload_separate", "upload_compiled"])
+    filing_type: str | None = Field(
+        default=None,
+        examples=["SLP_CIVIL", "SLP_CRIMINAL"],
+    )
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
     documents: list[DocumentIn] = Field(default_factory=list)
 
+    @field_validator(
+        "job_type",
+        "filing_type",
+        "organization_id",
+        "workspace_id",
+        "user_id",
+        mode="before",
+    )
+    @classmethod
+    def _drop_swagger_placeholders(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
+
+    @model_validator(mode="after")
+    def _require_real_job_and_filing_type(self) -> CreateFilingRequest:
+        job = (self.job_type or "").strip().lower()
+        if not job:
+            raise ValueError(
+                "job_type must be upload_compiled or upload_separate, "
+                "not the Swagger placeholder 'string'"
+            )
+        self.job_type = job
+        catalog_types = set(ui_catalog())
+        mode = normalize_job_type(job)
+        if mode == "split" or (
+            mode is None and len(self.documents) > 1
+        ):
+            if not self.filing_type:
+                raise ValueError(
+                    "filing_type is required for upload_separate. "
+                    "Use a real type such as SLP_CIVIL, not 'string' or a test value."
+                )
+            if catalog_types and self.filing_type not in catalog_types:
+                allowed = ", ".join(sorted(catalog_types))
+                raise ValueError(
+                    f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+                )
+        return self
+
 
 class CreateScrutinyRequest(BaseModel):
-    file_hash: str | None = None
+    """Optional locators. The path already has agent_data_id; both fields may be sent."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    file_hash: str | None = Field(
+        default=None,
+        examples=["8adf76ba0ba44d4561ab5a4ad88e3d6e97e56a32010ac8c08f39b5f8c1d01340"],
+    )
+    file_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("file_url", "download_url"),
+        examples=["https://storage.example/filings/Defect_SLP_Civil.pdf"],
+    )
+
+    @field_validator("file_hash", "file_url", mode="before")
+    @classmethod
+    def _drop_swagger_placeholders(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
 
 
 class JobAccepted(BaseModel):
@@ -235,11 +346,40 @@ async def create_filing(
     try:
         event = FileEvent(**payload)
     except (ValidationError, ValueError) as exc:
-        detail = exc.errors() if isinstance(exc, ValidationError) else str(exc)
+        if isinstance(exc, ValidationError):
+            detail = [
+                {"loc": list(err.get("loc") or ()), "msg": err.get("msg")}
+                for err in exc.errors()
+            ]
+        else:
+            detail = str(exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=detail,
         ) from exc
+
+    if intake_mode(event) == "split" and event.filing_type:
+        catalog = type_catalog(event.filing_type)
+        seen = {(item.slot_id or "").strip() for item in event.documents}
+        missing = [
+            slot.label
+            for slot in catalog.slots
+            if slot.required and slot.id not in seen
+        ]
+        if missing:
+            hint = ""
+            if len(event.documents) == 1:
+                hint = (
+                    " You sent one file. If it is a compiled petition PDF, "
+                    "use job_type upload_compiled, not upload_separate."
+                )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing required documents: "
+                + ", ".join(missing)
+                + "."
+                + hint,
+            )
 
     job_id = str(uuid.uuid4())
     job = JobState(
@@ -308,6 +448,7 @@ async def create_scrutiny(
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
         file_hash=(body.file_hash if body else None),
+        file_url=(body.file_url if body else None),
     )
     job_id = str(uuid.uuid4())
     job = JobState(job_id=job_id, kind="scrutiny")

@@ -8,10 +8,12 @@ record in Agent Data plus page chunks retrieved from Pinecone for that document.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Annotated, Any, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
@@ -60,6 +62,7 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
+from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ DEFAULT_CONCURRENCY = 3
 class ScrutinyEvent(StartEvent):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
 
 
 class Status(Event):
@@ -92,6 +96,7 @@ class ScrutinyPartial(Event):
 class ScrutinyState(BaseModel):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
 
 
 def _int_env(name: str, default: int) -> int:
@@ -132,8 +137,24 @@ async def _load_item(
             return item
 
     raise ValueError(
-        "Could not load the filing record. Provide a valid agent_data_id or file_hash."
+        "Could not load the filing record. Provide a valid agent_data_id, "
+        "file_hash, or file_url."
     )
+
+
+async def _sha256_from_url(file_url: str) -> str:
+    url = (file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+    _require_pdf_bytes(data, url)
+    return hashlib.sha256(data).hexdigest()
 
 
 def _sanitize_response(
@@ -335,6 +356,7 @@ class ScrutinyWorkflow(Workflow):
         async with ctx.store.edit_state() as state:
             state.agent_data_id = event.agent_data_id
             state.file_hash = event.file_hash
+            state.file_url = event.file_url
 
         item = await _load_item(
             llama_cloud_client,
@@ -346,6 +368,16 @@ class ScrutinyWorkflow(Workflow):
         review_status = payload.get("status")
         file_name = payload.get("file_name")
         file_hash = payload.get("file_hash") or event.file_hash
+        if not file_hash and event.file_url:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Computing file_hash from file_url",
+                )
+            )
+            file_hash = await _sha256_from_url(event.file_url)
+            async with ctx.store.edit_state() as state:
+                state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
         filing_type = metadata.get("classification") or record.get("petition_type")

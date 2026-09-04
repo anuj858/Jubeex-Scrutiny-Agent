@@ -48,6 +48,97 @@ def test_create_filing_rejects_empty_body(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_create_filing_rejects_swagger_placeholder_filing_type(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/v1/filings",
+        json={
+            "job_type": "upload_separate",
+            "filing_type": "string",
+            "documents": [
+                {
+                    "name": "01_Petition.pdf",
+                    "download_url": "https://example.com/01_Petition.pdf",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "SLP_CIVIL" in response.text
+
+
+def test_create_filing_rejects_unknown_filing_type(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings",
+        json={
+            "job_type": "upload_separate",
+            "filing_type": "test123",
+            "documents": [
+                {
+                    "name": "01_Petition.pdf",
+                    "download_url": "https://example.com/01_Petition.pdf",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "test123" in response.text
+    assert "SLP_CIVIL" in response.text
+
+
+def test_create_filing_rejects_swagger_slot_id_without_mappable_name(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/v1/filings",
+        json={
+            "job_type": "upload_separate",
+            "filing_type": "SLP_CIVIL",
+            "organization_id": "test123",
+            "workspace_id": "test123",
+            "user_id": "test123",
+            "documents": [
+                {
+                    "name": "test",
+                    "document_id": "test",
+                    "download_url": (
+                        "https://example.com/uploads/"
+                        "uuid-Defect_SLP_Civil_-3_.pdf"
+                    ),
+                    "slot_id": "string",
+                    "file_id": "string",
+                    "filename": "string",
+                    "file_url": "string",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "slot" in response.text.lower() or "upload_compiled" in response.text
+
+
+def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings",
+        json={
+            "job_type": "upload_separate",
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                {
+                    "slot_id": "cover_page",
+                    "name": "Defect_SLP_Civil.pdf",
+                    "download_url": "https://example.com/Defect_SLP_Civil.pdf",
+                    "file_id": "test123",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "upload_compiled" in response.text
+    assert "Missing required documents" in response.text
+
+
 def test_create_filing_and_poll(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -159,3 +250,85 @@ def test_create_scrutiny(client: TestClient, monkeypatch: pytest.MonkeyPatch) ->
     assert polled is not None
     assert polled.json()["status"] == "completed"
     assert polled.json()["agent_data_id"] == "agd-scr-1"
+
+
+def test_create_scrutiny_accepts_hash_and_url(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    result = SimpleNamespace(
+        model_dump=lambda mode=None: {
+            "report": {"agent_data_id": "agd-scr-2"},
+            "type": "ScrutinyResponse",
+        }
+    )
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(result)
+
+    monkeypatch.setattr(
+        "extraction_review.api.scrutiny_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/agd-scr-2/scrutiny",
+        json={
+            "file_hash": "abc123hash",
+            "file_url": "https://example.com/Defect_SLP_Civil.pdf",
+        },
+    )
+    assert response.status_code == 202
+    event = captured["event"]
+    assert getattr(event, "file_hash") == "abc123hash"
+    assert getattr(event, "file_url") == "https://example.com/Defect_SLP_Civil.pdf"
+
+
+def test_create_scrutiny_accepts_download_url_alias(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    result = SimpleNamespace(
+        model_dump=lambda mode=None: {"report": {}, "type": "ScrutinyResponse"}
+    )
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(result)
+
+    monkeypatch.setattr(
+        "extraction_review.api.scrutiny_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/agd-scr-4/scrutiny",
+        json={"download_url": "https://example.com/compiled.pdf"},
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "file_url") == "https://example.com/compiled.pdf"
+
+
+def test_create_scrutiny_drops_swagger_placeholders(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    result = SimpleNamespace(
+        model_dump=lambda mode=None: {"report": {}, "type": "ScrutinyResponse"}
+    )
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(result)
+
+    monkeypatch.setattr(
+        "extraction_review.api.scrutiny_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/agd-scr-3/scrutiny",
+        json={"file_hash": "string", "file_url": "string"},
+    )
+    assert response.status_code == 202
+    event = captured["event"]
+    assert getattr(event, "file_hash") is None
+    assert getattr(event, "file_url") is None
