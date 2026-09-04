@@ -12,7 +12,7 @@ from typing import Annotated, Any, cast
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
 from llama_cloud.types.configuration_response import ExtractV2Parameters
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from workflows import Context, Workflow, step
 from workflows.events import StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -34,6 +34,8 @@ from .process_file import (
     Status,
     _extract_page_markdown,
     _wait_for_parse,
+    ingest_remote_file,
+    normalize_org_id,
 )
 from .split_upload import (
     PETITION_SLOT_ID,
@@ -65,18 +67,46 @@ PARSE_CONCURRENCY = 4
 class SplitPartEvent(BaseModel):
     slot_id: str
     document_parts: list[str] = Field(default_factory=list)
-    file_id: str
+    file_id: str | None = None
+    file_url: str | None = None
     file_hash: str | None = None
     filename: str | None = None
+    document_id: str | None = None
 
 
 class SplitFilesEvent(StartEvent):
     filing_type: str
+    job_type: str | None = None
+    org_id: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
     parts: list[SplitPartEvent]
+
+    @field_validator(
+        "org_id", "organization_id", "workspace_id", "user_id", mode="before"
+    )
+    @classmethod
+    def _blank_ids(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return normalize_org_id(str(value))
+
+    @model_validator(mode="after")
+    def _sync_organization_id(self) -> SplitFilesEvent:
+        org_id = self.organization_id or self.org_id
+        self.organization_id = org_id
+        self.org_id = org_id
+        return self
 
 
 class SplitFilesState(BaseModel):
     filing_type: str | None = None
+    job_type: str | None = None
+    org_id: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
     parts: list[SplitPartEvent] = Field(default_factory=list)
     filename: str | None = None
     file_hash: str | None = None
@@ -109,9 +139,42 @@ class ProcessSplitFilesWorkflow(Workflow):
             ),
         ],
     ) -> ParsedEvent:
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message="Ingesting labeled file_url parts",
+            )
+        )
+        ingested: list[SplitPartEvent] = []
+        for part in event.parts:
+            file_id = (part.file_id or "").strip() or None
+            filename = (part.filename or "").strip() or None
+            file_hash = part.file_hash
+            if not file_id:
+                if not (part.file_url or "").strip():
+                    raise SplitUploadError(
+                        f"Slot {part.slot_id!r} needs file_url or file_id"
+                    )
+                file_id, digest, filename = await ingest_remote_file(
+                    llama_cloud_client,
+                    part.file_url or "",
+                    filename=filename,
+                    external_file_id=part.document_id or file_hash,
+                )
+                file_hash = file_hash or digest
+            ingested.append(
+                part.model_copy(
+                    update={
+                        "file_id": file_id,
+                        "filename": filename,
+                        "file_hash": file_hash,
+                    }
+                )
+            )
+
         try:
             catalog, parts = validate_parts(
-                event.filing_type, _as_part_inputs(event.parts)
+                event.filing_type, _as_part_inputs(ingested)
             )
         except SplitUploadError as exc:
             ctx.write_event_to_stream(Status(level="error", message=str(exc)))
@@ -139,6 +202,12 @@ class ProcessSplitFilesWorkflow(Workflow):
 
         async with ctx.store.edit_state() as state:
             state.filing_type = catalog.filing_type
+            state.job_type = event.job_type
+            state.organization_id = event.organization_id or event.org_id
+            state.org_id = state.organization_id
+            state.workspace_id = event.workspace_id
+            state.user_id = event.user_id
+            ingested_by_slot = {item.slot_id: item for item in ingested}
             state.parts = [
                 SplitPartEvent(
                     slot_id=item.slot_id,
@@ -146,6 +215,13 @@ class ProcessSplitFilesWorkflow(Workflow):
                     file_id=item.file_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
+                    document_id=(
+                        item.document_id
+                        or getattr(ingested_by_slot.get(item.slot_id), "document_id", None)
+                    ),
+                    file_url=getattr(
+                        ingested_by_slot.get(item.slot_id), "file_url", None
+                    ),
                 )
                 for item in parts
             ]
@@ -332,6 +408,25 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["split_files"] = {
                 item.slot_id: item.file_id for item in state.parts
             }
+            data.metadata["documents"] = [
+                {
+                    "slot_id": item.slot_id,
+                    "name": item.filename,
+                    "document_id": item.document_id,
+                    "file_id": item.file_id,
+                }
+                for item in state.parts
+            ]
+            if state.job_type:
+                data.metadata["job_type"] = state.job_type
+            if state.organization_id or state.org_id:
+                org_id = state.organization_id or state.org_id
+                data.metadata["organization_id"] = org_id
+                data.metadata["org_id"] = org_id
+            if state.workspace_id:
+                data.metadata["workspace_id"] = state.workspace_id
+            if state.user_id:
+                data.metadata["user_id"] = state.user_id
             extracted_event = ExtractedEvent(data=data)
         except InvalidExtractionData as exc:
             logger.exception("Error validating extracted data")
@@ -509,6 +604,14 @@ async def _index_split_upload(
         "petition_type": filing_type,
         "split_upload": True,
     }
+    if state.organization_id or state.org_id:
+        org_id = state.organization_id or state.org_id
+        shared_meta["organization_id"] = org_id
+        shared_meta["org_id"] = org_id
+    if state.workspace_id:
+        shared_meta["workspace_id"] = state.workspace_id
+    if state.user_id:
+        shared_meta["user_id"] = state.user_id
     ctx.write_event_to_stream(
         Status(
             level="info",
@@ -556,10 +659,11 @@ def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:
     return [
         SplitPartInput(
             slot_id=item.slot_id,
-            file_id=item.file_id,
+            file_id=item.file_id or "",
             document_parts=tuple(item.document_parts),
             file_hash=item.file_hash,
             filename=item.filename,
+            document_id=item.document_id,
         )
         for item in parts
     ]

@@ -7,14 +7,25 @@ after the user Submits the same split-upload form.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import logging
+import re
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
+from urllib.parse import unquote, urlparse
 
 import httpx
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.beta.extracted_data import ExtractedData
-from pydantic import BaseModel, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -23,7 +34,7 @@ from .bundle_slicer import slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import ClassifyConfig, SplitConfig
 from .document_parts import page_parts_from_split, parts_on_page
-from .split_upload import SplitUploadError, type_catalog
+from .split_upload import SplitUploadError, type_catalog, ui_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +51,335 @@ PARSE_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 SPLIT_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 SPLIT_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 FILE_DOWNLOAD_TIMEOUT_S = 120.0
+FULL_PETITION_SLOTS = frozenset({"fullpetition", "full_petition", "compiled"})
+FULL_JOB_TYPES = frozenset(
+    {
+        "full",
+        "compiled",
+        "bundle",
+        "upload_compiled",
+        "upload_combined",
+        "upload_full",
+        "upload_bundle",
+    }
+)
+SPLIT_JOB_TYPES = frozenset(
+    {"split", "parts", "upload_separate", "upload_split"}
+)
+_SLOT_NAME_ALIASES = {
+    "list_of_dates": "synopsis_lod",
+    "list_of_dates_events": "synopsis_lod",
+    "list_of_dates_and_events": "synopsis_lod",
+    "synopsis": "synopsis_lod",
+    "lod": "synopsis_lod",
+    "annexure": "annexures",
+    "full_petition": "fullpetition",
+    "advocates_check_list": "advocates_checklist",
+    "advocate_checklist": "advocates_checklist",
+    "aor_declaration": "aors_declaration",
+    "office_report_limitation": "office_report_on_limitation",
+}
+
+
+class FilingPartIn(BaseModel):
+    """One PDF in a backend intake payload (compiled or already-split)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    slot_id: str | None = None
+    document_id: str | None = None
+    filename: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("name", "filename"),
+    )
+    file_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("download_url", "file_url"),
+    )
+    file_id: str | None = None
+    file_hash: str | None = None
+
+    @model_validator(mode="after")
+    def _require_file_id_or_url(self) -> FilingPartIn:
+        if not (self.file_id or "").strip() and not (self.file_url or "").strip():
+            label = self.slot_id or self.filename or self.document_id or "document"
+            raise ValueError(f"Part {label!r} needs download_url or file_id")
+        return self
+
+
+def normalize_id(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    return raw or None
+
+
+def normalize_org_id(value: str | None) -> str | None:
+    return normalize_id(value)
+
+
+def normalize_job_type(value: str | None) -> str | None:
+    raw = (value or "").strip().lower()
+    if raw in FULL_JOB_TYPES:
+        return "full"
+    if raw in SPLIT_JOB_TYPES:
+        return "split"
+    return None
+
+
+def normalize_petitiontype(value: str | None) -> str | None:
+    return normalize_job_type(value)
+
+
+def normalize_document_stem(name: str) -> str:
+    stem = PurePosixPath((name or "").replace("\\", "/")).stem
+    stem = re.sub(r"^\d+[_.\-\s]+", "", stem)
+    return re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+
+
+def _known_slot_ids(filing_type: str | None) -> list[str]:
+    if filing_type:
+        try:
+            return [slot.id for slot in type_catalog(filing_type).slots]
+        except SplitUploadError:
+            pass
+    ids: list[str] = []
+    seen: set[str] = set()
+    for entry in ui_catalog().values():
+        for slot in entry.get("slots") or []:
+            slot_id = str(slot.get("id") or "").strip()
+            if slot_id and slot_id not in seen:
+                seen.add(slot_id)
+                ids.append(slot_id)
+    return ids
+
+
+def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
+    """Map `01_Petition.pdf` / `List of Dates` onto a split-upload slot id."""
+    stem = normalize_document_stem(name)
+    if not stem:
+        return None
+    if stem in FULL_PETITION_SLOTS or stem == "full_petition":
+        return "fullpetition"
+    if stem.startswith("annexure"):
+        return "annexures"
+    known = _known_slot_ids(filing_type)
+    if stem in known:
+        return stem
+    alias = _SLOT_NAME_ALIASES.get(stem)
+    if alias and (not known or alias in known or alias == "fullpetition"):
+        return alias
+    matches = [slot_id for slot_id in known if slot_id in stem or stem in slot_id]
+    if matches:
+        return max(matches, key=len)
+    return None
+
+
+def resolve_document_slot(
+    item: FilingPartIn,
+    *,
+    mode: str,
+    filing_type: str | None,
+) -> str:
+    explicit = (item.slot_id or "").strip()
+    if explicit:
+        return explicit
+    if mode == "full":
+        return "fullpetition"
+    resolved = slot_id_from_name(item.filename or "", filing_type)
+    if not resolved:
+        raise ValueError(
+            f"Could not map document {item.filename or item.document_id!r} to a slot_id"
+        )
+    return resolved
+
+
+def intake_mode(event: FileEvent) -> str:
+    """full → process-file bundle path; split → process-split-files."""
+    typed = normalize_job_type(event.job_type)
+    if typed:
+        return typed
+    slots = [(p.slot_id or "").strip().lower() for p in event.documents]
+    full_slots = [s for s in slots if s in FULL_PETITION_SLOTS]
+    other_slots = [s for s in slots if s and s not in FULL_PETITION_SLOTS]
+    if full_slots and other_slots:
+        raise ValueError(
+            "Mix of fullpetition and split slots requires job_type "
+            "upload_compiled or upload_separate"
+        )
+    if full_slots:
+        return "full"
+    if other_slots:
+        return "split"
+    if len(event.documents) > 1:
+        return "split"
+    return "full"
+
+
+def compiled_source(
+    event: FileEvent,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """file_id, file_url, filename, file_hash for a compiled petition."""
+    for part in event.documents:
+        if (part.slot_id or "").strip().lower() in FULL_PETITION_SLOTS:
+            return (
+                (part.file_id or "").strip() or None,
+                (part.file_url or "").strip() or None,
+                (part.filename or "").strip() or None,
+                part.file_hash,
+            )
+    if event.documents:
+        part = event.documents[0]
+        return (
+            (part.file_id or "").strip() or None,
+            (part.file_url or "").strip() or None,
+            (part.filename or "").strip() or None,
+            part.file_hash,
+        )
+    return (
+        (event.file_id or "").strip() or None,
+        (event.file_url or "").strip() or None,
+        (event.filename or "").strip() or None,
+        event.file_hash,
+    )
+
+
+def source_document_from_part(
+    item: FilingPartIn,
+    *,
+    file_id: str | None = None,
+    file_hash: str | None = None,
+) -> SourceDocument:
+    return SourceDocument(
+        name=item.filename,
+        document_id=item.document_id,
+        download_url=item.file_url,
+        slot_id=item.slot_id,
+        file_id=file_id or item.file_id,
+        file_hash=file_hash or item.file_hash,
+    )
+
+
+def intake_echo(event: FileEvent) -> dict[str, str | None]:
+    org_id = event.organization_id
+    return {
+        "job_type": event.job_type,
+        "organization_id": org_id,
+        "workspace_id": event.workspace_id,
+        "user_id": event.user_id,
+        "org_id": org_id,
+    }
 
 
 class FileEvent(StartEvent):
-    file_id: str
+    """Start from LlamaCloud file_id, a remote URL, or labeled documents.
+
+    Backend (no Llama UI): POST this to ``process-file``.
+
+    - ``job_type=upload_compiled`` (or ``full``): compiled PDF path.
+    - ``job_type=upload_separate`` (or ``split``) plus ``documents[]``:
+      already-split files; runs process-split-files internally.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    job_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("job_type", "petitiontype", "petition_type"),
+    )
+    filing_type: str | None = None
+    organization_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("organization_id", "org_id"),
+    )
+    workspace_id: str | None = None
+    user_id: str | None = None
+    file_id: str | None = None
+    file_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("download_url", "file_url"),
+    )
     file_hash: str | None = None
+    filename: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("name", "filename"),
+    )
+    documents: list[FilingPartIn] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("documents", "parts"),
+    )
+
+    def __init__(self, **params: Any) -> None:
+        # workflows.Event only forwards exact field names, not validation aliases.
+        if "job_type" not in params:
+            if "petitiontype" in params:
+                params["job_type"] = params.pop("petitiontype")
+            elif "petition_type" in params:
+                params["job_type"] = params.pop("petition_type")
+        params.pop("petitiontype", None)
+        params.pop("petition_type", None)
+        if "organization_id" not in params and "org_id" in params:
+            params["organization_id"] = params.pop("org_id")
+        else:
+            params.pop("org_id", None)
+        if "documents" not in params and "parts" in params:
+            params["documents"] = params.pop("parts")
+        else:
+            params.pop("parts", None)
+        if "file_url" not in params and "download_url" in params:
+            params["file_url"] = params.pop("download_url")
+        if "filename" not in params and "name" in params:
+            params["filename"] = params.pop("name")
+        super().__init__(**params)
+
+    @property
+    def parts(self) -> list[FilingPartIn]:
+        return self.documents
+
+    @property
+    def org_id(self) -> str | None:
+        return self.organization_id
+
+    @property
+    def petitiontype(self) -> str | None:
+        return self.job_type
+
+    @field_validator("organization_id", "workspace_id", "user_id", mode="before")
+    @classmethod
+    def _blank_ids(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return normalize_id(str(value))
+
+    @model_validator(mode="after")
+    def _require_file_id_or_url(self) -> FileEvent:
+        mode = intake_mode(self)
+        resolved: list[FilingPartIn] = []
+        for item in self.documents:
+            resolved.append(
+                item.model_copy(
+                    update={
+                        "slot_id": resolve_document_slot(
+                            item, mode=mode, filing_type=self.filing_type
+                        )
+                    }
+                )
+            )
+        self.documents = resolved
+        if mode == "split":
+            if not self.documents:
+                raise ValueError(
+                    "documents[] is required when job_type is upload_separate"
+                )
+            if not (self.filing_type or "").strip():
+                raise ValueError(
+                    "filing_type is required when job_type is upload_separate"
+                )
+            return self
+        file_id, file_url, _name, _hash = compiled_source(self)
+        if not file_id and not file_url:
+            raise ValueError(
+                "Provide download_url or file_id, or documents[] with the compiled PDF"
+            )
+        return self
 
 
 class ParsedEvent(Event):
@@ -79,12 +414,31 @@ class PreparedPart(BaseModel):
     file_id: str
     file_hash: str | None = None
     filename: str | None = None
+    document_id: str | None = None
+    download_url: str | None = None
+    name: str | None = None
+
+
+class SourceDocument(BaseModel):
+    name: str | None = None
+    document_id: str | None = None
+    download_url: str | None = None
+    slot_id: str | None = None
+    file_id: str | None = None
+    file_hash: str | None = None
 
 
 class BundlePrepared(StopEvent):
     filing_type: str
     parts: list[PreparedPart] = Field(default_factory=list)
+    documents: list[SourceDocument] = Field(default_factory=list)
     slot_pages: dict[str, str] = Field(default_factory=dict)
+    agent_data_id: str | None = None
+    job_type: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    org_id: str | None = None
 
 
 class PrepareState(BaseModel):
@@ -92,6 +446,12 @@ class PrepareState(BaseModel):
     filename: str | None = None
     file_hash: str | None = None
     filing_type: str | None = None
+    job_type: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    org_id: str | None = None
+    source_documents: list[SourceDocument] = Field(default_factory=list)
     classification_confidence: float | None = None
     classification_reasoning: str | None = None
 
@@ -253,6 +613,56 @@ def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
     return pages
 
 
+def _filename_from_url(url: str) -> str:
+    path = unquote(urlparse(url).path or "")
+    name = PurePosixPath(path).name
+    if name and "." in name:
+        return name
+    return "filing.pdf"
+
+
+async def ingest_remote_file(
+    client: AsyncLlamaCloud,
+    file_url: str,
+    *,
+    filename: str | None = None,
+    external_file_id: str | None = None,
+) -> tuple[str, str, str]:
+    """Download a remote PDF and upload it to LlamaCloud.
+
+    Returns ``(file_id, content_sha256, filename)``.
+    """
+    url = (file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+
+    name = (filename or "").strip() or _filename_from_url(url)
+    content_hash = hashlib.sha256(data).hexdigest()
+    file_id = await _upload_slot_pdf(
+        client,
+        filename=name,
+        pdf_bytes=data,
+        external_file_id=external_file_id,
+    )
+    logger.info(
+        "[process-file] Ingested remote file url=%s → file_id=%s name=%s bytes=%s",
+        url[:120],
+        file_id,
+        name,
+        len(data),
+    )
+    return file_id, content_hash, name
+
+
 async def _download_file_bytes(client: AsyncLlamaCloud, file_id: str) -> bytes:
     """Download original PDF bytes via the files content presigned URL."""
     presigned = await client.files.content(file_id, project_id=project_id)
@@ -271,20 +681,119 @@ async def _upload_slot_pdf(
     *,
     filename: str,
     pdf_bytes: bytes,
+    external_file_id: str | None = None,
 ) -> str:
-    uploaded = await client.files.create(
-        file=(filename, io.BytesIO(pdf_bytes), "application/pdf"),
-        purpose="extract",
-        project_id=project_id,
-    )
+    create_kwargs: dict[str, Any] = {
+        "file": (filename, io.BytesIO(pdf_bytes), "application/pdf"),
+        "purpose": "extract",
+        "project_id": project_id,
+    }
+    if external_file_id:
+        create_kwargs["external_file_id"] = external_file_id
+    uploaded = await client.files.create(**create_kwargs)
     file_id = getattr(uploaded, "id", None)
     if not file_id:
         raise RuntimeError(f"Upload of {filename} did not return a file id")
     return str(file_id)
 
 
+async def _run_split_from_file_event(
+    event: FileEvent,
+    ctx: Context[PrepareState],
+    client: AsyncLlamaCloud,
+) -> BundlePrepared:
+    """Ingest labeled URLs and run process-split-files inside this handler."""
+    from .process_split_files import (
+        ProcessSplitFilesWorkflow,
+        SplitFilesEvent,
+        SplitPartEvent,
+    )
+
+    filing_type = (event.filing_type or "").strip()
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"job_type=upload_separate: ingesting {len(event.documents)} file(s)"
+            ),
+        )
+    )
+    split_parts: list[SplitPartEvent] = []
+    source_docs: list[SourceDocument] = []
+    for item in event.documents:
+        slot = (item.slot_id or "").strip()
+        if slot.lower() in FULL_PETITION_SLOTS:
+            raise ValueError(
+                f"slot_id {slot!r} belongs to job_type upload_compiled, not upload_separate"
+            )
+        file_id = (item.file_id or "").strip() or None
+        filename = (item.filename or "").strip() or None
+        file_hash = item.file_hash
+        if not file_id:
+            file_id, digest, filename = await ingest_remote_file(
+                client,
+                item.file_url or "",
+                filename=filename,
+                external_file_id=item.document_id or file_hash,
+            )
+            file_hash = file_hash or digest
+        split_parts.append(
+            SplitPartEvent(
+                slot_id=slot,
+                file_id=file_id,
+                filename=filename,
+                file_hash=file_hash,
+                file_url=item.file_url,
+                document_id=item.document_id,
+            )
+        )
+        source_docs.append(
+            source_document_from_part(item, file_id=file_id, file_hash=file_hash)
+        )
+
+    echo = intake_echo(event)
+    nested = ProcessSplitFilesWorkflow(timeout=None)
+    handler = nested.run(
+        start_event=SplitFilesEvent(
+            filing_type=filing_type,
+            org_id=echo["organization_id"],
+            organization_id=echo["organization_id"],
+            workspace_id=echo["workspace_id"],
+            user_id=echo["user_id"],
+            job_type=echo["job_type"],
+            parts=split_parts,
+        )
+    )
+    async for ev in handler.stream_events():
+        ctx.write_event_to_stream(ev)
+    result = await handler
+    item_id = getattr(result, "result", result)
+    prepared = [
+        PreparedPart(
+            slot_id=part.slot_id,
+            file_id=part.file_id,
+            file_hash=part.file_hash,
+            filename=part.filename,
+            document_id=part.document_id,
+            download_url=part.file_url,
+            name=part.filename,
+        )
+        for part in split_parts
+        if part.file_id
+    ]
+    agent_data_id = str(item_id) if item_id else None
+    return BundlePrepared(
+        result=agent_data_id,
+        filing_type=filing_type,
+        parts=prepared,
+        documents=source_docs,
+        agent_data_id=agent_data_id,
+        **echo,
+    )
+
+
 class ProcessFileWorkflow(Workflow):
-    """Classify and split a bundled PDF into catalog-slot files. Does not extract."""
+    """Classify and split a bundled PDF, or ingest already-split parts."""
 
     @step()
     async def classify_file(
@@ -303,15 +812,50 @@ class ProcessFileWorkflow(Workflow):
                 description="Rules for classifying JubeeX filing types",
             ),
         ],
-    ) -> FileClassifiedEvent:
-        file_id = event.file_id
+    ) -> FileClassifiedEvent | BundlePrepared:
+        if intake_mode(event) == "split":
+            return await _run_split_from_file_event(event, ctx, llama_cloud_client)
+
+        file_id, file_url, filename, file_hash_hint = compiled_source(event)
+        content_hash: str | None = None
+
+        if not file_id and file_url:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Downloading filing from file_url and uploading to LlamaCloud",
+                )
+            )
+            try:
+                compiled_external = (
+                    event.documents[0].document_id if event.documents else None
+                )
+                file_id, content_hash, filename = await ingest_remote_file(
+                    llama_cloud_client,
+                    file_url,
+                    filename=filename,
+                    external_file_id=compiled_external or file_hash_hint,
+                )
+            except Exception as exc:
+                logger.exception("Failed to ingest file_url %s", file_url)
+                ctx.write_event_to_stream(
+                    Status(
+                        level="error",
+                        message=f"Failed to ingest file_url: {exc}",
+                    )
+                )
+                raise
+
+        if not file_id:
+            raise ValueError("Provide file_id or file_url in start_event")
+
         logger.info("Preparing bundled file %s", file_id)
 
         try:
             file_metadata = await llama_cloud_client.files.retrieve(
                 file_id, project_id=project_id
             )
-            filename = file_metadata.name
+            filename = filename or file_metadata.name
         except Exception as exc:
             logger.exception("Error fetching file metadata %s", file_id)
             ctx.write_event_to_stream(
@@ -322,11 +866,36 @@ class ProcessFileWorkflow(Workflow):
             )
             raise
 
-        file_hash = event.file_hash or file_metadata.external_file_id
+        file_hash = file_hash_hint or content_hash or file_metadata.external_file_id
+        echo = intake_echo(event)
+        source_docs = [
+            source_document_from_part(
+                item,
+                file_id=item.file_id or file_id,
+                file_hash=item.file_hash or file_hash,
+            )
+            for item in event.documents
+        ]
+        if not source_docs:
+            source_docs = [
+                SourceDocument(
+                    name=filename,
+                    download_url=event.file_url,
+                    file_id=file_id,
+                    file_hash=file_hash,
+                    slot_id="fullpetition",
+                )
+            ]
         async with ctx.store.edit_state() as state:
             state.file_id = file_id
             state.filename = filename
             state.file_hash = file_hash
+            state.job_type = echo["job_type"]
+            state.organization_id = echo["organization_id"]
+            state.workspace_id = echo["workspace_id"]
+            state.user_id = echo["user_id"]
+            state.org_id = echo["org_id"]
+            state.source_documents = source_docs
 
         ctx.write_event_to_stream(
             Status(level="info", message=f"Classifying file {filename}")
@@ -491,7 +1060,13 @@ class ProcessFileWorkflow(Workflow):
         return BundlePrepared(
             filing_type=catalog.filing_type,
             parts=prepared,
+            documents=list(state.source_documents),
             slot_pages=slot_pages,
+            job_type=state.job_type,
+            organization_id=state.organization_id,
+            workspace_id=state.workspace_id,
+            user_id=state.user_id,
+            org_id=state.org_id,
         )
 
 

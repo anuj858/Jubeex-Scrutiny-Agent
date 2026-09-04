@@ -56,6 +56,7 @@ class SplitPartInput:
     document_parts: tuple[str, ...] = ()
     file_hash: str | None = None
     filename: str | None = None
+    document_id: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -177,12 +178,14 @@ def _part_from_mapping(raw: Mapping[str, Any] | SplitPartInput) -> SplitPartInpu
     parts = _as_part_names(raw.get("document_parts"))
     file_hash = raw.get("file_hash")
     filename = raw.get("filename")
+    document_id = raw.get("document_id")
     return SplitPartInput(
         slot_id=slot_id,
         file_id=file_id,
         document_parts=parts,
         file_hash=str(file_hash) if file_hash else None,
         filename=str(filename) if filename else None,
+        document_id=str(document_id) if document_id else None,
     )
 
 
@@ -216,6 +219,7 @@ def validate_parts(
                 document_parts=slot.parts,
                 file_hash=item.file_hash,
                 filename=item.filename,
+                document_id=item.document_id,
             )
         )
 

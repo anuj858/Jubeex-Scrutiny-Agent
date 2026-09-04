@@ -1,0 +1,240 @@
+{
+  "info": {
+    "_postman_id": "a7c3e1d0-4b92-4f18-9c6e-jubeex-scrutiny-v1",
+    "name": "JubeeX Scrutiny API",
+    "description": "Production APIs for the JubeeX backend.\n\n**Flow**\n1. POST /v1/filings (compiled or separate)\n2. GET /v1/jobs/{{job_id}} until status=completed → copies agent_data_id\n3. GET /v1/filings/{{agent_data_id}}\n4. POST /v1/filings/{{agent_data_id}}/scrutiny\n5. GET /v1/jobs/{{job_id}} for the defect report\n\nSet `baseUrl` (default http://localhost:8000) and `apiKey` if JUBEEX_API_KEY is enabled.\nDo not wrap the body in `start_event`. Do not send `handler_id`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "job_id",
+      "value": ""
+    },
+    {
+      "key": "agent_data_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/health",
+            "description": "Liveness. No auth. Does not run a workflow."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catalog",
+      "item": [
+        {
+          "name": "List filing types and slots",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/catalog",
+            "description": "Returns filing_types, job_types, and split_upload slot ids. No workflow."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Process filing",
+      "description": "POST /v1/filings always enters process_file.py. job_type chooses the path.",
+      "item": [
+        {
+          "name": "Start compiled PDF (process_file.py)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) {",
+                  "    pm.collectionVariables.set('job_id', json.job_id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_compiled\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"documents\": [\n    {\n      \"name\": \"Defect_SLP_Civil.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "Runs **process_file.py** (classify + LlamaSplit a compiled PDF).\n\nReplace download_url with a real HTTPS/S3 URL. Saves job_id from the 202 response."
+          }
+        },
+        {
+          "name": "Start split files (process_file.py → process_split_files.py)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) {",
+                  "    pm.collectionVariables.set('job_id', json.job_id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_separate\",\n  \"filing_type\": \"SLP_CIVIL\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"documents\": [\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"02_List_of_Dates.pdf\",\n      \"document_id\": \"22bb33cc-44dd-55ee-96ff-778899001122\",\n      \"download_url\": \"https://storage.example/filings/02_List_of_Dates.pdf\"\n    },\n    {\n      \"name\": \"03_Annexure_P1_Impugned_Order.pdf\",\n      \"document_id\": \"33cc44dd-55ee-66ff-a700-889900112233\",\n      \"download_url\": \"https://storage.example/filings/03_Annexure_P1_Impugned_Order.pdf\"\n    },\n    {\n      \"name\": \"04_Vakalatnama.pdf\",\n      \"document_id\": \"44dd55ee-66ff-77aa-b811-990011223344\",\n      \"download_url\": \"https://storage.example/filings/04_Vakalatnama.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "Runs **process_file.py**, which then runs **process_split_files.py** (parse, extract, Agent Data, Pinecone).\n\n`filing_type` is required. Document `name` is mapped to a slot (01_Petition.pdf → petition).\nThere is no separate public URL for process_split_files.py.\nSaves job_id from the 202 response."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Poll job",
+      "item": [
+        {
+          "name": "Get job status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.agent_data_id) {",
+                  "    pm.collectionVariables.set('agent_data_id', json.agent_data_id);",
+                  "  }",
+                  "  pm.test('status is running, completed, or failed', function () {",
+                  "    pm.expect(['running', 'completed', 'failed']).to.include(json.status);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
+            "description": "Poll until `status` is `completed` or `failed`.\n\nWhen completed, `agent_data_id` is saved automatically.\n`result` holds BundlePrepared (filing jobs) or the scrutiny report (scrutiny jobs)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Get extracted filing",
+      "item": [
+        {
+          "name": "Get filing by agent_data_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Fetches the Agent Data record. Extracted JSON is in `data`. Org/workspace/user/document ids are in `data.metadata`.\nDoes not run a workflow."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Scrutiny",
+      "description": "Runs scrutiny_workflow.py against an extracted filing.",
+      "item": [
+        {
+          "name": "Start scrutiny (scrutiny_workflow.py)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) {",
+                  "    pm.collectionVariables.set('job_id', json.job_id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny",
+            "description": "Runs **scrutiny_workflow.py** (defect check).\n\nSaves a new job_id. Then run **Get job status** again. Report is `result.report`."
+          }
+        }
+      ]
+    }
+  ]
+}

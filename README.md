@@ -17,7 +17,18 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
    - `PINECONE_TEXT_FIELD` — record text field mapped for embedding (this index uses `normalized_text`)
    - `PINECONE_NAMESPACE` — namespace for filing vectors (default `jubeex-filings`)
    - `VECTOR_BACKEND` — `pinecone` to index after extract, or anything else to skip
-3. Run locally:
+3. Run the **production API** (what your other application should call):
+
+```bash
+uv run jubeex-api
+# or: uv run uvicorn extraction_review.api:app --host 0.0.0.0 --port 8000
+```
+
+OpenAPI: `http://localhost:8000/docs`.
+
+Postman: import `postman/JubeeX-Scrutiny-API.postman_collection.json` and optionally `postman/local.postman_environment.json`. Set `baseUrl` (and `apiKey` if `JUBEEX_API_KEY` is set). Start compiled or split, then **Get job status** — `job_id` and `agent_data_id` are saved automatically.
+
+Run the Llama UI / workflow debugger locally:
 
 ```bash
 uvx llamactl serve
@@ -89,7 +100,7 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 
 ## How it works
 
-1. **Upload**: User uploads a petition PDF through the UI (`process-file` workflow).
+1. **Upload / ingest**: UI uploads a PDF to LlamaCloud, **or** your backend starts `process-file` with `file_url` (S3/HTTPS). The workflow downloads the PDF, uploads it to LlamaCloud, then classifies and splits.
 2. **Parse**: LlamaParse converts the PDF to per-page markdown.
 3. **Start extraction**: Starts a LlamaExtract job with the JubeeX schema.
 4. **Classify (parallel)**: LlamaClassify picks petition type; on failure defaults to `other`.
@@ -105,11 +116,64 @@ Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `buil
 
 | Workflow | Module | Role |
 | --- | --- | --- |
-| `process-file` | `src/extraction_review/process_file.py` | parse → start extract → classify → split (hard fail) → store → Pinecone |
+| `process-file` | `src/extraction_review/process_file.py` | Backend entry: `job_type=upload_compiled` classifies/slices a compiled PDF; `job_type=upload_separate` runs extract on labeled files |
+| `process-split-files` | `src/extraction_review/process_split_files.py` | extract / overlay / Agent Data / Pinecone (UI submit, or nested from `process-file`) |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
 | `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: one Pinecone pool, sliced record, OpenRouter per defect, save on same Agent Data item |
 
-Progress is streamed to the UI via `Status` events (and extraction result events).
+### Production API (other applications)
+
+Your backend should call this FastAPI, not LlamaDeploy `/workflows/.../run-nowait`. Set `JUBEEX_API_KEY` in production and send it as `Authorization: Bearer …` or `X-API-Key`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/health` | Liveness (no auth) |
+| `GET` | `/v1/catalog` | Filing types and document slots |
+| `POST` | `/v1/filings` | Start compiled or separate-file processing |
+| `GET` | `/v1/jobs/{job_id}` | Poll until `completed` or `failed` |
+| `GET` | `/v1/filings/{agent_data_id}` | Extracted Core Filing Record |
+| `POST` | `/v1/filings/{agent_data_id}/scrutiny` | Start defect check |
+| `GET` | `/v1/jobs/{job_id}` | Poll scrutiny (same jobs resource) |
+
+**1. Start a filing** — body is the payload itself (no `start_event` wrapper):
+
+```json
+POST /v1/filings
+{
+  "job_type": "upload_separate",
+  "filing_type": "SLP_CIVIL",
+  "organization_id": "3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11",
+  "workspace_id": "b20c7d91-4e55-48aa-a013-9d6e2f88c104",
+  "user_id": "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447",
+  "documents": [
+    {
+      "name": "01_Petition.pdf",
+      "document_id": "11aa22bb-33cc-44dd-85ee-66ff77889900",
+      "download_url": "https://storage.example/01_Petition.pdf"
+    }
+  ]
+}
+```
+
+`202` response:
+
+```json
+{ "job_id": "…", "status": "accepted", "poll_url": "/v1/jobs/…" }
+```
+
+Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path.
+
+**2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`.
+
+**3. Fetch the record** `GET /v1/filings/{agent_data_id}` — filing JSON is in `data` (ids also in `data.metadata`).
+
+**4. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` then poll `GET /v1/jobs/{job_id}` again. The report is `result.report`.
+
+Job state is in-memory on this process. Poll until complete; do not assume jobs survive a restart.
+
+### Backend integration (LlamaDeploy UI / debugger)
+
+The Llama UI still uses `POST .../workflows/process-file/run-nowait` with a `start_event` wrapper. Applications should use `/v1` above instead. Do not send `"handler_id": "string"`.
 
 ## Linting and type checking
 
