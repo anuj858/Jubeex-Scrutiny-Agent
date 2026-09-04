@@ -11,6 +11,7 @@ from extraction_review.process_file import (
     _extract_sliced_parts,
     _filename_from_url,
     _upload_filename,
+    compiled_catalog_override,
     compiled_source,
     ingest_remote_file,
     intake_mode,
@@ -232,6 +233,14 @@ def test_compiled_accepts_optional_filing_type() -> None:
         ],
     )
     assert event.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_catalog_override_skips_classify() -> None:
+    catalog = compiled_catalog_override("SLP_CIVIL")
+    assert catalog is not None
+    assert catalog.filing_type == "SLP_CIVIL"
+    assert compiled_catalog_override("other") is None
+    assert compiled_catalog_override(None) is None
 
 
 def test_upload_compiled_documents_payload() -> None:

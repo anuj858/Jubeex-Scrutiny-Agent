@@ -42,11 +42,11 @@ logger = logging.getLogger(__name__)
 DISCRIMINATOR_FIELD = "petition_type"
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
-CLASSIFY_POLL_MAX_S = 300.0
+CLASSIFY_POLL_MAX_S = 600.0
 PARSE_POLL_INTERVAL_S = 2.0
-PARSE_POLL_MAX_S = 300.0
+PARSE_POLL_MAX_S = 600.0
 SPLIT_POLL_INTERVAL_S = 2.0
-SPLIT_POLL_MAX_S = 180.0
+SPLIT_POLL_MAX_S = 600.0
 PARSE_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 PARSE_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 SPLIT_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
@@ -252,10 +252,21 @@ def resolve_compiled_filing_type(
         )
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
-        raise SplitUploadError(
-            f"Classified as {classified_key or 'other'}, which cannot be sliced. "
-            f"Send filing_type as one of: {allowed}"
-        )
+    raise SplitUploadError(
+        f"Classified as {classified_key or 'other'}, which cannot be sliced. "
+        f"Send filing_type as one of: {allowed}"
+    )
+
+
+def compiled_catalog_override(filing_type: str | None) -> Any | None:
+    """Return a slice catalog when the caller already sent a usable filing_type."""
+    key = (filing_type or "").strip()
+    if not key:
+        return None
+    try:
+        return type_catalog(key)
+    except SplitUploadError:
+        return None
 
 
 def intake_mode(event: FileEvent) -> str:
@@ -1036,6 +1047,21 @@ class ProcessFileWorkflow(Workflow):
             state.user_id = echo["user_id"]
             state.org_id = echo["org_id"]
             state.source_documents = source_docs
+
+        override = compiled_catalog_override(event.filing_type)
+        if override is not None:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Using provided filing_type {override.filing_type}; "
+                        "skipping classify"
+                    ),
+                )
+            )
+            async with ctx.store.edit_state() as state:
+                state.filing_type = override.filing_type
+            return FileClassifiedEvent(filing_type=override.filing_type)
 
         ctx.write_event_to_stream(
             Status(level="info", message=f"Classifying file {filename}")

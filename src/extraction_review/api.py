@@ -280,6 +280,16 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.completed_at = datetime.now(UTC).isoformat()
 
 
+async def _start_process_file(job: JobState, event: FileEvent) -> None:
+    handler = process_file_workflow.run(start_event=event)
+    await _run_workflow(job, handler)
+
+
+async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
+    handler = scrutiny_workflow.run(start_event=event)
+    await _run_workflow(job, handler)
+
+
 def require_api_key(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
@@ -395,8 +405,7 @@ async def create_filing(
         user_id=event.user_id,
     )
     JOBS[job_id] = job
-    handler = process_file_workflow.run(start_event=event)
-    background_tasks.add_task(_run_workflow, job, handler)
+    background_tasks.add_task(_start_process_file, job, event)
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
@@ -458,8 +467,7 @@ async def create_scrutiny(
     job_id = str(uuid.uuid4())
     job = JobState(job_id=job_id, kind="scrutiny")
     JOBS[job_id] = job
-    handler = scrutiny_workflow.run(start_event=event)
-    background_tasks.add_task(_run_workflow, job, handler)
+    background_tasks.add_task(_start_scrutiny, job, event)
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
