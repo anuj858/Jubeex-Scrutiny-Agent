@@ -83,6 +83,7 @@ class SplitFilesEvent(StartEvent):
     user_id: str | None = None
     parts: list[SplitPartEvent]
     require_all_slots: bool = True
+    fallback_file_id: str | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -113,6 +114,7 @@ class SplitFilesState(BaseModel):
     filename: str | None = None
     file_hash: str | None = None
     petition_file_id: str | None = None
+    fallback_file_id: str | None = None
     extract_pack_file_id: str | None = None
     extract_job_id: str | None = None
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
@@ -233,6 +235,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.filename = filename
             state.file_hash = file_hash
             state.petition_file_id = petition.file_id if petition else None
+            state.fallback_file_id = event.fallback_file_id
             state.parse_job_ids = parse_job_ids
             state.page_markdown = page_markdown
             state.page_parts = page_parts
@@ -303,16 +306,20 @@ class ProcessSplitFilesWorkflow(Workflow):
                     message="Extracting from labeled document parts (no LlamaSplit)",
                 )
             )
-        elif extract_file_id:
+        else:
+            extract_file_id = extract_input_file_id(state)
+            if not extract_file_id:
+                raise RuntimeError(
+                    "No extract pack and no source PDF are available for extraction"
+                )
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
-                    message="Extract pack was empty; extracting from the Petition PDF",
+                    message=(
+                        "Extract pack was empty; extracting from a source PDF "
+                        f"({extract_file_id})"
+                    ),
                 )
-            )
-        else:
-            raise RuntimeError(
-                "No extract pack and no Petition file are available for extraction"
             )
 
         configuration = extract_configuration(extract_config, catalog)
@@ -660,6 +667,30 @@ async def _index_split_upload(
             ),
         )
     )
+
+
+def extract_input_file_id(state: SplitFilesState) -> str | None:
+    """Petition, compiled original, or any sliced PDF we can send to extract."""
+    if state.petition_file_id:
+        return state.petition_file_id
+    if state.fallback_file_id:
+        return state.fallback_file_id
+    preferred = (
+        PETITION_SLOT_ID,
+        "synopsis_lod",
+        "impugned_order",
+        "listing_proforma",
+        "cover_page",
+    )
+    by_slot = {item.slot_id: item.file_id for item in state.parts if item.file_id}
+    for slot in preferred:
+        file_id = by_slot.get(slot)
+        if file_id:
+            return file_id
+    for item in state.parts:
+        if item.file_id:
+            return item.file_id
+    return None
 
 
 def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:

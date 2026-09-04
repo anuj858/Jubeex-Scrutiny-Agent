@@ -838,6 +838,7 @@ async def _extract_sliced_parts(
     parts: list[Any],
     echo: dict[str, str | None],
     require_all_slots: bool,
+    fallback_file_id: str | None = None,
 ) -> str | None:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -853,6 +854,7 @@ async def _extract_sliced_parts(
             job_type=echo["job_type"],
             parts=parts,
             require_all_slots=require_all_slots,
+            fallback_file_id=fallback_file_id,
         )
     )
     async for ev in handler.stream_events():
@@ -1251,6 +1253,7 @@ class ProcessFileWorkflow(Workflow):
         agent_data_id = await _extract_sliced_parts(
             ctx,
             filing_type=catalog.filing_type,
+            fallback_file_id=state.file_id,
             parts=[
                 SplitPartEvent(
                     slot_id=item.slot_id,

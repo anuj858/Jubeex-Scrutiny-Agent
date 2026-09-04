@@ -18,7 +18,12 @@ from extraction_review.bundle_slicer import (
 from extraction_review.document_parts import format_page_span, overlay_split_documents
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import ProcessFileWorkflow
-from extraction_review.process_split_files import ProcessSplitFilesWorkflow
+from extraction_review.process_split_files import (
+    ProcessSplitFilesWorkflow,
+    SplitFilesState,
+    SplitPartEvent,
+    extract_input_file_id,
+)
 from extraction_review.split_upload import (
     SplitPartInput,
     SplitUploadError,
@@ -384,6 +389,18 @@ def test_process_split_files_does_not_classify() -> None:
     )
     assert "classify.create" not in module
     assert "classify_file" not in source
+
+
+def test_extract_input_falls_back_to_compiled_file() -> None:
+    state = SplitFilesState(
+        fallback_file_id="dfl-compiled-1",
+        parts=[
+            SplitPartEvent(slot_id="undefined", file_id="dfl-undef-1"),
+        ],
+    )
+    assert extract_input_file_id(state) == "dfl-compiled-1"
+    state.petition_file_id = "dfl-petition-1"
+    assert extract_input_file_id(state) == "dfl-petition-1"
 
 
 def test_process_file_prepare_does_not_extract() -> None:
