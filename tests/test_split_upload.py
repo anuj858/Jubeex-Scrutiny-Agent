@@ -16,13 +16,16 @@ from extraction_review.bundle_slicer import (
     slice_bundle_pdf,
 )
 from extraction_review.document_parts import format_page_span, overlay_split_documents
+from extraction_review.extract_record import apply_extract_envelope, stamp_source_pages
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import ProcessFileWorkflow
 from extraction_review.process_split_files import ProcessSplitFilesWorkflow
 from extraction_review.split_upload import (
+    FieldSources,
     SplitPartInput,
     SplitUploadError,
     build_extract_pack_markdown,
+    build_extract_system_prompt,
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
@@ -212,9 +215,15 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         1: "cover caption",
         2: "index listing",
         3: "listing columns",
-        4: "petition grounds",
+        4: "petition first page parties",
         5: "annexure p-1",
         6: "appendix text",
+        7: "petition grounds later page",
+        8: "memo of parties ram lal address",
+        9: "vakalatnama petitioner names for aor",
+        10: "petition prayer page one",
+        11: "petition prayer page two",
+        12: "petition prayer page three",
     }
     page_parts = {
         1: ["Cover Page"],
@@ -223,31 +232,69 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         4: ["Petition"],
         5: ["Annexures"],
         6: ["Appendix"],
+        7: ["Petition"],
+        8: ["Memo of Parties"],
+        9: ["Vakalatnama"],
+        10: ["Petition"],
+        11: ["Petition"],
+        12: ["Petition"],
     }
     pack = build_extract_pack_markdown(
-        page_markdown, page_parts, extract_source_parts(catalog)
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
     )
     assert "[Cover Page]" in pack
     assert "[Listing Proforma]" in pack
-    assert "[Petition]" not in pack
-    assert "[Index]" not in pack
-    assert "petition grounds" not in pack
-    assert "index listing" not in pack
+    assert "[Petition]" in pack
+    assert "[Memo of Parties]" in pack
+    assert "[Index]" in pack
+    assert "index listing" in pack
+    assert "petition first page parties" in pack
+    assert "petition prayer page one" in pack
+    assert "petition prayer page three" in pack
+    assert "memo of parties ram lal address" in pack
+    assert "Fill advocates_on_record" in pack
+    assert "Do not copy petitioner or respondent names" in pack
+    assert "Never copy party records from Vakalatnama or Cover Page" in pack
+    assert "petition grounds later page" not in pack
     assert "annexure p-1" not in pack
     assert "appendix text" not in pack
     assert "Annexures" not in pack
     assert "Appendix" not in pack
 
 
-def test_extract_source_parts_omit_index_and_petition() -> None:
+def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    assert catalog.extract_field_sources["petitioners"] == FieldSources(
+        fill=("Memo of Parties", "Petition"),
+        verify=("Petition", "Cover Page"),
+    )
+    assert catalog.extract_field_sources["respondents"] == FieldSources(
+        fill=("Memo of Parties", "Petition"),
+        verify=("Petition", "Cover Page"),
+    )
+    assert catalog.extract_field_sources["court"] == FieldSources(
+        fill=("Cover Page",),
+        verify=("Petition",),
+    )
+    assert catalog.extract_field_sources["applications"] == FieldSources(
+        fill=("Index",),
+    )
+
+
+def test_extract_source_parts_include_petition_and_index() -> None:
     parts = extract_source_parts(type_catalog("SLP_CIVIL"))
     assert parts == {
         "Cover Page",
         "Listing Proforma",
         "Memo of Parties",
+        "Petition",
         "Impugned Order",
         "Vakalatnama",
         "AOR's Declaration",
+        "Index",
     }
     assert "Undefined" not in parts
 
@@ -257,18 +304,34 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
         "properties": {
             "cause_title": {"description": "Cause title."},
             "court": {"description": "The court."},
+            "petitioners": {"description": "Array of petitioners."},
         }
     }
     updated = inject_where_to_look(
         schema,
-        {"cause_title": ["Memo of Parties", "Cover Page"]},
+        {
+            "cause_title": ["Memo of Parties", "Cover Page"],
+            "petitioners": ["Memo of Parties", "Petition"],
+        },
     )
     assert (
-        "Look only in Memo of Parties, Cover Page"
+        "Fill only from Memo of Parties, Cover Page"
         in updated["properties"]["cause_title"]["description"]
     )
+    petitioners = updated["properties"]["petitioners"]["description"]
+    assert "Prefer Memo of Parties" in petitioners
+    assert "first page of the Petition" in petitioners
+    assert "fill it from the other" in petitioners
+    assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Look only in" not in updated["properties"]["court"]["description"]
     assert schema["properties"]["cause_title"]["description"] == "Cause title."
+
+
+def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
+    prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
+    assert "petitioners: fill Memo of Parties, Petition; verify Petition, Cover Page" in prompt
+    assert "Copy printed text only" in prompt
+    assert "inconsistencies: one item per spelling" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -284,6 +347,43 @@ def test_overlay_uses_stitched_document_parts() -> None:
     assert any(item.startswith("Petition") for item in items)
     assert any(item.startswith("Synopsis") for item in items)
     assert any("List of Dates & Events" in item for item in items)
+    names = [span["name"] for span in payload["documents"]]
+    assert "Petition" in names
+    assert payload["document_counts"]["processed"] == len(payload["documents"])
+
+
+def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
+    record = {
+        "court": "Supreme Court of India",
+        "petition_type": None,
+        "cause_title": {"title": "A v. B"},
+        "petitioners": [{"name": "A", "source_pages": "6, 7"}],
+    }
+    stamp_source_pages(record)
+    wrapped = apply_extract_envelope(
+        record,
+        page_parts={1: ["Cover Page"], 2: ["Petition"]},
+        filing_type="SLP_CIVIL",
+        overall_confidence=0.91,
+        generated_at="2026-09-04T12:00:00+05:30",
+    )
+    assert wrapped["schema_version"] == "extraction-v1"
+    assert wrapped["job_type"] == "compiled_petition"
+    assert wrapped["organization_id"] is None
+    assert wrapped["workspace_id"] is None
+    assert wrapped["user_id"] is None
+    assert wrapped["primary_document_id"] is None
+    assert wrapped["court"] == {"name": "Supreme Court of India"}
+    assert wrapped["petition_type"] == {"name": "Special Leave Petition (Civil)"}
+    assert wrapped["overall_confidence"] == 0.91
+    assert wrapped["generated_at"] == "2026-09-04T12:00:00+05:30"
+    assert wrapped["documents"] == [
+        {"name": "Cover Page", "start_page": 1, "end_page": 1},
+        {"name": "Petition", "start_page": 2, "end_page": 2},
+    ]
+    assert wrapped["petitioners"][0]["source_pages"] == [6, 7]
+    assert wrapped["filing_summary"]["matter_title"] == "A v. B"
+    assert wrapped["filing_summary"]["matter_type"] == "Special Leave Petition (Civil)"
 
 
 def test_bundle_hash_is_stable() -> None:

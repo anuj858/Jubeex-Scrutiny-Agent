@@ -20,10 +20,15 @@ from .document_parts import parts_on_page
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
 EXTRACT_PACK_EXCLUDED_PARTS = frozenset({"Annexures", "Appendix"})
+# Petition grounds stay out of Extract. Keep page 1 (parties) and the last
+# pages (prayer / relief).
+PETITION_PACK_FIRST_PAGES = 1
+PETITION_PACK_LAST_PAGES = 3
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
 _PARSE_STUB_PREFIX = "(No parse text for"
+PARTY_FIELDS = frozenset({"petitioners", "respondents"})
 
 
 class SplitUploadError(ValueError):
@@ -39,11 +44,26 @@ class UploadSlot:
 
 
 @dataclass(frozen=True)
+class FieldSources:
+    """Where one extract field is filled from, and where spelling is checked."""
+
+    fill: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+
+    def all_parts(self) -> tuple[str, ...]:
+        names: list[str] = list(self.fill)
+        for name in self.verify:
+            if name not in names:
+                names.append(name)
+        return tuple(names)
+
+
+@dataclass(frozen=True)
 class UploadTypeCatalog:
     filing_type: str
     label: str
     slots: tuple[UploadSlot, ...]
-    extract_field_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    extract_field_sources: dict[str, FieldSources] = field(default_factory=dict)
 
     def slot_by_id(self) -> dict[str, UploadSlot]:
         return {slot.id: slot for slot in self.slots}
@@ -94,15 +114,28 @@ def _parse_slot(raw: Mapping[str, Any]) -> UploadSlot | None:
     )
 
 
-def _parse_sources(raw: Any) -> dict[str, tuple[str, ...]]:
+def _parse_field_sources(raw: Any) -> FieldSources | None:
+    if isinstance(raw, Mapping):
+        fill = _as_part_names(raw.get("fill") or raw.get("parts") or [])
+        verify = _as_part_names(raw.get("verify") or [])
+        if fill or verify:
+            return FieldSources(fill=fill, verify=verify)
+        return None
+    names = _as_part_names(raw)
+    if not names:
+        return None
+    return FieldSources(fill=names)
+
+
+def _parse_sources(raw: Any) -> dict[str, FieldSources]:
     if not isinstance(raw, Mapping):
         return {}
-    sources: dict[str, tuple[str, ...]] = {}
-    for field_name, parts in raw.items():
+    sources: dict[str, FieldSources] = {}
+    for field_name, spec in raw.items():
         key = str(field_name).strip()
-        names = _as_part_names(parts)
-        if key and names:
-            sources[key] = names
+        parsed = _parse_field_sources(spec)
+        if key and parsed is not None:
+            sources[key] = parsed
     return sources
 
 
@@ -296,7 +329,11 @@ def coerce_page_parts(raw: Mapping[Any, Any] | None) -> dict[int, list[str]]:
 
 
 def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
-    names = {part for parts in catalog.extract_field_sources.values() for part in parts}
+    names = {
+        part
+        for spec in catalog.extract_field_sources.values()
+        for part in spec.all_parts()
+    }
     return names - EXTRACT_PACK_EXCLUDED_PARTS
 
 
@@ -311,12 +348,97 @@ def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool
     return any(name in source_parts for name in labels)
 
 
+def _petition_pages_to_keep(
+    page_markdown: Mapping[int, str],
+    page_parts: Mapping[int, Any],
+) -> set[int]:
+    petition_pages = [
+        page
+        for page in sorted(page_markdown)
+        if "Petition" in parts_on_page(page_parts.get(page))
+        and not (page_markdown.get(page) or "").strip().startswith(_PARSE_STUB_PREFIX)
+    ]
+    if not petition_pages:
+        return set()
+    keep = set(petition_pages[:PETITION_PACK_FIRST_PAGES])
+    keep.update(petition_pages[-PETITION_PACK_LAST_PAGES:])
+    return keep
+
+
+def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
+    fill_of: dict[str, list[str]] = {}
+    verify_of: dict[str, list[str]] = {}
+    if catalog is not None:
+        for field_name, spec in catalog.extract_field_sources.items():
+            for part in spec.fill:
+                fill_of.setdefault(part, []).append(field_name)
+            for part in spec.verify:
+                verify_of.setdefault(part, []).append(field_name)
+    notes: dict[str, str] = {}
+    for part, fields in fill_of.items():
+        notes[part] = (
+            f"Fill {', '.join(fields)} from this section when listed as a fill source."
+        )
+    for part, fields in verify_of.items():
+        extra = (
+            f" Check spelling for {', '.join(fields)}; "
+            "do not overwrite fill values with text from this section."
+        )
+        notes[part] = (notes.get(part) or "").rstrip() + extra
+    notes.setdefault(
+        "Vakalatnama",
+        "Use only for advocates_on_record.",
+    )
+    notes.setdefault(
+        "AOR's Declaration",
+        "Use only for advocates_on_record.",
+    )
+    for part in ("Vakalatnama", "AOR's Declaration"):
+        if "Do not copy petitioner or respondent names" not in notes[part]:
+            notes[part] = (
+                notes[part].rstrip()
+                + " Do not copy petitioner or respondent names."
+            )
+    return notes
+
+
+def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
+    lines = [
+        "# Extraction rules",
+        "Copy printed text only. Do not invent names, addresses, dates, or "
+        "categories. If a value is not printed in the allowed fill section, leave it null.",
+        "",
+    ]
+    sources = catalog.extract_field_sources if catalog is not None else {}
+    for field_name, spec in sources.items():
+        fill = ", ".join(f"[{p}]" for p in spec.fill) or "(none)"
+        bit = f"- {field_name}: fill from {fill}"
+        if spec.verify:
+            verify = ", ".join(f"[{p}]" for p in spec.verify)
+            bit += f". Check spelling against {verify}; never overwrite fill text"
+        if field_name in PARTY_FIELDS:
+            bit += (
+                ". Prefer Memo of Parties; if it is missing, use the first page of "
+                "the Petition. Merge blank particulars between those two only. "
+                "Never copy party records from Vakalatnama or Cover Page"
+            )
+        lines.append(bit + ".")
+    lines.append(
+        "- inconsistencies: record spelling or value mismatches between fill and "
+        "verify sources. Do not invent extra parties to resolve a mismatch."
+    )
+    return "\n".join(lines).strip()
+
+
 def build_extract_pack_markdown(
     page_markdown: Mapping[int, str],
     page_parts: Mapping[int, Any],
     source_parts: set[str],
+    catalog: UploadTypeCatalog | None = None,
 ) -> str:
     sections: list[str] = []
+    petition_keep = _petition_pages_to_keep(page_markdown, page_parts)
+    notes = _section_use_notes(catalog)
     for page in sorted(page_markdown):
         names = parts_on_page(page_parts.get(page))
         if not page_is_extract_source(names, source_parts):
@@ -325,29 +447,57 @@ def build_extract_pack_markdown(
         body = (page_markdown.get(page) or "").strip()
         if body.startswith(_PARSE_STUB_PREFIX):
             continue
-        sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
-    return "\n\n".join(sections).strip()
+        if "Petition" in names:
+            others = [n for n in names if n in source_parts and n != "Petition"]
+            if page not in petition_keep and not others:
+                continue
+        note = next((notes[n] for n in names if n in notes), None)
+        if note:
+            sections.append(f"## [{label}] (p. {page})\n\n> {note}\n\n{body}".rstrip())
+        else:
+            sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
+    packed = "\n\n".join(sections).strip()
+    if not packed:
+        return ""
+    return f"{extract_pack_preamble(catalog)}\n\n{packed}"
 
 
-def _look_only_text(parts: Sequence[str]) -> str:
-    joined = ", ".join(parts)
-    return f"Look only in {joined}.{LOOK_ONLY_SUFFIX}"
+def _look_only_text(field_name: str, spec: FieldSources) -> str:
+    fill = ", ".join(spec.fill) or "no fill source"
+    extra = f"Fill only from {fill}."
+    if spec.verify:
+        extra += (
+            f" Check spelling against {', '.join(spec.verify)}. "
+            "If spellings differ, keep the fill value and add an inconsistencies item."
+        )
+    if field_name in PARTY_FIELDS:
+        extra += (
+            " Prefer Memo of Parties; if it is missing, use the first page of the "
+            "Petition. If a field is blank in one of those parts, fill it from the "
+            "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
+            "Memo of Appearance, AOR's Declaration, or Cover Page. Do not invent "
+            "parties. Leave a field null if it is not printed on a fill source."
+        )
+    return f"{extra}{LOOK_ONLY_SUFFIX}"
 
 
 def inject_where_to_look(
     schema: Mapping[str, Any],
-    sources: Mapping[str, Sequence[str]],
+    sources: Mapping[str, FieldSources | Sequence[str]],
 ) -> dict[str, Any]:
     """Copy extract JSON schema and append look-only guidance to field descriptions."""
     updated = copy.deepcopy(dict(schema))
     props = updated.get("properties")
     if not isinstance(props, dict):
         return updated
-    for field_name, parts in sources.items():
+    for field_name, spec in sources.items():
         node = props.get(field_name)
-        if not isinstance(node, dict) or not parts:
+        if not isinstance(node, dict):
             continue
-        extra = _look_only_text(parts)
+        parsed = spec if isinstance(spec, FieldSources) else _parse_field_sources(spec)
+        if parsed is None or not parsed.all_parts():
+            continue
+        extra = _look_only_text(field_name, parsed)
         existing = str(node.get("description") or "").rstrip()
         if extra in existing:
             continue
@@ -357,13 +507,23 @@ def inject_where_to_look(
 
 def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
     lines = [
-        "You are extracting a Core Filing Record from an already-split Supreme Court filing.",
+        "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
         "Each section is labelled with its document part, for example ## [Listing Proforma] (p. 3).",
-        "Extract each field only from the parts listed below. Ignore Annexures and Appendix.",
+        "Copy printed text only. Do not invent or complete a field from a document "
+        "part that is not a fill source for that field. If it is not printed there, leave it null.",
+        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Petition, …). "
+        "source_pages must be the integer page numbers in the headings, for example (p. 6).",
+        "Ignore Annexures and Appendix.",
         "",
     ]
-    for field_name, parts in catalog.extract_field_sources.items():
-        lines.append(f"- {field_name}: {', '.join(parts)}")
+    for field_name, spec in catalog.extract_field_sources.items():
+        line = f"- {field_name}: fill {', '.join(spec.fill) or '(none)'}"
+        if spec.verify:
+            line += f"; verify {', '.join(spec.verify)}"
+        lines.append(line)
+    lines.append(
+        "- inconsistencies: one item per spelling or value mismatch between fill and verify sources."
+    )
     return "\n".join(lines).strip()
 
 
@@ -371,15 +531,16 @@ def extract_configuration(
     extract_config: Any,
     catalog: UploadTypeCatalog,
 ) -> dict[str, Any]:
+    from .config import LegalExtractRecord
+
     dumped = extract_config.model_dump(
         exclude={"configuration_id", "product_type"},
         exclude_none=True,
     )
-    schema = dumped.get("data_schema") or {}
-    if isinstance(schema, Mapping):
-        dumped["data_schema"] = inject_where_to_look(
-            schema, catalog.extract_field_sources
-        )
+    dumped["data_schema"] = inject_where_to_look(
+        LegalExtractRecord.model_json_schema(),
+        catalog.extract_field_sources,
+    )
     dumped["system_prompt"] = build_extract_system_prompt(catalog)
     return dumped
 

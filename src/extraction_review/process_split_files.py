@@ -11,7 +11,6 @@ from typing import Annotated, Any, cast
 
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
-from llama_cloud.types.configuration_response import ExtractV2Parameters
 from pydantic import BaseModel, Field
 from workflows import Context, Workflow, step
 from workflows.events import StartEvent, StopEvent
@@ -21,12 +20,18 @@ from .clients import agent_name, get_llama_cloud_client, project_id
 from .config import (
     EXTRACTED_DATA_COLLECTION,
     ExtractConfig,
+    LegalExtractRecord,
     ParseConfig,
-    get_extraction_schema,
 )
 from .document_parts import overlay_split_documents
+from .extract_record import (
+    apply_extract_envelope,
+    field_confidence_from_job,
+    overall_confidence_from_job,
+    stamp_source_pages,
+    unwrap_extracted_record,
+)
 from .process_file import (
-    DISCRIMINATOR_FIELD,
     ExtractedEvent,
     ExtractedInvalidEvent,
     ExtractJobStartedEvent,
@@ -198,6 +203,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             page_markdown,
             page_parts,
             extract_source_parts(catalog),
+            catalog=catalog,
         )
         extract_file_id = state.petition_file_id
         pack_file_id: str | None = None
@@ -273,7 +279,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
         filing_type = state.filing_type or "other"
-        extract_config = extract_jubeex
+        del extract_jubeex
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
@@ -294,36 +300,16 @@ class ProcessSplitFilesWorkflow(Workflow):
                 "Extracted split-upload data: %s",
                 json.dumps(job.model_dump(mode="json"), indent=2, default=str),
             )
-            if extract_config.configuration_id:
-                config_resp = await llama_cloud_client.configurations.retrieve(
-                    extract_config.configuration_id,
-                    project_id=project_id,
-                )
-                params = config_resp.parameters
-                if not isinstance(params, ExtractV2Parameters):
-                    raise ValueError(
-                        f"Configuration {extract_config.configuration_id} is not extract_v2"
-                    )
-                schema_class = get_extraction_schema(
-                    dict(params.data_schema),
-                    discriminator_field=DISCRIMINATOR_FIELD,
-                    discriminator_value=filing_type,
-                )
-            else:
-                schema_class = get_extraction_schema(
-                    dict(extract_config.data_schema),
-                    discriminator_field=DISCRIMINATOR_FIELD,
-                    discriminator_value=filing_type,
-                )
             data = ExtractedData.from_extract_job(
                 job=job,
-                schema=schema_class,
+                schema=LegalExtractRecord,
                 file_name=state.filename,
                 file_id=record_file_id,
                 file_hash=state.file_hash,
             )
             if data.metadata is None:
                 data.metadata = {}
+            overall = overall_confidence_from_job(job)
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
             data.metadata["page_count"] = len(page_markdown)
@@ -331,6 +317,10 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["extract_pack_file_id"] = state.extract_pack_file_id
             data.metadata["split_files"] = {
                 item.slot_id: item.file_id for item in state.parts
+            }
+            data.metadata["extract_confidence"] = {
+                "overall": overall,
+                "fields": field_confidence_from_job(job),
             }
             extracted_event = ExtractedEvent(data=data)
         except InvalidExtractionData as exc:
@@ -352,6 +342,17 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(extracted_event)
         extracted_data = extracted_event.data
         data_dict = extracted_data.model_dump()
+        inner = unwrap_extracted_record(data_dict)
+        stamp_source_pages(inner)
+        meta = data_dict.get("metadata") if isinstance(data_dict.get("metadata"), dict) else {}
+        confidence = (meta.get("extract_confidence") or {}).get("overall")
+        inner = apply_extract_envelope(
+            inner,
+            page_parts=page_parts,
+            filing_type=filing_type,
+            overall_confidence=confidence,
+        )
+        data_dict["data"] = inner
         if page_parts:
             overlay_split_documents(data_dict, page_parts)
 

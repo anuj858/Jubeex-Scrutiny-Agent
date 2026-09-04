@@ -135,6 +135,29 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _named_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    data = _as_dict(value)
+    for key in ("name", "full_name"):
+        item = data.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
+def _first_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, list) and value:
+        return _as_dict(value[0])
+    return _as_dict(value)
+
+
+def _party_name(party: Any) -> str | None:
+    data = _as_dict(party)
+    return _named_value(data.get("name") or data.get("full_name") or data)
+
+
 def build_filing_chunk_text(
     filing: dict[str, Any] | Any,
     *,
@@ -144,41 +167,50 @@ def build_filing_chunk_text(
     """Turn a Core Filing Record into searchable plain text for embedding."""
     data = _as_dict(filing)
     cause = _as_dict(data.get("cause_title"))
-    matter = _as_dict(data.get("matter_classification"))
-    impugned = _as_dict(data.get("impugned_order"))
-    aor = _as_dict(data.get("advocate_on_record"))
+    matter = _as_dict(data.get("classification") or data.get("matter_classification"))
+    impugned = _first_dict(data.get("impugned_orders") or data.get("impugned_order"))
+    aor = _first_dict(
+        data.get("advocates_on_record") or data.get("advocate_on_record")
+    )
     summary = _as_dict(data.get("filing_summary"))
 
     petitioners = data.get("petitioners") or []
     respondents = data.get("respondents") or []
 
     petitioner_names = [
-        p.get("full_name")
-        for p in petitioners
-        if isinstance(p, dict) and p.get("full_name")
+        name for name in (_party_name(p) for p in petitioners) if name
     ]
     respondent_names = [
-        r.get("full_name")
-        for r in respondents
-        if isinstance(r, dict) and r.get("full_name")
+        name for name in (_party_name(r) for r in respondents) if name
     ]
 
+    special = None
+    specials = matter.get("special_categories")
+    if isinstance(specials, list) and specials:
+        special = ", ".join(str(item) for item in specials if item)
+    if not special:
+        special = data.get("special_category") or matter.get("special_category")
+
+    petition_type = filing_type or _named_value(data.get("petition_type"))
+    court = _named_value(data.get("court"))
     parts = [
         f"Filename: {filename}" if filename else None,
-        f"Petition type: {filing_type or data.get('petition_type')}",
-        f"Court: {data.get('court')}",
-        f"Special category: {data.get('special_category')}",
-        f"Cause title: {cause.get('formatted_title') or cause.get('raw_text')}",
+        f"Petition type: {petition_type}" if petition_type else None,
+        f"Court: {court}" if court else None,
+        f"Special category: {special}" if special else None,
+        f"Cause title: {cause.get('title') or cause.get('formatted_title') or cause.get('raw_text')}",
         f"Petitioners: {', '.join(petitioner_names)}" if petitioner_names else None,
         f"Respondents: {', '.join(respondent_names)}" if respondent_names else None,
-        f"Matter: {matter.get('main_category')} / {matter.get('sub_category')}",
+        f"Matter: {matter.get('main_category_name') or matter.get('main_category')} / "
+        f"{matter.get('sub_category_name') or matter.get('sub_category')}",
         f"PIL: {matter.get('is_pil')}",
         f"Impugned order: {impugned.get('case_number')} "
-        f"({impugned.get('earlier_court')}) dated {impugned.get('date_of_impugned_order')}",
+        f"({impugned.get('court_name') or impugned.get('earlier_court')}) "
+        f"dated {impugned.get('order_date') or impugned.get('date_of_impugned_order')}",
         f"AOR: {aor.get('name')} ({aor.get('registration_number')})",
         f"Summary title: {summary.get('matter_title')}",
     ]
-    return "\n".join(p for p in parts if p and not p.endswith(": None"))
+    return "\n".join(p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None"))
 
 
 def split_text_windows(

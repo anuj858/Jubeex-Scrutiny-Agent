@@ -264,20 +264,20 @@ def test_unlabelled_pages_do_not_borrow_neighbours() -> None:
 def test_slice_record_drops_unrelated_blocks() -> None:
     catalogue = get_catalogue()
     record = {
-        "court": "Supreme Court of India",
-        "petition_type": "SLP_CIVIL",
-        "advocate_on_record": {"name": "A", "registration_number": "1234"},
-        "matter_classification": {"main_category": "Service"},
-        "petitioners": [{"full_name": "X"}],
-        "impugned_order": {"case_number": "1"},
+        "court": {"name": "Supreme Court of India"},
+        "petition_type": {"name": "Special Leave Petition (Civil)"},
+        "advocates_on_record": [{"name": "A", "registration_number": "1234"}],
+        "classification": {"main_category_name": "Service"},
+        "petitioners": [{"name": "X"}],
+        "impugned_orders": [{"case_number": "1"}],
     }
     listing = slice_record_for_defect(record, catalogue.defect("D004"))
     aor = slice_record_for_defect(record, catalogue.defect("D005"))
-    assert listing is not None and "matter_classification" in listing
-    assert "advocate_on_record" not in listing
+    assert listing is not None and "classification" in listing
+    assert "advocates_on_record" not in listing
     assert "petitioners" not in listing
-    assert aor is not None and "advocate_on_record" in aor
-    assert "matter_classification" not in aor
+    assert aor is not None and "advocates_on_record" in aor
+    assert "classification" not in aor
     assert "petitioners" not in aor
 
 
@@ -526,10 +526,10 @@ def test_user_prompt_carries_category_and_sliced_record() -> None:
     defect = catalogue.defect("D005")
     record = slice_record_for_defect(
         {
-            "court": "SCI",
-            "petition_type": "SLP_CIVIL",
-            "advocate_on_record": {"registration_number": "1234"},
-            "petitioners": [{"full_name": "Should not appear"}],
+            "court": {"name": "SCI"},
+            "petition_type": {"name": "Special Leave Petition (Civil)"},
+            "advocates_on_record": [{"registration_number": "1234"}],
+            "petitioners": [{"name": "Should not appear"}],
         },
         defect,
     )

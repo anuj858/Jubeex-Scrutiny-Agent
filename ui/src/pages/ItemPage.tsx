@@ -222,6 +222,22 @@ export default function ItemPage() {
 
   const extractedData = itemData.data as ExtractedData<any>;
   const fileId = extractedData.file_id;
+  const extractedRecord = (extractedData?.data ?? extractedData) as
+    | Record<string, any>
+    | undefined;
+  const overallConfidence =
+    typeof extractedRecord?.overall_confidence === "number"
+      ? extractedRecord.overall_confidence
+      : undefined;
+  const inconsistencyItems = Array.isArray(
+    extractedRecord?.inconsistencies?.items,
+  )
+    ? (extractedRecord.inconsistencies.items as Array<{
+        id?: string;
+        label?: string;
+        detail?: string;
+      }>)
+    : [];
 
   return (
     <div className="flex h-full bg-gray-50">
@@ -250,6 +266,39 @@ export default function ItemPage() {
                   {classificationReasoning}
                 </div>
               )}
+            </div>
+          )}
+
+          {typeof overallConfidence === "number" && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 mb-4">
+              <div className="text-sm font-semibold text-slate-800">
+                Overall confidence: {Math.round(overallConfidence * 100)}%
+              </div>
+            </div>
+          )}
+
+          {inconsistencyItems.length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="h-4 w-4 text-amber-700 shrink-0" />
+                <span className="text-sm font-semibold text-amber-900">
+                  {inconsistencyItems.length} spelling / source mismatch
+                  {inconsistencyItems.length === 1 ? "" : "es"}
+                </span>
+              </div>
+              <ul className="space-y-1.5">
+                {inconsistencyItems.map((item, index) => (
+                  <li
+                    key={item.id || `${item.label || "mismatch"}-${index}`}
+                    className="text-xs text-amber-900"
+                  >
+                    <span className="font-medium">
+                      {item.label || "Mismatch"}
+                    </span>
+                    {item.detail ? `: ${item.detail}` : null}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

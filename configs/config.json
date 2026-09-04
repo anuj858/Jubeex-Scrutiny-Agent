@@ -37,1034 +37,1101 @@
     "product_type": "extract_v2",
     "configuration_id": null,
     "data_schema": {
-      "title": "CoreFilingRecord",
-      "description": "Core Filing Record for JubeeX parsing pipeline. Same shape for all petition types.",
-      "type": "object",
-      "properties": {
-        "court": {
-          "title": "Court",
-          "description": "The court where the petition is filed.",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "petition_type": {
-          "title": "Petition Type",
-          "description": "Type of the petition (e.g. SLP_CIVIL, WRIT_PETITION_CRIMINAL).",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "special_category": {
-          "title": "Special Category",
-          "description": "Special category as printed on the Listing Proforma. Copy it verbatim. Leave null if none is printed. Do not pick a category from memory.",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "cause_title": {
-          "title": "CauseTitle",
-          "description": "Cause title representing petitioner vs respondent.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "raw_text": {
-                  "title": "Raw Text",
-                  "description": "The cause title verbatim",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+      "$defs": {
+        "AdvocateOnRecord": {
+          "description": "AOR identity. Fill from Vakalatnama then AOR's Declaration.",
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
-                "petitioner_summary": {
-                  "title": "Petitioner Summary",
-                  "description": "The petitioner side as printed",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "respondent_summary": {
-                  "title": "Respondent Summary",
-                  "description": "The respondent side as printed",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "formatted_title": {
-                  "title": "Formatted Title",
-                  "description": "Formatted cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. Append 'And ors.' only when the source text shows more than one petitioner or respondent. Do not invent extra parties.",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "description": "The document part where this was found",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "description": "Pages containing this data",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
+                {
+                  "type": "null"
                 }
-              },
-              "required": [
-                "raw_text",
-                "formatted_title"
-              ]
+              ],
+              "default": null,
+              "description": "AOR name",
+              "title": "Name"
             },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "petitioners": {
-          "title": "Petitioners",
-          "description": "Array of petitioners. One record per petitioner.",
-          "type": "array",
-          "items": {
-            "title": "Petitioner",
-            "type": "object",
-            "properties": {
-              "serial": {
-                "title": "Serial",
-                "description": "Position in the cause title, 1-based",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
+            "registration_number": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR code / registration number. Extract verbatim.",
+              "title": "Registration Number"
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR email ONLY if printed",
+              "title": "Email"
+            },
+            "mobile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR mobile ONLY if printed",
+              "title": "Mobile"
+            },
+            "firm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Firm name, if any",
+              "title": "Firm"
+            },
+            "office": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Office address as printed",
+              "title": "Office"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Vakalatnama or AOR's Declaration",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
               },
-              "full_name": {
-                "title": "Full Name",
-                "description": "Full name as printed",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "entity_type": {
-                "title": "Entity Type",
-                "description": "INDIVIDUAL, COMPANY, PARTNERSHIP, etc.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "acting_through": {
-                "title": "Acting Through",
-                "description": "The authorised signatory",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "relation_details": {
-                "title": "Relation Details",
-                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_part": {
-                "title": "Source Part",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_pages": {
-                "title": "Source Pages",
-                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "address_full_text": {
-                "title": "Address Full Text",
-                "description": "Mandatory verbatim address text. Do not omit any details.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "city": {
-                "title": "City",
-                "description": "Extracted city",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "state": {
-                "title": "State",
-                "description": "Extracted state",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "pin_code": {
-                "title": "Pin Code",
-                "description": "Extracted pincode",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              }
+              "title": "Source Pages",
+              "type": "array"
             }
           },
-          "default": []
-        },
-        "respondents": {
-          "title": "Respondents",
-          "description": "Array of respondents. One record per respondent.",
-          "type": "array",
-          "items": {
-            "title": "Respondent",
-            "type": "object",
-            "properties": {
-              "serial": {
-                "title": "Serial",
-                "description": "Position in the cause title, 1-based",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "full_name": {
-                "title": "Full Name",
-                "description": "Full name as printed. DO NOT concatenate relations.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "age": {
-                "title": "Age",
-                "description": "Age as an integer",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "occupation": {
-                "title": "Occupation",
-                "description": "Occupation",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_part": {
-                "title": "Source Part",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_pages": {
-                "title": "Source Pages",
-                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "relation_details": {
-                "title": "Relation Details",
-                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "address_full_text": {
-                "title": "Address Full Text",
-                "description": "Mandatory verbatim address text. Do not omit any details.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "city": {
-                "title": "City",
-                "description": "Extracted city",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "state": {
-                "title": "State",
-                "description": "Extracted state",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "pin_code": {
-                "title": "Pin Code",
-                "description": "Extracted pincode",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              }
-            }
-          },
-          "default": []
-        },
-        "matter_classification": {
-          "title": "MatterClassification",
-          "description": "Main category, sub category, special category, PIL flag.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "main_category": {
-                  "title": "Main Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "sub_category": {
-                  "title": "Sub Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "special_category": {
-                  "title": "Special Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "is_pil": {
-                  "title": "Is Pil",
-                  "anyOf": [
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              }
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "impugned_order": {
-          "title": "ImpugnedOrder",
-          "description": "The challenged order and the earlier court.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "applicable": {
-                  "title": "Applicable",
-                  "anyOf": [
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": true
-                },
-                "not_applicable_reason": {
-                  "title": "Not Applicable Reason",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "date_of_impugned_order": {
-                  "title": "Date Of Impugned Order",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "earlier_court": {
-                  "title": "Earlier Court",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "case_number": {
-                  "title": "Case Number",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "petition_type": {
-                  "title": "Petition Type",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "certified_copy_applied_on": {
-                  "title": "Certified Copy Applied On",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "certified_copy_obtained_on": {
-                  "title": "Certified Copy Obtained On",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              }
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "advocate_on_record": {
           "title": "AdvocateOnRecord",
-          "description": "AOR identity and contact details.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "title": "Name",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "registration_number": {
-                  "title": "Registration Number",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "email": {
-                  "title": "Email",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "mobile": {
-                  "title": "Mobile",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "firm_name": {
-                  "title": "Firm Name",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "office_address": {
-                  "title": "Office Address",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "type": {
-                          "title": "Type",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "full_text": {
-                          "title": "Full Text",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "city": {
-                          "title": "City",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "state": {
-                          "title": "State",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "pin_code": {
-                          "title": "Pin Code",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "country": {
-                          "title": "Country",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              },
-              "required": [
-                "name"
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "type": "object"
         },
-        "filing_summary": {
-          "title": "FilingSummary",
-          "description": "Court, matter type and title, counts, review estimate.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "court": {
-                  "title": "Court",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+        "ApplicationItem": {
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
-                "matter_type": {
-                  "title": "Matter Type",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "matter_title": {
-                  "title": "Matter Title",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "documents": {
-                  "title": "Documents",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "annexures": {
-                  "title": "Annexures",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "applications": {
-                  "title": "Applications",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "estimated_review_minutes": {
-                  "title": "Estimated Review Minutes",
-                  "anyOf": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "estimated_review_basis": {
-                  "title": "Estimated Review Basis",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+                {
+                  "type": "null"
                 }
-              }
+              ],
+              "default": null,
+              "description": "Application name as listed in the Index",
+              "title": "Name"
             },
-            {
-              "type": "null"
+            "pages": {
+              "description": "Page numbers from the Index",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Pages",
+              "type": "array"
             }
-          ],
-          "default": null
+          },
+          "title": "ApplicationItem",
+          "type": "object"
+        },
+        "Applications": {
+          "properties": {
+            "count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 0,
+              "description": "Count of application items",
+              "title": "Count"
+            },
+            "items": {
+              "description": "Applications listed in the Index",
+              "items": {
+                "$ref": "#/$defs/ApplicationItem"
+              },
+              "title": "Items",
+              "type": "array"
+            }
+          },
+          "title": "Applications",
+          "type": "object"
+        },
+        "CauseTitle": {
+          "description": "The 'X versus Y' heading of the case. Extracted as printed.",
+          "properties": {
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short cause title as commonly cited, e.g. 'Meera Krishnan v. Union of India & Anr.'",
+              "title": "Title"
+            },
+            "formatted_title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Formatted cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. Append 'And ors.' only when the source text shows more than one petitioner or respondent. Do not invent extra parties.",
+              "title": "Formatted Title"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The cause title verbatim, including '...and others' / '...and another'",
+              "title": "Raw Text"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Split label where the stored title was filled (Memo of Parties or Cover Page).",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            }
+          },
+          "title": "CauseTitle",
+          "type": "object"
+        },
+        "Classification": {
+          "description": "Listing Proforma subject classification.",
+          "properties": {
+            "main_category_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Registry main category code as printed",
+              "title": "Main Category Code"
+            },
+            "main_category_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Registry main category name as printed",
+              "title": "Main Category Name"
+            },
+            "sub_category_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Registry sub-category code as printed",
+              "title": "Sub Category Code"
+            },
+            "sub_category_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Registry sub-category name as printed",
+              "title": "Sub Category Name"
+            },
+            "special_categories": {
+              "description": "Special categories as printed on the Listing Proforma. Copy verbatim. Empty if none.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Special Categories",
+              "type": "array"
+            },
+            "is_pil": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "True if the matter is printed as a Public Interest Litigation",
+              "title": "Is Pil"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Listing Proforma",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            }
+          },
+          "title": "Classification",
+          "type": "object"
+        },
+        "DocumentList": {
+          "properties": {
+            "count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 0,
+              "description": "Count of items",
+              "title": "Count"
+            },
+            "items": {
+              "description": "List of the items",
+              "items": {
+                "type": "string"
+              },
+              "title": "Items",
+              "type": "array"
+            }
+          },
+          "title": "DocumentList",
+          "type": "object"
+        },
+        "FilingSummary": {
+          "description": "High-level summary. Documents are filled by the pipeline from the stitch.",
+          "properties": {
+            "matter_title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short human title, normally the cause title",
+              "title": "Matter Title"
+            },
+            "matter_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Petition type label",
+              "title": "Matter Type"
+            },
+            "documents": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentList"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "List of parts present in the filing"
+            },
+            "annexures": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DocumentList"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Annexures named in the Index"
+            },
+            "estimated_review_minutes": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Estimated human review time based on complexity",
+              "title": "Estimated Review Minutes"
+            }
+          },
+          "title": "FilingSummary",
+          "type": "object"
+        },
+        "ImpugnedOrder": {
+          "description": "The order under challenge. Primary Impugned Order slot only.",
+          "properties": {
+            "is_primary": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": true,
+              "description": "True for the Impugned Order slot. Do not invent extra annexure orders.",
+              "title": "Is Primary"
+            },
+            "case_number": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Case number before the earlier court",
+              "title": "Case Number"
+            },
+            "order_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date of the order under challenge",
+              "title": "Order Date"
+            },
+            "court_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The court that passed the impugned order",
+              "title": "Court Name"
+            },
+            "petition_type_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The proceeding type before the earlier court, NOT the present one",
+              "title": "Petition Type Name"
+            },
+            "bench": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bench or seat as printed",
+              "title": "Bench"
+            },
+            "judges": {
+              "description": "Judge names ONLY if printed. Do not invent.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Judges",
+              "type": "array"
+            },
+            "lower_court_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Court below the impugned court, if printed",
+              "title": "Lower Court Name"
+            },
+            "certified_copy_applied_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date the certified copy was applied for",
+              "title": "Certified Copy Applied On"
+            },
+            "certified_copy_obtained_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date it was obtained",
+              "title": "Certified Copy Obtained On"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Impugned Order",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            }
+          },
+          "title": "ImpugnedOrder",
+          "type": "object"
+        },
+        "Inconsistencies": {
+          "properties": {
+            "items": {
+              "description": "Spelling or value mismatches between fill and verify sources",
+              "items": {
+                "$ref": "#/$defs/InconsistencyItem"
+              },
+              "title": "Items",
+              "type": "array"
+            },
+            "summary": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "One-line summary of mismatches. Null if none.",
+              "title": "Summary"
+            }
+          },
+          "title": "Inconsistencies",
+          "type": "object"
+        },
+        "InconsistencyItem": {
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short id such as i1",
+              "title": "Id"
+            },
+            "label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short mismatch label",
+              "title": "Label"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "What differed, quoting both sources",
+              "title": "Detail"
+            }
+          },
+          "title": "InconsistencyItem",
+          "type": "object"
+        },
+        "NamedValue": {
+          "description": "A labelled string such as court or petition type.",
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Printed name. Leave null if not printed. Do not invent.",
+              "title": "Name"
+            }
+          },
+          "title": "NamedValue",
+          "type": "object"
+        },
+        "Party": {
+          "description": "One petitioner or respondent. Fill from Memo of Parties then Petition page 1.",
+          "properties": {
+            "serial": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Position in the cause title, 1-based",
+              "title": "Serial"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "individual or organization. Leave null if unclear.",
+              "title": "Kind"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Full name as printed. Do not concatenate S/o or W/o into the name.",
+              "title": "Name"
+            },
+            "entity_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "INDIVIDUAL, COMPANY, PARTNERSHIP, SOCIETY, TRUST, STATUTORY_BODY, STATE, UNION_OF_INDIA, OTHER. Leave null if not printed.",
+              "title": "Entity Type"
+            },
+            "acting_through": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Authorised signatory / representative when the party is not an individual",
+              "title": "Acting Through"
+            },
+            "relation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Relation prefix only, e.g. S/o, D/o, W/o. Leave null if not printed.",
+              "title": "Relation"
+            },
+            "guardian": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Related person's name after S/o, D/o, W/o. Leave null if not printed.",
+              "title": "Guardian"
+            },
+            "age": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Age as an integer ONLY if explicitly stated.",
+              "title": "Age"
+            },
+            "occupation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Occupation ONLY if explicitly stated.",
+              "title": "Occupation"
+            },
+            "address": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim address. Leave null if not printed on a fill source. Never copy from Vakalatnama.",
+              "title": "Address"
+            },
+            "city": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted city",
+              "title": "City"
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted state",
+              "title": "State"
+            },
+            "pin_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted pincode",
+              "title": "Pin Code"
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Email ONLY if explicitly printed. Do not invent.",
+              "title": "Email"
+            },
+            "mobile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Mobile ONLY if explicitly printed. Do not invent.",
+              "title": "Mobile"
+            },
+            "is_primary": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "True for the first named party on that side",
+              "title": "Is Primary"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Must be Memo of Parties or Petition. Never Vakalatnama or Cover Page.",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            }
+          },
+          "title": "Party",
+          "type": "object"
+        },
+        "Relief": {
+          "description": "Prayer from the end of the Petition.",
+          "properties": {
+            "sought": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Main prayer as printed",
+              "title": "Sought"
+            },
+            "interim": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Interim relief as printed",
+              "title": "Interim"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Petition",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            }
+          },
+          "title": "Relief",
+          "type": "object"
         }
       },
-      "required": [
-        "court",
-        "petition_type",
-        "cause_title",
-        "petitioners",
-        "respondents",
-        "advocate_on_record"
-      ]
+      "description": "Legal fields LlamaExtract fills for a compiled petition. Envelope IDs, documents[], overall_confidence, and generated_at are added after extract.",
+      "properties": {
+        "court": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NamedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Court where the petition is filed."
+        },
+        "petition_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NamedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil)."
+        },
+        "cause_title": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CauseTitle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cause title representing petitioner vs respondent."
+        },
+        "petitioners": {
+          "description": "Petitioners. One record per petitioner.",
+          "items": {
+            "$ref": "#/$defs/Party"
+          },
+          "title": "Petitioners",
+          "type": "array"
+        },
+        "respondents": {
+          "description": "Respondents. One record per respondent.",
+          "items": {
+            "$ref": "#/$defs/Party"
+          },
+          "title": "Respondents",
+          "type": "array"
+        },
+        "advocates_on_record": {
+          "description": "Advocates-on-Record.",
+          "items": {
+            "$ref": "#/$defs/AdvocateOnRecord"
+          },
+          "title": "Advocates On Record",
+          "type": "array"
+        },
+        "classification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Classification"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Listing Proforma classification."
+        },
+        "impugned_orders": {
+          "description": "Primary impugned order only.",
+          "items": {
+            "$ref": "#/$defs/ImpugnedOrder"
+          },
+          "title": "Impugned Orders",
+          "type": "array"
+        },
+        "relief": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Relief"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Prayer from the Petition."
+        },
+        "applications": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Applications"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Applications listed in the Index."
+        },
+        "inconsistencies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inconsistencies"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Spelling mismatches between fill and verify sources."
+        },
+        "filing_summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilingSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Matter title and document lists."
+        }
+      },
+      "title": "LegalExtractRecord",
+      "type": "object"
     },
     "tier": "agentic",
     "extraction_target": "per_doc",
@@ -1169,63 +1236,385 @@
   },
   "split_upload": {
     "extract_field_sources": {
-      "court": ["Cover Page"],
-      "petition_type": ["Cover Page"],
-      "special_category": ["Listing Proforma"],
-      "matter_classification": ["Listing Proforma"],
-      "cause_title": ["Memo of Parties", "Cover Page"],
-      "petitioners": ["Memo of Parties", "Cover Page"],
-      "respondents": ["Memo of Parties", "Cover Page"],
-      "impugned_order": ["Impugned Order"],
-      "advocate_on_record": ["Vakalatnama", "AOR's Declaration"],
-      "filing_summary": ["Cover Page", "Listing Proforma"]
+      "court": {
+        "fill": [
+          "Cover Page"
+        ],
+        "verify": [
+          "Petition"
+        ]
+      },
+      "petition_type": {
+        "fill": [
+          "Cover Page"
+        ],
+        "verify": [
+          "Listing Proforma"
+        ]
+      },
+      "cause_title": {
+        "fill": [
+          "Memo of Parties",
+          "Cover Page"
+        ],
+        "verify": [
+          "Petition"
+        ]
+      },
+      "petitioners": {
+        "fill": [
+          "Memo of Parties",
+          "Petition"
+        ],
+        "verify": [
+          "Petition",
+          "Cover Page"
+        ]
+      },
+      "respondents": {
+        "fill": [
+          "Memo of Parties",
+          "Petition"
+        ],
+        "verify": [
+          "Petition",
+          "Cover Page"
+        ]
+      },
+      "advocates_on_record": {
+        "fill": [
+          "Vakalatnama",
+          "AOR's Declaration"
+        ]
+      },
+      "classification": {
+        "fill": [
+          "Listing Proforma"
+        ]
+      },
+      "impugned_orders": {
+        "fill": [
+          "Impugned Order"
+        ]
+      },
+      "relief": {
+        "fill": [
+          "Petition"
+        ]
+      },
+      "applications": {
+        "fill": [
+          "Index"
+        ]
+      }
     },
     "types": {
       "SLP_CIVIL": {
         "label": "SLP (Civil)",
         "slots": [
-          {"id": "advocates_checklist", "label": "Advocate's Checklist", "parts": ["Advocate's Checklist"], "required": true},
-          {"id": "cover_page", "label": "Cover Page", "parts": ["Cover Page"], "required": true},
-          {"id": "record_of_proceedings", "label": "Record of Proceedings", "parts": ["Record of Proceedings"], "required": true},
-          {"id": "aors_declaration", "label": "AOR's Declaration", "parts": ["AOR's Declaration"], "required": true},
-          {"id": "index", "label": "Index", "parts": ["Index"], "required": true},
-          {"id": "office_report_on_limitation", "label": "Office Report on Limitation", "parts": ["Office Report on Limitation"], "required": true},
-          {"id": "listing_proforma", "label": "Listing Proforma", "parts": ["Listing Proforma"], "required": true},
-          {"id": "synopsis_lod", "label": "Synopsis + List of Dates & Events", "parts": ["Synopsis", "List of Dates & Events"], "required": true},
-          {"id": "impugned_order", "label": "Impugned Order", "parts": ["Impugned Order"], "required": true},
-          {"id": "petition", "label": "Petition", "parts": ["Petition"], "required": true},
-          {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
-          {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
-          {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
-          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": false},
-          {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
-          {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
-          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false},
-          {"id": "court_fees", "label": "Court Fees", "parts": ["Court Fees"], "required": false},
-          {"id": "undefined", "label": "Undefined", "parts": ["Undefined"], "required": false}
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Petition",
+            "parts": [
+              "Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_appearance",
+            "label": "Memo of Appearance",
+            "parts": [
+              "Memo of Appearance"
+            ],
+            "required": true
+          },
+          {
+            "id": "vakalatnama",
+            "label": "Vakalatnama",
+            "parts": [
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "court_fees",
+            "label": "Court Fees",
+            "parts": [
+              "Court Fees"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
         ]
       },
       "SLP_CRIMINAL": {
         "label": "SLP (Criminal)",
         "slots": [
-          {"id": "advocates_checklist", "label": "Advocate's Checklist", "parts": ["Advocate's Checklist"], "required": true},
-          {"id": "cover_page", "label": "Cover Page", "parts": ["Cover Page"], "required": true},
-          {"id": "record_of_proceedings", "label": "Record of Proceedings", "parts": ["Record of Proceedings"], "required": true},
-          {"id": "aors_declaration", "label": "AOR's Declaration", "parts": ["AOR's Declaration"], "required": true},
-          {"id": "index", "label": "Index", "parts": ["Index"], "required": true},
-          {"id": "office_report_on_limitation", "label": "Office Report on Limitation", "parts": ["Office Report on Limitation"], "required": true},
-          {"id": "listing_proforma", "label": "Listing Proforma", "parts": ["Listing Proforma"], "required": true},
-          {"id": "synopsis_lod", "label": "Synopsis + List of Dates & Events", "parts": ["Synopsis", "List of Dates & Events"], "required": true},
-          {"id": "impugned_order", "label": "Impugned Order", "parts": ["Impugned Order"], "required": true},
-          {"id": "petition", "label": "Petition", "parts": ["Petition"], "required": true},
-          {"id": "affidavit", "label": "Affidavit", "parts": ["Affidavit"], "required": true},
-          {"id": "annexures", "label": "Annexures", "parts": ["Annexures"], "required": false},
-          {"id": "appendix", "label": "Appendix", "parts": ["Appendix"], "required": false},
-          {"id": "memo_of_parties", "label": "Memo of Parties", "parts": ["Memo of Parties"], "required": false},
-          {"id": "memo_of_appearance", "label": "Memo of Appearance", "parts": ["Memo of Appearance"], "required": true},
-          {"id": "vakalatnama", "label": "Vakalatnama", "parts": ["Vakalatnama"], "required": true},
-          {"id": "poa_br", "label": "PoA/BR", "parts": ["PoA/BR"], "required": false},
-          {"id": "undefined", "label": "Undefined", "parts": ["Undefined"], "required": false}
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Petition",
+            "parts": [
+              "Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_appearance",
+            "label": "Memo of Appearance",
+            "parts": [
+              "Memo of Appearance"
+            ],
+            "required": true
+          },
+          {
+            "id": "vakalatnama",
+            "label": "Vakalatnama",
+            "parts": [
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
         ]
       }
     }

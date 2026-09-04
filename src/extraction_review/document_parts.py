@@ -98,47 +98,46 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
     "filing_formalities": (
         "court",
         "petition_type",
-        "special_category",
         "cause_title",
-        "impugned_order",
+        "impugned_orders",
+        "relief",
         "filing_summary",
     ),
     "advocate_checklist": (
         "court",
         "petition_type",
-        "advocate_on_record",
+        "advocates_on_record",
     ),
     "listing_proforma": (
         "court",
         "petition_type",
-        "special_category",
         "cause_title",
-        "matter_classification",
+        "classification",
     ),
     "petition_presentation": (
         "court",
         "petition_type",
         "filing_summary",
     ),
-    "applications": ("court", "petition_type", "filing_summary"),
+    "applications": ("court", "petition_type", "applications", "filing_summary"),
     "annexures": ("court", "petition_type", "filing_summary"),
     "parties": (
         "court",
         "petition_type",
         "cause_title",
-        "impugned_order",
+        "impugned_orders",
     ),
     "dates_execution": ("court", "petition_type", "filing_summary"),
-    "index_paper_book": ("court", "petition_type", "filing_summary"),
-    "limitation": ("court", "petition_type", "impugned_order", "filing_summary"),
+    "index_paper_book": ("court", "petition_type", "applications", "filing_summary"),
+    "limitation": ("court", "petition_type", "impugned_orders", "filing_summary"),
     "affidavit": ("court", "petition_type"),
     "translations": ("court", "petition_type", "filing_summary"),
-    "vakalatnama": ("court", "petition_type", "advocate_on_record", "filing_summary"),
-    "memo_of_appearance": ("court", "petition_type", "advocate_on_record"),
+    "vakalatnama": ("court", "petition_type", "advocates_on_record", "filing_summary"),
+    "memo_of_appearance": ("court", "petition_type", "advocates_on_record"),
     "list_of_dates": ("court", "petition_type", "filing_summary"),
 }
 
-ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
+ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
 # do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
@@ -365,11 +364,35 @@ def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[
     return {"count": len(items), "items": items}
 
 
+def document_spans_from_page_parts(
+    page_parts: PagePartMap | dict[int, str],
+) -> list[dict[str, Any]]:
+    """Build documents[] spans from Split labels and global page numbers."""
+    order: list[str] = []
+    pages_by_part: dict[str, list[int]] = {}
+    for page in sorted(page_parts):
+        for name in parts_on_page(page_parts.get(page)):
+            if name not in pages_by_part:
+                pages_by_part[name] = []
+                order.append(name)
+            pages_by_part[name].append(page)
+    return [
+        {
+            "name": name,
+            "start_page": min(pages_by_part[name]),
+            "end_page": max(pages_by_part[name]),
+        }
+        for name in order
+        if pages_by_part[name]
+    ]
+
+
 def overlay_split_documents(
     payload: dict[str, Any], page_parts: PagePartMap | dict[int, str]
 ) -> None:
     """Replace Index slang (V/A) with Split part names and page sources."""
     docs = documents_from_page_parts(page_parts)
+    spans = document_spans_from_page_parts(page_parts)
     if not docs["items"]:
         return
     record = payload
@@ -387,6 +410,11 @@ def overlay_split_documents(
         summary = {}
         record["filing_summary"] = summary
     summary["documents"] = docs
+    record["documents"] = spans
+    record["document_counts"] = {
+        "processed": len(spans),
+        "failed": 0,
+    }
 
 
 def filing_type_label(filing_type: str | None) -> str:
