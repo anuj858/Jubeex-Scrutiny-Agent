@@ -27,6 +27,19 @@ type MissingField = {
   label: string;
 };
 
+function formatOverallConfidence(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return undefined;
+    return text.endsWith("%") ? text : `${text}%`;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const pct = value <= 1 ? Math.round(value * 100) : Math.round(value);
+    return `${pct}%`;
+  }
+  return undefined;
+}
+
 /**
  * Walk the JSON schema and the extracted data together.
  * For every field listed in a "required" array, check if the value
@@ -225,10 +238,9 @@ export default function ItemPage() {
   const extractedRecord = (extractedData?.data ?? extractedData) as
     | Record<string, any>
     | undefined;
-  const overallConfidence =
-    typeof extractedRecord?.overall_confidence === "number"
-      ? extractedRecord.overall_confidence
-      : undefined;
+  const overallConfidence = formatOverallConfidence(
+    extractedRecord?.overall_confidence,
+  );
   const inconsistencyItems = Array.isArray(
     extractedRecord?.inconsistencies?.items,
   )
@@ -236,6 +248,7 @@ export default function ItemPage() {
         id?: string;
         label?: string;
         detail?: string;
+        raw_text?: string;
       }>)
     : [];
 
@@ -269,10 +282,10 @@ export default function ItemPage() {
             </div>
           )}
 
-          {typeof overallConfidence === "number" && (
+          {overallConfidence && (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 mb-4">
               <div className="text-sm font-semibold text-slate-800">
-                Overall confidence: {Math.round(overallConfidence * 100)}%
+                Overall confidence: {overallConfidence}
               </div>
             </div>
           )}
@@ -295,7 +308,9 @@ export default function ItemPage() {
                     <span className="font-medium">
                       {item.label || "Mismatch"}
                     </span>
-                    {item.detail ? `: ${item.detail}` : null}
+                    {(item.raw_text || item.detail)
+                      ? `: ${item.raw_text || item.detail}`
+                      : null}
                   </li>
                 ))}
               </ul>

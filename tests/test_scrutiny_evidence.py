@@ -266,6 +266,7 @@ def test_slice_record_drops_unrelated_blocks() -> None:
     record = {
         "court": {"name": "Supreme Court of India"},
         "petition_type": {"name": "Special Leave Petition (Civil)"},
+        "cause_title": {"title": "X v. Y"},
         "advocates_on_record": [{"name": "A", "registration_number": "1234"}],
         "classification": {"main_category_name": "Service"},
         "petitioners": [{"name": "X"}],
@@ -273,7 +274,8 @@ def test_slice_record_drops_unrelated_blocks() -> None:
     }
     listing = slice_record_for_defect(record, catalogue.defect("D004"))
     aor = slice_record_for_defect(record, catalogue.defect("D005"))
-    assert listing is not None and "classification" in listing
+    assert listing is not None and "cause_title" in listing
+    assert "classification" not in listing
     assert "advocates_on_record" not in listing
     assert "petitioners" not in listing
     assert aor is not None and "advocates_on_record" in aor

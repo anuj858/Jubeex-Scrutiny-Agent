@@ -420,12 +420,30 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             bit += (
                 ". Prefer Memo of Parties; if it is missing, use the first page of "
                 "the Main Petition. Merge blank particulars between those two only. "
-                "Never copy party records from Vakalatnama or Cover Page"
+                "Never copy party names or addresses from Vakalatnama or Cover Page. "
+                "Use Cover Page only to mark is_primary from the cover cause-title names"
             )
         lines.append(bit + ".")
-    lines.append(
-        "- inconsistencies: record spelling or value mismatches between fill and "
-        "verify sources. Do not invent extra parties to resolve a mismatch."
+    lines.extend(
+        [
+            "- formatted_title: Cover Page names are main_petitioner and main_respondent. "
+            "Each side is 'MainName' (1 party), 'MainName and Anr.' (exactly 2), "
+            "'MainName and Ors.' (3 or more). Join with ' VS '.",
+            "- kind: INDIVIDUAL or ORGANIZATION from the printed name. Organization "
+            "prefixes: M/s, M/s., Messrs, The, Union, Government of, Ministry of, "
+            "Department of. Suffixes: Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, "
+            "LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, "
+            "Society, Association. 'The' is a name prefix (The State of …), not every 'the'.",
+            "- acting_through: look under the party for 'acting through' / 'through'. "
+            "ORGANIZATION almost always has it; if missing, add an inconsistencies item. "
+            "INDIVIDUAL: optional.",
+            "- relief_sort: Main Prayer / Prayer heading on the last 2-3 pages of the "
+            "Main Petition only.",
+            "- confidence: percentage string such as 95% or 65% on each object.",
+            "- inconsistencies: record spelling or value mismatches between fill and "
+            "verify sources. Do not invent extra parties to resolve a mismatch. "
+            "items[].id is '1', '2', …; use raw_text, not detail.",
+        ]
     )
     return "\n".join(lines).strip()
 
@@ -475,8 +493,22 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             " Prefer Memo of Parties; if it is missing, use the first page of the "
             "Main Petition. If a field is blank in one of those parts, fill it from the "
             "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
-            "Memo of Appearance, AOR's Declaration, or Cover Page. Do not invent "
-            "parties. Leave a field null if it is not printed on a fill source."
+            "Memo of Appearance, AOR's Declaration, or Cover Page. Use Cover Page "
+            "only to decide which already-listed party is primary. Do not invent "
+            "parties. Leave a field null if it is not printed on a fill source. "
+            "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
+            "ORGANIZATION without acting_through is an inconsistencies item."
+        )
+    if field_name == "cause_title":
+        extra += (
+            " main_petitioner and main_respondent are the names on the Cover Page "
+            "cause-title line. formatted_title uses and Anr. for exactly one extra "
+            "party on that side and and Ors. for two or more extras."
+        )
+    if field_name == "relief_sort":
+        extra += (
+            " Copy only the block under Main Prayer or Prayer on the last 2-3 pages "
+            "of the Main Petition."
         )
     return f"{extra}{LOOK_ONLY_SUFFIX}"
 
@@ -508,7 +540,7 @@ def inject_where_to_look(
 def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
     lines = [
         "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
-        "Each section is labelled with its document part, for example ## [Listing Proforma] (p. 3).",
+        "Each section is labelled with its document part, for example ## [Cover Page] (p. 1).",
         "Copy printed text only. Do not invent or complete a field from a document "
         "part that is not a fill source for that field. If it is not printed there, leave it null.",
         "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
@@ -521,8 +553,15 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         if spec.verify:
             line += f"; verify {', '.join(spec.verify)}"
         lines.append(line)
-    lines.append(
-        "- inconsistencies: one item per spelling or value mismatch between fill and verify sources."
+    lines.extend(
+        [
+            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page.",
+            "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
+            "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
+            "- relief_sort: Main Prayer / Prayer on the last 2-3 pages of the Main Petition.",
+            "- confidence: percentage strings such as 95% or 65%.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text.",
+        ]
     )
     return "\n".join(lines).strip()
 

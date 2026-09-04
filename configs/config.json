@@ -106,7 +106,7 @@
               "description": "Firm name, if any",
               "title": "Firm"
             },
-            "office": {
+            "office_address": {
               "anyOf": [
                 {
                   "type": "string"
@@ -117,7 +117,7 @@
               ],
               "default": null,
               "description": "Office address as printed",
-              "title": "Office"
+              "title": "Office Address"
             },
             "source_part": {
               "anyOf": [
@@ -132,21 +132,7 @@
               "description": "Vakalatnama or AOR's Declaration",
               "title": "Source Part"
             },
-            "source_pages": {
-              "description": "Global page numbers containing this data",
-              "items": {
-                "type": "integer"
-              },
-              "title": "Source Pages",
-              "type": "array"
-            }
-          },
-          "title": "AdvocateOnRecord",
-          "type": "object"
-        },
-        "ApplicationItem": {
-          "properties": {
-            "name": {
+            "raw_text": {
               "anyOf": [
                 {
                   "type": "string"
@@ -156,46 +142,32 @@
                 }
               ],
               "default": null,
-              "description": "Application name as listed in the Index",
-              "title": "Name"
+              "description": "Verbatim AOR block as printed, including name, address, email, and contact.",
+              "title": "Raw Text"
             },
-            "pages": {
-              "description": "Page numbers from the Index",
+            "source_pages": {
+              "description": "Global page numbers containing this data",
               "items": {
                 "type": "integer"
               },
-              "title": "Pages",
+              "title": "Source Pages",
               "type": "array"
-            }
-          },
-          "title": "ApplicationItem",
-          "type": "object"
-        },
-        "Applications": {
-          "properties": {
-            "count": {
+            },
+            "confidence": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "default": 0,
-              "description": "Count of application items",
-              "title": "Count"
-            },
-            "items": {
-              "description": "Applications listed in the Index",
-              "items": {
-                "$ref": "#/$defs/ApplicationItem"
-              },
-              "title": "Items",
-              "type": "array"
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
           },
-          "title": "Applications",
+          "title": "AdvocateOnRecord",
           "type": "object"
         },
         "CauseTitle": {
@@ -224,7 +196,7 @@
                 }
               ],
               "default": null,
-              "description": "Formatted cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. Append 'And ors.' only when the source text shows more than one petitioner or respondent. Do not invent extra parties.",
+              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Main names come from the Cover Page. Do not invent extra parties.",
               "title": "Formatted Title"
             },
             "raw_text": {
@@ -239,6 +211,32 @@
               "default": null,
               "description": "The cause title verbatim, including '...and others' / '...and another'",
               "title": "Raw Text"
+            },
+            "main_petitioner": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Main petitioner name as printed on the Cover Page cause-title line.",
+              "title": "Main Petitioner"
+            },
+            "main_respondent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Main respondent name as printed on the Cover Page cause-title line.",
+              "title": "Main Respondent"
             },
             "source_part": {
               "anyOf": [
@@ -260,207 +258,22 @@
               },
               "title": "Source Pages",
               "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
           },
           "title": "CauseTitle",
-          "type": "object"
-        },
-        "Classification": {
-          "description": "Listing Proforma subject classification.",
-          "properties": {
-            "main_category_code": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Registry main category code as printed",
-              "title": "Main Category Code"
-            },
-            "main_category_name": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Registry main category name as printed",
-              "title": "Main Category Name"
-            },
-            "sub_category_code": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Registry sub-category code as printed",
-              "title": "Sub Category Code"
-            },
-            "sub_category_name": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Registry sub-category name as printed",
-              "title": "Sub Category Name"
-            },
-            "special_categories": {
-              "description": "Special categories as printed on the Listing Proforma. Copy verbatim. Empty if none.",
-              "items": {
-                "type": "string"
-              },
-              "title": "Special Categories",
-              "type": "array"
-            },
-            "is_pil": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "True if the matter is printed as a Public Interest Litigation",
-              "title": "Is Pil"
-            },
-            "source_part": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Listing Proforma",
-              "title": "Source Part"
-            },
-            "source_pages": {
-              "description": "Global page numbers containing this data",
-              "items": {
-                "type": "integer"
-              },
-              "title": "Source Pages",
-              "type": "array"
-            }
-          },
-          "title": "Classification",
-          "type": "object"
-        },
-        "DocumentList": {
-          "properties": {
-            "count": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": 0,
-              "description": "Count of items",
-              "title": "Count"
-            },
-            "items": {
-              "description": "List of the items",
-              "items": {
-                "type": "string"
-              },
-              "title": "Items",
-              "type": "array"
-            }
-          },
-          "title": "DocumentList",
-          "type": "object"
-        },
-        "FilingSummary": {
-          "description": "High-level summary. Documents are filled by the pipeline from the stitch.",
-          "properties": {
-            "matter_title": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Short human title, normally the cause title",
-              "title": "Matter Title"
-            },
-            "matter_type": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Petition type label",
-              "title": "Matter Type"
-            },
-            "documents": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/DocumentList"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "List of parts present in the filing"
-            },
-            "annexures": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/DocumentList"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Annexures named in the Index"
-            },
-            "estimated_review_minutes": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Estimated human review time based on complexity",
-              "title": "Estimated Review Minutes"
-            }
-          },
-          "title": "FilingSummary",
           "type": "object"
         },
         "ImpugnedOrder": {
@@ -505,7 +318,7 @@
               "description": "Date of the order under challenge",
               "title": "Order Date"
             },
-            "court_name": {
+            "Forum": {
               "anyOf": [
                 {
                   "type": "string"
@@ -515,21 +328,8 @@
                 }
               ],
               "default": null,
-              "description": "The court that passed the impugned order",
-              "title": "Court Name"
-            },
-            "petition_type_name": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "The proceeding type before the earlier court, NOT the present one",
-              "title": "Petition Type Name"
+              "description": "The court/forum that passed the impugned order",
+              "title": "Forum"
             },
             "bench": {
               "anyOf": [
@@ -543,27 +343,6 @@
               "default": null,
               "description": "Bench or seat as printed",
               "title": "Bench"
-            },
-            "judges": {
-              "description": "Judge names ONLY if printed. Do not invent.",
-              "items": {
-                "type": "string"
-              },
-              "title": "Judges",
-              "type": "array"
-            },
-            "lower_court_name": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Court below the impugned court, if printed",
-              "title": "Lower Court Name"
             },
             "certified_copy_applied_on": {
               "anyOf": [
@@ -591,6 +370,19 @@
               "description": "Date it was obtained",
               "title": "Certified Copy Obtained On"
             },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim impugned-order identification as printed.",
+              "title": "Raw Text"
+            },
             "source_part": {
               "anyOf": [
                 {
@@ -611,22 +403,8 @@
               },
               "title": "Source Pages",
               "type": "array"
-            }
-          },
-          "title": "ImpugnedOrder",
-          "type": "object"
-        },
-        "Inconsistencies": {
-          "properties": {
-            "items": {
-              "description": "Spelling or value mismatches between fill and verify sources",
-              "items": {
-                "$ref": "#/$defs/InconsistencyItem"
-              },
-              "title": "Items",
-              "type": "array"
             },
-            "summary": {
+            "confidence": {
               "anyOf": [
                 {
                   "type": "string"
@@ -636,8 +414,51 @@
                 }
               ],
               "default": null,
-              "description": "One-line summary of mismatches. Null if none.",
-              "title": "Summary"
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
+            }
+          },
+          "title": "ImpugnedOrder",
+          "type": "object"
+        },
+        "Inconsistencies": {
+          "properties": {
+            "items": {
+              "description": "Spelling or value mismatches between fill and verify sources. Also record an ORGANIZATION party with no acting_through.",
+              "items": {
+                "$ref": "#/$defs/InconsistencyItem"
+              },
+              "title": "Items",
+              "type": "array"
+            },
+            "source_part": {
+              "description": "Split labels involved in the mismatches.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Part",
+              "type": "array"
+            },
+            "source_pages": {
+              "description": "Global page numbers involved in the mismatches.",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
           },
           "title": "Inconsistencies",
@@ -655,7 +476,7 @@
                 }
               ],
               "default": null,
-              "description": "Short id such as i1",
+              "description": "Sequential id as a string, starting at 1.",
               "title": "Id"
             },
             "label": {
@@ -671,7 +492,7 @@
               "description": "Short mismatch label",
               "title": "Label"
             },
-            "detail": {
+            "raw_text": {
               "anyOf": [
                 {
                   "type": "string"
@@ -681,31 +502,11 @@
                 }
               ],
               "default": null,
-              "description": "What differed, quoting both sources",
-              "title": "Detail"
+              "description": "What differed, quoting both sources.",
+              "title": "Raw Text"
             }
           },
           "title": "InconsistencyItem",
-          "type": "object"
-        },
-        "NamedValue": {
-          "description": "A labelled string such as court or petition type.",
-          "properties": {
-            "name": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Printed name. Leave null if not printed. Do not invent.",
-              "title": "Name"
-            }
-          },
-          "title": "NamedValue",
           "type": "object"
         },
         "Party": {
@@ -734,7 +535,7 @@
                 }
               ],
               "default": null,
-              "description": "individual or organization. Leave null if unclear.",
+              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition (and Memo of Parties). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
               "title": "Kind"
             },
             "name": {
@@ -760,7 +561,7 @@
                 }
               ],
               "default": null,
-              "description": "INDIVIDUAL, COMPANY, PARTNERSHIP, SOCIETY, TRUST, STATUTORY_BODY, STATE, UNION_OF_INDIA, OTHER. Leave null if not printed.",
+              "description": "Short type label from the printed name, e.g. INDIVIDUAL, Union, Company. Not limited to a fixed enum. Leave null if not printed.",
               "title": "Entity Type"
             },
             "acting_through": {
@@ -773,7 +574,7 @@
                 }
               ],
               "default": null,
-              "description": "Authorised signatory / representative when the party is not an individual",
+              "description": "Person named after 'acting through' / 'through' under the party block. May appear under an organization or an individual. ORGANIZATION almost always has this; if missing, leave null and add an inconsistencies item. INDIVIDUAL: fill only when those words appear.",
               "title": "Acting Through"
             },
             "relation": {
@@ -801,19 +602,6 @@
               "default": null,
               "description": "Related person's name after S/o, D/o, W/o. Leave null if not printed.",
               "title": "Guardian"
-            },
-            "age": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Age as an integer ONLY if explicitly stated.",
-              "title": "Age"
             },
             "occupation": {
               "anyOf": [
@@ -916,8 +704,21 @@
                 }
               ],
               "default": null,
-              "description": "True for the first named party on that side",
+              "description": "True for the party whose name matches the Cover Page main petitioner or main respondent. False for the others. Do not invent a party from Cover Page.",
               "title": "Is Primary"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim party block as printed, including name, relation, and address lines.",
+              "title": "Raw Text"
             },
             "source_part": {
               "anyOf": [
@@ -939,91 +740,52 @@
               },
               "title": "Source Pages",
               "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
           },
           "title": "Party",
           "type": "object"
-        },
-        "Relief": {
-          "description": "Prayer from the end of the Main Petition.",
-          "properties": {
-            "sought": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Main prayer as printed",
-              "title": "Sought"
-            },
-            "interim": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Interim relief as printed",
-              "title": "Interim"
-            },
-            "source_part": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Main Petition",
-              "title": "Source Part"
-            },
-            "source_pages": {
-              "description": "Global page numbers containing this data",
-              "items": {
-                "type": "integer"
-              },
-              "title": "Source Pages",
-              "type": "array"
-            }
-          },
-          "title": "Relief",
-          "type": "object"
         }
       },
-      "description": "Legal fields LlamaExtract fills for a compiled petition. Envelope IDs, documents[], overall_confidence, and generated_at are added after extract.",
+      "description": "Fields LlamaExtract fills from the extract pack.",
       "properties": {
         "court": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NamedValue"
+              "type": "string"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Court where the petition is filed."
+          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "title": "Court"
         },
         "petition_type": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NamedValue"
+              "type": "string"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Petition type as printed, e.g. Special Leave Petition (Civil)."
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "title": "Petition Type"
         },
         "cause_title": {
           "anyOf": [
@@ -1061,18 +823,6 @@
           "title": "Advocates On Record",
           "type": "array"
         },
-        "classification": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Classification"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Listing Proforma classification."
-        },
         "impugned_orders": {
           "description": "Primary impugned order only.",
           "items": {
@@ -1081,29 +831,18 @@
           "title": "Impugned Orders",
           "type": "array"
         },
-        "relief": {
+        "relief_sort": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Relief"
+              "type": "string"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Prayer from the Main Petition."
-        },
-        "applications": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Applications"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Applications listed in the Index."
+          "description": "Main prayer only. Copy from the Main Petition last 2-3 pages under a heading Main Prayer or Prayer. Leave null if that heading is not printed.",
+          "title": "Relief Sort"
         },
         "inconsistencies": {
           "anyOf": [
@@ -1115,19 +854,7 @@
             }
           ],
           "default": null,
-          "description": "Spelling mismatches between fill and verify sources."
-        },
-        "filing_summary": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FilingSummary"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Matter title and document lists."
+          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. items[].id is '1', '2', …; items[].raw_text quotes both sources."
         }
       },
       "title": "LegalExtractRecord",
@@ -1241,7 +968,11 @@
           "Cover Page"
         ],
         "verify": [
-          "Main Petition"
+          "Main Petition",
+          "Vakalatnama",
+          "Office Report on Limitation",
+          "Affidavit",
+          "Memo of Parties"
         ]
       },
       "petition_type": {
@@ -1249,7 +980,11 @@
           "Cover Page"
         ],
         "verify": [
-          "Listing Proforma"
+          "Main Petition",
+          "Vakalatnama",
+          "Office Report on Limitation",
+          "Affidavit",
+          "Memo of Parties"
         ]
       },
       "cause_title": {
@@ -1287,24 +1022,14 @@
           "AOR's Declaration"
         ]
       },
-      "classification": {
-        "fill": [
-          "Listing Proforma"
-        ]
-      },
       "impugned_orders": {
         "fill": [
           "Impugned Order"
         ]
       },
-      "relief": {
+      "relief_sort": {
         "fill": [
           "Main Petition"
-        ]
-      },
-      "applications": {
-        "fill": [
-          "Index"
         ]
       }
     },

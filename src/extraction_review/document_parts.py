@@ -107,7 +107,7 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "petition_type",
         "cause_title",
         "impugned_orders",
-        "relief",
+        "relief_sort",
         "filing_summary",
     ),
     "advocate_checklist": (
@@ -119,14 +119,13 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "court",
         "petition_type",
         "cause_title",
-        "classification",
     ),
     "petition_presentation": (
         "court",
         "petition_type",
         "filing_summary",
     ),
-    "applications": ("court", "petition_type", "applications", "filing_summary"),
+    "applications": ("court", "petition_type", "filing_summary"),
     "annexures": ("court", "petition_type", "filing_summary"),
     "parties": (
         "court",
@@ -135,7 +134,7 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "impugned_orders",
     ),
     "dates_execution": ("court", "petition_type", "filing_summary"),
-    "index_paper_book": ("court", "petition_type", "applications", "filing_summary"),
+    "index_paper_book": ("court", "petition_type", "filing_summary"),
     "limitation": ("court", "petition_type", "impugned_orders", "filing_summary"),
     "affidavit": ("court", "petition_type"),
     "translations": ("court", "petition_type", "filing_summary"),

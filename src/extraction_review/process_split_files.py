@@ -351,6 +351,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             page_parts=page_parts,
             filing_type=filing_type,
             overall_confidence=confidence,
+            field_confidence=(meta.get("extract_confidence") or {}).get("fields"),
         )
         data_dict["data"] = inner
         if page_parts:

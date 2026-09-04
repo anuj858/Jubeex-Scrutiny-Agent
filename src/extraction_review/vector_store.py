@@ -205,10 +205,10 @@ def build_filing_chunk_text(
         f"{matter.get('sub_category_name') or matter.get('sub_category')}",
         f"PIL: {matter.get('is_pil')}",
         f"Impugned order: {impugned.get('case_number')} "
-        f"({impugned.get('court_name') or impugned.get('earlier_court')}) "
+        f"({impugned.get('Forum') or impugned.get('forum') or impugned.get('court_name') or impugned.get('earlier_court')}) "
         f"dated {impugned.get('order_date') or impugned.get('date_of_impugned_order')}",
         f"AOR: {aor.get('name')} ({aor.get('registration_number')})",
-        f"Summary title: {summary.get('matter_title')}",
+        f"Summary title: {cause.get('formatted_title') or cause.get('title') or summary.get('matter_title')}",
     ]
     return "\n".join(p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None"))
 
