@@ -95,8 +95,22 @@ class CauseTitle(BaseModel):
         ),
     )
     raw_text: str | None = Field(default=None, description="The cause title verbatim, including '...and others' / '...and another'")
-    main_petitioner: str | None = Field(default=None, description="Main petitioner name as printed on the Cover Page cause-title line.")
-    main_respondent: str | None = Field(default=None, description="Main respondent name as printed on the Cover Page cause-title line.")
+    main_petitioner: str | None = Field(
+        default=None,
+        description=(
+            "Main petitioner name from the Cover Page cause-title line. "
+            "The person's or body's name only. Do not include And Anr, And Ors, "
+            "Petitioner, Petitioner(s), or leading dots."
+        ),
+    )
+    main_respondent: str | None = Field(
+        default=None,
+        description=(
+            "Main respondent name from the Cover Page cause-title line. "
+            "The person's or body's name only. Do not include And Anr, And Ors, "
+            "Respondent, Respondent(s), or leading dots."
+        ),
+    )
     source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Memo of Parties or Cover Page).")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)

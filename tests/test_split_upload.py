@@ -20,8 +20,11 @@ from extraction_review.extract_record import (
     apply_extract_envelope,
     build_formatted_title,
     confidence_percent_string,
+    format_side_title,
     is_organization_name,
+    is_party_role_label_mismatch,
     stamp_source_pages,
+    strip_party_role_label,
 )
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import ProcessFileWorkflow
@@ -426,6 +429,36 @@ def test_formatted_title_anr_and_ors() -> None:
     assert build_formatted_title("Meera Krishnan", 2, "Union of India", 4) == (
         "Meera Krishnan and Anr. VS Union of India and Ors."
     )
+    assert build_formatted_title(
+        "Kailash Negi Alias Anmol",
+        1,
+        "Smt. Shalija Shah And Anr",
+        2,
+    ) == "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    assert format_side_title("Smt. Shalija Shah And Anr ...Respondent(s)", 2) == (
+        "Smt. Shalija Shah and Anr."
+    )
+
+
+def test_envelope_strips_cover_anr_before_formatting() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "cause_title": {
+                "main_petitioner": "Kailash Negi Alias Anmol",
+                "main_respondent": "Smt. Shalija Shah And Anr",
+            },
+            "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+            "respondents": [
+                {"name": "Smt. Shalija Shah"},
+                {"name": "Another"},
+            ],
+        }
+    )
+    cause = wrapped["cause_title"]
+    assert cause["main_respondent"] == "Smt. Shalija Shah"
+    assert cause["formatted_title"] == (
+        "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    )
 
 
 def test_organization_name_prefixes_and_suffixes() -> None:
@@ -485,6 +518,55 @@ def test_envelope_formats_title_kind_acting_through_and_confidence() -> None:
     assert wrapped["overall_confidence"] == "65%"
     assert confidence_percent_string(0.91) == "91%"
     assert confidence_percent_string("95%") == "95%"
+
+
+def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> None:
+    dotted = (
+        'Cover Page: "Smt. Shalija Shah And Anr ...Respondent(s)" vs '
+        'Main Petition/Affidavit/Vakalatnama: "Smt. Shalija Shah And Anr"'
+    )
+    plain = (
+        'Cover Page: "Smt. Shalija Shah And Anr Petitioner" vs '
+        'Main Petition: "Smt. Shalija Shah And Anr"'
+    )
+    assert strip_party_role_label("Smt. Shalija Shah And Anr ...Respondent(s)") == (
+        "Smt. Shalija Shah And Anr"
+    )
+    assert strip_party_role_label("Smt. Shalija Shah And Anr Petitioner") == (
+        "Smt. Shalija Shah And Anr"
+    )
+    assert is_party_role_label_mismatch(dotted)
+    assert is_party_role_label_mismatch(plain)
+    assert not is_party_role_label_mismatch(
+        'Cover Page: "Smt. Shalija Shah" vs Main Petition: "Smt. Shailja Shah"'
+    )
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "cause title respondent capitalization",
+                        "raw_text": dotted,
+                    },
+                    {
+                        "id": "2",
+                        "label": "Name spelling",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah" vs '
+                            'Main Petition: "Smt. Shailja Shah"'
+                        ),
+                    },
+                ],
+                "source_part": ["Cover Page", "Main Petition"],
+                "source_pages": [1, 27],
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == "1"
+    assert "Shailja" in items[0]["raw_text"]
 
 
 def test_bundle_hash_is_stable() -> None:

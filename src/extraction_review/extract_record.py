@@ -62,6 +62,17 @@ _CONFIDENCE_LIST_KEYS = (
     "impugned_orders",
 )
 _NAME_SPLIT = re.compile(r"[^a-z0-9]+")
+_QUOTED_TEXT = re.compile(r'"([^"]+)"')
+_QUOTED_TEXT_SINGLE = re.compile(r"'([^']+)'")
+_VS_SPLIT = re.compile(r"\bvs\.?\b", re.IGNORECASE)
+_ROLE_TAIL = re.compile(
+    r"(?:[\s.·…]+|\s+)*(?:petitioners?|respondents?)(?:\s*\(\s*s\s*\))?\s*$",
+    re.IGNORECASE,
+)
+_ANR_ORS_TAIL = re.compile(
+    r"(?:\s*[,&]?\s*(?:and\s+)?(?:anrs?|ors|another|others)\.?)+\s*$",
+    re.IGNORECASE,
+)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -196,9 +207,20 @@ def confidence_percent_string(value: Any) -> str | None:
     return None
 
 
+def strip_anr_ors_suffix(text: str | None) -> str:
+    """Drop trailing And Anr / And Ors / & Anr. already printed on the Cover Page."""
+    cleaned = strip_party_role_label(text)
+    while True:
+        updated = _ANR_ORS_TAIL.sub("", cleaned).rstrip(" .,&")
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
 def format_side_title(main_name: str | None, count: int) -> str | None:
     """Build one side of formatted_title: Name / Name and Anr. / Name and Ors."""
-    name = (main_name or "").strip()
+    name = strip_anr_ors_suffix(main_name)
     if not name:
         return None
     if count <= 1:
@@ -276,6 +298,72 @@ def _names_match(left: str | None, right: str | None) -> bool:
     return bool(a and b and (a == b or a in b or b in a))
 
 
+def strip_party_role_label(text: str | None) -> str:
+    """Drop trailing Petitioner/Respondent caption marks, with or without dots."""
+    cleaned = re.sub(r"\s+", " ", (text or "").replace("…", "...")).strip()
+    while True:
+        updated = _ROLE_TAIL.sub("", cleaned).rstrip(" .")
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
+def _inconsistency_compare_texts(raw_text: str | None) -> list[str]:
+    blob = (raw_text or "").strip()
+    if not blob:
+        return []
+    quoted = _QUOTED_TEXT.findall(blob)
+    if len(quoted) < 2:
+        quoted = _QUOTED_TEXT_SINGLE.findall(blob)
+    if len(quoted) >= 2:
+        return quoted
+    parts = [bit.strip() for bit in _VS_SPLIT.split(blob) if bit.strip()]
+    if len(parts) < 2:
+        return []
+    sides: list[str] = []
+    for part in parts:
+        if ":" in part:
+            part = part.split(":", 1)[1].strip()
+        if part:
+            sides.append(part)
+    return sides
+
+
+def is_party_role_label_mismatch(raw_text: str | None) -> bool:
+    """True when quoted sides differ only by Petitioner/Respondent caption labels."""
+    sides = _inconsistency_compare_texts(raw_text)
+    if len(sides) < 2:
+        return False
+    normalized = [strip_party_role_label(side).casefold() for side in sides]
+    if not all(normalized):
+        return False
+    return len(set(normalized)) == 1 and len({side.casefold() for side in sides}) > 1
+
+
+def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
+    blob = payload.get("inconsistencies")
+    if not isinstance(blob, dict):
+        return
+    items = blob.get("items")
+    if not isinstance(items, list):
+        return
+    kept: list[Any] = []
+    for item in items:
+        data = item if isinstance(item, dict) else _as_dict(item)
+        raw = data.get("raw_text") or data.get("detail")
+        if is_party_role_label_mismatch(raw if isinstance(raw, str) else None):
+            continue
+        kept.append(item)
+    for index, item in enumerate(kept, start=1):
+        if isinstance(item, dict):
+            item["id"] = str(index)
+    blob["items"] = kept
+    if not kept:
+        blob["source_part"] = []
+        blob["source_pages"] = []
+
+
 def _next_inconsistency_id(items: list[Any]) -> str:
     used: set[int] = set()
     for item in items:
@@ -327,8 +415,17 @@ def _normalize_parties(payload: dict[str, Any]) -> None:
     )
     if not isinstance(main_petitioner, str):
         main_petitioner = None
+    else:
+        main_petitioner = strip_anr_ors_suffix(main_petitioner) or None
     if not isinstance(main_respondent, str):
         main_respondent = None
+    else:
+        main_respondent = strip_anr_ors_suffix(main_respondent) or None
+    if isinstance(cause, dict):
+        if main_petitioner:
+            cause["main_petitioner"] = main_petitioner
+        if main_respondent:
+            cause["main_respondent"] = main_respondent
 
     for key, main_name in (
         ("petitioners", main_petitioner),
@@ -349,9 +446,9 @@ def _normalize_parties(payload: dict[str, Any]) -> None:
 
     if isinstance(cause, dict):
         formatted = build_formatted_title(
-            cause.get("main_petitioner") or main_petitioner,
+            main_petitioner,
             len(payload.get("petitioners") or []),
-            cause.get("main_respondent") or main_respondent,
+            main_respondent,
             len(payload.get("respondents") or []),
         )
         if formatted:
@@ -510,6 +607,7 @@ def apply_extract_envelope(
     _normalize_legacy_keys(payload)
     _normalize_parties(payload)
     _append_missing_acting_through(payload)
+    _drop_role_label_inconsistencies(payload)
     stamp_confidence(payload, field_confidence=field_confidence)
     _drop_removed_fields(payload)
 
