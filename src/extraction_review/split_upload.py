@@ -439,14 +439,19 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "- acting_through: look under the party for 'acting through' / 'through'. "
             "ORGANIZATION almost always has it; if missing, add an inconsistencies item. "
             "INDIVIDUAL: optional.",
-            "- relief_sort: Main Prayer / Prayer heading on the last 2-3 pages of the "
-            "Main Petition only.",
+            "- relief_sort: copy only the prayer body under Main Prayer / Prayer on the "
+            "last 2-3 pages of the Main Petition. Do not include the heading, number, "
+            "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
             "- confidence: percentage string such as 95% or 65% on each object.",
             "- inconsistencies: record spelling or value mismatches between fill and "
             "verify sources. Do not invent extra parties to resolve a mismatch. "
             "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
             "Respondent, or Respondent(s), with or without leading dots (... or …). "
             "Those marks are not part of the party name. "
+            "Do not flag ALL CAPS vs title case as a spelling mismatch "
+            "(Impugned Order names are often printed in capitals). "
+            "Do not compare party names against the Impugned Order. "
+            "One item per distinct name spelling; do not repeat the same two names. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -516,8 +521,8 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         )
     if field_name == "relief_sort":
         extra += (
-            " Copy only the block under Main Prayer or Prayer on the last 2-3 pages "
-            "of the Main Petition."
+            " Copy only the prayer body under Main Prayer or Prayer on the last 2-3 pages "
+            "of the Main Petition. Omit the heading, clause number, HTML, and markdown."
         )
     return f"{extra}{LOOK_ONLY_SUFFIX}"
 
@@ -567,9 +572,9 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page without And Anr / And Ors.",
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
-            "- relief_sort: Main Prayer / Prayer on the last 2-3 pages of the Main Petition.",
+            "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text. Do not flag Petitioner / Respondent / Petitioner(s) / Respondent(s) caption labels, with or without dots, as a mismatch.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair.",
         ]
     )
     return "\n".join(lines).strip()

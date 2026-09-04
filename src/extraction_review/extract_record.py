@@ -73,6 +73,20 @@ _ANR_ORS_TAIL = re.compile(
     r"(?:\s*[,&]?\s*(?:and\s+)?(?:anrs?|ors|another|others)\.?)+\s*$",
     re.IGNORECASE,
 )
+_LIST_SERIAL = re.compile(r"^\s*(?:\(\s*)?\d+\s*[.)]\s*")
+_PRAYER_HEADING_LINE = re.compile(
+    r"^\s*(?:\d+\s*[.)]\s*)?(?:</?[^>]+>|\*{1,3}|_{1,3}|`+|#+\s*)*"
+    r"(?:main\s+)?prayer"
+    r"(?:</?[^>]+>|\*{1,3}|_{1,3}|`+)*\s*:?\s*$",
+    re.IGNORECASE,
+)
+_PRAYER_HEADING_PREFIX = re.compile(
+    r"^\s*(?:\d+\s*[.)]\s*)?(?:</?[^>]+>|\*{1,3}|_{1,3}|`+|#+\s*)*"
+    r"(?:main\s+)?prayer"
+    r"(?:</?[^>]+>|\*{1,3}|_{1,3}|`+)*\s*:?\s*",
+    re.IGNORECASE,
+)
+_PRAYER_MARKUP = re.compile(r"</?[^>]+>|\*{1,3}|_{2}")
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -207,6 +221,23 @@ def confidence_percent_string(value: Any) -> str | None:
     return None
 
 
+def clean_relief_sort(text: str | None) -> str | None:
+    """Keep the Main Prayer body; drop heading, clause number, and markdown."""
+    if not isinstance(text, str):
+        return None
+    blob = text.replace("\r\n", "\n").strip()
+    if not blob:
+        return None
+    lines = blob.split("\n")
+    while lines and _PRAYER_HEADING_LINE.match(lines[0]):
+        lines.pop(0)
+    blob = "\n".join(lines).strip()
+    blob = _PRAYER_HEADING_PREFIX.sub("", blob, count=1).strip()
+    blob = _PRAYER_MARKUP.sub("", blob)
+    blob = re.sub(r"\n{3,}", "\n\n", blob).strip()
+    return blob or None
+
+
 def strip_anr_ors_suffix(text: str | None) -> str:
     """Drop trailing And Anr / And Ors / & Anr. already printed on the Cover Page."""
     cleaned = strip_party_role_label(text)
@@ -331,14 +362,36 @@ def _inconsistency_compare_texts(raw_text: str | None) -> list[str]:
 
 
 def is_party_role_label_mismatch(raw_text: str | None) -> bool:
-    """True when quoted sides differ only by Petitioner/Respondent caption labels."""
+    """True when quoted sides differ only by caption labels, Anr/Ors, or letter case."""
+    return is_cosmetic_name_mismatch(raw_text)
+
+
+def normalize_compared_name(text: str | None) -> str:
+    """Name used to decide if two inconsistency quotes are the same person."""
+    cleaned = _LIST_SERIAL.sub("", strip_anr_ors_suffix(text)).strip()
+    return re.sub(r"\s+", " ", cleaned.casefold()).strip()
+
+
+def is_cosmetic_name_mismatch(raw_text: str | None) -> bool:
+    """True when compared names match after ignoring case, role labels, and Anr/Ors."""
     sides = _inconsistency_compare_texts(raw_text)
     if len(sides) < 2:
         return False
-    normalized = [strip_party_role_label(side).casefold() for side in sides]
+    normalized = [normalize_compared_name(side) for side in sides]
     if not all(normalized):
         return False
-    return len(set(normalized)) == 1 and len({side.casefold() for side in sides}) > 1
+    return len(set(normalized)) == 1
+
+
+def _inconsistency_name_key(raw_text: str | None) -> frozenset[str] | None:
+    names = {
+        normalize_compared_name(side)
+        for side in _inconsistency_compare_texts(raw_text)
+    }
+    names.discard("")
+    if len(names) < 2:
+        return None
+    return frozenset(names)
 
 
 def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
@@ -349,11 +402,24 @@ def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
     if not isinstance(items, list):
         return
     kept: list[Any] = []
+    seen_names: dict[frozenset[str], int] = {}
     for item in items:
         data = item if isinstance(item, dict) else _as_dict(item)
         raw = data.get("raw_text") or data.get("detail")
-        if is_party_role_label_mismatch(raw if isinstance(raw, str) else None):
+        raw_text = raw if isinstance(raw, str) else None
+        if is_cosmetic_name_mismatch(raw_text):
             continue
+        key = _inconsistency_name_key(raw_text)
+        if key is not None and key in seen_names:
+            existing = kept[seen_names[key]]
+            existing_raw = ""
+            if isinstance(existing, dict):
+                existing_raw = str(existing.get("raw_text") or existing.get("detail") or "")
+            if raw_text and (not existing_raw or len(raw_text) < len(existing_raw)):
+                kept[seen_names[key]] = item
+            continue
+        if key is not None:
+            seen_names[key] = len(kept)
         kept.append(item)
     for index, item in enumerate(kept, start=1):
         if isinstance(item, dict):
@@ -387,6 +453,10 @@ def _normalize_legacy_keys(payload: dict[str, Any]) -> None:
             sought = relief
         if isinstance(sought, str) and sought.strip():
             payload["relief_sort"] = sought.strip()
+    if "relief_sort" in payload:
+        payload["relief_sort"] = clean_relief_sort(
+            payload.get("relief_sort") if isinstance(payload.get("relief_sort"), str) else None
+        )
     for aor in payload.get("advocates_on_record") or []:
         if isinstance(aor, dict) and not aor.get("office_address") and aor.get("office"):
             aor["office_address"] = aor.get("office")

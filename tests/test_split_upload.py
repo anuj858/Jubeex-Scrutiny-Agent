@@ -19,6 +19,7 @@ from extraction_review.document_parts import format_page_span, overlay_split_doc
 from extraction_review.extract_record import (
     apply_extract_envelope,
     build_formatted_title,
+    clean_relief_sort,
     confidence_percent_string,
     format_side_title,
     is_organization_name,
@@ -440,6 +441,26 @@ def test_formatted_title_anr_and_ors() -> None:
     )
 
 
+def test_relief_sort_drops_main_prayer_heading() -> None:
+    raw = (
+        "7. <u>**MAIN PRAYER**</u>:\n"
+        "\n"
+        "In the circumstances stated above, the Petitioners pray that this "
+        "Hon’ble Court may be pleased to:\n"
+        "\n"
+        "(i) Pass an order granting Special Leave to Appeal against judgement "
+        "dated 09.02.2026 passed by the Hon’ble High Court of Uttarakhand at "
+        "Nainital in MCRC No. 08/2026 in CLR No. 67/2022;"
+    )
+    cleaned = clean_relief_sort(raw)
+    assert cleaned is not None
+    assert "MAIN PRAYER" not in cleaned
+    assert "<u>" not in cleaned
+    assert cleaned.startswith("In the circumstances stated above")
+    wrapped = apply_extract_envelope({"relief_sort": raw})
+    assert wrapped["relief_sort"] == cleaned
+
+
 def test_envelope_strips_cover_anr_before_formatting() -> None:
     wrapped = apply_extract_envelope(
         {
@@ -540,6 +561,11 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     assert not is_party_role_label_mismatch(
         'Cover Page: "Smt. Shalija Shah" vs Main Petition: "Smt. Shailja Shah"'
     )
+    caps = (
+        'Petitioner spelling mismatch in impugned order: Main Petition/Cover Page: '
+        '"Kailash Negi Alias Anmol"; Impugned Order: "KAILASH NEGI ALIAS ANMOL"'
+    )
+    assert is_party_role_label_mismatch(caps)
     wrapped = apply_extract_envelope(
         {
             "inconsistencies": {
@@ -551,6 +577,11 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
                     },
                     {
                         "id": "2",
+                        "label": "Petitioner spelling mismatch in impugned order",
+                        "raw_text": caps,
+                    },
+                    {
+                        "id": "3",
                         "label": "Name spelling",
                         "raw_text": (
                             'Cover Page: "Smt. Shalija Shah" vs '
@@ -567,6 +598,39 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     assert len(items) == 1
     assert items[0]["id"] == "1"
     assert "Shailja" in items[0]["raw_text"]
+
+
+def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Main respondent spelling mismatch",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah And Anr ...Respondent(s)"; '
+                            'Main Petition: "Smt. Shailja Shah" / "1. Smt. Shailja Shah"'
+                        ),
+                    },
+                    {
+                        "id": "2",
+                        "label": "Respondent name spelling mismatch",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah"; '
+                            'Main Petition: "Smt. Shailja Shah"'
+                        ),
+                    },
+                ]
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == "1"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; Main Petition: "Smt. Shailja Shah"'
+    )
 
 
 def test_bundle_hash_is_stable() -> None:

@@ -314,8 +314,12 @@ class LegalExtractRecord(BaseModel):
     relief_sort: str | None = Field(
         default=None,
         description=(
-            "Main prayer only. Copy from the Main Petition last 2-3 pages under a "
-            "heading Main Prayer or Prayer. Leave null if that heading is not printed."
+            "Main prayer body only from the Main Petition last 2-3 pages. "
+            "Copy the text under the heading Main Prayer or Prayer. "
+            "Do not include the heading, clause number, markdown, or HTML "
+            "(for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). "
+            "Start at the prayer sentence, e.g. 'In the circumstances stated above…'. "
+            "Leave null if that heading is not printed."
         ),
     )
     inconsistencies: Inconsistencies | None = Field(

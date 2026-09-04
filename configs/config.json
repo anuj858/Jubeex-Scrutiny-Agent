@@ -841,7 +841,7 @@
             }
           ],
           "default": null,
-          "description": "Main prayer only. Copy from the Main Petition last 2-3 pages under a heading Main Prayer or Prayer. Leave null if that heading is not printed.",
+          "description": "Main prayer body only from the Main Petition last 2-3 pages. Copy the text under the heading Main Prayer or Prayer. Do not include the heading, clause number, markdown, or HTML (for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). Start at the prayer sentence, e.g. 'In the circumstances stated above…'. Leave null if that heading is not printed.",
           "title": "Relief Sort"
         },
         "inconsistencies": {
