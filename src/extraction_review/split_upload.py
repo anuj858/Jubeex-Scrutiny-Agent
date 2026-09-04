@@ -421,7 +421,9 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
                 ". Prefer Memo of Parties; if it is missing, use the first page of "
                 "the Main Petition. Merge blank particulars between those two only. "
                 "Never copy party names or addresses from Vakalatnama or Cover Page. "
-                "Use Cover Page only to mark is_primary from the cover cause-title names"
+                "Use Cover Page only to mark is_primary from the cover cause-title names. "
+                "And Anr/Ors on Cover Page means extra parties exist; list those names "
+                "from Memo of Parties or the Main Petition"
             )
         lines.append(bit + ".")
     lines.extend(
@@ -452,6 +454,10 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "(Impugned Order names are often printed in capitals). "
             "Do not compare party names against the Impugned Order. "
             "One item per distinct name spelling; do not repeat the same two names. "
+            "Cover Page, Vakalatnama, Affidavit, and AOR's Declaration often print only "
+            "the main name plus And Anr/Ors. Additional parties come from Memo of Parties "
+            "or the Main Petition; do not flag those extra names as a spelling mismatch "
+            "against And Anr/Ors. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -504,7 +510,9 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "Main Petition. If a field is blank in one of those parts, fill it from the "
             "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
             "Memo of Appearance, AOR's Declaration, or Cover Page. Use Cover Page "
-            "only to decide which already-listed party is primary. Do not invent "
+            "only to decide which already-listed party is primary. Extra petitioners "
+            "and respondents are listed on Memo of Parties or the Main Petition; "
+            "Cover Page And Anr/Ors is not the second party's name. Do not invent "
             "parties. Leave a field null if it is not printed on a fill source. "
             "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
             "ORGANIZATION without acting_through is an inconsistencies item."
@@ -574,7 +582,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra parties on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

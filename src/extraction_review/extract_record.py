@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -74,6 +75,22 @@ _ANR_ORS_TAIL = re.compile(
     re.IGNORECASE,
 )
 _LIST_SERIAL = re.compile(r"^\s*(?:\(\s*)?\d+\s*[.)]\s*")
+_TITLE_TOKEN = re.compile(
+    r"\b(?:smt|shri|sh|mr|mrs|ms|km|kumari|dr|sri)\b\.?",
+    re.IGNORECASE,
+)
+_ANR_ORS_MARK = re.compile(
+    r"\b(?:and\s+)?(?:anr|ors|another|others)\b",
+    re.IGNORECASE,
+)
+_EXTRA_PARTY_LABEL = re.compile(
+    r"\b(?:petitioner|respondent)\s*(?:no\.?\s*)?(?:[2-9]|[1-9]\d)\b",
+    re.IGNORECASE,
+)
+_CAPTION_SOURCE = re.compile(
+    r"cover page|vakalatnama|affidavit|aor's declaration|aors declaration",
+    re.IGNORECASE,
+)
 _PRAYER_HEADING_LINE = re.compile(
     r"^\s*(?:\d+\s*[.)]\s*)?(?:</?[^>]+>|\*{1,3}|_{1,3}|`+|#+\s*)*"
     r"(?:main\s+)?prayer"
@@ -372,6 +389,55 @@ def normalize_compared_name(text: str | None) -> str:
     return re.sub(r"\s+", " ", cleaned.casefold()).strip()
 
 
+def _core_person_name(text: str | None) -> str:
+    cleaned = _TITLE_TOKEN.sub(" ", normalize_compared_name(text))
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def names_are_spelling_variants(left: str | None, right: str | None) -> bool:
+    """True when two strings look like the same person with a spelling slip."""
+    a = _core_person_name(left)
+    b = _core_person_name(right)
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    tokens_a = a.split()
+    tokens_b = b.split()
+    last_a = tokens_a[-1] if tokens_a else ""
+    last_b = tokens_b[-1] if tokens_b else ""
+    given_a = " ".join(tokens_a[:-1]) if len(tokens_a) > 1 else a
+    given_b = " ".join(tokens_b[:-1]) if len(tokens_b) > 1 else b
+    if last_a and last_b and last_a == last_b:
+        return SequenceMatcher(None, given_a, given_b).ratio() >= 0.75
+    return SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
+def is_extra_party_caption_mismatch(
+    raw_text: str | None, label: str | None = None
+) -> bool:
+    """True when Cover Page 'And Anr/Ors' is compared to a later-listed party."""
+    sides = _inconsistency_compare_texts(raw_text)
+    blob = raw_text or ""
+    has_shorthand = any(_ANR_ORS_MARK.search(side) for side in sides)
+    caption_context = bool(_CAPTION_SOURCE.search(blob))
+    extra_label = bool(_EXTRA_PARTY_LABEL.search(label or ""))
+    if extra_label and (has_shorthand or caption_context):
+        return True
+    if len(sides) < 2:
+        return False
+    if not has_shorthand and not caption_context:
+        return False
+    cores = [name for name in (_core_person_name(side) for side in sides) if name]
+    distinct = list(dict.fromkeys(cores))
+    if len(distinct) < 2:
+        return False
+    base = distinct[0]
+    if all(names_are_spelling_variants(base, other) for other in distinct[1:]):
+        return False
+    return True
+
+
 def is_cosmetic_name_mismatch(raw_text: str | None) -> bool:
     """True when compared names match after ignoring case, role labels, and Anr/Ors."""
     sides = _inconsistency_compare_texts(raw_text)
@@ -408,6 +474,10 @@ def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
         raw = data.get("raw_text") or data.get("detail")
         raw_text = raw if isinstance(raw, str) else None
         if is_cosmetic_name_mismatch(raw_text):
+            continue
+        if is_extra_party_caption_mismatch(
+            raw_text, data.get("label") if isinstance(data.get("label"), str) else None
+        ):
             continue
         key = _inconsistency_name_key(raw_text)
         if key is not None and key in seen_names:

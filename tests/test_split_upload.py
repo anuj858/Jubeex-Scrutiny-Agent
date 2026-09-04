@@ -22,8 +22,10 @@ from extraction_review.extract_record import (
     clean_relief_sort,
     confidence_percent_string,
     format_side_title,
+    is_extra_party_caption_mismatch,
     is_organization_name,
     is_party_role_label_mismatch,
+    names_are_spelling_variants,
     stamp_source_pages,
     strip_party_role_label,
 )
@@ -631,6 +633,44 @@ def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
     assert items[0]["raw_text"] == (
         'Cover Page: "Smt. Shalija Shah"; Main Petition: "Smt. Shailja Shah"'
     )
+
+
+def test_extra_respondent_is_not_cover_page_anr_spelling_error() -> None:
+    respondent_1 = (
+        'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+        '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Shailja Shah"'
+    )
+    respondent_2 = (
+        'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+        '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Bandana Shah"'
+    )
+    assert names_are_spelling_variants("Smt. Shalija Shah", "Smt. Shailja Shah")
+    assert not names_are_spelling_variants("Smt. Shalija Shah", "Smt. Bandana Shah")
+    assert not is_extra_party_caption_mismatch(respondent_1, "Respondent 1 spelling")
+    assert is_extra_party_caption_mismatch(respondent_2, "Respondent 2 spelling")
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Respondent 1 spelling",
+                        "raw_text": respondent_1,
+                    },
+                    {
+                        "id": "2",
+                        "label": "Respondent 2 spelling",
+                        "raw_text": respondent_2,
+                    },
+                ]
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["label"] == "Respondent 1 spelling"
+    assert "Shailja" in items[0]["raw_text"]
+    assert "Bandana" not in items[0]["raw_text"]
 
 
 def test_bundle_hash_is_stable() -> None:
