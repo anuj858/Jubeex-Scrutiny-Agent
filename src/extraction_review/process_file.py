@@ -67,6 +67,7 @@ FULL_JOB_TYPES = frozenset(
 SPLIT_JOB_TYPES = frozenset(
     {"split", "parts", "upload_separate", "upload_split"}
 )
+DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
 SWAGGER_PLACEHOLDERS = frozenset({"string", "str", "none", "null"})
 _SLOT_NAME_ALIASES = {
     "list_of_dates": "synopsis_lod",
@@ -227,6 +228,34 @@ def resolve_document_slot(
         "petition, cover_page, vakalatnama, … "
         "For one compiled PDF use job_type upload_compiled."
     )
+
+
+def resolve_compiled_filing_type(
+    classified: str,
+    requested: str | None,
+) -> tuple[str, Any]:
+    """Pick a slice catalog. Prefer a classified type that we can slice."""
+    classified_key = (classified or "").strip()
+    requested_key = (requested or "").strip()
+    try:
+        return classified_key, type_catalog(classified_key)
+    except SplitUploadError:
+        pass
+    if requested_key:
+        try:
+            return requested_key, type_catalog(requested_key)
+        except SplitUploadError:
+            pass
+    try:
+        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(
+            DEFAULT_COMPILED_FILING_TYPE
+        )
+    except SplitUploadError:
+        allowed = ", ".join(sorted(ui_catalog()))
+        raise SplitUploadError(
+            f"Classified as {classified_key or 'other'}, which cannot be sliced. "
+            f"Send filing_type as one of: {allowed}"
+        )
 
 
 def intake_mode(event: FileEvent) -> str:
@@ -429,6 +458,12 @@ class FileEvent(StartEvent):
             raise ValueError(
                 "Provide download_url or file_id, or documents[] with the compiled PDF"
             )
+        if (self.filing_type or "").strip():
+            try:
+                type_catalog(self.filing_type)
+            except SplitUploadError as exc:
+                allowed = ", ".join(sorted(ui_catalog()))
+                raise ValueError(f"{exc}. Use one of: {allowed}") from exc
         return self
 
 
@@ -692,26 +727,6 @@ def _require_pdf_bytes(data: bytes, url: str) -> None:
     )
 
 
-async def _existing_file_id(
-    client: AsyncLlamaCloud, external_file_id: str
-) -> str | None:
-    try:
-        async for item in client.files.list(
-            external_file_id=external_file_id,
-            project_id=project_id,
-            page_size=5,
-        ):
-            file_id = getattr(item, "id", None)
-            if file_id:
-                return str(file_id)
-    except Exception:
-        logger.exception(
-            "Could not look up LlamaCloud file for external_file_id=%s",
-            external_file_id,
-        )
-    return None
-
-
 async def ingest_remote_file(
     client: AsyncLlamaCloud,
     file_url: str,
@@ -777,15 +792,6 @@ async def _upload_slot_pdf(
 ) -> str:
     name = _upload_filename(filename)
     external = (external_file_id or "").strip() or None
-    if external:
-        existing = await _existing_file_id(client, external)
-        if existing:
-            logger.info(
-                "Reusing LlamaCloud file %s for external_file_id=%s",
-                existing,
-                external,
-            )
-            return existing
 
     create_kwargs: dict[str, Any] = {
         "file": (name, io.BytesIO(pdf_bytes), "application/pdf"),
@@ -1057,19 +1063,26 @@ class ProcessFileWorkflow(Workflow):
             raise RuntimeError(message)
 
         result = completed.result
-        filing_type = result.type or "other"
+        classified = result.type or "other"
         confidence = result.confidence
         reasoning = result.reasoning
-
         try:
-            catalog = type_catalog(filing_type)
-        except SplitUploadError:
-            message = (
-                f"No split-upload catalog for {filing_type}; "
-                "cannot prepare sliced files"
+            filing_type, catalog = resolve_compiled_filing_type(
+                classified, event.filing_type
             )
-            ctx.write_event_to_stream(Status(level="error", message=message))
-            raise RuntimeError(message)
+        except SplitUploadError as exc:
+            ctx.write_event_to_stream(Status(level="error", message=str(exc)))
+            raise RuntimeError(str(exc)) from exc
+        if filing_type != classified:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        f"Classified as {classified}; using filing_type "
+                        f"{filing_type} for slicing"
+                    ),
+                )
+            )
 
         logger.info(
             "Classified %s as %s (confidence: %s, reasoning: %s)",

@@ -107,7 +107,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"job_type\": \"upload_compiled\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"documents\": [\n    {\n      \"name\": \"Defect_SLP_Civil.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n    }\n  ]\n}"
+              "raw": "{\n  \"job_type\": \"upload_compiled\",\n  \"filing_type\": \"SLP_CIVIL\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"documents\": [\n    {\n      \"name\": \"Defect_SLP_Civil.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n    }\n  ]\n}"
             },
             "url": "{{baseUrl}}/v1/filings",
             "description": "Runs **process_file.py** (classify + LlamaSplit a compiled PDF), then **process_split_files.py** (parse, extract, Agent Data, Pinecone).\n\nReplace download_url with a real HTTPS/S3 URL. Poll until completed and read `agent_data_id`.\nSaves job_id from the 202 response."

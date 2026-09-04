@@ -152,6 +152,11 @@ class CreateFilingRequest(BaseModel):
                 raise ValueError(
                     f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
                 )
+        elif self.filing_type and catalog_types and self.filing_type not in catalog_types:
+            allowed = ", ".join(sorted(catalog_types))
+            raise ValueError(
+                f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+            )
         return self
 
 

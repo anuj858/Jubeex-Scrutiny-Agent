@@ -161,7 +161,7 @@ POST /v1/filings
 { "job_id": "…", "status": "accepted", "poll_url": "/v1/jobs/…" }
 ```
 
-Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract).
+Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract). Send `filing_type` (`SLP_CIVIL` or `SLP_CRIMINAL`) when you know the type so slicing still runs if classify returns `other`.
 
 **2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`.
 

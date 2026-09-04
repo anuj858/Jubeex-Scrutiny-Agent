@@ -14,6 +14,7 @@ from extraction_review.process_file import (
     compiled_source,
     ingest_remote_file,
     intake_mode,
+    resolve_compiled_filing_type,
     slot_id_from_name,
 )
 
@@ -201,6 +202,38 @@ def test_upload_separate_documents_payload() -> None:
     assert petition.filename == "01_Petition.pdf"
 
 
+def test_compiled_uses_requested_type_when_classified_other() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("other", "SLP_CIVIL")
+    assert filing_type == "SLP_CIVIL"
+    assert catalog.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_keeps_classified_slp_civil() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("SLP_CIVIL", "SLP_CRIMINAL")
+    assert filing_type == "SLP_CIVIL"
+    assert catalog.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_other_without_filing_type_defaults_to_slp_civil() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("other", None)
+    assert filing_type == "SLP_CIVIL"
+    assert catalog.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_accepts_optional_filing_type() -> None:
+    event = FileEvent(
+        job_type="upload_compiled",
+        filing_type="SLP_CIVIL",
+        documents=[
+            {
+                "name": "compiled-petition.pdf",
+                "download_url": "https://example.com/compiled.pdf",
+            }
+        ],
+    )
+    assert event.filing_type == "SLP_CIVIL"
+
+
 def test_upload_compiled_documents_payload() -> None:
     event = FileEvent(
         job_type="upload_compiled",
@@ -242,17 +275,6 @@ class _EmptyFileList:
         async def _gen():
             if False:
                 yield None
-
-        return _gen()
-
-
-class _OneFileList:
-    def __init__(self, file_id: str) -> None:
-        self._file_id = file_id
-
-    def __aiter__(self):
-        async def _gen():
-            yield SimpleNamespace(id=self._file_id)
 
         return _gen()
 
@@ -353,43 +375,6 @@ async def test_ingest_remote_file_uploads_to_llamacloud(
     assert kwargs["purpose"] == "extract"
     assert kwargs["external_file_id"] == "backend-doc-99"
     assert kwargs["file"][0] == "My_Filing.pdf"
-
-
-@pytest.mark.asyncio
-async def test_ingest_reuses_existing_llamacloud_file(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeResponse:
-        content = b"%PDF-1.4 fake"
-
-        def raise_for_status(self) -> None:
-            return None
-
-    class FakeAsyncClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        async def __aenter__(self) -> "FakeAsyncClient":
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-        async def get(self, url: str) -> FakeResponse:
-            return FakeResponse()
-
-    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
-    client = MagicMock()
-    client.files.list = MagicMock(return_value=_OneFileList("dfl-already-1"))
-    client.files.create = AsyncMock()
-
-    file_id, _digest, _name = await ingest_remote_file(
-        client,
-        "https://example.com/path/My_Filing.pdf",
-        external_file_id="backend-doc-99",
-    )
-    assert file_id == "dfl-already-1"
-    client.files.create.assert_not_called()
 
 
 @pytest.mark.asyncio
