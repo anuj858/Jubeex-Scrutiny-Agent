@@ -58,14 +58,14 @@ def test_page_parts_from_split_maps_pages() -> None:
         result=SimpleNamespace(
             segments=[
                 SimpleNamespace(category="Listing Proforma", pages=[3, 4]),
-                SimpleNamespace(category="Petition", pages=[10]),
+                SimpleNamespace(category="Main Petition", pages=[10]),
             ]
         )
     )
     assert page_parts_from_split(job) == {
         3: ["Listing Proforma"],
         4: ["Listing Proforma"],
-        10: ["Petition"],
+        10: ["Main Petition"],
     }
 
 
@@ -78,7 +78,7 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
                 SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
                 SimpleNamespace(category="Office Report on Limitation", pages=[8, 58]),
                 SimpleNamespace(category="Listing Proforma", pages=[9, 10, 59, 60]),
-                SimpleNamespace(category="Petition", pages=[17, 25, 26, 35]),
+                SimpleNamespace(category="Main Petition", pages=[17, 25, 26, 35]),
                 SimpleNamespace(category="Record of Proceedings", pages=[4, 20, 21, 23, 54]),
             ]
         )
@@ -89,8 +89,8 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     assert all("55" not in item for item in docs["items"])
     assert mapping[1] == ["Advocate's Checklist"]
     assert 51 not in mapping
-    assert mapping[17] == ["Petition"]
-    assert mapping[25] == ["Petition"]
+    assert mapping[17] == ["Main Petition"]
+    assert mapping[25] == ["Main Petition"]
     assert mapping[4] == ["Record of Proceedings"]
     assert 54 not in mapping
     assert mapping[20] == ["Record of Proceedings"]
@@ -101,12 +101,12 @@ def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
         result=SimpleNamespace(
             segments=[
                 SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
-                SimpleNamespace(category="Petition", pages=[10]),
+                SimpleNamespace(category="Main Petition", pages=[10]),
             ]
         )
     )
     mapping = page_parts_from_split(job)
-    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Petition"]}
+    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Main Petition"]}
 
 
 def test_one_page_can_carry_two_document_parts() -> None:
@@ -165,7 +165,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     completed = SimpleNamespace(
         status="COMPLETED",
         result=SimpleNamespace(
-            segments=[SimpleNamespace(category="Petition", pages=[1])]
+            segments=[SimpleNamespace(category="Main Petition", pages=[1])]
         ),
     )
     split_api = SimpleNamespace(
@@ -174,8 +174,8 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     )
     split_config = SimpleNamespace(
         configuration_id=None,
-        categories=[SimpleNamespace(name="Petition")],
-        model_dump=lambda **_kwargs: {"categories": [{"name": "Petition"}]},
+        categories=[SimpleNamespace(name="Main Petition")],
+        model_dump=lambda **_kwargs: {"categories": [{"name": "Main Petition"}]},
     )
     mapping = await _split_page_parts(
         SimpleNamespace(split=split_api),
@@ -186,7 +186,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     split_api.create.assert_awaited_once()
     kwargs = split_api.create.await_args.kwargs
     assert kwargs["file_input"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    assert mapping == {1: ["Petition"]}
+    assert mapping == {1: ["Main Petition"]}
 
 
 def test_build_page_records_stamps_document_part() -> None:
@@ -219,7 +219,7 @@ def test_page_records_borrow_same_part_neighbours_only() -> None:
             2: "Cover Page",
             3: "Listing Proforma",
             4: "Listing Proforma",
-            5: "Petition",
+            5: "Main Petition",
         },
     )
     by_page = {r["metadata"]["page_start"]: r for r in records}
@@ -295,7 +295,7 @@ def test_select_chunks_prefers_labelled_part() -> None:
             "record_id": "p10",
             "chunk_kind": "page",
             "page": 10,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "GROUNDS FOR INTERIM RELIEF",
             "score": 0.99,
         },
@@ -355,7 +355,7 @@ def test_select_chunks_keeps_vakalatnama_for_date_check() -> None:
             "record_id": "pet",
             "chunk_kind": "page",
             "page": 16,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "Place: New Delhi Dated 10.04.2026 below the prayer",
             "score": 0.4,
         },
@@ -441,14 +441,14 @@ def test_pinecone_queries_follow_where_to_look() -> None:
     catalogue = get_catalogue()
     d013 = pinecone_queries_for_defect(catalogue.defect("D013"))
     assert any("Vakalatnama" in q for q in d013)
-    assert any("Petition" in q or "petition" in q.lower() for q in d013)
+    assert any("Main Petition" in q or "petition" in q.lower() for q in d013)
     d047 = pinecone_queries_for_defect(catalogue.defect("D047"))
     assert any("Memo of Appearance" in q for q in d047)
     d017 = pinecone_queries_for_defect(catalogue.defect("D017"))
     assert any("Office Report on Limitation" in q for q in d017)
     named = parts_named_in_where_to_look(catalogue.defect("D013"))
     assert "Vakalatnama" in named
-    assert named[0] in {"Petition", "Vakalatnama"}
+    assert named[0] in {"Main Petition", "Vakalatnama"}
     assert "Memo of Parties" not in named
 
 
@@ -736,7 +736,7 @@ def test_undetermined_without_the_part_stays_needs_review() -> None:
             "record_id": "p1",
             "chunk_kind": "page",
             "page": 10,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "SPECIAL LEAVE PETITION",
         }
     ]
@@ -773,7 +773,7 @@ def test_visual_prompt_treats_missing_marks_as_defects() -> None:
             {
                 "chunk_kind": "page",
                 "page": 12,
-                "document_part": "Petition",
+                "document_part": "Main Petition",
                 "text": "1. The petitioner states",
             }
         ],
@@ -917,10 +917,10 @@ def test_catalogue_inspect_parts_are_source_of_truth() -> None:
     catalogue = get_catalogue()
     d021 = catalogue.defect("D021")
     assert d021.inspect_parts == ["Affidavit"]
-    assert d021.context_parts == ["Petition"]
+    assert d021.context_parts == ["Main Petition"]
     assert d021.exclude_parts == ["Index"]
     assert required_parts_for_defect(d021) == ["Affidavit"]
-    assert parts_named_in_where_to_look(d021) == ["Affidavit", "Petition"]
+    assert parts_named_in_where_to_look(d021) == ["Affidavit", "Main Petition"]
 
     d073 = catalogue.defect("D073")
     assert d073.inspect_parts == ["List of Dates & Events"]

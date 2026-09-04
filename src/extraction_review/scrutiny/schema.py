@@ -49,7 +49,7 @@ class EvidenceRef(BaseModel):
     page: int | None = Field(
         description=(
             "1-indexed PDF page of THIS filing, copied from the excerpt "
-            "header such as '[Page 12 — Petition]'. Null if the quote is "
+            "header such as '[Page 12 — Main Petition]'. Null if the quote is "
             "not from an excerpt. Never use a page number from Authority "
             "or location_source (those are official-rulebook locators)."
         )
@@ -198,8 +198,9 @@ class DefectFinding(BaseModel):
     location: str | None = Field(
         default=None,
         description=(
-            "Petition PDF page for this finding, e.g. 'Filing page 12 — "
-            "Vakalatnama.' If the page is unknown: 'Filing page missing — …'."
+            "Petition/Matter PDF page for this finding (the full filing), "
+            "e.g. 'Filing page 12 — Vakalatnama.' If the page is unknown: "
+            "'Filing page missing — …'."
         ),
     )
     location_source: str | None = None

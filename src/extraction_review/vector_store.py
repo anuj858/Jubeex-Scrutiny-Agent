@@ -296,7 +296,7 @@ def build_page_records(
     `page_parts` is the Split map (page number → Listing Proforma, …).
     The first/last window of a page also takes CHUNK_OVERLAP characters from
     the previous/next page when Split labelled both as the same part. Cover
-    Page is never glued onto Petition. Borrowed text is marked so citations
+    Page is never glued onto Main Petition. Borrowed text is marked so citations
     still point at this page (`page_start`).
     """
     base_meta = metadata or {}

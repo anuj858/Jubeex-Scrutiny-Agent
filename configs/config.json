@@ -709,7 +709,7 @@
           "type": "object"
         },
         "Party": {
-          "description": "One petitioner or respondent. Fill from Memo of Parties then Petition page 1.",
+          "description": "One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1.",
           "properties": {
             "serial": {
               "anyOf": [
@@ -929,7 +929,7 @@
                 }
               ],
               "default": null,
-              "description": "Must be Memo of Parties or Petition. Never Vakalatnama or Cover Page.",
+              "description": "Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.",
               "title": "Source Part"
             },
             "source_pages": {
@@ -945,7 +945,7 @@
           "type": "object"
         },
         "Relief": {
-          "description": "Prayer from the end of the Petition.",
+          "description": "Prayer from the end of the Main Petition.",
           "properties": {
             "sought": {
               "anyOf": [
@@ -983,7 +983,7 @@
                 }
               ],
               "default": null,
-              "description": "Petition",
+              "description": "Main Petition",
               "title": "Source Part"
             },
             "source_pages": {
@@ -1091,7 +1091,7 @@
             }
           ],
           "default": null,
-          "description": "Prayer from the Petition."
+          "description": "Prayer from the Main Petition."
         },
         "applications": {
           "anyOf": [
@@ -1190,8 +1190,8 @@
         "description": "List of Dates and Events."
       },
       {
-        "name": "Petition",
-        "description": "Main Special Leave Petition or writ/arbitration petition body (Form 28), grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, or Office Report on Limitation."
+        "name": "Main Petition",
+        "description": "Main Petition body (Form 28): Special Leave Petition or writ/arbitration petition, grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, or Office Report on Limitation."
       },
       {
         "name": "Affidavit",
@@ -1241,7 +1241,7 @@
           "Cover Page"
         ],
         "verify": [
-          "Petition"
+          "Main Petition"
         ]
       },
       "petition_type": {
@@ -1258,26 +1258,26 @@
           "Cover Page"
         ],
         "verify": [
-          "Petition"
+          "Main Petition"
         ]
       },
       "petitioners": {
         "fill": [
           "Memo of Parties",
-          "Petition"
+          "Main Petition"
         ],
         "verify": [
-          "Petition",
+          "Main Petition",
           "Cover Page"
         ]
       },
       "respondents": {
         "fill": [
           "Memo of Parties",
-          "Petition"
+          "Main Petition"
         ],
         "verify": [
-          "Petition",
+          "Main Petition",
           "Cover Page"
         ]
       },
@@ -1299,7 +1299,7 @@
       },
       "relief": {
         "fill": [
-          "Petition"
+          "Main Petition"
         ]
       },
       "applications": {
@@ -1387,9 +1387,9 @@
           },
           {
             "id": "petition",
-            "label": "Petition",
+            "label": "Main Petition",
             "parts": [
-              "Petition"
+              "Main Petition"
             ],
             "required": true
           },
@@ -1545,9 +1545,9 @@
           },
           {
             "id": "petition",
-            "label": "Petition",
+            "label": "Main Petition",
             "parts": [
-              "Petition"
+              "Main Petition"
             ],
             "required": true
           },

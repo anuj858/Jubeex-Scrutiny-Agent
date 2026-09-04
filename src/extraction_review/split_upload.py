@@ -15,12 +15,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .document_parts import parts_on_page
+from .document_parts import MAIN_PETITION_PART, parts_on_page
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
 EXTRACT_PACK_EXCLUDED_PARTS = frozenset({"Annexures", "Appendix"})
-# Petition grounds stay out of Extract. Keep page 1 (parties) and the last
+# Main Petition grounds stay out of Extract. Keep page 1 (parties) and the last
 # pages (prayer / relief).
 PETITION_PACK_FIRST_PAGES = 1
 PETITION_PACK_LAST_PAGES = 3
@@ -355,7 +355,7 @@ def _petition_pages_to_keep(
     petition_pages = [
         page
         for page in sorted(page_markdown)
-        if "Petition" in parts_on_page(page_parts.get(page))
+        if MAIN_PETITION_PART in parts_on_page(page_parts.get(page))
         and not (page_markdown.get(page) or "").strip().startswith(_PARSE_STUB_PREFIX)
     ]
     if not petition_pages:
@@ -419,7 +419,7 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
         if field_name in PARTY_FIELDS:
             bit += (
                 ". Prefer Memo of Parties; if it is missing, use the first page of "
-                "the Petition. Merge blank particulars between those two only. "
+                "the Main Petition. Merge blank particulars between those two only. "
                 "Never copy party records from Vakalatnama or Cover Page"
             )
         lines.append(bit + ".")
@@ -447,8 +447,8 @@ def build_extract_pack_markdown(
         body = (page_markdown.get(page) or "").strip()
         if body.startswith(_PARSE_STUB_PREFIX):
             continue
-        if "Petition" in names:
-            others = [n for n in names if n in source_parts and n != "Petition"]
+        if MAIN_PETITION_PART in names:
+            others = [n for n in names if n in source_parts and n != MAIN_PETITION_PART]
             if page not in petition_keep and not others:
                 continue
         note = next((notes[n] for n in names if n in notes), None)
@@ -473,7 +473,7 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
     if field_name in PARTY_FIELDS:
         extra += (
             " Prefer Memo of Parties; if it is missing, use the first page of the "
-            "Petition. If a field is blank in one of those parts, fill it from the "
+            "Main Petition. If a field is blank in one of those parts, fill it from the "
             "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
             "Memo of Appearance, AOR's Declaration, or Cover Page. Do not invent "
             "parties. Leave a field null if it is not printed on a fill source."
@@ -511,7 +511,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         "Each section is labelled with its document part, for example ## [Listing Proforma] (p. 3).",
         "Copy printed text only. Do not invent or complete a field from a document "
         "part that is not a fill source for that field. If it is not printed there, leave it null.",
-        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Petition, …). "
+        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
         "source_pages must be the integer page numbers in the headings, for example (p. 6).",
         "Ignore Annexures and Appendix.",
         "",

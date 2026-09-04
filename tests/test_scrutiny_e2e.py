@@ -270,7 +270,7 @@ async def test_each_check_retrieves_its_own_pinecone_excerpts(
                 "record_id": f"p-{len(gathers)}",
                 "chunk_kind": "page",
                 "page": 1,
-                "document_part": "Petition",
+                "document_part": "Main Petition",
                 "text": "SPECIAL LEAVE PETITION",
                 "score": 0.9,
             }

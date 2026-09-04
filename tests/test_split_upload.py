@@ -153,7 +153,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
 
 
 def test_missing_required_petition_fails() -> None:
-    with pytest.raises(SplitUploadError, match="Petition"):
+    with pytest.raises(SplitUploadError, match="Main Petition"):
         validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
 
 
@@ -229,15 +229,15 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         1: ["Cover Page"],
         2: ["Index"],
         3: ["Listing Proforma"],
-        4: ["Petition"],
+        4: ["Main Petition"],
         5: ["Annexures"],
         6: ["Appendix"],
-        7: ["Petition"],
+        7: ["Main Petition"],
         8: ["Memo of Parties"],
         9: ["Vakalatnama"],
-        10: ["Petition"],
-        11: ["Petition"],
-        12: ["Petition"],
+        10: ["Main Petition"],
+        11: ["Main Petition"],
+        12: ["Main Petition"],
     }
     pack = build_extract_pack_markdown(
         page_markdown,
@@ -247,7 +247,7 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     )
     assert "[Cover Page]" in pack
     assert "[Listing Proforma]" in pack
-    assert "[Petition]" in pack
+    assert "[Main Petition]" in pack
     assert "[Memo of Parties]" in pack
     assert "[Index]" in pack
     assert "index listing" in pack
@@ -268,16 +268,16 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
 def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
     catalog = type_catalog("SLP_CIVIL")
     assert catalog.extract_field_sources["petitioners"] == FieldSources(
-        fill=("Memo of Parties", "Petition"),
-        verify=("Petition", "Cover Page"),
+        fill=("Memo of Parties", "Main Petition"),
+        verify=("Main Petition", "Cover Page"),
     )
     assert catalog.extract_field_sources["respondents"] == FieldSources(
-        fill=("Memo of Parties", "Petition"),
-        verify=("Petition", "Cover Page"),
+        fill=("Memo of Parties", "Main Petition"),
+        verify=("Main Petition", "Cover Page"),
     )
     assert catalog.extract_field_sources["court"] == FieldSources(
         fill=("Cover Page",),
-        verify=("Petition",),
+        verify=("Main Petition",),
     )
     assert catalog.extract_field_sources["applications"] == FieldSources(
         fill=("Index",),
@@ -290,7 +290,7 @@ def test_extract_source_parts_include_petition_and_index() -> None:
         "Cover Page",
         "Listing Proforma",
         "Memo of Parties",
-        "Petition",
+        "Main Petition",
         "Impugned Order",
         "Vakalatnama",
         "AOR's Declaration",
@@ -311,7 +311,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
         schema,
         {
             "cause_title": ["Memo of Parties", "Cover Page"],
-            "petitioners": ["Memo of Parties", "Petition"],
+            "petitioners": ["Memo of Parties", "Main Petition"],
         },
     )
     assert (
@@ -320,7 +320,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     )
     petitioners = updated["properties"]["petitioners"]["description"]
     assert "Prefer Memo of Parties" in petitioners
-    assert "first page of the Petition" in petitioners
+    assert "first page of the Main Petition" in petitioners
     assert "fill it from the other" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Look only in" not in updated["properties"]["court"]["description"]
@@ -329,7 +329,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
 
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
-    assert "petitioners: fill Memo of Parties, Petition; verify Petition, Cover Page" in prompt
+    assert "petitioners: fill Memo of Parties, Main Petition; verify Main Petition, Cover Page" in prompt
     assert "Copy printed text only" in prompt
     assert "inconsistencies: one item per spelling" in prompt
 
@@ -344,11 +344,11 @@ def test_overlay_uses_stitched_document_parts() -> None:
     payload = {"filing_summary": {}}
     overlay_split_documents(payload, page_parts)
     items = payload["filing_summary"]["documents"]["items"]
-    assert any(item.startswith("Petition") for item in items)
+    assert any(item.startswith("Main Petition") for item in items)
     assert any(item.startswith("Synopsis") for item in items)
     assert any("List of Dates & Events" in item for item in items)
     names = [span["name"] for span in payload["documents"]]
-    assert "Petition" in names
+    assert "Main Petition" in names
     assert payload["document_counts"]["processed"] == len(payload["documents"])
 
 
@@ -362,7 +362,7 @@ def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
     stamp_source_pages(record)
     wrapped = apply_extract_envelope(
         record,
-        page_parts={1: ["Cover Page"], 2: ["Petition"]},
+        page_parts={1: ["Cover Page"], 2: ["Main Petition"]},
         filing_type="SLP_CIVIL",
         overall_confidence=0.91,
         generated_at="2026-09-04T12:00:00+05:30",
@@ -379,7 +379,7 @@ def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
     assert wrapped["generated_at"] == "2026-09-04T12:00:00+05:30"
     assert wrapped["documents"] == [
         {"name": "Cover Page", "start_page": 1, "end_page": 1},
-        {"name": "Petition", "start_page": 2, "end_page": 2},
+        {"name": "Main Petition", "start_page": 2, "end_page": 2},
     ]
     assert wrapped["petitioners"][0]["source_pages"] == [6, 7]
     assert wrapped["filing_summary"]["matter_title"] == "A v. B"
@@ -415,7 +415,7 @@ def test_empty_parse_still_stamps_document_part() -> None:
     }
     page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
     petition_pages = [
-        page for page, names in page_parts.items() if names == ["Petition"]
+        page for page, names in page_parts.items() if names == ["Main Petition"]
     ]
     assert len(petition_pages) == 1
     assert "No parse text" in page_markdown[petition_pages[0]]
@@ -427,9 +427,10 @@ def test_empty_parse_still_stamps_document_part() -> None:
 
 def test_page_maps_survive_string_keys() -> None:
     markdown = coerce_page_markdown({"1": "cover", "2": "petition body"})
-    parts = coerce_page_parts({"1": "Cover Page", "2": ["Petition"]})
+    parts = coerce_page_parts({"1": "Cover Page", "2": ["Main Petition"]})
     assert markdown == {1: "cover", 2: "petition body"}
-    assert parts == {1: ["Cover Page"], 2: ["Petition"]}
+    assert parts == {1: ["Cover Page"], 2: ["Main Petition"]}
+    assert coerce_page_parts({"3": "Petition"}) == {3: ["Main Petition"]}
     records = build_page_records(
         base_id="bundle",
         page_markdown=markdown,
@@ -437,7 +438,7 @@ def test_page_maps_survive_string_keys() -> None:
     )
     by_page = {r["metadata"]["page_start"]: r["metadata"] for r in records}
     assert by_page[1]["document_part"] == "Cover Page"
-    assert by_page[2]["document_part"] == "Petition"
+    assert by_page[2]["document_part"] == "Main Petition"
 
 
 @pytest.mark.asyncio
@@ -584,7 +585,7 @@ def test_no_undefined_slice_when_every_page_has_a_slot() -> None:
     slices = slice_bundle_pdf(
         _blank_pdf(2),
         catalog,
-        {1: ["Cover Page"], 2: ["Petition"]},
+        {1: ["Cover Page"], 2: ["Main Petition"]},
     )
     by_id = {item.slot_id: item for item in slices}
     assert "undefined" not in by_id

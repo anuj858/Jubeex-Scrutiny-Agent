@@ -226,7 +226,7 @@ async def _split_page_parts(
     if not mapping:
         raise RuntimeError(
             f"Split finished for {label} but labelled no pages. "
-            "Scrutiny cannot filter Listing Proforma / Petition / checklist parts."
+            "Scrutiny cannot filter Listing Proforma / Main Petition / checklist parts."
         )
     return mapping
 

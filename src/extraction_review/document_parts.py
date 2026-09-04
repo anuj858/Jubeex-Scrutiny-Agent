@@ -38,29 +38,36 @@ PINECONE_QUERY_MAX_CHARS = 110
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
 
+# Split label for the Form 28 body only. Slot id stays `petition`.
+# "Petition" / "Matter" in product language means the full filing PDF.
+MAIN_PETITION_PART = "Main Petition"
+_LEGACY_PART_NAMES = {
+    "petition": MAIN_PETITION_PART,
+}
+
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": ("Petition", "Affidavit"),
+    "filing_formalities": (MAIN_PETITION_PART, "Affidavit"),
     "advocate_checklist": ("Advocate's Checklist", "Vakalatnama"),
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": (
-        "Petition",
+        MAIN_PETITION_PART,
         "AOR's Declaration",
         "Listing Proforma",
         "Advocate's Checklist",
     ),
-    "applications": ("Petition", "Annexures", "Index"),
+    "applications": (MAIN_PETITION_PART, "Annexures", "Index"),
     "annexures": ("Annexures", "Index", "List of Dates & Events"),
-    "parties": ("Memo of Parties", "Cover Page", "Petition"),
+    "parties": ("Memo of Parties", "Cover Page", MAIN_PETITION_PART),
     "dates_execution": (
-        "Petition",
+        MAIN_PETITION_PART,
         "Affidavit",
         "Vakalatnama",
         "PoA/BR",
     ),
     "index_paper_book": ("Index",),
-    "limitation": ("Office Report on Limitation", "Petition"),
-    # Affidavit is the inspect target; Petition is only retrieval context.
-    "affidavit": ("Affidavit", "Petition"),
+    "limitation": ("Office Report on Limitation", MAIN_PETITION_PART),
+    # Affidavit is the inspect target; Main Petition is only retrieval context.
+    "affidavit": ("Affidavit", MAIN_PETITION_PART),
     "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
     "vakalatnama": ("Vakalatnama", "PoA/BR"),
     "memo_of_appearance": ("Memo of Appearance",),
@@ -82,9 +89,9 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
         "impugned order",
         "judgment under challenge",
     ),
-    "PoA/BR": (
-        "power of attorney",
-        "board resolution",
+    "Main Petition": (
+        "form 28",
+        "special leave petition body",
     ),
 }
 
@@ -240,6 +247,8 @@ def normalize_part_name(name: str | None) -> str:
         return ""
     text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
     folded = _fold(text)
+    if folded in _LEGACY_PART_NAMES:
+        return _LEGACY_PART_NAMES[folded]
     for canonical, _description in _split_categories():
         if folded == _fold(canonical):
             return canonical
@@ -324,7 +333,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep the first occurrence of each Split part, including nearby pages.
 
     Index at 5–7 is kept; Index at 55–57 is dropped (that page is something
-    else). A mixed page can still keep its other label. Petition at 17 then
+    else). A mixed page can still keep its other label. Main Petition at 17 then
     25–35 is kept (other documents sit in between).
     """
     pages_by_part: dict[str, list[int]] = {}
@@ -459,9 +468,13 @@ def parts_named_in_text(text: str) -> list[str]:
     blob = _fold(text)
     found: list[str] = []
     for name, description in _split_categories():
-        if any(needle in blob for needle in _needles_for_part(name, description)):
-            if name not in found:
-                found.append(name)
+        needles = _needles_for_part(name, description)
+        matched = any(needle in blob for needle in needles)
+        if not matched and name == MAIN_PETITION_PART:
+            # "the Petition" in catalogue prose; do not match "petitioner".
+            matched = bool(re.search(r"(?<![a-z])petition(?![a-z])", blob))
+        if matched and name not in found:
+            found.append(name)
     return found
 
 
@@ -660,7 +673,7 @@ def required_parts_for_defect(defect: Defect) -> list[str]:
         primary = [p for p in named if p == "Affidavit"]
         return primary or named[:1]
     if category == "parties":
-        primary = [p for p in named if p in {"Petition", "Memo of Parties"}]
+        primary = [p for p in named if p in {MAIN_PETITION_PART, "Memo of Parties"}]
         return primary or named[:1]
     if len(named) > 3 and defect.where_to_look:
         first = parts_named_in_text(_strip_landmark_clauses(defect.where_to_look[0]))

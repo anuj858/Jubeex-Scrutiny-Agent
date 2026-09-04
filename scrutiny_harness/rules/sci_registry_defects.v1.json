@@ -271,7 +271,7 @@
         "Check whether any respondent is described as a Judge, Judicial Officer or Presiding Officer of the court below; cross-check the name against the judge who passed the impugned order."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [
@@ -394,7 +394,7 @@
       "inspect_parts": [
         "Advocate's Checklist",
         "AOR's Declaration",
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -458,7 +458,7 @@
       ],
       "inspect_parts": [
         "Office Report on Limitation",
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -488,7 +488,7 @@
         "Office Report on Limitation"
       ],
       "context_parts": [
-        "Petition",
+        "Main Petition",
         "Impugned Order"
       ],
       "exclude_parts": [
@@ -516,7 +516,7 @@
         "Check the Memo of Parties for the complete residential or office addresses of all parties, including street, city and PIN code."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -546,7 +546,7 @@
         "Check the Memo of Parties for complete addresses of the parties and of their representatives, properly set out with the relationship (S/o, W/o), house or ward number, locality, city and PIN code."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -575,7 +575,7 @@
         "Check whether the specific Ministry or Department and its complete address, through which notice is to be served, is stated."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -608,7 +608,7 @@
         "Affidavit"
       ],
       "context_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "exclude_parts": [
         "Index"
@@ -667,7 +667,7 @@
         "Affidavit"
       ],
       "context_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "exclude_parts": [
         "Index"
@@ -844,7 +844,7 @@
         "Affidavit"
       ],
       "context_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "exclude_parts": [
         "Index"
@@ -873,7 +873,7 @@
         "Caveat Report"
       ],
       "context_parts": [
-        "Petition",
+        "Main Petition",
         "Cover Page"
       ],
       "exclude_parts": [
@@ -903,7 +903,7 @@
         "For originals, it is advisable that a clear typed copy is annexed along with the original."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Affidavit"
       ],
       "context_parts": [],
@@ -935,7 +935,7 @@
         "Check that the paper is demy-foolscap or 29.7 cm × 21 cm (A4), and that the petition carries the prescribed quarter margin."
       ],
       "inspect_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1049,7 +1049,7 @@
         "Check that the petition is fairly and legibly typed, lithographed or printed on both sides of standard A4 paper with the required quarter margin."
       ],
       "inspect_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1084,7 +1084,7 @@
       ],
       "inspect_parts": [
         "Cover Page",
-        "Petition",
+        "Main Petition",
         "Vakalatnama"
       ],
       "context_parts": [],
@@ -1203,7 +1203,7 @@
         "Look for a board resolution or other authority letter following the Vakalatnama."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties",
         "Vakalatnama"
       ],
@@ -1523,7 +1523,7 @@
         "Where the document is not clearly legible, check whether a typed or written copy certified as a true copy by the Advocate-on-Record or party-in-person is filed alongside it."
       ],
       "inspect_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -1552,7 +1552,7 @@
         "Cross-check the markings against those referred to in the List of Dates, the Index and the body of the main petition."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Index"
       ],
       "context_parts": [],
@@ -1581,7 +1581,7 @@
         "Check the Vakalatnama for its date of execution, which must not be later than the date of drafting of the petition."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Affidavit",
         "Vakalatnama"
       ],
@@ -1612,7 +1612,7 @@
         "Check the drawn-on date; it cannot be before the date on which the Vakalatnama was signed."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Cover Page"
       ],
       "context_parts": [],
@@ -1642,7 +1642,7 @@
         "Check the body of the affidavit for the date, number of paragraphs and number of pages of the petition, and cross-check the paragraph and page count against the main petition."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Affidavit"
       ],
       "context_parts": [],
@@ -1671,7 +1671,7 @@
         "Check the Vakalatnama (placed at the end of the file, after the Memo of Parties and Filing Memo) for its date of execution; the date must be the same as or prior to the date of drafting of the petition."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Vakalatnama"
       ],
       "context_parts": [],
@@ -1729,7 +1729,7 @@
         "Verify Times New Roman, size 14, with one-and-a-half line spacing; for quotations and indents, verify size 12 with single-line spacing."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -1760,7 +1760,7 @@
         "Check for a margin of 4 cm on the left and right and 2 cm at the top and bottom."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -1797,7 +1797,7 @@
         "Listing Proforma"
       ],
       "context_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties",
         "Memo of Appearance",
         "Vakalatnama"
@@ -1828,7 +1828,7 @@
         "If a Memo of Parties has not been separately filed, but the cause title of the main petition contains complete particulars of all parties, including address and e-mail address (or an indication that the e-mail address is unavailable), treat the requirement of filing the Memo of Parties as complied with."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -1859,7 +1859,7 @@
         "Also verify the status of the parties, as the roles of petitioner and respondent may change depending on which party has challenged the impugned judgment."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Impugned Order"
       ],
       "context_parts": [
@@ -1892,7 +1892,7 @@
         "Check the applications placed after the Annexures for an application for bringing legal representatives on record."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -1922,7 +1922,7 @@
         "Check the applications placed after the Annexures for an application seeking condonation of delay in filing the application for substitution."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Memo of Parties"
       ],
       "context_parts": [],
@@ -1951,7 +1951,7 @@
         "Check the body of that application for the date of death and for the complete addresses of the parties."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -1982,7 +1982,7 @@
         "Check the particulars of each proposed legal representative for their age and complete address."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -2012,7 +2012,7 @@
         "Check the body of that application for the date of death, and for the relationship, age and complete addresses of the parties."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -2041,7 +2041,7 @@
         "Check each such application for a supporting affidavit filed immediately after it. If filed with the main petition, check whether the affidavit includes a line as to the veracity of the application; if the application is filed separately, check that an affidavit is attached with it."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Affidavit"
       ],
       "context_parts": [],
@@ -2074,7 +2074,7 @@
       "context_parts": [
         "PoA/BR",
         "Vakalatnama",
-        "Petition"
+        "Main Petition"
       ],
       "exclude_parts": [
         "Index"
@@ -2102,7 +2102,7 @@
         "Check that the application states the reasons why the petitioner cannot engage an advocate and whether he is willing to accept an advocate appointed by the Court."
       ],
       "inspect_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [],
       "exclude_parts": [
@@ -2131,7 +2131,7 @@
         "Cross-check all of them against the Impugned Judgment itself placed after the Synopsis and List of Dates."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Impugned Order"
       ],
       "context_parts": [
@@ -2193,7 +2193,7 @@
         "Check the annexures in sequence and verify that they are arranged chronologically in accordance with the List of Dates."
       ],
       "inspect_parts": [
-        "Petition",
+        "Main Petition",
         "Annexures"
       ],
       "context_parts": [],
@@ -2283,7 +2283,7 @@
         "Check at all required places for the signature and name of the counsel along with disclosure of whom they are representing."
       ],
       "inspect_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "context_parts": [
         "Listing Proforma",
@@ -2317,7 +2317,7 @@
         "Annexures"
       ],
       "context_parts": [
-        "Petition"
+        "Main Petition"
       ],
       "exclude_parts": [
         "Index"

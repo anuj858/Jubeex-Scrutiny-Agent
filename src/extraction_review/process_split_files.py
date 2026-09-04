@@ -230,12 +230,12 @@ class ProcessSplitFilesWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
-                    message="Extract pack was empty; extracting from the Petition PDF",
+                    message="Extract pack was empty; extracting from the Main Petition PDF",
                 )
             )
         else:
             raise RuntimeError(
-                "No extract pack and no Petition file are available for extraction"
+                "No extract pack and no Main Petition file are available for extraction"
             )
 
         configuration = extract_configuration(extract_config, catalog)

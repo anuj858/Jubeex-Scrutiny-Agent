@@ -53,7 +53,7 @@ class CauseTitle(BaseModel):
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Memo of Parties then Petition page 1."""
+    """One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(default=None, description="individual or organization. Leave null if unclear.")
     name: str | None = Field(default=None, description="Full name as printed. Do not concatenate S/o or W/o into the name.")
@@ -70,7 +70,7 @@ class Party(BaseModel):
     email: str | None = Field(default=None, description="Email ONLY if explicitly printed. Do not invent.")
     mobile: str | None = Field(default=None, description="Mobile ONLY if explicitly printed. Do not invent.")
     is_primary: bool | None = Field(default=None, description="True for the first named party on that side")
-    source_part: str | None = Field(default=None, description="Must be Memo of Parties or Petition. Never Vakalatnama or Cover Page.")
+    source_part: str | None = Field(default=None, description="Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
 
 
@@ -115,10 +115,10 @@ class ImpugnedOrder(BaseModel):
 
 
 class Relief(BaseModel):
-    """Prayer from the end of the Petition."""
+    """Prayer from the end of the Main Petition."""
     sought: str | None = Field(default=None, description="Main prayer as printed")
     interim: str | None = Field(default=None, description="Interim relief as printed")
-    source_part: str | None = Field(default=None, description="Petition")
+    source_part: str | None = Field(default=None, description="Main Petition")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
 
 
@@ -178,7 +178,7 @@ class LegalExtractRecord(BaseModel):
     advocates_on_record: list[AdvocateOnRecord] = Field(default_factory=list, description="Advocates-on-Record.")
     classification: Classification | None = Field(default=None, description="Listing Proforma classification.")
     impugned_orders: list[ImpugnedOrder] = Field(default_factory=list, description="Primary impugned order only.")
-    relief: Relief | None = Field(default=None, description="Prayer from the Petition.")
+    relief: Relief | None = Field(default=None, description="Prayer from the Main Petition.")
     applications: Applications | None = Field(default=None, description="Applications listed in the Index.")
     inconsistencies: Inconsistencies | None = Field(default=None, description="Spelling mismatches between fill and verify sources.")
     filing_summary: FilingSummary | None = Field(default=None, description="Matter title and document lists.")
