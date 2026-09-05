@@ -1,1 +1,1 @@
-"""Registry defect scrutiny for approved filings."""
+"""Registry defect scrutiny for extracted filings."""

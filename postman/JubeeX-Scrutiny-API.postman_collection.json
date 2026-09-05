@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a7c3e1d0-4b92-4f18-9c6e-jubeex-scrutiny-v1",
     "name": "JubeeX Scrutiny API",
-    "description": "Production APIs for the JubeeX backend.\n\n**Flow**\n1. POST /v1/filings (compiled or separate)\n2. GET /v1/jobs/{{job_id}} until status=completed → copies agent_data_id\n3. GET /v1/filings/{{agent_data_id}}\n4. POST /v1/filings/{{agent_data_id}}/scrutiny\n5. GET /v1/jobs/{{job_id}} for the defect report\n\nSet `baseUrl` (default http://localhost:8000) and `apiKey` if JUBEEX_API_KEY is enabled.\nDo not wrap the body in `start_event`. Do not send `handler_id`.",
+    "description": "Production APIs for the JubeeX backend.\n\n**Flow**\n1. POST /v1/filings (compiled or separate)\n2. GET /v1/jobs/{{job_id}} until status=completed → copies agent_data_id\n3. GET /v1/filings/{{agent_data_id}}\n4. PATCH /v1/filings/{{agent_data_id}} with {\"status\":\"approved\"} if you want to mark it approved (no Llama UI)\n5. POST /v1/filings/{{agent_data_id}}/scrutiny\n6. GET /v1/jobs/{{job_id}} for the defect report\n\nSet `baseUrl` (default http://localhost:8000) and `apiKey` if JUBEEX_API_KEY is enabled.\nDo not wrap the body in `start_event`. Do not send `handler_id`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -193,6 +193,24 @@
             "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
             "description": "Fetches the Agent Data record. Extracted JSON is in `data`. Org/workspace/user/document ids are in `data.metadata`.\nDoes not run a workflow."
           }
+        },
+        {
+          "name": "Approve filing",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Sets Agent Data review status without the Llama UI.\nAllowed values: approved, rejected, pending_review.\nAfter extract the record is pending_review. Call this before scrutiny if the deployed image still requires approved."
+          }
         }
       ]
     },
@@ -231,7 +249,7 @@
               "raw": "{\n  \"file_hash\": \"8adf76ba0ba44d4561ab5a4ad88e3d6e97e56a32010ac8c08f39b5f8c1d01340\",\n  \"file_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n}"
             },
             "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny",
-            "description": "Runs **scrutiny_workflow.py** (defect check).\n\nBody is optional. You may send `file_hash`, `file_url` (`download_url`), both, or `{}`.\nDo not send Swagger placeholders like `\"string\"`.\nSaves a new job_id. Then run **Get job status** again. Report is `result.report`."
+            "description": "Runs **scrutiny_workflow.py** (defect check).\n\nBody is optional. You may send `file_hash`, `file_url` (`download_url`), both, or `{}`.\nDo not send Swagger placeholders like `\"string\"`.\nFiling status may be `pending_review` after extract; approval is not required.\nSaves a new job_id. Then run **Get job status** again. Report is `result.report`."
           }
         }
       ]

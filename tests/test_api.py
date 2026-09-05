@@ -204,6 +204,50 @@ def test_api_key_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
 
 
+def test_approve_filing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stored = {
+        "status": "pending_review",
+        "file_name": "Cover Page.pdf",
+        "data": {"court": None},
+    }
+
+    class FakeAgentData:
+        @staticmethod
+        async def get(_item_id: str):
+            return SimpleNamespace(id="agd-approve-1", data=dict(stored))
+
+        @staticmethod
+        async def update(_item_id: str, data: dict | None = None, **_: object):
+            stored.clear()
+            stored.update(data or {})
+            return SimpleNamespace(id="agd-approve-1", data=dict(stored))
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    monkeypatch.setattr(
+        "extraction_review.api.get_llama_cloud_client",
+        lambda: FakeClient(),
+    )
+    response = client.patch(
+        "/v1/filings/agd-approve-1",
+        json={"status": "approved"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "approved"
+    assert stored["status"] == "approved"
+
+
+def test_approve_filing_rejects_unknown_status(client: TestClient) -> None:
+    response = client.patch(
+        "/v1/filings/agd-approve-1",
+        json={"status": "done"},
+    )
+    assert response.status_code == 422
+
+
 def test_get_filing_not_found(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

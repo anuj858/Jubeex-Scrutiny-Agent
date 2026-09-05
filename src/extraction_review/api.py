@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 JobKind = Literal["process_file", "scrutiny"]
 JobStatus = Literal["running", "completed", "failed"]
+ReviewStatus = Literal["pending_review", "approved", "rejected"]
 
 
 class DocumentIn(BaseModel):
@@ -158,6 +159,14 @@ class CreateFilingRequest(BaseModel):
                 f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
             )
         return self
+
+
+class UpdateFilingRequest(BaseModel):
+    """Set Agent Data review status. The Llama UI is not required."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: ReviewStatus = Field(examples=["approved"])
 
 
 class CreateScrutinyRequest(BaseModel):
@@ -422,29 +431,72 @@ async def get_job(job_id: str) -> JobRecordOut:
     return job.as_out()
 
 
-@app.get(
-    "/v1/filings/{agent_data_id}",
-    tags=["filings"],
-    dependencies=[Depends(require_api_key)],
-)
-async def get_filing(agent_data_id: str) -> dict[str, Any]:
+def _as_data_dict(data: Any) -> dict[str, Any]:
+    if hasattr(data, "model_dump"):
+        dumped = data.model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    if isinstance(data, dict):
+        return dict(data)
+    return {}
+
+
+def _filing_out(agent_data_id: str, item: Any, data: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(item, "id", agent_data_id),
+        "collection": FILING_COLLECTION,
+        "data": data,
+    }
+
+
+async def _load_filing_item(agent_data_id: str) -> Any:
     client = get_llama_cloud_client()
     try:
-        item = await client.beta.agent_data.get(agent_data_id)
+        return await client.beta.agent_data.get(agent_data_id)
     except Exception as exc:
         logger.exception("Failed to load Agent Data %s", agent_data_id)
         raise HTTPException(
             status_code=404,
             detail=f"Filing not found: {agent_data_id}",
         ) from exc
-    data = getattr(item, "data", None)
-    if hasattr(data, "model_dump"):
-        data = data.model_dump(mode="json")
-    return {
-        "id": getattr(item, "id", agent_data_id),
-        "collection": FILING_COLLECTION,
-        "data": data,
-    }
+
+
+@app.get(
+    "/v1/filings/{agent_data_id}",
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def get_filing(agent_data_id: str) -> dict[str, Any]:
+    item = await _load_filing_item(agent_data_id)
+    return _filing_out(agent_data_id, item, _as_data_dict(getattr(item, "data", None)))
+
+
+@app.patch(
+    "/v1/filings/{agent_data_id}",
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def update_filing(
+    agent_data_id: str,
+    body: UpdateFilingRequest,
+) -> dict[str, Any]:
+    """Set review status (`approved` / `rejected` / `pending_review`) without the Llama UI."""
+    client = get_llama_cloud_client()
+    item = await _load_filing_item(agent_data_id)
+    data = _as_data_dict(getattr(item, "data", None))
+    data["status"] = body.status
+    try:
+        updated = await client.beta.agent_data.update(agent_data_id, data=data)
+    except Exception as exc:
+        logger.exception("Failed to update Agent Data %s", agent_data_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to update filing status: {exc}",
+        ) from exc
+    return _filing_out(
+        agent_data_id,
+        updated,
+        _as_data_dict(getattr(updated, "data", None) or data),
+    )
 
 
 @app.post(

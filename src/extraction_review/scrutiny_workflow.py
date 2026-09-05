@@ -1,4 +1,4 @@
-"""Registry defect scrutiny for an approved filing.
+"""Registry defect scrutiny for an extracted filing.
 
 Runs the enabled defects from the SCI catalogue against a document that has
 already been parsed, extracted and indexed. Evidence comes from the structured
@@ -112,6 +112,25 @@ def scrutiny_enabled() -> bool:
         "0",
         "no",
     )
+
+
+SCRUTINY_ALLOWED_STATUSES = frozenset({"approved", "pending_review"})
+
+
+def assert_filing_ready_for_scrutiny(
+    review_status: object, file_name: object = None
+) -> None:
+    """Allow extract-complete filings. Block only rejected records."""
+    status = str(review_status or "").strip().lower()
+    label = str(file_name or "").strip() or "this document"
+    if status == "rejected":
+        raise ValueError(
+            f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
+        )
+    if status and status not in SCRUTINY_ALLOWED_STATUSES:
+        raise ValueError(
+            f"Scrutiny cannot run while {label} is '{review_status}'."
+        )
 
 
 async def _load_item(
@@ -335,7 +354,7 @@ async def collect_defect_findings(
 
 
 class ScrutinyWorkflow(Workflow):
-    """Check an approved filing against the SCI registry defect catalogue."""
+    """Check an extracted filing against the SCI registry defect catalogue."""
 
     @step()
     async def run_scrutiny(
@@ -382,11 +401,7 @@ class ScrutinyWorkflow(Workflow):
         metadata = payload.get("metadata") or {}
         filing_type = metadata.get("classification") or record.get("petition_type")
 
-        if review_status != "approved":
-            raise ValueError(
-                f"Scrutiny only runs on approved filings; "
-                f"{file_name or 'this document'} is '{review_status}'."
-            )
+        assert_filing_ready_for_scrutiny(review_status, file_name)
 
         catalogue = get_catalogue()
         defects = defects_for_filing_type(filing_type)

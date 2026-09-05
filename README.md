@@ -68,7 +68,7 @@ uvx llamactl deployments apply -f deployment.yaml
 - **Agent Data storage**: Results land in collection `jubeex-filing-extraction`, deduplicated by file hash
 - **Pinecone vector index**: Upserts (1) a filing summary vector and (2) per-page chunks from Parse. Embeddings are **not** generated in-app — Pinecone’s integrated model (`llama-text-embed-v2`) embeds server-side
 - **Review UI**: Upload filings, watch workflow progress, edit/approve extracted records
-- **Defect check (after approve)**: `scrutiny-check` runs D003–D006 (checklist, AOR code, listing columns, petition presentation) against Pinecone + OpenRouter; report is stored on the same Agent Data item
+- **Defect check**: `POST /v1/filings/{id}/scrutiny` (or UI `scrutiny-check`) runs after extract. Agent Data is usually `pending_review`; approval is not required. Report is stored on the same Agent Data item.
 
 How the live path is wired (diagrams for non-developers): [docs/how-it-works.md](docs/how-it-works.md). Agent orientation for code changes: [AGENTS.md](AGENTS.md).
 
@@ -119,7 +119,7 @@ Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `buil
 | `process-file` | `src/extraction_review/process_file.py` | Backend entry: `job_type=upload_compiled` classifies/slices a compiled PDF then runs extract; `job_type=upload_separate` runs extract on labeled files |
 | `process-split-files` | `src/extraction_review/process_split_files.py` | extract / overlay / Agent Data / Pinecone (UI submit, or nested from `process-file`) |
 | `metadata` | `src/extraction_review/metadata_workflow.py` | Expose JSON schema, per-type schemas, and collection name to the UI |
-| `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Approved filings: one Pinecone pool, sliced record, OpenRouter per defect, save on same Agent Data item |
+| `scrutiny-check` | `src/extraction_review/scrutiny_workflow.py` | Extracted filings (`pending_review` or `approved`): Pinecone excerpts, OpenRouter per defect, save on same Agent Data item |
 
 ### Production API (other applications)
 
@@ -132,6 +132,7 @@ Your backend should call this FastAPI, not LlamaDeploy `/workflows/.../run-nowai
 | `POST` | `/v1/filings` | Start compiled or separate-file processing |
 | `GET` | `/v1/jobs/{job_id}` | Poll until `completed` or `failed` |
 | `GET` | `/v1/filings/{agent_data_id}` | Extracted Core Filing Record |
+| `PATCH` | `/v1/filings/{agent_data_id}` | Set review status (`approved` / `rejected` / `pending_review`) |
 | `POST` | `/v1/filings/{agent_data_id}/scrutiny` | Start defect check |
 | `GET` | `/v1/jobs/{job_id}` | Poll scrutiny (same jobs resource) |
 
@@ -167,7 +168,13 @@ Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the f
 
 **3. Fetch the record** `GET /v1/filings/{agent_data_id}` — filing JSON is in `data` (ids also in `data.metadata`).
 
-**4. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` with an optional body:
+**4. Approve (optional)** `PATCH /v1/filings/{agent_data_id}` — no Llama UI:
+
+```json
+{ "status": "approved" }
+```
+
+**5. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` with an optional body:
 
 ```json
 {

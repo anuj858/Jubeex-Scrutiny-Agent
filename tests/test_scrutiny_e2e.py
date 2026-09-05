@@ -15,6 +15,7 @@ from extraction_review.scrutiny_workflow import (
     ScrutinyPartial,
     ScrutinyResponse,
     ScrutinyWorkflow,
+    assert_filing_ready_for_scrutiny,
     collect_defect_findings,
 )
 
@@ -39,6 +40,14 @@ class FakeAgentData:
 class FakeLlamaCloud:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.beta = SimpleNamespace(agent_data=FakeAgentData(_approved_item()))
+
+
+def test_scrutiny_allows_pending_review_and_blocks_rejected() -> None:
+    assert_filing_ready_for_scrutiny("pending_review", "Cover Page.pdf")
+    assert_filing_ready_for_scrutiny("approved", "Cover Page.pdf")
+    assert_filing_ready_for_scrutiny(None, "Cover Page.pdf")
+    with pytest.raises(ValueError, match="rejected"):
+        assert_filing_ready_for_scrutiny("rejected", "Cover Page.pdf")
 
 
 def _approved_item() -> SimpleNamespace:
@@ -99,6 +108,30 @@ def scrutiny_env(monkeypatch: pytest.MonkeyPatch) -> FakeLlamaCloud:
         lambda: False,
     )
     return client
+
+
+@pytest.mark.asyncio
+async def test_scrutiny_runs_on_pending_review_extract(
+    scrutiny_env: FakeLlamaCloud,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scrutiny_env.beta.agent_data.item.data["status"] = "pending_review"
+    scrutiny_env.beta.agent_data.item.data["file_name"] = "Cover Page.pdf"
+
+    async def fake_llm(**kwargs: Any) -> tuple[DefectResponse, LlmUsage]:
+        return _ok(_check_id_from_prompt(kwargs["user_prompt"]))
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.call_structured",
+        fake_llm,
+    )
+    workflow = ScrutinyWorkflow(timeout=None)
+    handler = workflow.run(start_event=ScrutinyEvent(agent_data_id="item-e2e-1"))
+    async for _event in handler.stream_events():
+        pass
+    result = await handler
+    assert isinstance(result, ScrutinyResponse)
+    assert result.report.findings
 
 
 @pytest.mark.asyncio
