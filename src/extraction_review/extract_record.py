@@ -343,7 +343,9 @@ def _party_name(party: Any) -> str | None:
 def _names_match(left: str | None, right: str | None) -> bool:
     a = _name_tokens(left or "")
     b = _name_tokens(right or "")
-    return bool(a and b and (a == b or a in b or b in a))
+    if a and b and (a == b or a in b or b in a):
+        return True
+    return names_are_spelling_variants(left, right)
 
 
 def strip_party_role_label(text: str | None) -> str:
@@ -422,20 +424,19 @@ def is_extra_party_caption_mismatch(
     has_shorthand = any(_ANR_ORS_MARK.search(side) for side in sides)
     caption_context = bool(_CAPTION_SOURCE.search(blob))
     extra_label = bool(_EXTRA_PARTY_LABEL.search(label or ""))
+    cores = [name for name in (_core_person_name(side) for side in sides) if name]
+    distinct = list(dict.fromkeys(cores))
+    if len(distinct) >= 2:
+        base = distinct[0]
+        if all(names_are_spelling_variants(base, other) for other in distinct[1:]):
+            return False
     if extra_label and (has_shorthand or caption_context):
         return True
     if len(sides) < 2:
         return False
     if not has_shorthand and not caption_context:
         return False
-    cores = [name for name in (_core_person_name(side) for side in sides) if name]
-    distinct = list(dict.fromkeys(cores))
-    if len(distinct) < 2:
-        return False
-    base = distinct[0]
-    if all(names_are_spelling_variants(base, other) for other in distinct[1:]):
-        return False
-    return True
+    return len(distinct) >= 2
 
 
 def is_cosmetic_name_mismatch(raw_text: str | None) -> bool:
@@ -458,6 +459,172 @@ def _inconsistency_name_key(raw_text: str | None) -> frozenset[str] | None:
     if len(names) < 2:
         return None
     return frozenset(names)
+
+
+def _clean_quoted_party_name(text: str | None) -> str:
+    cleaned = strip_anr_ors_suffix(strip_party_role_label(text))
+    cleaned = _LIST_SERIAL.sub("", cleaned).strip()
+    return re.sub(r"\s+", " ", cleaned).strip(" ,;")
+
+
+def format_party_spelling_raw_text(cover: str, listed: str) -> str:
+    return (
+        f'Cover Page: "{cover}"; Main Petition / Memo of Parties: "{listed}"'
+    )
+
+
+def _looks_like_person_name(text: str | None) -> bool:
+    core = _core_person_name(text)
+    if not core or re.search(r"\b(?:court|petition|affidavit|vakalatnama)\b", core):
+        return False
+    return 1 <= len(core.split()) <= 6
+
+
+def _is_party_name_spelling_item(raw_text: str | None, label: str | None) -> bool:
+    label_l = (label or "").lower()
+    if "acting through" in label_l:
+        return False
+    sides = _inconsistency_compare_texts(raw_text)
+    if len(sides) < 2:
+        return False
+    if not all(_looks_like_person_name(side) for side in (sides[0], sides[-1])):
+        return False
+    if names_are_spelling_variants(sides[0], sides[-1]):
+        return True
+    return bool(re.search(r"\b(?:petitioner|respondent|party)\b", label_l))
+
+
+def _party_spelling_label(
+    cover: str,
+    listed: str,
+    payload: dict[str, Any],
+    current: str | None,
+) -> str:
+    cause = payload.get("cause_title")
+    cause_data = cause if isinstance(cause, dict) else {}
+    main_respondent = cause_data.get("main_respondent")
+    main_petitioner = cause_data.get("main_petitioner")
+    if isinstance(main_respondent, str) and (
+        names_are_spelling_variants(cover, main_respondent)
+        or names_are_spelling_variants(listed, main_respondent)
+    ):
+        return "Main respondent spelling"
+    if isinstance(main_petitioner, str) and (
+        names_are_spelling_variants(cover, main_petitioner)
+        or names_are_spelling_variants(listed, main_petitioner)
+    ):
+        return "Main petitioner spelling"
+    label_l = (current or "").lower()
+    if "respondent" in label_l:
+        return "Main respondent spelling"
+    if "petitioner" in label_l:
+        return "Main petitioner spelling"
+    return current or "Name spelling"
+
+
+def _rewrite_party_spelling_item(item: dict[str, Any], payload: dict[str, Any]) -> None:
+    raw = item.get("raw_text") or item.get("detail")
+    raw_text = raw if isinstance(raw, str) else None
+    label = item.get("label") if isinstance(item.get("label"), str) else None
+    if not _is_party_name_spelling_item(raw_text, label):
+        return
+    sides = _inconsistency_compare_texts(raw_text)
+    cover = _clean_quoted_party_name(sides[0])
+    listed = _clean_quoted_party_name(sides[-1])
+    if not cover or not listed:
+        return
+    item["raw_text"] = format_party_spelling_raw_text(cover, listed)
+    item["label"] = _party_spelling_label(cover, listed, payload, label)
+
+
+def _primary_listed_party(parties: Any) -> dict[str, Any] | None:
+    if not isinstance(parties, list):
+        return None
+    for party in parties:
+        if isinstance(party, dict) and party.get("is_primary"):
+            return party
+    first = parties[0] if parties else None
+    return first if isinstance(first, dict) else None
+
+
+def _ensure_inconsistencies_blob(payload: dict[str, Any]) -> dict[str, Any]:
+    blob = payload.get("inconsistencies")
+    if not isinstance(blob, dict):
+        blob = {"items": [], "source_part": [], "source_pages": []}
+        payload["inconsistencies"] = blob
+    if not isinstance(blob.get("items"), list):
+        blob["items"] = []
+    return blob
+
+
+def _append_main_party_spelling(payload: dict[str, Any]) -> None:
+    cause = payload.get("cause_title")
+    if not isinstance(cause, dict):
+        return
+    pending: list[tuple[str, str, str]] = []
+    blob = payload.get("inconsistencies")
+    items = blob.get("items") if isinstance(blob, dict) else []
+    if not isinstance(items, list):
+        items = []
+    existing = {
+        key
+        for item in items
+        for key in (
+            _inconsistency_name_key(
+                (item.get("raw_text") or item.get("detail"))
+                if isinstance(item, dict)
+                else None
+            ),
+        )
+        if key is not None
+    }
+    for parties_key, main_key, label in (
+        ("petitioners", "main_petitioner", "Main petitioner spelling"),
+        ("respondents", "main_respondent", "Main respondent spelling"),
+    ):
+        cover = cause.get(main_key)
+        if not isinstance(cover, str) or not cover.strip():
+            continue
+        cover_clean = _clean_quoted_party_name(cover)
+        listed = _party_name(_primary_listed_party(payload.get(parties_key)))
+        if not listed:
+            continue
+        listed_clean = _clean_quoted_party_name(listed)
+        if not cover_clean or not listed_clean:
+            continue
+        if normalize_compared_name(cover_clean) == normalize_compared_name(listed_clean):
+            continue
+        if not names_are_spelling_variants(cover_clean, listed_clean):
+            continue
+        key = frozenset(
+            {
+                normalize_compared_name(cover_clean),
+                normalize_compared_name(listed_clean),
+            }
+        )
+        if key in existing:
+            continue
+        pending.append((label, cover_clean, listed_clean))
+        existing.add(key)
+    if not pending:
+        return
+    blob = _ensure_inconsistencies_blob(payload)
+    items = blob["items"]
+    for label, cover_clean, listed_clean in pending:
+        items.append(
+            {
+                "id": _next_inconsistency_id(items),
+                "label": label,
+                "raw_text": format_party_spelling_raw_text(cover_clean, listed_clean),
+            }
+        )
+    part_list = blob.get("source_part")
+    if not isinstance(part_list, list):
+        part_list = []
+        blob["source_part"] = part_list
+    for part in ("Cover Page", "Main Petition", "Memo of Parties"):
+        if part not in part_list:
+            part_list.append(part)
 
 
 def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
@@ -491,6 +658,9 @@ def _drop_role_label_inconsistencies(payload: dict[str, Any]) -> None:
         if key is not None:
             seen_names[key] = len(kept)
         kept.append(item)
+    for item in kept:
+        if isinstance(item, dict):
+            _rewrite_party_spelling_item(item, payload)
     for index, item in enumerate(kept, start=1):
         if isinstance(item, dict):
             item["id"] = str(index)
@@ -748,6 +918,7 @@ def apply_extract_envelope(
     _normalize_parties(payload)
     _append_missing_acting_through(payload)
     _drop_role_label_inconsistencies(payload)
+    _append_main_party_spelling(payload)
     stamp_confidence(payload, field_confidence=field_confidence)
     _drop_removed_fields(payload)
 

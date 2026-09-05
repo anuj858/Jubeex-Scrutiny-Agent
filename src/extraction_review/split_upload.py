@@ -446,7 +446,11 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
             "- confidence: percentage string such as 95% or 65% on each object.",
             "- inconsistencies: record spelling or value mismatches between fill and "
-            "verify sources. Do not invent extra parties to resolve a mismatch. "
+            "verify sources. Always record a letter-level mismatch of the Cover Page "
+            "main petitioner or main respondent versus that same person's name on "
+            "Memo of Parties or the Main Petition (example: Shalija vs Shailja). "
+            "Do not skip the main-name spelling because Cover Page also says And Anr/Ors. "
+            "Do not invent extra parties to resolve a mismatch. "
             "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
             "Respondent, or Respondent(s), with or without leading dots (... or …). "
             "Those marks are not part of the party name. "
@@ -454,10 +458,13 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "(Impugned Order names are often printed in capitals). "
             "Do not compare party names against the Impugned Order. "
             "One item per distinct name spelling; do not repeat the same two names. "
-            "Cover Page, Vakalatnama, Affidavit, and AOR's Declaration often print only "
-            "the main name plus And Anr/Ors. Additional parties come from Memo of Parties "
-            "or the Main Petition; do not flag those extra names as a spelling mismatch "
-            "against And Anr/Ors. "
+            "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
+            "Cover Page And Anr/Ors; those extra people are listed on Memo of Parties "
+            "or the Main Petition, not on the cover shorthand. "
+            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition / "
+            "Memo of Parties: \"Name\". Quote the person's name only: no And Anr/Ors, "
+            "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
+            "AOR's Declaration as party-name sources. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -525,7 +532,10 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "party on that side and and Ors. for two or more extras. "
             "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
             "Respondent(s), with or without dots, as a spelling mismatch. "
-            "Do not write 'and Anr. and Anr.'"
+            "Do not write 'and Anr. and Anr.' "
+            "If the Cover Page main name differs in letters from Memo of Parties "
+            "or the Main Petition (Shalija vs Shailja), that is an inconsistencies item. "
+            "Extra parties are not a spelling mismatch against And Anr/Ors."
         )
     if field_name == "relief_sort":
         extra += (
@@ -582,7 +592,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. id is '1', '2', …; use raw_text. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra parties on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Declaration as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

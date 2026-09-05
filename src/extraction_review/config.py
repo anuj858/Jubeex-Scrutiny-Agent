@@ -326,8 +326,12 @@ class LegalExtractRecord(BaseModel):
         default=None,
         description=(
             "Spelling mismatches between fill and verify sources, plus an ORGANIZATION "
-            "party with no acting_through. items[].id is '1', '2', …; items[].raw_text "
-            "quotes both sources."
+            "party with no acting_through. Always include a letter-level mismatch of "
+            "the Cover Page main petitioner or main respondent versus Memo of Parties "
+            "or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a "
+            "mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is "
+            'Cover Page: "Name"; Main Petition / Memo of Parties: "Name". '
+            "items[].id is '1', '2', …."
         ),
     )
 

@@ -368,6 +368,8 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     assert "petitioners: fill Memo of Parties, Main Petition; verify Main Petition, Cover Page" in prompt
     assert "Copy printed text only" in prompt
     assert "inconsistencies: one item per spelling" in prompt
+    assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
+    assert "Do not list Vakalatnama, Affidavit, or AOR's Declaration as party-name sources" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -599,7 +601,12 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     items = wrapped["inconsistencies"]["items"]
     assert len(items) == 1
     assert items[0]["id"] == "1"
-    assert "Shailja" in items[0]["raw_text"]
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+    assert "AOR" not in items[0]["raw_text"]
+    assert "And Anr" not in items[0]["raw_text"]
 
 
 def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
@@ -631,7 +638,8 @@ def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
     assert len(items) == 1
     assert items[0]["id"] == "1"
     assert items[0]["raw_text"] == (
-        'Cover Page: "Smt. Shalija Shah"; Main Petition: "Smt. Shailja Shah"'
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
     )
 
 
@@ -668,9 +676,52 @@ def test_extra_respondent_is_not_cover_page_anr_spelling_error() -> None:
     )
     items = wrapped["inconsistencies"]["items"]
     assert len(items) == 1
-    assert items[0]["label"] == "Respondent 1 spelling"
-    assert "Shailja" in items[0]["raw_text"]
+    assert items[0]["label"] == "Main respondent spelling"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
     assert "Bandana" not in items[0]["raw_text"]
+    assert "AOR" not in items[0]["raw_text"]
+    assert "And Anr" not in items[0]["raw_text"]
+
+
+def test_main_respondent_spelling_is_kept_even_if_extract_omits_it() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "cause_title": {
+                "main_petitioner": "Kailash Negi Alias Anmol",
+                "main_respondent": "Smt. Shalija Shah And Anr",
+            },
+            "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+            "respondents": [
+                {"name": "Smt. Shailja Shah"},
+                {"name": "Smt. Bandana Shah"},
+            ],
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Respondent 2 spelling",
+                        "raw_text": (
+                            'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+                            '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Bandana Shah"'
+                        ),
+                    }
+                ]
+            },
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["label"] == "Main respondent spelling"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+    assert "Bandana" not in items[0]["raw_text"]
+    assert wrapped["respondents"][0]["is_primary"] is True
+    assert wrapped["respondents"][1]["is_primary"] is False
 
 
 def test_bundle_hash_is_stable() -> None:
