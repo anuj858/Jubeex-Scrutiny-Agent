@@ -17,6 +17,9 @@ dependencies = [
     "llama-index-core>=0.14.0",
     "pinecone>=7.0.0,<8",
     "pypdf>=5.0.0,<7",
+    "boto3>=1.35,<2.0",
+    "awscrt>=0.23,<1.0",
+    "botocore[crt]>=1.43.89",
 ]
 
 [dependency-groups]
@@ -38,6 +41,7 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 jubeex-api = "extraction_review.api:main"
+jubeex-sqs-worker = "extraction_review.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/extraction_review"]

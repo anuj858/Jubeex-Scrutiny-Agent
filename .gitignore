@@ -18,3 +18,8 @@ ui/dist/
 docs
 .cursor
 AGENTS.md
+# Local secrets
+secret.json
+.env
+.env.*
+!.env.template

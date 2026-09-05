@@ -29,6 +29,7 @@ from pydantic import (
     model_validator,
 )
 
+from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES
@@ -39,6 +40,7 @@ from .process_file import (
     normalize_job_type,
 )
 from .process_file import workflow as process_file_workflow
+from .queue import enqueue_job, sqs_enabled
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import type_catalog, ui_catalog
@@ -115,6 +117,10 @@ class CreateFilingRequest(BaseModel):
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
+    callback_url: str | None = Field(
+        default=None,
+        examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
+    )
     documents: list[DocumentIn] = Field(default_factory=list)
 
     @field_validator(
@@ -123,6 +129,7 @@ class CreateFilingRequest(BaseModel):
         "organization_id",
         "workspace_id",
         "user_id",
+        "callback_url",
         mode="before",
     )
     @classmethod
@@ -183,8 +190,15 @@ class CreateScrutinyRequest(BaseModel):
         validation_alias=AliasChoices("file_url", "download_url"),
         examples=["https://storage.example/filings/Defect_SLP_Civil.pdf"],
     )
+    callback_url: str | None = Field(
+        default=None,
+        examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
+    )
+    organization_id: str | None = None
 
-    @field_validator("file_hash", "file_url", mode="before")
+    @field_validator(
+        "file_hash", "file_url", "callback_url", "organization_id", mode="before"
+    )
     @classmethod
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
         return blank_or_placeholder(value)
@@ -229,6 +243,8 @@ class JobState:
         self.agent_data_id: str | None = None
         self.result: dict[str, Any] | None = None
         self.error: str | None = None
+        self.callback_url: str | None = None
+        self.event_id: str = str(uuid.uuid4())
         self.created_at = datetime.now(UTC).isoformat()
         self.completed_at: str | None = None
 
@@ -287,6 +303,17 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.error = str(exc)
     finally:
         job.completed_at = datetime.now(UTC).isoformat()
+        await notify_job_finished(
+            callback_url=job.callback_url,
+            job_id=job.job_id,
+            kind=job.kind,
+            status=job.status,
+            agent_data_id=job.agent_data_id,
+            organization_id=job.organization_id,
+            error=job.error,
+            result=job.result,
+            event_id=job.event_id,
+        )
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
@@ -367,6 +394,7 @@ async def create_filing(
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
     payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
     try:
         event = FileEvent(**payload)
     except (ValidationError, ValueError) as exc:
@@ -413,8 +441,20 @@ async def create_filing(
         workspace_id=event.workspace_id,
         user_id=event.user_id,
     )
+    job.callback_url = body.callback_url
     JOBS[job_id] = job
-    background_tasks.add_task(_start_process_file, job, event)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "process_file",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_process_file, job, event)
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
@@ -515,11 +555,28 @@ async def create_scrutiny(
         agent_data_id=agent_data_id,
         file_hash=(body.file_hash if body else None),
         file_url=(body.file_url if body else None),
+        organization_id=(body.organization_id if body else None),
     )
     job_id = str(uuid.uuid4())
-    job = JobState(job_id=job_id, kind="scrutiny")
+    job = JobState(
+        job_id=job_id,
+        kind="scrutiny",
+        organization_id=event.organization_id,
+    )
+    job.callback_url = body.callback_url if body else None
     JOBS[job_id] = job
-    background_tasks.add_task(_start_scrutiny, job, event)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "scrutiny",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_scrutiny, job, event)
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 

@@ -1,24 +1,22 @@
 {
-  "family": "jubeex-scrutiny-api",
+  "family": "jubeex-scrutiny-worker",
   "networkMode": "awsvpc",
   "requiresCompatibilities": [
     "FARGATE"
   ],
-  "cpu": "512",
-  "memory": "1024",
+  "cpu": "1024",
+  "memory": "2048",
   "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
   "containerDefinitions": [
     {
-      "name": "jubeex-scrutiny-api",
+      "name": "jubeex-scrutiny-worker",
       "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:fastapi-v1",
       "essential": true,
-      "portMappings": [
-        {
-          "containerPort": 8000,
-          "hostPort": 8000,
-          "protocol": "tcp"
-        }
+      "command": [
+        "uv",
+        "run",
+        "jubeex-sqs-worker"
       ],
       "environment": [
         {
@@ -122,28 +120,14 @@
         {
           "name": "JUBEEX_CALLBACK_SECRET",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:JUBEEX_CALLBACK_SECRET::"
-        },
-        {
-          "name": "JUBEEX_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-api-key-3zVFXj:JUBEEX_API_KEY::"
         }
       ],
-      "healthCheck": {
-        "command": [
-          "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health')\" || exit 1"
-        ],
-        "interval": 30,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 30
-      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/jubeex-scrutiny-agent",
           "awslogs-region": "ap-south-1",
-          "awslogs-stream-prefix": "ai-api"
+          "awslogs-stream-prefix": "sqs-worker"
         }
       }
     }

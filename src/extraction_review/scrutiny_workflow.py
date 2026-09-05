@@ -73,6 +73,7 @@ class ScrutinyEvent(StartEvent):
     agent_data_id: str | None = None
     file_hash: str | None = None
     file_url: str | None = None
+    organization_id: str | None = None
 
 
 class Status(Event):
