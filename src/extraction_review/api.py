@@ -31,6 +31,7 @@ from pydantic import (
 
 from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
+from .s3_artifacts import recorded_artifacts, set_job_context
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES
 from .process_file import (
@@ -195,9 +196,15 @@ class CreateScrutinyRequest(BaseModel):
         examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
     )
     organization_id: str | None = None
+    workspace_id: str | None = None
 
     @field_validator(
-        "file_hash", "file_url", "callback_url", "organization_id", mode="before"
+        "file_hash",
+        "file_url",
+        "callback_url",
+        "organization_id",
+        "workspace_id",
+        mode="before",
     )
     @classmethod
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
@@ -291,9 +298,13 @@ def _agent_data_id_from(payload: dict[str, Any]) -> str | None:
 
 
 async def _run_workflow(job: JobState, handler: Any) -> None:
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
     try:
         result = await handler
         payload = _serialize_result(result)
+        artifacts = recorded_artifacts(job.job_id)
+        if artifacts:
+            payload["artifacts"] = artifacts
         job.result = payload
         job.agent_data_id = _agent_data_id_from(payload)
         job.status = "completed"
@@ -303,6 +314,11 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.error = str(exc)
     finally:
         job.completed_at = datetime.now(UTC).isoformat()
+        artifacts = recorded_artifacts(job.job_id)
+        if job.result is None and artifacts:
+            job.result = {"artifacts": artifacts}
+        elif isinstance(job.result, dict) and artifacts:
+            job.result["artifacts"] = artifacts
         await notify_job_finished(
             callback_url=job.callback_url,
             job_id=job.job_id,
@@ -310,18 +326,22 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
             status=job.status,
             agent_data_id=job.agent_data_id,
             organization_id=job.organization_id,
+            workspace_id=job.workspace_id,
             error=job.error,
             result=job.result,
+            artifacts=artifacts,
             event_id=job.event_id,
         )
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
     handler = process_file_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 
 
 async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
     handler = scrutiny_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 
@@ -556,12 +576,14 @@ async def create_scrutiny(
         file_hash=(body.file_hash if body else None),
         file_url=(body.file_url if body else None),
         organization_id=(body.organization_id if body else None),
+        workspace_id=(body.workspace_id if body else None),
     )
     job_id = str(uuid.uuid4())
     job = JobState(
         job_id=job_id,
         kind="scrutiny",
         organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
     )
     job.callback_url = body.callback_url if body else None
     JOBS[job_id] = job

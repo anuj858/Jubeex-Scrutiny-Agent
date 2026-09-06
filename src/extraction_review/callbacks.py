@@ -35,8 +35,10 @@ async def notify_job_finished(
     status: str,
     agent_data_id: str | None,
     organization_id: str | None,
+    workspace_id: str | None = None,
     error: str | None,
     result: dict[str, Any] | None,
+    artifacts: dict[str, Any] | None = None,
     event_id: str,
 ) -> None:
     url = (callback_url or os.getenv("JUBEEX_CALLBACK_URL") or "").strip()
@@ -52,15 +54,19 @@ async def notify_job_finished(
         if completed
         else "SCRUTINY_FAILED"
     )
+    artifact_map = artifacts or {}
     payload = {
         "event_id": event_id,
         "event": event,
         "agent_job_id": job_id,
+        "task_id": job_id,
         "status": "COMPLETED" if completed else "FAILED",
         "agent_data_id": agent_data_id,
         "organization_id": organization_id,
+        "workspace_id": workspace_id,
         "error": error,
-        "result": result or {},
+        "artifacts": artifact_map,
+        "result": {**(result or {}), "artifacts": artifact_map},
     }
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode()
     timestamp = str(int(time.time()))

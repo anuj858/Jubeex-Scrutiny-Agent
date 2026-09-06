@@ -35,6 +35,7 @@ from .bundle_slicer import slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import ClassifyConfig, SplitConfig
 from .document_parts import page_parts_from_split, parts_on_page
+from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import SplitUploadError, type_catalog, ui_catalog
 
 logger = logging.getLogger(__name__)
@@ -915,6 +916,19 @@ async def _run_split_from_file_event(
         )
 
     echo = intake_echo(event)
+    upload_step_json(
+        STEP_SPLIT,
+        {
+            "job_type": echo["job_type"],
+            "filing_type": filing_type,
+            "organization_id": echo["organization_id"],
+            "workspace_id": echo["workspace_id"],
+            "parts": [item.model_dump(mode="json") for item in split_parts],
+            "slot_pages": {},
+        },
+        organization_id=echo["organization_id"],
+        workspace_id=echo["workspace_id"],
+    )
     agent_data_id = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
@@ -1231,6 +1245,31 @@ class ProcessFileWorkflow(Workflow):
                     message=f"Ready {item.label} ({item.page_span or 'pages unknown'})",
                 )
             )
+
+        upload_step_json(
+            STEP_SPLIT,
+            {
+                "job_type": state.job_type,
+                "filing_type": catalog.filing_type,
+                "filename": state.filename,
+                "file_id": state.file_id,
+                "organization_id": state.organization_id,
+                "workspace_id": state.workspace_id,
+                "parts": [
+                    {
+                        "slot_id": item.slot_id,
+                        "label": item.label,
+                        "filename": item.filename,
+                        "page_span": item.page_span,
+                        "file_hash": item.file_hash,
+                    }
+                    for item in slices
+                ],
+                "slot_pages": slot_pages,
+            },
+            organization_id=state.organization_id,
+            workspace_id=state.workspace_id,
+        )
 
         from .process_split_files import SplitPartEvent
 

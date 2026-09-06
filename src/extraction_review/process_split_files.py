@@ -25,6 +25,7 @@ from .config import (
     get_extraction_schema,
 )
 from .document_parts import overlay_split_documents
+from .s3_artifacts import STEP_EXTRACT, upload_step_json
 from .process_file import (
     DISCRIMINATOR_FIELD,
     ExtractedEvent,
@@ -463,6 +464,16 @@ class ProcessSplitFilesWorkflow(Workflow):
         data_dict = extracted_data.model_dump()
         if page_parts:
             overlay_split_documents(data_dict, page_parts)
+        org_id = state.organization_id or state.org_id
+        if isinstance(data_dict, dict):
+            data_dict.setdefault("organization_id", org_id)
+            data_dict.setdefault("workspace_id", state.workspace_id)
+        upload_step_json(
+            STEP_EXTRACT,
+            data_dict,
+            organization_id=org_id,
+            workspace_id=state.workspace_id,
+        )
 
         if extracted_data.file_hash is not None:
             delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(

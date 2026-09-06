@@ -63,6 +63,7 @@ from .document_parts import (
     slice_record_for_defect,
 )
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .s3_artifacts import STEP_DEFECTS, upload_step_json
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class ScrutinyEvent(StartEvent):
     file_hash: str | None = None
     file_url: str | None = None
     organization_id: str | None = None
+    workspace_id: str | None = None
 
 
 class Status(Event):
@@ -565,6 +567,16 @@ class ScrutinyWorkflow(Workflow):
             on_update=publish,
         )
         report = build_report(findings, stopped_early=stopped_early)
+        defects_payload = report.model_dump(mode="json")
+        if isinstance(defects_payload, dict):
+            defects_payload.setdefault("organization_id", event.organization_id)
+            defects_payload.setdefault("workspace_id", event.workspace_id)
+        upload_step_json(
+            STEP_DEFECTS,
+            defects_payload,
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
+        )
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:

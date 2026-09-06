@@ -23,8 +23,12 @@ class ImmediateHandler:
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     JOBS.clear()
+    monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
+    monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
+    monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)
+    monkeypatch.delenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL", raising=False)
     return TestClient(app)
 
 

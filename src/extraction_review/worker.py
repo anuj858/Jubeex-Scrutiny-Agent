@@ -14,6 +14,7 @@ from .api import JOBS, JobState, _run_workflow
 from .process_file import FileEvent
 from .process_file import workflow as process_file_workflow
 from .queue import delete_job, receive_jobs, sqs_enabled
+from .s3_artifacts import set_job_context
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 
@@ -41,6 +42,7 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
 async def process_message(message: dict[str, Any]) -> None:
     job = _job_from_message(message)
     event = message.get("event") if isinstance(message.get("event"), dict) else {}
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
     if job.kind == "scrutiny":
         handler = scrutiny_workflow.run(start_event=ScrutinyEvent(**event))
     else:
