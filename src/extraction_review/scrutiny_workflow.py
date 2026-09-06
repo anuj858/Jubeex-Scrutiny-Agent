@@ -529,10 +529,7 @@ class ScrutinyWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
-                        message=(
-                            f"{defect.check_id} failed; stopping remaining "
-                            f"checks so no more tokens are used. {e}"
-                        ),
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
                 return failed_finding(defect, str(e), usage=e.usage)
@@ -541,10 +538,7 @@ class ScrutinyWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
-                        message=(
-                            f"{defect.check_id} failed; stopping remaining "
-                            f"checks so no more tokens are used. {e}"
-                        ),
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
                 return failed_finding(defect, str(e))
@@ -564,6 +558,7 @@ class ScrutinyWorkflow(Workflow):
             defects,
             run_one,
             concurrency=concurrency,
+            stop_on_error=False,
             on_update=publish,
         )
         report = build_report(findings, stopped_early=stopped_early)
