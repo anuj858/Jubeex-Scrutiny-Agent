@@ -106,11 +106,15 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert civil_required["undefined"] is False
     assert civil_required["petition"] is True
     assert criminal_required["memo_of_parties"] is False
-    assert criminal_required["vakalatnama"] is True
+    assert criminal_required["vakalatnama_appearance"] is True
     assert criminal_required["poa_br"] is False
     assert criminal_required["undefined"] is False
     assert "court_fees" not in criminal_required
-    assert civil_required["vakalatnama"] is True
+    assert civil_required["vakalatnama_appearance"] is True
+    assert "memo_of_appearance" not in civil_required
+    assert "vakalatnama" not in civil_required
+    assert "memo_of_appearance" not in criminal_required
+    assert "vakalatnama" not in criminal_required
     assert civil_required["poa_br"] is False
     assert "poa_br" in civil_ids
     assert "poa_br" in criminal_ids
@@ -120,6 +124,14 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert aor_slots
     assert aor_slots[0]["label"] == "AOR's Certificate"
     assert aor_slots[0]["parts"] == ["AOR's Certificate"]
+    appearance = [
+        slot
+        for slot in catalog["SLP_CIVIL"]["slots"]
+        if slot["id"] == "vakalatnama_appearance"
+    ]
+    assert appearance
+    assert appearance[0]["label"] == "Memo of Appearance + Vakalatnama"
+    assert appearance[0]["parts"] == ["Memo of Appearance", "Vakalatnama"]
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -131,7 +143,9 @@ def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     assert "court_fees" not in present
     assert "poa_br" not in present
     assert "undefined" not in present
-    assert "vakalatnama" in present
+    assert "vakalatnama_appearance" in present
+    assert "vakalatnama" not in present
+    assert "memo_of_appearance" not in present
 
 
 def test_slp_civil_allows_optional_memo_of_parties_and_court_fees() -> None:
@@ -165,7 +179,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
     assert "court_fees" not in present
     assert "memo_of_parties" not in present
     assert "poa_br" not in present
-    assert "vakalatnama" in present
+    assert "vakalatnama_appearance" in present
     with pytest.raises(SplitUploadError, match="Unknown slot"):
         validate_parts(
             "SLP_CRIMINAL",
@@ -220,7 +234,9 @@ def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
     pages_by_slot = {item.slot_id: {1: f"text for {item.slot_id}"} for item in parts}
     _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
     vakalatnama_pages = [
-        page for page, names in page_parts.items() if names == ["Vakalatnama"]
+        page
+        for page, names in page_parts.items()
+        if names == ["Memo of Appearance", "Vakalatnama"]
     ]
     poa_pages = [page for page, names in page_parts.items() if names == ["PoA/BR"]]
     assert len(vakalatnama_pages) == 1
@@ -249,6 +265,25 @@ def test_synopsis_slot_stamps_both_document_parts() -> None:
         "Synopsis",
         "List of Dates & Events",
     ]
+
+
+def test_vakalatnama_slot_stamps_appearance_and_vakalatnama() -> None:
+    catalog, parts = validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL"))
+    pages_by_slot = {item.slot_id: {1: f"text for {item.slot_id}"} for item in parts}
+    pages_by_slot["vakalatnama_appearance"] = {
+        1: "memo of appearance page",
+        2: "vakalatnama page",
+    }
+    page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
+    stamped = [
+        page
+        for page, names in page_parts.items()
+        if "Vakalatnama" in names and "Memo of Appearance" in names
+    ]
+    assert len(stamped) == 2
+    for page in stamped:
+        assert page_parts[page] == ["Memo of Appearance", "Vakalatnama"]
+        assert page_markdown[page]
 
 
 def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
@@ -916,23 +951,31 @@ def test_combined_vakalatnama_maps_to_vakalatnama_and_poa_slots() -> None:
             51: ["PoA/BR"],
         },
     )
-    assert pages["vakalatnama"] == [50]
+    assert pages["vakalatnama_appearance"] == [50]
     assert pages["poa_br"] == [50, 51]
 
 
 def test_vakalatnama_and_poa_are_separate_slots() -> None:
     catalog = type_catalog("SLP_CIVIL")
     slots = {slot.id: slot for slot in catalog.slots}
-    assert slots["vakalatnama"].parts == ("Vakalatnama",)
+    assert slots["vakalatnama_appearance"].parts == (
+        "Memo of Appearance",
+        "Vakalatnama",
+    )
+    assert slots["vakalatnama_appearance"].label == (
+        "Memo of Appearance + Vakalatnama"
+    )
     assert slots["poa_br"].parts == ("PoA/BR",)
     assert all("+" not in part for slot in catalog.slots for part in slot.parts)
     criminal = type_catalog("SLP_CRIMINAL")
-    assert {slot.id for slot in criminal.slots} >= {"vakalatnama", "poa_br"}
+    assert {slot.id for slot in criminal.slots} >= {"vakalatnama_appearance", "poa_br"}
+    assert "vakalatnama" not in {slot.id for slot in catalog.slots}
+    assert "memo_of_appearance" not in {slot.id for slot in catalog.slots}
     pages = map_slot_pages(
         catalog,
         {50: ["Vakalatnama"], 51: ["PoA/BR"]},
     )
-    assert pages["vakalatnama"] == [50]
+    assert pages["vakalatnama_appearance"] == [50]
     assert pages["poa_br"] == [51]
 
 
@@ -943,7 +986,7 @@ def test_mixed_label_page_is_copied_into_both_slots() -> None:
         {20: ["Affidavit", "Vakalatnama"]},
     )
     assert pages["affidavit"] == [20]
-    assert pages["vakalatnama"] == [20]
+    assert pages["vakalatnama_appearance"] == [20]
     slices = {
         item.slot_id: item
         for item in slice_bundle_pdf(
@@ -951,7 +994,7 @@ def test_mixed_label_page_is_copied_into_both_slots() -> None:
         )
     }
     assert len(PdfReader(BytesIO(slices["affidavit"].pdf_bytes)).pages) == 1
-    assert len(PdfReader(BytesIO(slices["vakalatnama"].pdf_bytes)).pages) == 1
+    assert len(PdfReader(BytesIO(slices["vakalatnama_appearance"].pdf_bytes)).pages) == 1
 
 
 def test_unmatched_labels_are_not_mapped_to_known_slots() -> None:
@@ -1015,6 +1058,20 @@ def test_synopsis_slot_unions_synopsis_and_list_of_dates() -> None:
     assert format_page_span(pages["synopsis_lod"]) == "pp. 10–12"
 
 
+def test_vakalatnama_slot_unions_appearance_and_vakalatnama() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            40: ["Memo of Appearance"],
+            41: ["Vakalatnama"],
+            42: ["Memo of Appearance", "Vakalatnama"],
+        },
+    )
+    assert pages["vakalatnama_appearance"] == [40, 41, 42]
+    assert format_page_span(pages["vakalatnama_appearance"]) == "pp. 40–42"
+
+
 def test_slice_uses_one_indexed_split_pages() -> None:
     pdf_bytes = _blank_pdf(3)
     sliced = extract_pdf_pages(pdf_bytes, [1, 3])
@@ -1062,5 +1119,5 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
     assert {item.slot_id for item in parts} >= {
         "cover_page",
         "petition",
-        "vakalatnama",
+        "vakalatnama_appearance",
     }

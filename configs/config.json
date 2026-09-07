@@ -1151,17 +1151,10 @@
             "required": false
           },
           {
-            "id": "memo_of_appearance",
-            "label": "Memo of Appearance",
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
             "parts": [
-              "Memo of Appearance"
-            ],
-            "required": true
-          },
-          {
-            "id": "vakalatnama",
-            "label": "Vakalatnama",
-            "parts": [
+              "Memo of Appearance",
               "Vakalatnama"
             ],
             "required": true
@@ -1309,17 +1302,10 @@
             "required": false
           },
           {
-            "id": "memo_of_appearance",
-            "label": "Memo of Appearance",
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
             "parts": [
-              "Memo of Appearance"
-            ],
-            "required": true
-          },
-          {
-            "id": "vakalatnama",
-            "label": "Vakalatnama",
-            "parts": [
+              "Memo of Appearance",
               "Vakalatnama"
             ],
             "required": true

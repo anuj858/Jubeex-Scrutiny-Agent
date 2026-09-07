@@ -74,8 +74,8 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     # Affidavit is the inspect target; Main Petition is only retrieval context.
     "affidavit": ("Affidavit", MAIN_PETITION_PART),
     "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
-    "vakalatnama": ("Vakalatnama", "PoA/BR"),
-    "memo_of_appearance": ("Memo of Appearance",),
+    "vakalatnama": ("Vakalatnama", "Memo of Appearance", "PoA/BR"),
+    "memo_of_appearance": ("Memo of Appearance", "Vakalatnama"),
     "list_of_dates": ("List of Dates & Events", "Synopsis"),
 }
 

@@ -396,6 +396,10 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         )
         notes[part] = (notes.get(part) or "").rstrip() + extra
     notes.setdefault(
+        "Memo of Appearance",
+        "Use only for advocates_on_record.",
+    )
+    notes.setdefault(
         "Vakalatnama",
         "Use only for advocates_on_record.",
     )
@@ -406,7 +410,7 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         "is confined only to the pleadings. Use the signature or DRAWN & FILED BY "
         "block only for advocates_on_record.",
     )
-    for part in ("Vakalatnama", "AOR's Certificate"):
+    for part in ("Memo of Appearance", "Vakalatnama", "AOR's Certificate"):
         if "Do not copy petitioner or respondent names" not in notes[part]:
             notes[part] = (
                 notes[part].rstrip()
