@@ -903,14 +903,14 @@ def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     catalogue = get_catalogue()
     assert required_parts_for_defect(catalogue.defect("D021")) == ["Affidavit"]
     d057 = required_parts_for_defect(catalogue.defect("D057"))
-    assert "AOR's Declaration" in d057
+    assert "AOR's Certificate" in d057
     assert "Advocate's Checklist" in d057
     assert "Listing Proforma" in d057
     assert "Vakalatnama" not in d057
     assert "PoA/BR" not in d057
     assert "Annexures" not in d057
     named = parts_named_in_where_to_look(catalogue.defect("D057"))
-    assert "AOR's Declaration" in named
+    assert "AOR's Certificate" in named
     assert "Impugned Order" in parts_named_in_where_to_look(catalogue.defect("D059"))
 
 

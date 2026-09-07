@@ -183,14 +183,23 @@ class Party(BaseModel):
 
 
 class AdvocateOnRecord(BaseModel):
-    """AOR identity. Fill from Vakalatnama then AOR's Declaration."""
+    """AOR identity. Fill from Vakalatnama then AOR's Certificate."""
     name: str | None = Field(default=None, description="AOR name")
     registration_number: str | None = Field(default=None, description="AOR code / registration number. Extract verbatim.")
     email: str | None = Field(default=None, description="AOR email ONLY if printed")
     mobile: str | None = Field(default=None, description="AOR mobile ONLY if printed")
     firm: str | None = Field(default=None, description="Firm name, if any")
     office_address: str | None = Field(default=None, description="Office address as printed")
-    source_part: str | None = Field(default=None, description="Vakalatnama or AOR's Declaration")
+    source_part: str | None = Field(
+        default=None,
+        description=(
+            "Vakalatnama or AOR's Certificate. AOR's Certificate always has the cause "
+            "title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
+            "then Certified that / CERTIFIED that the petition is confined only to the "
+            "pleadings below. Take name from the signature or DRAWN & FILED BY block; "
+            "take code (CC No.) and mobile only if printed. Not the Advocate's Check List."
+        ),
+    )
     raw_text: str | None = Field(default=None, description="Verbatim AOR block as printed, including name, address, email, and contact.")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
@@ -309,7 +318,16 @@ class LegalExtractRecord(BaseModel):
     cause_title: CauseTitle | None = Field(default=None, description="Cause title representing petitioner vs respondent.")
     petitioners: list[Party] = Field(default_factory=list, description="Petitioners. One record per petitioner.")
     respondents: list[Party] = Field(default_factory=list, description="Respondents. One record per respondent.")
-    advocates_on_record: list[AdvocateOnRecord] = Field(default_factory=list, description="Advocates-on-Record.")
+    advocates_on_record: list[AdvocateOnRecord] = Field(
+        default_factory=list,
+        description=(
+            "Advocates-on-Record. Fill from Vakalatnama, then the signature or "
+            "DRAWN & FILED BY block on AOR's Certificate. That page always has the "
+            "cause title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
+            "then the confined-to-pleadings text. Code and mobile only if printed. "
+            "Not the Advocate's Check List."
+        ),
+    )
     impugned_orders: list[ImpugnedOrder] = Field(default_factory=list, description="Primary impugned order only.")
     relief_sort: str | None = Field(
         default=None,

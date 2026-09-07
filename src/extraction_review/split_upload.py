@@ -390,15 +390,28 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         "Use only for advocates_on_record.",
     )
     notes.setdefault(
-        "AOR's Declaration",
-        "Use only for advocates_on_record.",
+        "AOR's Certificate",
+        "Cause title at the top, then the word CERTIFICATE (or C E R T I F I C A T E). "
+        "Both are required. Body starts Certified that / CERTIFIED that the petition "
+        "is confined only to the pleadings. Use the signature or DRAWN & FILED BY "
+        "block only for advocates_on_record.",
     )
-    for part in ("Vakalatnama", "AOR's Declaration"):
+    for part in ("Vakalatnama", "AOR's Certificate"):
         if "Do not copy petitioner or respondent names" not in notes[part]:
             notes[part] = (
                 notes[part].rstrip()
                 + " Do not copy petitioner or respondent names."
             )
+    cert_note = notes.get("AOR's Certificate") or ""
+    if "cause title" not in cert_note.lower():
+        notes["AOR's Certificate"] = (
+            cert_note.rstrip()
+            + " This page always has the cause title at the top, then the word "
+            "CERTIFICATE (or C E R T I F I C A T E), then Certified that the "
+            "petition is confined only to the pleadings. Use the signature or "
+            "DRAWN & FILED BY block for advocates_on_record only. "
+            "Cause title without CERTIFICATE is Cover Page or Main Petition."
+        )
     return notes
 
 
@@ -464,7 +477,7 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition / "
             "Memo of Parties: \"Name\". Quote the person's name only: no And Anr/Ors, "
             "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
-            "AOR's Declaration as party-name sources. "
+            "AOR's Certificate as party-name sources. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -516,7 +529,7 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             " Prefer Memo of Parties; if it is missing, use the first page of the "
             "Main Petition. If a field is blank in one of those parts, fill it from the "
             "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
-            "Memo of Appearance, AOR's Declaration, or Cover Page. Use Cover Page "
+            "Memo of Appearance, AOR's Certificate, or Cover Page. Use Cover Page "
             "only to decide which already-listed party is primary. Extra petitioners "
             "and respondents are listed on Memo of Parties or the Main Petition; "
             "Cover Page And Anr/Ors is not the second party's name. Do not invent "
@@ -536,6 +549,19 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "If the Cover Page main name differs in letters from Memo of Parties "
             "or the Main Petition (Shalija vs Shailja), that is an inconsistencies item. "
             "Extra parties are not a spelling mismatch against And Anr/Ors."
+        )
+    if field_name == "advocates_on_record":
+        extra += (
+            " AOR's Certificate always has the cause title at the top, then the word "
+            "CERTIFICATE (one word or letter-spaced C E R T I F I C A T E). Both are "
+            "required. Under CERTIFICATE the body starts Certified that or CERTIFIED "
+            "that the Special Leave Petition is confined only to the pleadings before "
+            "the High Court, Court, or Tribunal whose order is challenged. Extra facts "
+            "or grounds with an application may or may not be mentioned. Take AOR name "
+            "from the signature block or DRAWN & FILED BY; take code (CC No.) and mobile "
+            "only if printed. Do not copy petitioner or respondent names from the cause "
+            "title on this page. Cause title without CERTIFICATE is not this page. This "
+            "is not Cover Page, Vakalatnama, or the Advocate's Check List."
         )
     if field_name == "relief_sort":
         extra += (
@@ -592,7 +618,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Declaration as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

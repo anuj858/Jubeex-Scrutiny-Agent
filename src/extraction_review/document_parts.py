@@ -28,9 +28,11 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
     "QUESTIONS OF LAW GROUNDS MAIN PRAYER INTERIM RELIEF",
     "Listing Proforma Proforma for First Listing",
     "Advocate's Check List Advocate-on-Record certificate",
+    "CERTIFICATE confined only to the pleadings",
+    "cause title CERTIFICATE CERTIFIED confined only to the pleadings",
     "DECLARATION IN TERMS OF RULE 3(2) Affidavit",
     "Cover Page Index Office Report on Limitation",
-    "Vakalatnama AOR Declaration Memo of Parties",
+    "Vakalatnama AOR Certificate Memo of Parties",
 )
 
 PINECONE_QUERY_MAX_CHARS = 110
@@ -43,6 +45,9 @@ PagePartMap = dict[int, list[str]]
 MAIN_PETITION_PART = "Main Petition"
 _LEGACY_PART_NAMES = {
     "petition": MAIN_PETITION_PART,
+    "aor's declaration": "AOR's Certificate",
+    "aors declaration": "AOR's Certificate",
+    "aor declaration": "AOR's Certificate",
 }
 
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
@@ -51,7 +56,7 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": (
         MAIN_PETITION_PART,
-        "AOR's Declaration",
+        "AOR's Certificate",
         "Listing Proforma",
         "Advocate's Checklist",
     ),
@@ -76,13 +81,23 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
 
 # Extra catalogue phrases → Split labels (beyond the config name/description).
 _PART_ALIASES: dict[str, tuple[str, ...]] = {
-    # Prefer "check the declaration" so "below the declaration" on the
-    # checklist form does not pull AOR's Declaration into other checks.
-    "AOR's Declaration": (
-        "check the declaration",
-        "declaration in terms of rule",
-        "advocate-on-record declaration",
-        "advocate on record declaration",
+    # Do not alias bare "declaration" / "check the declaration": those words
+    # on the Advocate's Check List are not this page.
+    "AOR's Certificate": (
+        "advocate's certificate",
+        "advocate-on-record certificate",
+        "advocate on record certificate",
+        "aor's certificate",
+        "certificate after the main prayer",
+        "certificate after main prayer",
+        "certified that the special leave petition is confined",
+        "certified that the special leave petition is confined only",
+        "confined only to the pleadings",
+        "court/tribunal whose order is challenged",
+        "this certificate is given on the basis of the instructions",
+        "c e r t i f i c a t e",
+        "aor's declaration",
+        "aors declaration",
     ),
     "Impugned Order": (
         "impugned judgment",

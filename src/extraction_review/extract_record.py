@@ -88,7 +88,8 @@ _EXTRA_PARTY_LABEL = re.compile(
     re.IGNORECASE,
 )
 _CAPTION_SOURCE = re.compile(
-    r"cover page|vakalatnama|affidavit|aor's declaration|aors declaration",
+    r"cover page|vakalatnama|affidavit|aor's declaration|aors declaration|"
+    r"aor's certificate|aors certificate",
     re.IGNORECASE,
 )
 _PRAYER_HEADING_LINE = re.compile(

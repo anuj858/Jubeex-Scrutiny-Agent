@@ -489,7 +489,7 @@
       ],
       "inspect_parts": [
         "Advocate's Checklist",
-        "AOR's Declaration",
+        "AOR's Certificate",
         "Main Petition"
       ],
       "context_parts": [],
@@ -1917,7 +1917,7 @@
         "Verify that the signatures are digitally affixed through Adobe Sign and appear at the prescribed signature locations."
       ],
       "inspect_parts": [
-        "AOR's Declaration",
+        "AOR's Certificate",
         "Advocate's Checklist",
         "Listing Proforma"
       ],
@@ -2413,7 +2413,7 @@
       "context_parts": [
         "Listing Proforma",
         "Advocate's Checklist",
-        "AOR's Declaration"
+        "AOR's Certificate"
       ],
       "exclude_parts": [
         "Index"

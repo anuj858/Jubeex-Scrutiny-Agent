@@ -15,7 +15,13 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
-from extraction_review.document_parts import format_page_span, overlay_split_documents
+from extraction_review.document_parts import (
+    _split_categories,
+    format_page_span,
+    normalize_part_name,
+    overlay_split_documents,
+    parts_named_in_text,
+)
 from extraction_review.extract_record import (
     apply_extract_envelope,
     build_formatted_title,
@@ -103,6 +109,12 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert civil_required["poa_br"] is False
     assert "poa_br" in civil_ids
     assert "poa_br" in criminal_ids
+    aor_slots = [
+        slot for slot in catalog["SLP_CIVIL"]["slots"] if slot["id"] == "aors_declaration"
+    ]
+    assert aor_slots
+    assert aor_slots[0]["label"] == "AOR's Certificate"
+    assert aor_slots[0]["parts"] == ["AOR's Certificate"]
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -326,13 +338,41 @@ def test_extract_source_parts_include_petition_and_index() -> None:
         "Main Petition",
         "Impugned Order",
         "Vakalatnama",
-        "AOR's Declaration",
+        "AOR's Certificate",
         "Affidavit",
         "Office Report on Limitation",
     }
     assert "Undefined" not in parts
     assert "Index" not in parts
     assert "Listing Proforma" not in parts
+    assert normalize_part_name("AOR's Declaration") == "AOR's Certificate"
+    assert normalize_part_name("AOR's Certificate") == "AOR's Certificate"
+    _split_categories.cache_clear()
+    cert = dict(_split_categories())["AOR's Certificate"]
+    assert "CERTIFICATE" in cert
+    assert "C E R T I F I C A T E" in cert
+    assert "cause title at the top" in cert
+    assert "CERTIFICATE is always printed" in cert
+    assert "Certified that" in cert
+    assert "CERTIFIED that" in cert
+    assert "confined only to the pleadings" in cert
+    assert "DRAWN & FILED BY" in cert
+    assert "Cause title without the word CERTIFICATE" in cert
+    petition = dict(_split_categories())["Main Petition"]
+    assert "CERTIFICATE" in petition
+    spaced = parts_named_in_text(
+        "IN THE MATTER OF: Kailash Negi versus Smt. Shalija Shah "
+        "C E R T I F I C A T E Certified that the Special Leave Petition is "
+        "confined only to the pleadings before the Hon'ble High Court whose "
+        "order is challenged"
+    )
+    plain = parts_named_in_text(
+        "IN THE MATTER OF: Col. Pawan Kumar versus K.D.R. Farms "
+        "CERTIFICATE CERTIFIED that the Special Leave Petition is confined "
+        "only to the pleadings before the Court/Tribunal whose order is challenged"
+    )
+    assert "AOR's Certificate" in spaced
+    assert "AOR's Certificate" in plain
 
 
 def test_inject_where_to_look_appends_field_guidance() -> None:
@@ -369,7 +409,7 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     assert "Copy printed text only" in prompt
     assert "inconsistencies: one item per spelling" in prompt
     assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
-    assert "Do not list Vakalatnama, Affidavit, or AOR's Declaration as party-name sources" in prompt
+    assert "Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -963,7 +1003,7 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
             1: ["Advocate's Checklist"],
             2: ["Cover Page"],
             3: ["Record of Proceedings"],
-            4: ["AOR's Declaration"],
+            4: ["AOR's Certificate"],
             5: ["Index"],
             6: ["Office Report on Limitation"],
         },
