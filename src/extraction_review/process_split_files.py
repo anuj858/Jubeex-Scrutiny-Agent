@@ -329,10 +329,6 @@ class ProcessSplitFilesWorkflow(Workflow):
                     ),
                 )
             )
-        else:
-            raise RuntimeError(
-                "No extract pack and no Main Petition file are available for extraction"
-            )
 
         configuration = extract_configuration(extract_config, catalog)
         if extract_config.configuration_id:
