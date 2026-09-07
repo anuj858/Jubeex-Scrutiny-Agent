@@ -52,6 +52,8 @@ uvx llamactl deployments apply -f deployment.yaml
 - **Petition classification**: LlamaClassify labels filings as one of:
   - `SLP_CIVIL`
   - `SLP_CRIMINAL`
+  - `TRANSFER_PETITION_CIVIL`
+  - `TRANSFER_PETITION_CRIMINAL`
   - `ARBITRATION_PETITION`
   - `WRIT_PETITION_CIVIL`
   - `WRIT_PETITION_CRIMINAL`
@@ -162,7 +164,7 @@ POST /v1/filings
 { "job_id": "…", "status": "accepted", "poll_url": "/v1/jobs/…" }
 ```
 
-Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract). Send `filing_type` (`SLP_CIVIL` or `SLP_CRIMINAL`) when you know the type so slicing still runs if classify returns `other`.
+Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract). Send `filing_type` (`SLP_CIVIL`, `SLP_CRIMINAL`, `TRANSFER_PETITION_CIVIL`, or `TRANSFER_PETITION_CRIMINAL`) when you know the type so slicing still runs if classify returns `other`.
 
 **2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`.
 

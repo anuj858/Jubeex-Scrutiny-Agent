@@ -22,11 +22,13 @@ logger = logging.getLogger(__name__)
 EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
 
 JUBEEX_FILING_TYPES = [
-    "SLP_CIVIL", 
-    "SLP_CRIMINAL", 
-    "ARBITRATION_PETITION", 
-    "WRIT_PETITION_CIVIL", 
-    "WRIT_PETITION_CRIMINAL", 
+    "SLP_CIVIL",
+    "SLP_CRIMINAL",
+    "TRANSFER_PETITION_CIVIL",
+    "TRANSFER_PETITION_CRIMINAL",
+    "ARBITRATION_PETITION",
+    "WRIT_PETITION_CIVIL",
+    "WRIT_PETITION_CRIMINAL",
     "other"
 ]
 
@@ -298,7 +300,7 @@ class LegalExtractRecord(BaseModel):
     petition_type: str | None = Field(
         default=None,
         description=(
-            "Petition type as printed, e.g. Special Leave Petition (Civil). "
+            "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
             "Office Report on Limitation, Affidavit, and Memo of Parties."
         ),
@@ -384,6 +386,8 @@ class ExtractionSchema(CoreFilingRecord):
 FILING_SCHEMAS = {
     "SLP_CIVIL": CoreFilingRecord,
     "SLP_CRIMINAL": CoreFilingRecord,
+    "TRANSFER_PETITION_CIVIL": CoreFilingRecord,
+    "TRANSFER_PETITION_CRIMINAL": CoreFilingRecord,
     "ARBITRATION_PETITION": CoreFilingRecord,
     "WRIT_PETITION_CIVIL": CoreFilingRecord,
     "WRIT_PETITION_CRIMINAL": CoreFilingRecord,

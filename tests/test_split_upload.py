@@ -17,6 +17,7 @@ from extraction_review.bundle_slicer import (
 )
 from extraction_review.document_parts import (
     _split_categories,
+    filing_type_label,
     format_page_span,
     normalize_part_name,
     overlay_split_documents,
@@ -87,14 +88,34 @@ def _required_parts(
 
 def test_ui_catalog_is_driven_by_config_types() -> None:
     catalog = ui_catalog()
-    assert set(catalog) == {"SLP_CIVIL", "SLP_CRIMINAL"}
+    assert set(catalog) == {
+        "SLP_CIVIL",
+        "SLP_CRIMINAL",
+        "TRANSFER_PETITION_CIVIL",
+        "TRANSFER_PETITION_CRIMINAL",
+    }
     assert catalog["SLP_CIVIL"]["label"] == "SLP (Civil)"
+    assert catalog["TRANSFER_PETITION_CIVIL"]["label"] == "Transfer Petition (Civil)"
+    assert catalog["TRANSFER_PETITION_CRIMINAL"]["label"] == (
+        "Transfer Petition (Criminal)"
+    )
     civil_ids = [slot["id"] for slot in catalog["SLP_CIVIL"]["slots"]]
     criminal_ids = [slot["id"] for slot in catalog["SLP_CRIMINAL"]["slots"]]
+    tp_civil_ids = [slot["id"] for slot in catalog["TRANSFER_PETITION_CIVIL"]["slots"]]
+    tp_criminal_ids = [
+        slot["id"] for slot in catalog["TRANSFER_PETITION_CRIMINAL"]["slots"]
+    ]
     assert "court_fees" in civil_ids
     assert "court_fees" not in criminal_ids
+    assert "court_fees" not in tp_civil_ids
+    assert "court_fees" not in tp_criminal_ids
+    assert "filing_memo" in tp_civil_ids
+    assert "filing_memo" not in tp_criminal_ids
+    assert "filing_memo" not in civil_ids
     assert civil_ids[-1] == "undefined"
     assert criminal_ids[-1] == "undefined"
+    assert tp_civil_ids[-1] == "undefined"
+    assert tp_criminal_ids[-1] == "undefined"
     civil_required = {
         slot["id"]: slot["required"] for slot in catalog["SLP_CIVIL"]["slots"]
     }
@@ -132,6 +153,27 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert appearance
     assert appearance[0]["label"] == "Memo of Appearance + Vakalatnama"
     assert appearance[0]["parts"] == ["Memo of Appearance", "Vakalatnama"]
+    assert filing_type_label("TRANSFER_PETITION_CIVIL") == "Transfer Petition (Civil)"
+    assert filing_type_label("TRANSFER_PETITION_CRIMINAL") == (
+        "Transfer Petition (Criminal)"
+    )
+    tp_civil_required = {
+        slot["id"]: slot["required"]
+        for slot in catalog["TRANSFER_PETITION_CIVIL"]["slots"]
+    }
+    tp_criminal_required = {
+        slot["id"]: slot["required"]
+        for slot in catalog["TRANSFER_PETITION_CRIMINAL"]["slots"]
+    }
+    assert tp_civil_required["filing_memo"] is True
+    assert tp_civil_required["vakalatnama_appearance"] is True
+    assert tp_civil_required["memo_of_parties"] is False
+    assert tp_civil_required["poa_br"] is False
+    assert tp_civil_required["annexures"] is False
+    assert "court_fees" not in tp_civil_required
+    assert "filing_memo" not in tp_criminal_required
+    assert tp_criminal_required["vakalatnama_appearance"] is True
+    assert tp_criminal_required["petition"] is True
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -189,6 +231,61 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
                     {
                         "slot_id": "court_fees",
                         "file_id": "file-court-fees",
+                    }
+                ],
+            ),
+        )
+
+
+def test_transfer_petition_civil_requires_filing_memo() -> None:
+    catalog, parts = validate_parts(
+        "TRANSFER_PETITION_CIVIL",
+        _required_parts("TRANSFER_PETITION_CIVIL"),
+    )
+    present = {item.slot_id for item in parts}
+    assert catalog.filing_type == "TRANSFER_PETITION_CIVIL"
+    assert "filing_memo" in present
+    assert "court_fees" not in present
+    assert "annexures" not in present
+    assert "memo_of_parties" not in present
+    assert "poa_br" not in present
+    assert "vakalatnama_appearance" in present
+    assert "aors_declaration" in present
+    extra = [
+        {"slot_id": "memo_of_parties", "file_id": "file-memo-of-parties"},
+        {"slot_id": "poa_br", "file_id": "file-poa-br"},
+        {"slot_id": "annexures", "file_id": "file-annexures"},
+    ]
+    _, with_optional = validate_parts(
+        "TRANSFER_PETITION_CIVIL",
+        _required_parts("TRANSFER_PETITION_CIVIL", extra=extra),
+    )
+    assert {item.slot_id for item in with_optional} >= {
+        "filing_memo",
+        "memo_of_parties",
+        "poa_br",
+        "annexures",
+    }
+
+
+def test_transfer_petition_criminal_omits_filing_memo_and_rejects_it() -> None:
+    _, parts = validate_parts(
+        "TRANSFER_PETITION_CRIMINAL",
+        _required_parts("TRANSFER_PETITION_CRIMINAL"),
+    )
+    present = {item.slot_id for item in parts}
+    assert "filing_memo" not in present
+    assert "court_fees" not in present
+    assert "vakalatnama_appearance" in present
+    with pytest.raises(SplitUploadError, match="Unknown slot"):
+        validate_parts(
+            "TRANSFER_PETITION_CRIMINAL",
+            _required_parts(
+                "TRANSFER_PETITION_CRIMINAL",
+                extra=[
+                    {
+                        "slot_id": "filing_memo",
+                        "file_id": "file-filing-memo",
                     }
                 ],
             ),
@@ -921,11 +1018,26 @@ def test_page_maps_survive_string_keys() -> None:
 @pytest.mark.asyncio
 async def test_metadata_exposes_split_upload_types() -> None:
     result = await metadata_workflow.run(start_event=StartEvent())
-    assert set(result.split_upload_types.keys()) == {"SLP_CIVIL", "SLP_CRIMINAL"}
+    assert set(result.split_upload_types.keys()) == {
+        "SLP_CIVIL",
+        "SLP_CRIMINAL",
+        "TRANSFER_PETITION_CIVIL",
+        "TRANSFER_PETITION_CRIMINAL",
+    }
     criminal_ids = [
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]
     assert "court_fees" not in criminal_ids
+    tp_civil_ids = [
+        slot["id"]
+        for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
+    ]
+    tp_criminal_ids = [
+        slot["id"]
+        for slot in result.split_upload_types["TRANSFER_PETITION_CRIMINAL"]["slots"]
+    ]
+    assert "filing_memo" in tp_civil_ids
+    assert "filing_memo" not in tp_criminal_ids
 
 
 def test_process_split_files_does_not_call_llama_split() -> None:
@@ -1116,6 +1228,15 @@ def test_vakalatnama_slot_unions_appearance_and_vakalatnama() -> None:
     )
     assert pages["vakalatnama_appearance"] == [40, 41, 42]
     assert format_page_span(pages["vakalatnama_appearance"]) == "pp. 40–42"
+
+
+def test_filing_memo_maps_on_transfer_petition_civil() -> None:
+    catalog = type_catalog("TRANSFER_PETITION_CIVIL")
+    pages = map_slot_pages(catalog, {60: ["Filing Memo"]})
+    assert pages["filing_memo"] == [60]
+    criminal = type_catalog("TRANSFER_PETITION_CRIMINAL")
+    assert "filing_memo" not in {slot.id for slot in criminal.slots}
+    assert "court_fees" not in {slot.id for slot in catalog.slots}
 
 
 def test_slice_uses_one_indexed_split_pages() -> None:

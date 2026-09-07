@@ -81,7 +81,12 @@ _SLOT_NAME_ALIASES = {
     "advocates_check_list": "advocates_checklist",
     "advocate_checklist": "advocates_checklist",
     "aor_declaration": "aors_declaration",
+    "aors_certificate": "aors_declaration",
+    "aor_certificate": "aors_declaration",
     "office_report_limitation": "office_report_on_limitation",
+    "vakalatnama": "vakalatnama_appearance",
+    "memo_of_appearance": "vakalatnama_appearance",
+    "filing_memorandum": "filing_memo",
 }
 
 
