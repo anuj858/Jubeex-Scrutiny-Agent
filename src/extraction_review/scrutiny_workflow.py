@@ -1,4 +1,4 @@
-"""Registry defect scrutiny for an approved filing.
+"""Registry defect scrutiny for an extracted filing.
 
 Runs the enabled defects from the SCI catalogue against a document that has
 already been parsed, extracted and indexed. Evidence comes from the structured
@@ -8,10 +8,12 @@ record in Agent Data plus page chunks retrieved from Pinecone for that document.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Annotated, Any, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
@@ -61,6 +63,8 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
+from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .s3_artifacts import STEP_DEFECTS, upload_step_json
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,9 @@ DEFAULT_CONCURRENCY = 3
 class ScrutinyEvent(StartEvent):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
 
 
 class Status(Event):
@@ -93,6 +100,7 @@ class ScrutinyPartial(Event):
 class ScrutinyState(BaseModel):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
 
 
 def _int_env(name: str, default: int) -> int:
@@ -108,6 +116,25 @@ def scrutiny_enabled() -> bool:
         "0",
         "no",
     )
+
+
+SCRUTINY_ALLOWED_STATUSES = frozenset({"approved", "pending_review"})
+
+
+def assert_filing_ready_for_scrutiny(
+    review_status: object, file_name: object = None
+) -> None:
+    """Allow extract-complete filings. Block only rejected records."""
+    status = str(review_status or "").strip().lower()
+    label = str(file_name or "").strip() or "this document"
+    if status == "rejected":
+        raise ValueError(
+            f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
+        )
+    if status and status not in SCRUTINY_ALLOWED_STATUSES:
+        raise ValueError(
+            f"Scrutiny cannot run while {label} is '{review_status}'."
+        )
 
 
 async def _load_item(
@@ -133,8 +160,24 @@ async def _load_item(
             return item
 
     raise ValueError(
-        "Could not load the filing record. Provide a valid agent_data_id or file_hash."
+        "Could not load the filing record. Provide a valid agent_data_id, "
+        "file_hash, or file_url."
     )
+
+
+async def _sha256_from_url(file_url: str) -> str:
+    url = (file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+    _require_pdf_bytes(data, url)
+    return hashlib.sha256(data).hexdigest()
 
 
 def _sanitize_response(
@@ -315,7 +358,7 @@ async def collect_defect_findings(
 
 
 class ScrutinyWorkflow(Workflow):
-    """Check an approved filing against the SCI registry defect catalogue."""
+    """Check an extracted filing against the SCI registry defect catalogue."""
 
     @step()
     async def run_scrutiny(
@@ -336,6 +379,7 @@ class ScrutinyWorkflow(Workflow):
         async with ctx.store.edit_state() as state:
             state.agent_data_id = event.agent_data_id
             state.file_hash = event.file_hash
+            state.file_url = event.file_url
 
         item = await _load_item(
             llama_cloud_client,
@@ -347,15 +391,21 @@ class ScrutinyWorkflow(Workflow):
         review_status = payload.get("status")
         file_name = payload.get("file_name")
         file_hash = payload.get("file_hash") or event.file_hash
+        if not file_hash and event.file_url:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Computing file_hash from file_url",
+                )
+            )
+            file_hash = await _sha256_from_url(event.file_url)
+            async with ctx.store.edit_state() as state:
+                state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
         filing_type = metadata.get("classification") or record.get("petition_type")
 
-        if review_status != "approved":
-            raise ValueError(
-                f"Scrutiny only runs on approved filings; "
-                f"{file_name or 'this document'} is '{review_status}'."
-            )
+        assert_filing_ready_for_scrutiny(review_status, file_name)
 
         catalogue = get_catalogue()
         defects = defects_for_filing_type(filing_type)
@@ -480,10 +530,7 @@ class ScrutinyWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
-                        message=(
-                            f"{defect.check_id} failed; stopping remaining "
-                            f"checks so no more tokens are used. {e}"
-                        ),
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
                 return failed_finding(defect, str(e), usage=e.usage)
@@ -492,10 +539,7 @@ class ScrutinyWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
-                        message=(
-                            f"{defect.check_id} failed; stopping remaining "
-                            f"checks so no more tokens are used. {e}"
-                        ),
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
                 return failed_finding(defect, str(e))
@@ -515,9 +559,20 @@ class ScrutinyWorkflow(Workflow):
             defects,
             run_one,
             concurrency=concurrency,
+            stop_on_error=False,
             on_update=publish,
         )
         report = build_report(findings, stopped_early=stopped_early)
+        defects_payload = report.model_dump(mode="json")
+        if isinstance(defects_payload, dict):
+            defects_payload.setdefault("organization_id", event.organization_id)
+            defects_payload.setdefault("workspace_id", event.workspace_id)
+        upload_step_json(
+            STEP_DEFECTS,
+            defects_payload,
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
+        )
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:

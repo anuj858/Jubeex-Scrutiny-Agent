@@ -37,7 +37,12 @@ from extraction_review.extract_record import (
 )
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import ProcessFileWorkflow
-from extraction_review.process_split_files import ProcessSplitFilesWorkflow
+from extraction_review.process_split_files import (
+    ProcessSplitFilesWorkflow,
+    SplitFilesState,
+    SplitPartEvent,
+    extract_input_file_id,
+)
 from extraction_review.split_upload import (
     FieldSources,
     SplitPartInput,
@@ -179,6 +184,19 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
 def test_missing_required_petition_fails() -> None:
     with pytest.raises(SplitUploadError, match="Main Petition"):
         validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
+
+
+def test_compiled_slices_skip_missing_required_slots() -> None:
+    catalog, parts = validate_parts(
+        "SLP_CIVIL",
+        [
+            {"slot_id": "cover_page", "file_id": "file-cover"},
+            {"slot_id": "petition", "file_id": "file-petition"},
+        ],
+        require_all_slots=False,
+    )
+    assert catalog.filing_type == "SLP_CIVIL"
+    assert {item.slot_id for item in parts} == {"cover_page", "petition"}
 
 
 def test_unknown_filing_type_fails() -> None:
@@ -852,6 +870,18 @@ def test_process_split_files_does_not_classify() -> None:
     assert "classify_file" not in source
 
 
+def test_extract_input_falls_back_to_compiled_file() -> None:
+    state = SplitFilesState(
+        fallback_file_id="dfl-compiled-1",
+        parts=[
+            SplitPartEvent(slot_id="undefined", file_id="dfl-undef-1"),
+        ],
+    )
+    assert extract_input_file_id(state) == "dfl-compiled-1"
+    state.petition_file_id = "dfl-petition-1"
+    assert extract_input_file_id(state) == "dfl-petition-1"
+
+
 def test_process_file_prepare_does_not_extract() -> None:
     source = inspect.getsource(ProcessFileWorkflow)
     module = inspect.getsource(
@@ -865,6 +895,7 @@ def test_process_file_prepare_does_not_extract() -> None:
     assert "classify.create" in source
     assert "_split_page_parts" in source
     assert "slice_bundle_pdf" in source
+    assert "_extract_sliced_parts" in source
 
 
 def _blank_pdf(page_count: int) -> bytes:

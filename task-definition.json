@@ -1,0 +1,174 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:ap-south-1:893338224943:task-definition/jubeex-ai-api:1",
+    "containerDefinitions": [
+        {
+            "name": "jubeex-ai-api",
+            "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:fastapi-v1",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 8000,
+                    "hostPort": 8000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "VECTOR_BACKEND",
+                    "value": "pinecone"
+                },
+                {
+                    "name": "SCRUTINY_MAX_CHUNKS",
+                    "value": "12"
+                },
+                {
+                    "name": "PINECONE_CLOUD",
+                    "value": "aws"
+                },
+                {
+                    "name": "OPENROUTER_TIMEOUT_S",
+                    "value": "180"
+                },
+                {
+                    "name": "OPENROUTER_APP_TITLE",
+                    "value": "JubeeX Scrutiny"
+                },
+                {
+                    "name": "SCRUTINY_ENABLED",
+                    "value": "true"
+                },
+                {
+                    "name": "PINECONE_INDEX",
+                    "value": "legal-document-knowledge"
+                },
+                {
+                    "name": "SCRUTINY_DEFECTS",
+                    "value": "all"
+                },
+                {
+                    "name": "PINECONE_REGION",
+                    "value": "us-east-1"
+                },
+                {
+                    "name": "PINECONE_EMBED_MODEL",
+                    "value": "llama-text-embed-v2"
+                },
+                {
+                    "name": "PINECONE_NAMESPACE",
+                    "value": "jubeex-filings"
+                },
+                {
+                    "name": "SCRUTINY_TOP_K",
+                    "value": "8"
+                },
+                {
+                    "name": "OPENROUTER_MODEL",
+                    "value": "google/gemini-3.8-flash"
+                },
+                {
+                    "name": "OPENROUTER_BASE_URL",
+                    "value": "https://openrouter.ai/api/v1"
+                },
+                {
+                    "name": "SCRUTINY_CONCURRENCY",
+                    "value": "6"
+                },
+                {
+                    "name": "PINECONE_TEXT_FIELD",
+                    "value": "normalized_text"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "secrets": [
+                {
+                    "name": "LLAMA_CLOUD_API_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/llamaindex/api-key-jhcG3b:LLAMA_CLOUD_API_KEY::"
+                },
+                {
+                    "name": "OPENROUTER_API_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:OPENROUTER_API_KEY::"
+                },
+                {
+                    "name": "PINECONE_API_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:PINECONE_API_KEY::"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/jubeex-scrutiny-agent",
+                    "awslogs-region": "ap-south-1",
+                    "awslogs-stream-prefix": "ai-api"
+                }
+            },
+            "healthCheck": {
+                "command": [
+                    "CMD-SHELL",
+                    "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health')\" || exit 1"
+                ],
+                "interval": 30,
+                "timeout": 5,
+                "retries": 3,
+                "startPeriod": 30
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "jubeex-ai-api",
+    "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
+    "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
+    "networkMode": "awsvpc",
+    "revision": 1,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "ecs.capability.secrets.asm.environment-variables"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.container-health-check"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.29"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "MANAGED_INSTANCES",
+        "FARGATE"
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "512",
+    "memory": "1024",
+    "registeredAt": "2026-09-04T17:22:33.593000+05:30",
+    "registeredBy": "arn:aws:iam::893338224943:root"
+}

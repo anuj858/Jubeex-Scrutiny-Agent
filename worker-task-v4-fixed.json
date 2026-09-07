@@ -1,0 +1,134 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "jubeex-scrutiny-worker",
+      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-v3",
+      "cpu": 0,
+      "portMappings": [],
+      "essential": true,
+      "entryPoint": [
+        "uv",
+        "run",
+        "jubeex-sqs-worker"
+      ],
+      "environment": [
+        {
+          "name": "VECTOR_BACKEND",
+          "value": "pinecone"
+        },
+        {
+          "name": "SCRUTINY_MAX_CHUNKS",
+          "value": "12"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "ap-south-1"
+        },
+        {
+          "name": "JUBEEX_SQS_SCRUTINY_QUEUE_URL",
+          "value": "https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-scrutiny-jobs"
+        },
+        {
+          "name": "PINECONE_CLOUD",
+          "value": "aws"
+        },
+        {
+          "name": "OPENROUTER_TIMEOUT_S",
+          "value": "180"
+        },
+        {
+          "name": "JUBEEX_SQS_INGESTION_QUEUE_URL",
+          "value": "https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-ingestion-jobs"
+        },
+        {
+          "name": "OPENROUTER_APP_TITLE",
+          "value": "JubeeX Scrutiny"
+        },
+        {
+          "name": "SCRUTINY_ENABLED",
+          "value": "true"
+        },
+        {
+          "name": "PINECONE_INDEX",
+          "value": "legal-document-knowledge"
+        },
+        {
+          "name": "JUBEEX_SQS_ENABLED",
+          "value": "true"
+        },
+        {
+          "name": "SCRUTINY_DEFECTS",
+          "value": "all"
+        },
+        {
+          "name": "PINECONE_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "PINECONE_EMBED_MODEL",
+          "value": "llama-text-embed-v2"
+        },
+        {
+          "name": "PINECONE_NAMESPACE",
+          "value": "jubeex-filings"
+        },
+        {
+          "name": "SCRUTINY_TOP_K",
+          "value": "8"
+        },
+        {
+          "name": "OPENROUTER_MODEL",
+          "value": "google/gemini-3.8-flash"
+        },
+        {
+          "name": "OPENROUTER_BASE_URL",
+          "value": "https://openrouter.ai/api/v1"
+        },
+        {
+          "name": "SCRUTINY_CONCURRENCY",
+          "value": "6"
+        },
+        {
+          "name": "PINECONE_TEXT_FIELD",
+          "value": "normalized_text"
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "secrets": [
+        {
+          "name": "LLAMA_CLOUD_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/llamaindex/api-key-jhcG3b:LLAMA_CLOUD_API_KEY::"
+        },
+        {
+          "name": "OPENROUTER_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:OPENROUTER_API_KEY::"
+        },
+        {
+          "name": "PINECONE_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:PINECONE_API_KEY::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/jubeex-scrutiny-agent",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "sqs-worker"
+        }
+      },
+      "systemControls": []
+    }
+  ],
+  "family": "jubeex-scrutiny-worker",
+  "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
+  "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
+  "networkMode": "awsvpc",
+  "volumes": [],
+  "placementConstraints": [],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "1024",
+  "memory": "2048"
+}

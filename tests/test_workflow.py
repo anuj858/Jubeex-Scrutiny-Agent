@@ -19,6 +19,14 @@ async def test_process_file_workflow(
     fake: FakeLlamaCloudServer,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
+
+    async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        return "agd-compiled-1"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
     file_id = fake.files.preload(path="tests/files/test.pdf")
     try:
         result = await process_file_workflow.run(start_event=FileEvent(file_id=file_id))
@@ -27,6 +35,7 @@ async def test_process_file_workflow(
     assert result is not None
     assert isinstance(result, BundlePrepared)
     assert result.filing_type
+    assert result.agent_data_id == "agd-compiled-1"
 
 
 @pytest.mark.asyncio
@@ -41,6 +50,14 @@ async def test_classify_v2_assigns_filing_type(
     """process_file reports a concrete SEC filing type from classify v2."""
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
     file_id = fake.files.preload(path="tests/files/test.pdf")
+
+    async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        return "agd-compiled-1"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
 
     handler = process_file_workflow.run(start_event=FileEvent(file_id=file_id))
     classified_statuses: list[Status] = []
