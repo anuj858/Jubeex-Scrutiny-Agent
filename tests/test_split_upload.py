@@ -15,7 +15,26 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
-from extraction_review.document_parts import format_page_span, overlay_split_documents
+from extraction_review.document_parts import (
+    _split_categories,
+    format_page_span,
+    normalize_part_name,
+    overlay_split_documents,
+    parts_named_in_text,
+)
+from extraction_review.extract_record import (
+    apply_extract_envelope,
+    build_formatted_title,
+    clean_relief_sort,
+    confidence_percent_string,
+    format_side_title,
+    is_extra_party_caption_mismatch,
+    is_organization_name,
+    is_party_role_label_mismatch,
+    names_are_spelling_variants,
+    stamp_source_pages,
+    strip_party_role_label,
+)
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import ProcessFileWorkflow
 from extraction_review.process_split_files import (
@@ -25,9 +44,11 @@ from extraction_review.process_split_files import (
     extract_input_file_id,
 )
 from extraction_review.split_upload import (
+    FieldSources,
     SplitPartInput,
     SplitUploadError,
     build_extract_pack_markdown,
+    build_extract_system_prompt,
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
@@ -93,6 +114,12 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert civil_required["poa_br"] is False
     assert "poa_br" in civil_ids
     assert "poa_br" in criminal_ids
+    aor_slots = [
+        slot for slot in catalog["SLP_CIVIL"]["slots"] if slot["id"] == "aors_declaration"
+    ]
+    assert aor_slots
+    assert aor_slots[0]["label"] == "AOR's Certificate"
+    assert aor_slots[0]["parts"] == ["AOR's Certificate"]
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -155,7 +182,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
 
 
 def test_missing_required_petition_fails() -> None:
-    with pytest.raises(SplitUploadError, match="Petition"):
+    with pytest.raises(SplitUploadError, match="Main Petition"):
         validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
 
 
@@ -230,44 +257,140 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         1: "cover caption",
         2: "index listing",
         3: "listing columns",
-        4: "petition grounds",
+        4: "petition first page parties",
         5: "annexure p-1",
         6: "appendix text",
+        7: "petition grounds later page",
+        8: "memo of parties ram lal address",
+        9: "vakalatnama petitioner names for aor",
+        10: "petition prayer page one",
+        11: "petition prayer page two",
+        12: "petition prayer page three",
+        13: "affidavit deponent",
+        14: "office report limitation",
     }
     page_parts = {
         1: ["Cover Page"],
         2: ["Index"],
         3: ["Listing Proforma"],
-        4: ["Petition"],
+        4: ["Main Petition"],
         5: ["Annexures"],
         6: ["Appendix"],
+        7: ["Main Petition"],
+        8: ["Memo of Parties"],
+        9: ["Vakalatnama"],
+        10: ["Main Petition"],
+        11: ["Main Petition"],
+        12: ["Main Petition"],
+        13: ["Affidavit"],
+        14: ["Office Report on Limitation"],
     }
     pack = build_extract_pack_markdown(
-        page_markdown, page_parts, extract_source_parts(catalog)
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
     )
     assert "[Cover Page]" in pack
-    assert "[Listing Proforma]" in pack
-    assert "[Petition]" not in pack
-    assert "[Index]" not in pack
-    assert "petition grounds" not in pack
+    assert "[Main Petition]" in pack
+    assert "[Memo of Parties]" in pack
+    assert "[Affidavit]" in pack
+    assert "[Office Report on Limitation]" in pack
+    assert "affidavit deponent" in pack
+    assert "office report limitation" in pack
+    assert "petition first page parties" in pack
+    assert "petition prayer page one" in pack
+    assert "petition prayer page three" in pack
+    assert "memo of parties ram lal address" in pack
+    assert "Fill advocates_on_record" in pack
+    assert "Do not copy petitioner or respondent names" in pack
+    assert "Never copy party names or addresses from Vakalatnama or Cover Page" in pack
+    assert "and Anr." in pack
+    assert "petition grounds later page" not in pack
     assert "index listing" not in pack
+    assert "[Index]" not in pack
+    assert "[Listing Proforma]" not in pack
     assert "annexure p-1" not in pack
     assert "appendix text" not in pack
     assert "Annexures" not in pack
     assert "Appendix" not in pack
 
 
-def test_extract_source_parts_omit_index_and_petition() -> None:
+def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    court_verify = (
+        "Main Petition",
+        "Vakalatnama",
+        "Office Report on Limitation",
+        "Affidavit",
+        "Memo of Parties",
+    )
+    assert catalog.extract_field_sources["petitioners"] == FieldSources(
+        fill=("Memo of Parties", "Main Petition"),
+        verify=("Main Petition", "Cover Page"),
+    )
+    assert catalog.extract_field_sources["respondents"] == FieldSources(
+        fill=("Memo of Parties", "Main Petition"),
+        verify=("Main Petition", "Cover Page"),
+    )
+    assert catalog.extract_field_sources["court"] == FieldSources(
+        fill=("Cover Page",),
+        verify=court_verify,
+    )
+    assert catalog.extract_field_sources["petition_type"] == FieldSources(
+        fill=("Cover Page",),
+        verify=court_verify,
+    )
+    assert catalog.extract_field_sources["relief_sort"] == FieldSources(
+        fill=("Main Petition",),
+    )
+    assert "applications" not in catalog.extract_field_sources
+    assert "classification" not in catalog.extract_field_sources
+
+
+def test_extract_source_parts_include_petition_and_index() -> None:
     parts = extract_source_parts(type_catalog("SLP_CIVIL"))
     assert parts == {
         "Cover Page",
-        "Listing Proforma",
         "Memo of Parties",
+        "Main Petition",
         "Impugned Order",
         "Vakalatnama",
-        "AOR's Declaration",
+        "AOR's Certificate",
+        "Affidavit",
+        "Office Report on Limitation",
     }
     assert "Undefined" not in parts
+    assert "Index" not in parts
+    assert "Listing Proforma" not in parts
+    assert normalize_part_name("AOR's Declaration") == "AOR's Certificate"
+    assert normalize_part_name("AOR's Certificate") == "AOR's Certificate"
+    _split_categories.cache_clear()
+    cert = dict(_split_categories())["AOR's Certificate"]
+    assert "CERTIFICATE" in cert
+    assert "C E R T I F I C A T E" in cert
+    assert "cause title at the top" in cert
+    assert "CERTIFICATE is always printed" in cert
+    assert "Certified that" in cert
+    assert "CERTIFIED that" in cert
+    assert "confined only to the pleadings" in cert
+    assert "DRAWN & FILED BY" in cert
+    assert "Cause title without the word CERTIFICATE" in cert
+    petition = dict(_split_categories())["Main Petition"]
+    assert "CERTIFICATE" in petition
+    spaced = parts_named_in_text(
+        "IN THE MATTER OF: Kailash Negi versus Smt. Shalija Shah "
+        "C E R T I F I C A T E Certified that the Special Leave Petition is "
+        "confined only to the pleadings before the Hon'ble High Court whose "
+        "order is challenged"
+    )
+    plain = parts_named_in_text(
+        "IN THE MATTER OF: Col. Pawan Kumar versus K.D.R. Farms "
+        "CERTIFICATE CERTIFIED that the Special Leave Petition is confined "
+        "only to the pleadings before the Court/Tribunal whose order is challenged"
+    )
+    assert "AOR's Certificate" in spaced
+    assert "AOR's Certificate" in plain
 
 
 def test_inject_where_to_look_appends_field_guidance() -> None:
@@ -275,18 +398,36 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
         "properties": {
             "cause_title": {"description": "Cause title."},
             "court": {"description": "The court."},
+            "petitioners": {"description": "Array of petitioners."},
         }
     }
     updated = inject_where_to_look(
         schema,
-        {"cause_title": ["Memo of Parties", "Cover Page"]},
+        {
+            "cause_title": ["Memo of Parties", "Cover Page"],
+            "petitioners": ["Memo of Parties", "Main Petition"],
+        },
     )
     assert (
-        "Look only in Memo of Parties, Cover Page"
+        "Fill only from Memo of Parties, Cover Page"
         in updated["properties"]["cause_title"]["description"]
     )
+    petitioners = updated["properties"]["petitioners"]["description"]
+    assert "Prefer Memo of Parties" in petitioners
+    assert "first page of the Main Petition" in petitioners
+    assert "fill it from the other" in petitioners
+    assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Look only in" not in updated["properties"]["court"]["description"]
     assert schema["properties"]["cause_title"]["description"] == "Cause title."
+
+
+def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
+    prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
+    assert "petitioners: fill Memo of Parties, Main Petition; verify Main Petition, Cover Page" in prompt
+    assert "Copy printed text only" in prompt
+    assert "inconsistencies: one item per spelling" in prompt
+    assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
+    assert "Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -299,9 +440,346 @@ def test_overlay_uses_stitched_document_parts() -> None:
     payload = {"filing_summary": {}}
     overlay_split_documents(payload, page_parts)
     items = payload["filing_summary"]["documents"]["items"]
-    assert any(item.startswith("Petition") for item in items)
+    assert any(item.startswith("Main Petition") for item in items)
     assert any(item.startswith("Synopsis") for item in items)
     assert any("List of Dates & Events" in item for item in items)
+    names = [span["name"] for span in payload["documents"]]
+    assert "Main Petition" in names
+    assert payload["document_counts"]["processed"] == len(payload["documents"])
+
+
+def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
+    record = {
+        "court": "Supreme Court of India",
+        "petition_type": None,
+        "cause_title": {"title": "A v. B"},
+        "petitioners": [{"name": "A", "source_pages": "6, 7"}],
+    }
+    stamp_source_pages(record)
+    wrapped = apply_extract_envelope(
+        record,
+        page_parts={1: ["Cover Page"], 2: ["Main Petition"]},
+        filing_type="SLP_CIVIL",
+        overall_confidence=0.91,
+        generated_at="2026-09-04T12:00:00+05:30",
+    )
+    assert wrapped["schema_version"] == "extraction-v1"
+    assert wrapped["job_type"] == "compiled_petition"
+    assert wrapped["organization_id"] is None
+    assert wrapped["workspace_id"] is None
+    assert wrapped["user_id"] is None
+    assert wrapped["primary_document_id"] is None
+    assert wrapped["court"] == "Supreme Court of India"
+    assert wrapped["petition_type"] == "Special Leave Petition (Civil)"
+    assert wrapped["overall_confidence"] == "91%"
+    assert wrapped["generated_at"] == "2026-09-04T12:00:00+05:30"
+    assert wrapped["documents"] == [
+        {"name": "Cover Page", "start_page": 1, "end_page": 1},
+        {"name": "Main Petition", "start_page": 2, "end_page": 2},
+    ]
+    assert wrapped["petitioners"][0]["source_pages"] == [6, 7]
+    assert "classification" not in wrapped
+    assert "applications" not in wrapped
+
+
+def test_formatted_title_anr_and_ors() -> None:
+    assert build_formatted_title("Meera Krishnan", 1, "Union of India", 1) == (
+        "Meera Krishnan VS Union of India"
+    )
+    assert build_formatted_title("Meera Krishnan", 2, "Union of India", 2) == (
+        "Meera Krishnan and Anr. VS Union of India and Anr."
+    )
+    assert build_formatted_title("Meera Krishnan", 2, "Union of India", 4) == (
+        "Meera Krishnan and Anr. VS Union of India and Ors."
+    )
+    assert build_formatted_title(
+        "Kailash Negi Alias Anmol",
+        1,
+        "Smt. Shalija Shah And Anr",
+        2,
+    ) == "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    assert format_side_title("Smt. Shalija Shah And Anr ...Respondent(s)", 2) == (
+        "Smt. Shalija Shah and Anr."
+    )
+
+
+def test_relief_sort_drops_main_prayer_heading() -> None:
+    raw = (
+        "7. <u>**MAIN PRAYER**</u>:\n"
+        "\n"
+        "In the circumstances stated above, the Petitioners pray that this "
+        "Hon’ble Court may be pleased to:\n"
+        "\n"
+        "(i) Pass an order granting Special Leave to Appeal against judgement "
+        "dated 09.02.2026 passed by the Hon’ble High Court of Uttarakhand at "
+        "Nainital in MCRC No. 08/2026 in CLR No. 67/2022;"
+    )
+    cleaned = clean_relief_sort(raw)
+    assert cleaned is not None
+    assert "MAIN PRAYER" not in cleaned
+    assert "<u>" not in cleaned
+    assert cleaned.startswith("In the circumstances stated above")
+    wrapped = apply_extract_envelope({"relief_sort": raw})
+    assert wrapped["relief_sort"] == cleaned
+
+
+def test_envelope_strips_cover_anr_before_formatting() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "cause_title": {
+                "main_petitioner": "Kailash Negi Alias Anmol",
+                "main_respondent": "Smt. Shalija Shah And Anr",
+            },
+            "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+            "respondents": [
+                {"name": "Smt. Shalija Shah"},
+                {"name": "Another"},
+            ],
+        }
+    )
+    cause = wrapped["cause_title"]
+    assert cause["main_respondent"] == "Smt. Shalija Shah"
+    assert cause["formatted_title"] == (
+        "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    )
+
+
+def test_organization_name_prefixes_and_suffixes() -> None:
+    assert is_organization_name("Union of India")
+    assert is_organization_name("The State of Maharashtra")
+    assert is_organization_name("M/s Acme Traders")
+    assert is_organization_name("Acme Pvt. Ltd.")
+    assert is_organization_name("Helping Hands Foundation")
+    assert not is_organization_name("Meera Krishnan")
+
+
+def test_envelope_formats_title_kind_acting_through_and_confidence() -> None:
+    record = {
+        "court": {"name": "Supreme Court of India"},
+        "cause_title": {
+            "title": "Meera Krishnan v. Union of India",
+            "main_petitioner": "Meera Krishnan",
+            "main_respondent": "Union of India",
+            "confidence": 0.95,
+        },
+        "petitioners": [
+            {"name": "Meera Krishnan", "kind": "individual"},
+            {"name": "Ramesh"},
+        ],
+        "respondents": [
+            {
+                "name": "Union of India",
+                "kind": "individual",
+                "source_part": "Memo of Parties",
+                "source_pages": [8],
+            },
+            {"name": "Ajay"},
+            {"name": "State of Karnataka"},
+        ],
+        "inconsistencies": {
+            "items": [{"id": "1", "label": "Court spelling", "detail": "Cover vs petition"}],
+        },
+    }
+    wrapped = apply_extract_envelope(
+        record,
+        overall_confidence=0.65,
+        field_confidence={"petitioners": [0.9, 0.8]},
+    )
+    assert wrapped["court"] == "Supreme Court of India"
+    assert wrapped["cause_title"]["formatted_title"] == (
+        "Meera Krishnan and Anr. VS Union of India and Ors."
+    )
+    assert wrapped["cause_title"]["confidence"] == "95%"
+    assert wrapped["petitioners"][0]["kind"] == "INDIVIDUAL"
+    assert wrapped["petitioners"][0]["is_primary"] is True
+    assert wrapped["petitioners"][0]["confidence"] == "90%"
+    assert wrapped["respondents"][0]["kind"] == "ORGANIZATION"
+    assert wrapped["respondents"][0]["is_primary"] is True
+    missing = wrapped["inconsistencies"]["items"]
+    assert any(item.get("label") == "Missing acting through" for item in missing)
+    assert missing[0]["raw_text"] == "Cover vs petition"
+    assert wrapped["overall_confidence"] == "65%"
+    assert confidence_percent_string(0.91) == "91%"
+    assert confidence_percent_string("95%") == "95%"
+
+
+def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> None:
+    dotted = (
+        'Cover Page: "Smt. Shalija Shah And Anr ...Respondent(s)" vs '
+        'Main Petition/Affidavit/Vakalatnama: "Smt. Shalija Shah And Anr"'
+    )
+    plain = (
+        'Cover Page: "Smt. Shalija Shah And Anr Petitioner" vs '
+        'Main Petition: "Smt. Shalija Shah And Anr"'
+    )
+    assert strip_party_role_label("Smt. Shalija Shah And Anr ...Respondent(s)") == (
+        "Smt. Shalija Shah And Anr"
+    )
+    assert strip_party_role_label("Smt. Shalija Shah And Anr Petitioner") == (
+        "Smt. Shalija Shah And Anr"
+    )
+    assert is_party_role_label_mismatch(dotted)
+    assert is_party_role_label_mismatch(plain)
+    assert not is_party_role_label_mismatch(
+        'Cover Page: "Smt. Shalija Shah" vs Main Petition: "Smt. Shailja Shah"'
+    )
+    caps = (
+        'Petitioner spelling mismatch in impugned order: Main Petition/Cover Page: '
+        '"Kailash Negi Alias Anmol"; Impugned Order: "KAILASH NEGI ALIAS ANMOL"'
+    )
+    assert is_party_role_label_mismatch(caps)
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "cause title respondent capitalization",
+                        "raw_text": dotted,
+                    },
+                    {
+                        "id": "2",
+                        "label": "Petitioner spelling mismatch in impugned order",
+                        "raw_text": caps,
+                    },
+                    {
+                        "id": "3",
+                        "label": "Name spelling",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah" vs '
+                            'Main Petition: "Smt. Shailja Shah"'
+                        ),
+                    },
+                ],
+                "source_part": ["Cover Page", "Main Petition"],
+                "source_pages": [1, 27],
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == "1"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+    assert "AOR" not in items[0]["raw_text"]
+    assert "And Anr" not in items[0]["raw_text"]
+
+
+def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Main respondent spelling mismatch",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah And Anr ...Respondent(s)"; '
+                            'Main Petition: "Smt. Shailja Shah" / "1. Smt. Shailja Shah"'
+                        ),
+                    },
+                    {
+                        "id": "2",
+                        "label": "Respondent name spelling mismatch",
+                        "raw_text": (
+                            'Cover Page: "Smt. Shalija Shah"; '
+                            'Main Petition: "Smt. Shailja Shah"'
+                        ),
+                    },
+                ]
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == "1"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+
+
+def test_extra_respondent_is_not_cover_page_anr_spelling_error() -> None:
+    respondent_1 = (
+        'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+        '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Shailja Shah"'
+    )
+    respondent_2 = (
+        'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+        '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Bandana Shah"'
+    )
+    assert names_are_spelling_variants("Smt. Shalija Shah", "Smt. Shailja Shah")
+    assert not names_are_spelling_variants("Smt. Shalija Shah", "Smt. Bandana Shah")
+    assert not is_extra_party_caption_mismatch(respondent_1, "Respondent 1 spelling")
+    assert is_extra_party_caption_mismatch(respondent_2, "Respondent 2 spelling")
+    wrapped = apply_extract_envelope(
+        {
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Respondent 1 spelling",
+                        "raw_text": respondent_1,
+                    },
+                    {
+                        "id": "2",
+                        "label": "Respondent 2 spelling",
+                        "raw_text": respondent_2,
+                    },
+                ]
+            }
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["label"] == "Main respondent spelling"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+    assert "Bandana" not in items[0]["raw_text"]
+    assert "AOR" not in items[0]["raw_text"]
+    assert "And Anr" not in items[0]["raw_text"]
+
+
+def test_main_respondent_spelling_is_kept_even_if_extract_omits_it() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "cause_title": {
+                "main_petitioner": "Kailash Negi Alias Anmol",
+                "main_respondent": "Smt. Shalija Shah And Anr",
+            },
+            "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+            "respondents": [
+                {"name": "Smt. Shailja Shah"},
+                {"name": "Smt. Bandana Shah"},
+            ],
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Respondent 2 spelling",
+                        "raw_text": (
+                            'Cover Page / AOR\'s Declaration / Affidavit / Vakalatnama: '
+                            '"Smt. Shalija Shah And Anr"; Main Petition: "Smt. Bandana Shah"'
+                        ),
+                    }
+                ]
+            },
+        }
+    )
+    items = wrapped["inconsistencies"]["items"]
+    assert len(items) == 1
+    assert items[0]["label"] == "Main respondent spelling"
+    assert items[0]["raw_text"] == (
+        'Cover Page: "Smt. Shalija Shah"; '
+        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+    )
+    assert "Bandana" not in items[0]["raw_text"]
+    assert wrapped["respondents"][0]["is_primary"] is True
+    assert wrapped["respondents"][1]["is_primary"] is False
 
 
 def test_bundle_hash_is_stable() -> None:
@@ -333,7 +811,7 @@ def test_empty_parse_still_stamps_document_part() -> None:
     }
     page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
     petition_pages = [
-        page for page, names in page_parts.items() if names == ["Petition"]
+        page for page, names in page_parts.items() if names == ["Main Petition"]
     ]
     assert len(petition_pages) == 1
     assert "No parse text" in page_markdown[petition_pages[0]]
@@ -345,9 +823,10 @@ def test_empty_parse_still_stamps_document_part() -> None:
 
 def test_page_maps_survive_string_keys() -> None:
     markdown = coerce_page_markdown({"1": "cover", "2": "petition body"})
-    parts = coerce_page_parts({"1": "Cover Page", "2": ["Petition"]})
+    parts = coerce_page_parts({"1": "Cover Page", "2": ["Main Petition"]})
     assert markdown == {1: "cover", 2: "petition body"}
-    assert parts == {1: ["Cover Page"], 2: ["Petition"]}
+    assert parts == {1: ["Cover Page"], 2: ["Main Petition"]}
+    assert coerce_page_parts({"3": "Petition"}) == {3: ["Main Petition"]}
     records = build_page_records(
         base_id="bundle",
         page_markdown=markdown,
@@ -355,7 +834,7 @@ def test_page_maps_survive_string_keys() -> None:
     )
     by_page = {r["metadata"]["page_start"]: r["metadata"] for r in records}
     assert by_page[1]["document_part"] == "Cover Page"
-    assert by_page[2]["document_part"] == "Petition"
+    assert by_page[2]["document_part"] == "Main Petition"
 
 
 @pytest.mark.asyncio
@@ -515,7 +994,7 @@ def test_no_undefined_slice_when_every_page_has_a_slot() -> None:
     slices = slice_bundle_pdf(
         _blank_pdf(2),
         catalog,
-        {1: ["Cover Page"], 2: ["Petition"]},
+        {1: ["Cover Page"], 2: ["Main Petition"]},
     )
     by_id = {item.slot_id: item for item in slices}
     assert "undefined" not in by_id
@@ -555,7 +1034,7 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
             1: ["Advocate's Checklist"],
             2: ["Cover Page"],
             3: ["Record of Proceedings"],
-            4: ["AOR's Declaration"],
+            4: ["AOR's Certificate"],
             5: ["Index"],
             6: ["Office Report on Limitation"],
         },

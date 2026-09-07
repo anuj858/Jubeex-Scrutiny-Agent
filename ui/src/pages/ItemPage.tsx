@@ -27,6 +27,19 @@ type MissingField = {
   label: string;
 };
 
+function formatOverallConfidence(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return undefined;
+    return text.endsWith("%") ? text : `${text}%`;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const pct = value <= 1 ? Math.round(value * 100) : Math.round(value);
+    return `${pct}%`;
+  }
+  return undefined;
+}
+
 /**
  * Walk the JSON schema and the extracted data together.
  * For every field listed in a "required" array, check if the value
@@ -222,6 +235,22 @@ export default function ItemPage() {
 
   const extractedData = itemData.data as ExtractedData<any>;
   const fileId = extractedData.file_id;
+  const extractedRecord = (extractedData?.data ?? extractedData) as
+    | Record<string, any>
+    | undefined;
+  const overallConfidence = formatOverallConfidence(
+    extractedRecord?.overall_confidence,
+  );
+  const inconsistencyItems = Array.isArray(
+    extractedRecord?.inconsistencies?.items,
+  )
+    ? (extractedRecord.inconsistencies.items as Array<{
+        id?: string;
+        label?: string;
+        detail?: string;
+        raw_text?: string;
+      }>)
+    : [];
 
   return (
     <div className="flex h-full bg-gray-50">
@@ -250,6 +279,41 @@ export default function ItemPage() {
                   {classificationReasoning}
                 </div>
               )}
+            </div>
+          )}
+
+          {overallConfidence && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 mb-4">
+              <div className="text-sm font-semibold text-slate-800">
+                Overall confidence: {overallConfidence}
+              </div>
+            </div>
+          )}
+
+          {inconsistencyItems.length > 0 && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="h-4 w-4 text-amber-700 shrink-0" />
+                <span className="text-sm font-semibold text-amber-900">
+                  {inconsistencyItems.length} spelling / source mismatch
+                  {inconsistencyItems.length === 1 ? "" : "es"}
+                </span>
+              </div>
+              <ul className="space-y-1.5">
+                {inconsistencyItems.map((item, index) => (
+                  <li
+                    key={item.id || `${item.label || "mismatch"}-${index}`}
+                    className="text-xs text-amber-900"
+                  >
+                    <span className="font-medium">
+                      {item.label || "Mismatch"}
+                    </span>
+                    {(item.raw_text || item.detail)
+                      ? `: ${item.raw_text || item.detail}`
+                      : null}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 

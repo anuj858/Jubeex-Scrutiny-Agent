@@ -58,14 +58,14 @@ def test_page_parts_from_split_maps_pages() -> None:
         result=SimpleNamespace(
             segments=[
                 SimpleNamespace(category="Listing Proforma", pages=[3, 4]),
-                SimpleNamespace(category="Petition", pages=[10]),
+                SimpleNamespace(category="Main Petition", pages=[10]),
             ]
         )
     )
     assert page_parts_from_split(job) == {
         3: ["Listing Proforma"],
         4: ["Listing Proforma"],
-        10: ["Petition"],
+        10: ["Main Petition"],
     }
 
 
@@ -78,7 +78,7 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
                 SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
                 SimpleNamespace(category="Office Report on Limitation", pages=[8, 58]),
                 SimpleNamespace(category="Listing Proforma", pages=[9, 10, 59, 60]),
-                SimpleNamespace(category="Petition", pages=[17, 25, 26, 35]),
+                SimpleNamespace(category="Main Petition", pages=[17, 25, 26, 35]),
                 SimpleNamespace(category="Record of Proceedings", pages=[4, 20, 21, 23, 54]),
             ]
         )
@@ -89,8 +89,8 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     assert all("55" not in item for item in docs["items"])
     assert mapping[1] == ["Advocate's Checklist"]
     assert 51 not in mapping
-    assert mapping[17] == ["Petition"]
-    assert mapping[25] == ["Petition"]
+    assert mapping[17] == ["Main Petition"]
+    assert mapping[25] == ["Main Petition"]
     assert mapping[4] == ["Record of Proceedings"]
     assert 54 not in mapping
     assert mapping[20] == ["Record of Proceedings"]
@@ -101,12 +101,12 @@ def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
         result=SimpleNamespace(
             segments=[
                 SimpleNamespace(category="Index", pages=[5, 6, 7, 55, 56, 57]),
-                SimpleNamespace(category="Petition", pages=[10]),
+                SimpleNamespace(category="Main Petition", pages=[10]),
             ]
         )
     )
     mapping = page_parts_from_split(job)
-    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Petition"]}
+    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Main Petition"]}
 
 
 def test_one_page_can_carry_two_document_parts() -> None:
@@ -165,7 +165,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     completed = SimpleNamespace(
         status="COMPLETED",
         result=SimpleNamespace(
-            segments=[SimpleNamespace(category="Petition", pages=[1])]
+            segments=[SimpleNamespace(category="Main Petition", pages=[1])]
         ),
     )
     split_api = SimpleNamespace(
@@ -174,8 +174,8 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     )
     split_config = SimpleNamespace(
         configuration_id=None,
-        categories=[SimpleNamespace(name="Petition")],
-        model_dump=lambda **_kwargs: {"categories": [{"name": "Petition"}]},
+        categories=[SimpleNamespace(name="Main Petition")],
+        model_dump=lambda **_kwargs: {"categories": [{"name": "Main Petition"}]},
     )
     mapping = await _split_page_parts(
         SimpleNamespace(split=split_api),
@@ -186,7 +186,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
     split_api.create.assert_awaited_once()
     kwargs = split_api.create.await_args.kwargs
     assert kwargs["file_input"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    assert mapping == {1: ["Petition"]}
+    assert mapping == {1: ["Main Petition"]}
 
 
 def test_build_page_records_stamps_document_part() -> None:
@@ -219,7 +219,7 @@ def test_page_records_borrow_same_part_neighbours_only() -> None:
             2: "Cover Page",
             3: "Listing Proforma",
             4: "Listing Proforma",
-            5: "Petition",
+            5: "Main Petition",
         },
     )
     by_page = {r["metadata"]["page_start"]: r for r in records}
@@ -264,20 +264,22 @@ def test_unlabelled_pages_do_not_borrow_neighbours() -> None:
 def test_slice_record_drops_unrelated_blocks() -> None:
     catalogue = get_catalogue()
     record = {
-        "court": "Supreme Court of India",
-        "petition_type": "SLP_CIVIL",
-        "advocate_on_record": {"name": "A", "registration_number": "1234"},
-        "matter_classification": {"main_category": "Service"},
-        "petitioners": [{"full_name": "X"}],
-        "impugned_order": {"case_number": "1"},
+        "court": {"name": "Supreme Court of India"},
+        "petition_type": {"name": "Special Leave Petition (Civil)"},
+        "cause_title": {"title": "X v. Y"},
+        "advocates_on_record": [{"name": "A", "registration_number": "1234"}],
+        "classification": {"main_category_name": "Service"},
+        "petitioners": [{"name": "X"}],
+        "impugned_orders": [{"case_number": "1"}],
     }
     listing = slice_record_for_defect(record, catalogue.defect("D004"))
     aor = slice_record_for_defect(record, catalogue.defect("D005"))
-    assert listing is not None and "matter_classification" in listing
-    assert "advocate_on_record" not in listing
+    assert listing is not None and "cause_title" in listing
+    assert "classification" not in listing
+    assert "advocates_on_record" not in listing
     assert "petitioners" not in listing
-    assert aor is not None and "advocate_on_record" in aor
-    assert "matter_classification" not in aor
+    assert aor is not None and "advocates_on_record" in aor
+    assert "classification" not in aor
     assert "petitioners" not in aor
 
 
@@ -295,7 +297,7 @@ def test_select_chunks_prefers_labelled_part() -> None:
             "record_id": "p10",
             "chunk_kind": "page",
             "page": 10,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "GROUNDS FOR INTERIM RELIEF",
             "score": 0.99,
         },
@@ -355,7 +357,7 @@ def test_select_chunks_keeps_vakalatnama_for_date_check() -> None:
             "record_id": "pet",
             "chunk_kind": "page",
             "page": 16,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "Place: New Delhi Dated 10.04.2026 below the prayer",
             "score": 0.4,
         },
@@ -441,14 +443,14 @@ def test_pinecone_queries_follow_where_to_look() -> None:
     catalogue = get_catalogue()
     d013 = pinecone_queries_for_defect(catalogue.defect("D013"))
     assert any("Vakalatnama" in q for q in d013)
-    assert any("Petition" in q or "petition" in q.lower() for q in d013)
+    assert any("Main Petition" in q or "petition" in q.lower() for q in d013)
     d047 = pinecone_queries_for_defect(catalogue.defect("D047"))
     assert any("Memo of Appearance" in q for q in d047)
     d017 = pinecone_queries_for_defect(catalogue.defect("D017"))
     assert any("Office Report on Limitation" in q for q in d017)
     named = parts_named_in_where_to_look(catalogue.defect("D013"))
     assert "Vakalatnama" in named
-    assert named[0] in {"Petition", "Vakalatnama"}
+    assert named[0] in {"Main Petition", "Vakalatnama"}
     assert "Memo of Parties" not in named
 
 
@@ -526,10 +528,10 @@ def test_user_prompt_carries_category_and_sliced_record() -> None:
     defect = catalogue.defect("D005")
     record = slice_record_for_defect(
         {
-            "court": "SCI",
-            "petition_type": "SLP_CIVIL",
-            "advocate_on_record": {"registration_number": "1234"},
-            "petitioners": [{"full_name": "Should not appear"}],
+            "court": {"name": "SCI"},
+            "petition_type": {"name": "Special Leave Petition (Civil)"},
+            "advocates_on_record": [{"registration_number": "1234"}],
+            "petitioners": [{"name": "Should not appear"}],
         },
         defect,
     )
@@ -704,7 +706,7 @@ def test_invented_evidence_page_becomes_null() -> None:
     assert grounded.evidence[0].quote == "something that was never retrieved"
 
 
-def test_missing_stamp_is_defect_not_undetermined() -> None:
+def test_missing_visual_mark_is_defect_not_undetermined() -> None:
     catalogue = get_catalogue()
     vakalatnama = [
         {
@@ -716,16 +718,16 @@ def test_missing_stamp_is_defect_not_undetermined() -> None:
         }
     ]
     timid = DefectResponse(
-        check_id="D040",
+        check_id="D038",
         status="not_determined",
         confidence=0.4,
-        summary="Cannot see whether a welfare stamp is affixed.",
-        reasoning="Stamps are visual.",
+        summary="Cannot see whether the Vakalatnama is executed.",
+        reasoning="Signatures are visual.",
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
     )
-    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, vakalatnama)
+    gated = apply_undetermined_policy(catalogue.defect("D038"), timid, vakalatnama)
     assert gated.status == "defect_found"
 
 
@@ -736,28 +738,28 @@ def test_undetermined_without_the_part_stays_needs_review() -> None:
             "record_id": "p1",
             "chunk_kind": "page",
             "page": 10,
-            "document_part": "Petition",
+            "document_part": "Main Petition",
             "text": "SPECIAL LEAVE PETITION",
         }
     ]
     timid = DefectResponse(
-        check_id="D040",
+        check_id="D038",
         status="not_determined",
         confidence=0.5,
         summary="No Vakalatnama excerpts.",
-        reasoning="Cannot see a stamp.",
+        reasoning="Cannot see a signature.",
         evidence=[],
         suggested_fix=None,
         fix_rationale=None,
     )
-    gated = apply_undetermined_policy(catalogue.defect("D040"), timid, petition_only)
+    gated = apply_undetermined_policy(catalogue.defect("D038"), timid, petition_only)
     assert gated.status == "needs_review"
 
 
-def test_visual_defects_query_stamp_and_margin_cues() -> None:
+def test_visual_defects_query_seal_and_margin_cues() -> None:
     catalogue = get_catalogue()
-    stamp_queries = pinecone_queries_for_defect(catalogue.defect("D040"))
-    assert any("stamp" in q.lower() for q in stamp_queries)
+    seal_queries = pinecone_queries_for_defect(catalogue.defect("D021"))
+    assert any("seal" in q.lower() for q in seal_queries)
     margin_queries = pinecone_queries_for_defect(catalogue.defect("D006"))
     assert any("margin" in q.lower() or "a4" in q.lower() for q in margin_queries)
 
@@ -773,7 +775,7 @@ def test_visual_prompt_treats_missing_marks_as_defects() -> None:
             {
                 "chunk_kind": "page",
                 "page": 12,
-                "document_part": "Petition",
+                "document_part": "Main Petition",
                 "text": "1. The petitioner states",
             }
         ],
@@ -825,7 +827,7 @@ def test_filing_location_states_page_or_page_missing() -> None:
 
 def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
     catalogue = get_catalogue()
-    defect = catalogue.defect("D040")
+    defect = catalogue.defect("D038")
     rewritten = validated_reasoning(
         defect,
         "Stamps are visual. See SCI_CHECKLIST_2025 Page 5 of the PDF.",
@@ -834,7 +836,7 @@ def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
         evidence_pages=[50],
     )
     assert "SCI_CHECKLIST" not in rewritten
-    assert "welfare stamp" in rewritten.lower() or "vakalatnama" in rewritten.lower()
+    assert "vakalatnama" in rewritten.lower() or "executed" in rewritten.lower()
     assert "filing page 50" in rewritten.lower()
 
 
@@ -901,15 +903,33 @@ def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     catalogue = get_catalogue()
     assert required_parts_for_defect(catalogue.defect("D021")) == ["Affidavit"]
     d057 = required_parts_for_defect(catalogue.defect("D057"))
-    assert "AOR's Declaration" in d057
+    assert "AOR's Certificate" in d057
     assert "Advocate's Checklist" in d057
     assert "Listing Proforma" in d057
     assert "Vakalatnama" not in d057
     assert "PoA/BR" not in d057
     assert "Annexures" not in d057
     named = parts_named_in_where_to_look(catalogue.defect("D057"))
-    assert "AOR's Declaration" in named
+    assert "AOR's Certificate" in named
     assert "Impugned Order" in parts_named_in_where_to_look(catalogue.defect("D059"))
+
+
+def test_serial_96_is_split_into_three_date_checks() -> None:
+    get_catalogue.cache_clear()
+    catalogue = get_catalogue()
+    drafting = catalogue.defect("D010")
+    affidavit = catalogue.defect("D077")
+    vakalatnama = catalogue.defect("D078")
+    assert drafting.serial_no == "96A"
+    assert affidavit.serial_no == "96B"
+    assert vakalatnama.serial_no == "96C"
+    assert drafting.inspect_parts == ["Main Petition"]
+    assert affidavit.inspect_parts == ["Main Petition", "Affidavit"]
+    assert vakalatnama.inspect_parts == ["Main Petition", "Vakalatnama"]
+    exhibits = catalogue.defect("D025")
+    assert exhibits.serial_no == 92
+    assert exhibits.applicable_rule == "Order IX, Rule 9"
+    assert "SCI_RULES_2013" in exhibits.location_source
 
 
 def test_catalogue_inspect_parts_are_source_of_truth() -> None:
@@ -917,10 +937,10 @@ def test_catalogue_inspect_parts_are_source_of_truth() -> None:
     catalogue = get_catalogue()
     d021 = catalogue.defect("D021")
     assert d021.inspect_parts == ["Affidavit"]
-    assert d021.context_parts == ["Petition"]
+    assert d021.context_parts == ["Main Petition"]
     assert d021.exclude_parts == ["Index"]
     assert required_parts_for_defect(d021) == ["Affidavit"]
-    assert parts_named_in_where_to_look(d021) == ["Affidavit", "Petition"]
+    assert parts_named_in_where_to_look(d021) == ["Affidavit", "Main Petition"]
 
     d073 = catalogue.defect("D073")
     assert d073.inspect_parts == ["List of Dates & Events"]

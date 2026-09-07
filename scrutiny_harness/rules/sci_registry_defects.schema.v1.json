@@ -139,9 +139,17 @@
           "description": "Internal check id, e.g. D001. API serial_no is the registry S.No."
         },
         "serial_no": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "S.No. from the defect API / registry list"
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+[A-Z]$"
+            }
+          ],
+          "description": "S.No. from the defect API / registry list. Letter suffixes (96A) are slices of one sheet row."
         },
         "main_category": {
           "type": "string",

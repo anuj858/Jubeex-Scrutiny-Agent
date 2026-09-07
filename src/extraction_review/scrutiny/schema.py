@@ -49,7 +49,7 @@ class EvidenceRef(BaseModel):
     page: int | None = Field(
         description=(
             "1-indexed PDF page of THIS filing, copied from the excerpt "
-            "header such as '[Page 12 — Petition]'. Null if the quote is "
+            "header such as '[Page 12 — Main Petition]'. Null if the quote is "
             "not from an excerpt. Never use a page number from Authority "
             "or location_source (those are official-rulebook locators)."
         )
@@ -147,7 +147,7 @@ class UsageByCheck(BaseModel):
     """One row in the cost breakdown, sorted highest charge first."""
 
     check_id: str
-    serial_no: int
+    serial_no: int | str
     cost_usd: float | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -168,7 +168,7 @@ class UsageSummary(BaseModel):
     llm_calls: int = 0
     model: str | None = None
     highest_cost_check_id: str | None = None
-    highest_cost_serial_no: int | None = None
+    highest_cost_serial_no: int | str | None = None
     highest_cost_usd: float | None = None
     by_check: list[UsageByCheck] = Field(default_factory=list)
     note: str = (
@@ -182,7 +182,7 @@ class DefectFinding(BaseModel):
     """Server-assembled finding for one catalogue defect."""
 
     check_id: str
-    serial_no: int
+    serial_no: int | str
     title: str
     main_category: str
     special_category: str | None = None
@@ -198,8 +198,9 @@ class DefectFinding(BaseModel):
     location: str | None = Field(
         default=None,
         description=(
-            "Petition PDF page for this finding, e.g. 'Filing page 12 — "
-            "Vakalatnama.' If the page is unknown: 'Filing page missing — …'."
+            "Petition/Matter PDF page for this finding (the full filing), "
+            "e.g. 'Filing page 12 — Vakalatnama.' If the page is unknown: "
+            "'Filing page missing — …'."
         ),
     )
     location_source: str | None = None

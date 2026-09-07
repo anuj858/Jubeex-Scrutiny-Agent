@@ -85,12 +85,12 @@ the filing itself must contain or attach. Follow the cure aims. Never mention \
 Jubeex, auto-generation, uploads, or user-interface options. Otherwise set \
 suggested_fix and fix_rationale to null.
 8. evidence.page is the 1-indexed PDF page of THIS filing, copied from the \
-excerpt header (“[Page 12 — Petition]” → 12). Never copy a page number \
+excerpt header (“[Page 12 — Main Petition]” → 12). Never copy a page number \
 from Authority or location_source — those are official-rulebook locators, \
 not pages of this filing. If the quote is not in an excerpt, set page to null.
 9. Do not quote Index / paper-book listing lines (for example “SLP with \
 Affidavit 1+3”) as proof that a document was filed, sworn, or signed. \
-Quote the document part itself (Affidavit, Petition, Declaration, …). \
+Quote the document part itself (Affidavit, Main Petition, Declaration, …). \
 If that part is not in the excerpts, return needs_review.
 
 Respond with JSON matching the required schema. No prose outside the JSON."""
@@ -808,7 +808,7 @@ def build_defect_prompt(
                 "location_source, SCI_CHECKLIST, handbook PDF pages, or "
                 "check_id. Each evidence item is {page, quote}. page MUST "
                 "be the integer from the excerpt header (“[Page 12 — "
-                "Petition]” → 12; for “Pages 12–13” use 12). Never use a "
+                "Main Petition]” → 12; for “Pages 12–13” use 12). Never use a "
                 "page from Authority / the rulebook locator. Quote the "
                 "document part this task inspects — not an Index listing "
                 "line that merely names that document. If the quote is "

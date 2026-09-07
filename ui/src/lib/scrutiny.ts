@@ -44,7 +44,7 @@ export interface LlmUsage {
 
 export interface UsageByCheck {
   check_id: string;
-  serial_no: number;
+  serial_no: number | string;
   cost_usd?: number | null;
   prompt_tokens: number;
   completion_tokens: number;
@@ -63,7 +63,7 @@ export interface UsageSummary {
   llm_calls: number;
   model?: string | null;
   highest_cost_check_id?: string | null;
-  highest_cost_serial_no?: number | null;
+  highest_cost_serial_no?: number | string | null;
   highest_cost_usd?: number | null;
   by_check?: UsageByCheck[];
   note?: string;
@@ -78,7 +78,7 @@ export interface Coverage {
 
 export interface DefectFinding {
   check_id: string;
-  serial_no?: number;
+  serial_no?: number | string;
   title: string;
   main_category?: string;
   special_category?: string | null;
@@ -161,14 +161,25 @@ const RESULT_ORDER: ResultState[] = [
   "not_applicable",
 ];
 
+export function serialSortKey(serial: number | string | null | undefined): [number, string] {
+  const text = String(serial ?? "").trim().toUpperCase();
+  const match = text.match(/^(\d+)([A-Z]*)$/);
+  if (!match) {
+    return [Number.MAX_SAFE_INTEGER, text];
+  }
+  return [Number(match[1]), match[2]];
+}
+
 export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
   return [...findings].sort((a, b) => {
     const byStatus =
       RESULT_ORDER.indexOf(a.status) - RESULT_ORDER.indexOf(b.status);
-    return byStatus !== 0
-      ? byStatus
-      : (a.serial_no ?? Number.MAX_SAFE_INTEGER) -
-          (b.serial_no ?? Number.MAX_SAFE_INTEGER);
+    if (byStatus !== 0) {
+      return byStatus;
+    }
+    const [aNum, aSuf] = serialSortKey(a.serial_no);
+    const [bNum, bSuf] = serialSortKey(b.serial_no);
+    return aNum !== bNum ? aNum - bNum : aSuf.localeCompare(bSuf);
   });
 }
 

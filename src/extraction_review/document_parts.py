@@ -28,9 +28,11 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
     "QUESTIONS OF LAW GROUNDS MAIN PRAYER INTERIM RELIEF",
     "Listing Proforma Proforma for First Listing",
     "Advocate's Check List Advocate-on-Record certificate",
+    "CERTIFICATE confined only to the pleadings",
+    "cause title CERTIFICATE CERTIFIED confined only to the pleadings",
     "DECLARATION IN TERMS OF RULE 3(2) Affidavit",
     "Cover Page Index Office Report on Limitation",
-    "Vakalatnama AOR Declaration Memo of Parties",
+    "Vakalatnama AOR Certificate Memo of Parties",
 )
 
 PINECONE_QUERY_MAX_CHARS = 110
@@ -38,29 +40,39 @@ PINECONE_QUERY_MAX_CHARS = 110
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
 
+# Split label for the Form 28 body only. Slot id stays `petition`.
+# "Petition" / "Matter" in product language means the full filing PDF.
+MAIN_PETITION_PART = "Main Petition"
+_LEGACY_PART_NAMES = {
+    "petition": MAIN_PETITION_PART,
+    "aor's declaration": "AOR's Certificate",
+    "aors declaration": "AOR's Certificate",
+    "aor declaration": "AOR's Certificate",
+}
+
 CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": ("Petition", "Affidavit"),
+    "filing_formalities": (MAIN_PETITION_PART, "Affidavit"),
     "advocate_checklist": ("Advocate's Checklist", "Vakalatnama"),
     "listing_proforma": ("Listing Proforma",),
     "petition_presentation": (
-        "Petition",
-        "AOR's Declaration",
+        MAIN_PETITION_PART,
+        "AOR's Certificate",
         "Listing Proforma",
         "Advocate's Checklist",
     ),
-    "applications": ("Petition", "Annexures", "Index"),
+    "applications": (MAIN_PETITION_PART, "Annexures", "Index"),
     "annexures": ("Annexures", "Index", "List of Dates & Events"),
-    "parties": ("Memo of Parties", "Cover Page", "Petition"),
+    "parties": ("Memo of Parties", "Cover Page", MAIN_PETITION_PART),
     "dates_execution": (
-        "Petition",
+        MAIN_PETITION_PART,
         "Affidavit",
         "Vakalatnama",
         "PoA/BR",
     ),
     "index_paper_book": ("Index",),
-    "limitation": ("Office Report on Limitation", "Petition"),
-    # Affidavit is the inspect target; Petition is only retrieval context.
-    "affidavit": ("Affidavit", "Petition"),
+    "limitation": ("Office Report on Limitation", MAIN_PETITION_PART),
+    # Affidavit is the inspect target; Main Petition is only retrieval context.
+    "affidavit": ("Affidavit", MAIN_PETITION_PART),
     "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
     "vakalatnama": ("Vakalatnama", "PoA/BR"),
     "memo_of_appearance": ("Memo of Appearance",),
@@ -69,22 +81,32 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
 
 # Extra catalogue phrases → Split labels (beyond the config name/description).
 _PART_ALIASES: dict[str, tuple[str, ...]] = {
-    # Prefer "check the declaration" so "below the declaration" on the
-    # checklist form does not pull AOR's Declaration into other checks.
-    "AOR's Declaration": (
-        "check the declaration",
-        "declaration in terms of rule",
-        "advocate-on-record declaration",
-        "advocate on record declaration",
+    # Do not alias bare "declaration" / "check the declaration": those words
+    # on the Advocate's Check List are not this page.
+    "AOR's Certificate": (
+        "advocate's certificate",
+        "advocate-on-record certificate",
+        "advocate on record certificate",
+        "aor's certificate",
+        "certificate after the main prayer",
+        "certificate after main prayer",
+        "certified that the special leave petition is confined",
+        "certified that the special leave petition is confined only",
+        "confined only to the pleadings",
+        "court/tribunal whose order is challenged",
+        "this certificate is given on the basis of the instructions",
+        "c e r t i f i c a t e",
+        "aor's declaration",
+        "aors declaration",
     ),
     "Impugned Order": (
         "impugned judgment",
         "impugned order",
         "judgment under challenge",
     ),
-    "PoA/BR": (
-        "power of attorney",
-        "board resolution",
+    "Main Petition": (
+        "form 28",
+        "special leave petition body",
     ),
 }
 
@@ -98,22 +120,20 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
     "filing_formalities": (
         "court",
         "petition_type",
-        "special_category",
         "cause_title",
-        "impugned_order",
+        "impugned_orders",
+        "relief_sort",
         "filing_summary",
     ),
     "advocate_checklist": (
         "court",
         "petition_type",
-        "advocate_on_record",
+        "advocates_on_record",
     ),
     "listing_proforma": (
         "court",
         "petition_type",
-        "special_category",
         "cause_title",
-        "matter_classification",
     ),
     "petition_presentation": (
         "court",
@@ -126,19 +146,19 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "court",
         "petition_type",
         "cause_title",
-        "impugned_order",
+        "impugned_orders",
     ),
     "dates_execution": ("court", "petition_type", "filing_summary"),
     "index_paper_book": ("court", "petition_type", "filing_summary"),
-    "limitation": ("court", "petition_type", "impugned_order", "filing_summary"),
+    "limitation": ("court", "petition_type", "impugned_orders", "filing_summary"),
     "affidavit": ("court", "petition_type"),
     "translations": ("court", "petition_type", "filing_summary"),
-    "vakalatnama": ("court", "petition_type", "advocate_on_record", "filing_summary"),
-    "memo_of_appearance": ("court", "petition_type", "advocate_on_record"),
+    "vakalatnama": ("court", "petition_type", "advocates_on_record", "filing_summary"),
+    "memo_of_appearance": ("court", "petition_type", "advocates_on_record"),
     "list_of_dates": ("court", "petition_type", "filing_summary"),
 }
 
-ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type", "special_category")
+ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
 # do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
@@ -241,6 +261,8 @@ def normalize_part_name(name: str | None) -> str:
         return ""
     text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
     folded = _fold(text)
+    if folded in _LEGACY_PART_NAMES:
+        return _LEGACY_PART_NAMES[folded]
     for canonical, _description in _split_categories():
         if folded == _fold(canonical):
             return canonical
@@ -325,7 +347,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep the first occurrence of each Split part, including nearby pages.
 
     Index at 5–7 is kept; Index at 55–57 is dropped (that page is something
-    else). A mixed page can still keep its other label. Petition at 17 then
+    else). A mixed page can still keep its other label. Main Petition at 17 then
     25–35 is kept (other documents sit in between).
     """
     pages_by_part: dict[str, list[int]] = {}
@@ -365,11 +387,35 @@ def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[
     return {"count": len(items), "items": items}
 
 
+def document_spans_from_page_parts(
+    page_parts: PagePartMap | dict[int, str],
+) -> list[dict[str, Any]]:
+    """Build documents[] spans from Split labels and global page numbers."""
+    order: list[str] = []
+    pages_by_part: dict[str, list[int]] = {}
+    for page in sorted(page_parts):
+        for name in parts_on_page(page_parts.get(page)):
+            if name not in pages_by_part:
+                pages_by_part[name] = []
+                order.append(name)
+            pages_by_part[name].append(page)
+    return [
+        {
+            "name": name,
+            "start_page": min(pages_by_part[name]),
+            "end_page": max(pages_by_part[name]),
+        }
+        for name in order
+        if pages_by_part[name]
+    ]
+
+
 def overlay_split_documents(
     payload: dict[str, Any], page_parts: PagePartMap | dict[int, str]
 ) -> None:
     """Replace Index slang (V/A) with Split part names and page sources."""
     docs = documents_from_page_parts(page_parts)
+    spans = document_spans_from_page_parts(page_parts)
     if not docs["items"]:
         return
     record = payload
@@ -387,6 +433,11 @@ def overlay_split_documents(
         summary = {}
         record["filing_summary"] = summary
     summary["documents"] = docs
+    record["documents"] = spans
+    record["document_counts"] = {
+        "processed": len(spans),
+        "failed": 0,
+    }
 
 
 def filing_type_label(filing_type: str | None) -> str:
@@ -431,9 +482,13 @@ def parts_named_in_text(text: str) -> list[str]:
     blob = _fold(text)
     found: list[str] = []
     for name, description in _split_categories():
-        if any(needle in blob for needle in _needles_for_part(name, description)):
-            if name not in found:
-                found.append(name)
+        needles = _needles_for_part(name, description)
+        matched = any(needle in blob for needle in needles)
+        if not matched and name == MAIN_PETITION_PART:
+            # "the Petition" in catalogue prose; do not match "petitioner".
+            matched = bool(re.search(r"(?<![a-z])petition(?![a-z])", blob))
+        if matched and name not in found:
+            found.append(name)
     return found
 
 
@@ -632,7 +687,7 @@ def required_parts_for_defect(defect: Defect) -> list[str]:
         primary = [p for p in named if p == "Affidavit"]
         return primary or named[:1]
     if category == "parties":
-        primary = [p for p in named if p in {"Petition", "Memo of Parties"}]
+        primary = [p for p in named if p in {MAIN_PETITION_PART, "Memo of Parties"}]
         return primary or named[:1]
     if len(named) > 3 and defect.where_to_look:
         first = parts_named_in_text(_strip_landmark_clauses(defect.where_to_look[0]))

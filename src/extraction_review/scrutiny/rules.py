@@ -77,7 +77,7 @@ class CatalogueSource(_Strict):
 
 class Defect(_Strict):
     check_id: str
-    serial_no: int
+    serial_no: int | str
     main_category: str
     special_category: str | None = None
     category_id: str | None = None
@@ -111,9 +111,13 @@ class Defect(_Strict):
 
     @field_validator("serial_no", mode="before")
     @classmethod
-    def _int_serial(cls, value: object) -> object:
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
+    def _serial_no(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip().upper()
+            if text.isdigit():
+                return int(text)
+            if re.fullmatch(r"\d+[A-Z]", text):
+                return text
         return value
 
     @field_validator(
@@ -254,6 +258,15 @@ def normalize_filing_type(filing_type: str | None) -> str:
     return _CATEGORY_ALIASES.get(raw, raw.replace(" ", "_").replace("(", "").replace(")", ""))
 
 
+def serial_sort_key(serial_no: int | str | None) -> tuple[int, str]:
+    """Sort 92 before 96A before 96B; letter suffixes follow the number."""
+    text = str(serial_no or "").strip().upper()
+    match = re.fullmatch(r"(\d+)([A-Z]*)", text)
+    if not match:
+        return (10**9, text)
+    return (int(match.group(1)), match.group(2))
+
+
 def enabled_defect_ids() -> tuple[str, ...]:
     raw = os.getenv("SCRUTINY_DEFECTS")
     if not raw or not raw.strip():
@@ -285,14 +298,14 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
         if parent_id and parent_id in by_id:
             children.setdefault(parent_id, []).append(defect)
     for kids in children.values():
-        kids.sort(key=lambda d: (d.serial_no, d.check_id))
+        kids.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
 
     roots = [
         d
         for d in defects
         if not d.parent_check_id or d.parent_check_id not in by_id
     ]
-    roots.sort(key=lambda d: (d.serial_no, d.check_id))
+    roots.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
 
     ordered: list[Defect] = []
     seen: set[str] = set()
