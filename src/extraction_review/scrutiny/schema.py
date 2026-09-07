@@ -1,8 +1,8 @@
 """The `scrutiny_finding_v1` response contract.
 
 `DefectResponse` is the narrow shape the model must return for a single defect.
-Catalogue fields (how to cure, rule, source) are copied onto the finding in
-Python so they stay aligned with the defect API payload.
+Catalogue fields (defect, requirement, how to cure, rule, source) are copied
+onto the finding in Python so they stay aligned with the defect API payload.
 """
 
 from __future__ import annotations
@@ -184,6 +184,18 @@ class DefectFinding(BaseModel):
     check_id: str
     serial_no: int | str
     title: str
+    defect: str = Field(
+        description=(
+            "Exact catalogue defect text from sci_registry_defects.v1.json. "
+            "Copied in Python; the model is not asked for this string."
+        )
+    )
+    requirement: str = Field(
+        description=(
+            "Exact catalogue requirement text from sci_registry_defects.v1.json. "
+            "Copied in Python; the model is not asked for this string."
+        )
+    )
     main_category: str
     special_category: str | None = None
     status: ResultState
@@ -479,6 +491,8 @@ def build_finding(
         check_id=defect.check_id,
         serial_no=defect.serial_no,
         title=finding_title(defect, catalogue),
+        defect=defect.defect,
+        requirement=defect.requirement,
         main_category=defect.main_category,
         special_category=defect.special_category,
         status=response.status,
@@ -519,6 +533,8 @@ def failed_finding(
         check_id=defect.check_id,
         serial_no=defect.serial_no,
         title=finding_title(defect, catalogue),
+        defect=defect.defect,
+        requirement=defect.requirement,
         main_category=defect.main_category,
         special_category=defect.special_category,
         status="not_determined",

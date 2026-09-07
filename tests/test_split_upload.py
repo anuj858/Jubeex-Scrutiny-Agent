@@ -459,6 +459,8 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
     assert "petitioners: fill Memo of Parties, Main Petition; verify Main Petition, Cover Page" in prompt
+    assert "cause_title: fill Cover Page; verify Main Petition, Memo of Parties" in prompt
+    assert "Never use [And ors.] or other square brackets" in prompt
     assert "Copy printed text only" in prompt
     assert "inconsistencies: one item per spelling" in prompt
     assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
@@ -474,12 +476,11 @@ def test_overlay_uses_stitched_document_parts() -> None:
     _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
     payload = {"filing_summary": {}}
     overlay_split_documents(payload, page_parts)
-    items = payload["filing_summary"]["documents"]["items"]
-    assert any(item.startswith("Main Petition") for item in items)
-    assert any(item.startswith("Synopsis") for item in items)
-    assert any("List of Dates & Events" in item for item in items)
+    assert "filing_summary" not in payload
     names = [span["name"] for span in payload["documents"]]
     assert "Main Petition" in names
+    assert "Synopsis" in names
+    assert "List of Dates & Events" in names
     assert payload["document_counts"]["processed"] == len(payload["documents"])
 
 
@@ -489,6 +490,7 @@ def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
         "petition_type": None,
         "cause_title": {"title": "A v. B"},
         "petitioners": [{"name": "A", "source_pages": "6, 7"}],
+        "filing_summary": {"documents": {"items": ["V/A"]}},
     }
     stamp_source_pages(record)
     wrapped = apply_extract_envelope(
@@ -515,6 +517,7 @@ def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
     assert wrapped["petitioners"][0]["source_pages"] == [6, 7]
     assert "classification" not in wrapped
     assert "applications" not in wrapped
+    assert "filing_summary" not in wrapped
 
 
 def test_formatted_title_anr_and_ors() -> None:
@@ -536,6 +539,18 @@ def test_formatted_title_anr_and_ors() -> None:
     assert format_side_title("Smt. Shalija Shah And Anr ...Respondent(s)", 2) == (
         "Smt. Shalija Shah and Anr."
     )
+    assert format_side_title("Meera Krishnan [And ors.]", 3) == (
+        "Meera Krishnan and Ors."
+    )
+    assert format_side_title("Union of India [And Anr.]", 2) == (
+        "Union of India and Anr."
+    )
+    assert build_formatted_title(
+        "Meera Krishnan [And ors.]",
+        3,
+        "Union of India [And Anr.]",
+        2,
+    ) == "Meera Krishnan and Ors. VS Union of India and Anr."
 
 
 def test_relief_sort_drops_main_prayer_heading() -> None:
@@ -577,6 +592,37 @@ def test_envelope_strips_cover_anr_before_formatting() -> None:
     assert cause["formatted_title"] == (
         "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
     )
+
+
+def test_envelope_drops_brackets_around_anr_ors() -> None:
+    wrapped = apply_extract_envelope(
+        {
+            "cause_title": {
+                "main_petitioner": "Meera Krishnan [And ors.]",
+                "main_respondent": "Union of India [And Anr.]",
+                "formatted_title": (
+                    "Meera Krishnan [And ors.] VS Union of India [And Anr.]"
+                ),
+            },
+            "petitioners": [
+                {"name": "Meera Krishnan"},
+                {"name": "Ramesh"},
+                {"name": "Suresh"},
+            ],
+            "respondents": [
+                {"name": "Union of India"},
+                {"name": "Ajay"},
+            ],
+        }
+    )
+    cause = wrapped["cause_title"]
+    assert cause["main_petitioner"] == "Meera Krishnan"
+    assert cause["main_respondent"] == "Union of India"
+    assert cause["formatted_title"] == (
+        "Meera Krishnan and Ors. VS Union of India and Anr."
+    )
+    assert "[" not in cause["formatted_title"]
+    assert "]" not in cause["formatted_title"]
 
 
 def test_organization_name_prefixes_and_suffixes() -> None:

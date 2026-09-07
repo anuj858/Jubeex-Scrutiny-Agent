@@ -123,7 +123,7 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "cause_title",
         "impugned_orders",
         "relief_sort",
-        "filing_summary",
+        "documents",
     ),
     "advocate_checklist": (
         "court",
@@ -138,24 +138,24 @@ CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
     "petition_presentation": (
         "court",
         "petition_type",
-        "filing_summary",
+        "documents",
     ),
-    "applications": ("court", "petition_type", "filing_summary"),
-    "annexures": ("court", "petition_type", "filing_summary"),
+    "applications": ("court", "petition_type", "documents"),
+    "annexures": ("court", "petition_type", "documents"),
     "parties": (
         "court",
         "petition_type",
         "cause_title",
         "impugned_orders",
     ),
-    "dates_execution": ("court", "petition_type", "filing_summary"),
-    "index_paper_book": ("court", "petition_type", "filing_summary"),
-    "limitation": ("court", "petition_type", "impugned_orders", "filing_summary"),
+    "dates_execution": ("court", "petition_type", "documents"),
+    "index_paper_book": ("court", "petition_type", "documents"),
+    "limitation": ("court", "petition_type", "impugned_orders", "documents"),
     "affidavit": ("court", "petition_type"),
-    "translations": ("court", "petition_type", "filing_summary"),
-    "vakalatnama": ("court", "petition_type", "advocates_on_record", "filing_summary"),
+    "translations": ("court", "petition_type", "documents"),
+    "vakalatnama": ("court", "petition_type", "advocates_on_record", "documents"),
     "memo_of_appearance": ("court", "petition_type", "advocates_on_record"),
-    "list_of_dates": ("court", "petition_type", "filing_summary"),
+    "list_of_dates": ("court", "petition_type", "documents"),
 }
 
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type")
@@ -372,7 +372,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
 
 
 def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
-    """Build filing_summary.documents from Split labels, with page spans."""
+    """Build a count/items list of Split parts with page spans."""
     order: list[str] = []
     pages_by_part: dict[str, list[int]] = {}
     for page in sorted(page_parts):
@@ -413,26 +413,21 @@ def document_spans_from_page_parts(
 def overlay_split_documents(
     payload: dict[str, Any], page_parts: PagePartMap | dict[int, str]
 ) -> None:
-    """Replace Index slang (V/A) with Split part names and page sources."""
-    docs = documents_from_page_parts(page_parts)
+    """Stamp stitch document spans onto the stored record. Drop filing_summary."""
     spans = document_spans_from_page_parts(page_parts)
-    if not docs["items"]:
+    if not spans:
         return
     record = payload
     while (
         isinstance(record, dict)
-        and "filing_summary" not in record
         and "petition_type" not in record
+        and "documents" not in record
         and isinstance(record.get("data"), dict)
     ):
         record = record["data"]
     if not isinstance(record, dict):
         return
-    summary = record.get("filing_summary")
-    if not isinstance(summary, dict):
-        summary = {}
-        record["filing_summary"] = summary
-    summary["documents"] = docs
+    record.pop("filing_summary", None)
     record["documents"] = spans
     record["document_counts"] = {
         "processed": len(spans),

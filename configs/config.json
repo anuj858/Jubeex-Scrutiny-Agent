@@ -196,7 +196,7 @@
                 }
               ],
               "default": null,
-              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Main names come from the Cover Page. Do not invent extra parties.",
+              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
               "title": "Formatted Title"
             },
             "raw_text": {
@@ -989,11 +989,11 @@
       },
       "cause_title": {
         "fill": [
-          "Memo of Parties",
           "Cover Page"
         ],
         "verify": [
-          "Main Petition"
+          "Main Petition",
+          "Memo of Parties"
         ]
       },
       "petitioners": {
