@@ -6,9 +6,11 @@ import {
   useWorkflow,
   type HandlerState,
 } from "@llamaindex/ui";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { useMetadataContext } from "./MetadataProvider";
 import type { SplitUploadSlot } from "./useMetadata";
+import { clickDownloadUrl, downloadFile } from "./export";
 import styles from "./SplitUploadForm.module.css";
 
 type UploadedPart = {
@@ -30,12 +32,19 @@ export type BundlePrepared = {
   slot_pages?: Record<string, string>;
 };
 
-type CloudFileCreate = {
+type PresignedFile = {
+  url?: string;
+  download_url?: string | { url?: string };
+};
+
+type CloudFiles = {
   files: {
     create: (args: {
       file: File;
       purpose: string;
     }) => Promise<{ id?: string; fileId?: string }>;
+    get?: (fileId: string) => Promise<PresignedFile>;
+    content?: (fileId: string) => Promise<PresignedFile>;
   };
 };
 
@@ -88,6 +97,48 @@ function asPreparedParts(value: unknown): PreparedPart[] {
     });
   }
   return parts;
+}
+
+function presignedFileUrl(value: unknown): string | null {
+  const raw = asRecord(value);
+  if (!raw) {
+    return null;
+  }
+  if (typeof raw.url === "string" && raw.url) {
+    return raw.url;
+  }
+  if (typeof raw.download_url === "string" && raw.download_url) {
+    return raw.download_url;
+  }
+  const nested = asRecord(raw.download_url);
+  if (nested && typeof nested.url === "string" && nested.url) {
+    return nested.url;
+  }
+  return null;
+}
+
+async function downloadCloudPdf(
+  cloud: CloudFiles,
+  fileId: string,
+  filename: string,
+) {
+  const getter = cloud.files.get ?? cloud.files.content;
+  if (!getter) {
+    throw new Error("This LlamaCloud client cannot download files");
+  }
+  const url = presignedFileUrl(await getter(fileId));
+  if (!url) {
+    throw new Error(`No download URL for ${filename}`);
+  }
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Download failed (${response.status})`);
+    }
+    downloadFile(await response.blob(), filename, "application/pdf");
+  } catch {
+    clickDownloadUrl(url, filename);
+  }
 }
 
 function asSlotPages(value: unknown): Record<string, string> {
@@ -153,9 +204,10 @@ export function SplitUploadForm({
   const [preparing, setPreparing] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [downloadingSlot, setDownloadingSlot] = useState<string | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const preparedFor = useRef<string | null>(null);
-  const cloud = useCloudApiClient() as unknown as CloudFileCreate;
+  const cloud = useCloudApiClient() as unknown as CloudFiles;
   const wf = useWorkflow("process-split-files");
   const handlersService = useHandlers({
     query: { workflow_name: ["process-file"] },
@@ -317,6 +369,56 @@ export function SplitUploadForm({
     }
   };
 
+  const downloadPart = async (slot: SplitUploadSlot) => {
+    const uploaded = uploads[slot.id];
+    if (!uploaded || downloadingSlot) {
+      return;
+    }
+    setDownloadingSlot(slot.id);
+    try {
+      await downloadCloudPdf(cloud, uploaded.fileId, uploaded.filename);
+    } catch (error) {
+      toast.error(
+        `Could not download ${slot.label}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      setDownloadingSlot(null);
+    }
+  };
+
+  const downloadAllParts = async () => {
+    if (downloadingSlot) {
+      return;
+    }
+    const ready = slots
+      .map((slot) => ({ slot, uploaded: uploads[slot.id] }))
+      .filter(
+        (row): row is { slot: SplitUploadSlot; uploaded: UploadedPart } =>
+          Boolean(row.uploaded),
+      );
+    if (ready.length === 0) {
+      return;
+    }
+    setDownloadingSlot("all");
+    let failed = 0;
+    for (const { slot, uploaded } of ready) {
+      try {
+        await downloadCloudPdf(cloud, uploaded.fileId, uploaded.filename);
+      } catch {
+        failed += 1;
+        toast.error(`Could not download ${slot.label}`);
+      }
+    }
+    if (failed === 0) {
+      toast.success(
+        `Downloaded ${ready.length} sliced file${ready.length === 1 ? "" : "s"}`,
+      );
+    }
+    setDownloadingSlot(null);
+  };
+
   const removeFile = (slotId: string) => {
     setUploads((prev) => {
       const next = { ...prev };
@@ -381,7 +483,12 @@ export function SplitUploadForm({
     return null;
   }
 
-  const formBusy = preparing || submitting || Boolean(uploadingSlot);
+  const formBusy =
+    preparing ||
+    submitting ||
+    Boolean(uploadingSlot) ||
+    Boolean(downloadingSlot);
+  const slicedCount = Object.keys(uploads).length;
 
   return (
     <section className={styles.panel}>
@@ -437,6 +544,19 @@ export function SplitUploadForm({
                     {uploaded.filename}
                   </span>
                 ) : null}
+                {uploaded ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    label={
+                      downloadingSlot === slot.id ? "Downloading…" : "Download"
+                    }
+                    startIcon={<Download className="h-3.5 w-3.5" />}
+                    disabled={formBusy}
+                    title={`Download the ${slot.label} PDF LlamaSplit assigned to this slot`}
+                    onClick={() => void downloadPart(slot)}
+                  />
+                ) : null}
                 <input
                   ref={(node) => {
                     inputRefs.current[slot.id] = node;
@@ -477,6 +597,21 @@ export function SplitUploadForm({
       </ul>
 
       <div className={styles.footer}>
+        {slicedCount > 0 ? (
+          <Button
+            size="sm"
+            variant="outline"
+            label={
+              downloadingSlot === "all" ? "Downloading…" : "Download all"
+            }
+            startIcon={<Download className="h-3.5 w-3.5" />}
+            disabled={formBusy}
+            title="Download every sliced PDF LlamaSplit assigned to a slot"
+            onClick={() => void downloadAllParts()}
+          />
+        ) : (
+          <span />
+        )}
         <Button
           label={
             preparing
