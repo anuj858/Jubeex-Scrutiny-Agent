@@ -105,8 +105,17 @@ def _json_bytes(payload: Any) -> bytes:
 
 def _s3_client():
     import boto3
+    from botocore.config import Config
 
-    return boto3.client("s3", **_client_kwargs())
+    kwargs: dict[str, Any] = dict(_client_kwargs())
+    region = str(kwargs.get("region_name") or "ap-south-1")
+    explicit = (os.getenv("AWS_S3_ENDPOINT_URL") or "").strip()
+    kwargs["config"] = Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "virtual"},
+    )
+    kwargs["endpoint_url"] = explicit or f"https://s3.{region}.amazonaws.com"
+    return boto3.client("s3", **kwargs)
 
 
 def _url_expires() -> int:
