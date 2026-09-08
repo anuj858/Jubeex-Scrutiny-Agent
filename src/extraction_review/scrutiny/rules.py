@@ -231,8 +231,9 @@ class Defect(_Strict):
 def split_main_categories(main_category: str | list[str] | None) -> tuple[str, ...]:
     """Split a catalogue Main Category into one or more petition-type labels.
 
-    Accepts a JSON list, or a string split on commas and/or slashes
-    (e.g. "SLP (Civil)/SLP (Criminal)").
+    Accepts a JSON list, or a string split on commas and on slashes that follow
+    a closing parenthesis (e.g. "SLP (Civil)/SLP (Criminal)"). Leaves
+    "General/Global" as a single label.
     """
     if main_category is None:
         return ()
@@ -245,7 +246,11 @@ def split_main_categories(main_category: str | list[str] | None) -> tuple[str, .
             str(main_category).strip(),
             flags=re.IGNORECASE,
         )
-        parts = [part.strip() for part in re.split(r"[,/]", cleaned)]
+        parts = [
+            part.strip()
+            for part in re.split(r"\s*,\s*|(?<=\))\s*/\s*", cleaned)
+            if part.strip()
+        ]
     return tuple(part for part in parts if part)
 
 

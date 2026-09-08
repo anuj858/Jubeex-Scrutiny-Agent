@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.1",
-  "catalogue_version": "2.2.9",
+  "catalogue_version": "2.3.0",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -2537,6 +2537,530 @@
         "Option for the User to edit the particulars with Jubeex."
       ],
       "location_source": "SCI_CHECKLIST_2025, Page 4"
+    },
+    {
+      "check_id": "D079",
+      "serial_no": 162,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "SLP (Civil) number and year not stated in the prescribed space in Form No. 28",
+      "requirement": "Form No. 28 shall contain the S.L.P. (Civil) No. and year",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the top of Form 28 (SLP) for the S.L.P. (Civil) number and year, which appears immediately below the heading “SPECIAL LEAVE PETITION."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for User to auto-fix with Jubeex",
+        "Option for User to edit with Jubeex"
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D080",
+      "serial_no": 163,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Names of the petitioners are not stated and/or the position of the parties before the Court/Tribunal whose judgment/order is challenged, as well as their position before the Supreme Court, is not indicated",
+      "requirement": "The names of the petitioners must be stated, and the position of each party before the Court/Tribunal whose judgment/order is challenged and before the Supreme Court must be clearly indicated.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the cause title at the beginning of Form 28 (the first page after the impugned order) for the names of all petitioners and the position of each party before the Court/Tribunal and before the Supreme Court (i.e., Petitioner/Respondent/Appellant)."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for User to Auto-draft with Jubeex based on available information and give a confidence score",
+        "Option for the User to edit the Petition with Jubeex."
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D081",
+      "serial_no": 164,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Paragraph 1 of the SLP does not specify the Court/Tribunal against whose order leave to appeal is sought, and/or the case number, date of the impugned order, and/or the nature of the impugned order.",
+      "requirement": "The petition shall specify the Court/Tribunal against whose order the leave to appeal is sought, the number of the case, the date of the order and the nature of the order, such as allowing or dismissing the matter or granting or refusing the interim order",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check Paragraph 1 of the SLP for the particulars of the impugned judgment/order, including the name of the Court/Tribunal, case number, date of the order, and nature of the order"
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for User to Auto-draft paragraph 1 with Jubeex",
+        "Option for the User to edit the Petition with Jubeex."
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D082",
+      "serial_no": 165,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Paragraph 2 of the SLP does not set out the questions of law arising for consideration",
+      "requirement": "Paragraph 2 of the SLP must set out the questions of law arising for consideration, and/or the questions of law are not stated",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check Paragraph 2 ,Question of Law of the SLP to ensure that the questions of law arising for consideration are specifically and precisely stated."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for User to Auto-draft the questions of law with Jubeex",
+        "Option for the User to edit the Petition with Jubeex."
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D083",
+      "serial_no": 166,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Paragraph 3 of the SLP does not contain the declaration required under Rule 3(2), stating that no other petition seeking leave to appeal has been filed by the petitioner against the impugned judgment/order.",
+      "requirement": "Paragraph 3 of the SLP must contain a declaration in terms of Rule 4(2) stating that no other petition seeking leave to appeal has been filed by the petitioner against the impugned judgment/order.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check Paragraph 3 ,Declaration in terms of Rule 4(2) of the SLP for the declaration that no other petition seeking leave to appeal has been filed by the petitioner against the impugned judgment/order."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to draft the declaration.",
+        "Option for the User to upload the declaration."
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D084",
+      "serial_no": 167,
+      "main_category": "SLP (Civil)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Paragraph 4 of the SLP does not contain the declaration required under Rule 5 stating that the annexures filed with the SLP are true copies of the pleadings/documents forming part of the record of the case before the Court/Tribunal below.",
+      "requirement": "Paragraph 4 of the SLP must contain a declaration in terms of Rule 6 stating that the annexures filed with the SLP are true copies of the pleadings/documents forming part of the record of the case before the Court/Tribunal below.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check Paragraph 4 ,Declaration in terms of Rule 6 of the SLP for the declaration that the annexures filed with the SLP are true copies of the pleadings/documents forming part of the record before the Court/Tribunal below."
+      ],
+      "inspect_parts": [
+        "Main Petition"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to draft the declaration.",
+        "Option for the User to upload the declaration."
+      ],
+      "applicable_rule": "Order XXI, Rule 3(1)(a)",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf"
+    },
+    {
+      "check_id": "D085",
+      "serial_no": 199,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Jail Petition",
+      "category_id": "annexures",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "True copy of judgment of the Court immediately below not filed, where required in cases filed under Order XX Rule 5(1) of the rules",
+      "requirement": "True copy of judgment of the Court immediately below must be filed, where required in cases filed under Order XX Rule 5(1) of the rules",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Index for the page number of the judgment of the Court immediately below.",
+        "Check the Annexures for its true copy; if not named in the Index, pick up the court name, case number and date from the cause title/facts and scan the whole file for a match."
+      ],
+      "inspect_parts": [
+        "Annexures",
+        "Impugned Order"
+      ],
+      "context_parts": [
+        "Index"
+      ],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for the User to upload the true copy of the judgment of the Court immediately below."
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 141 of the PDF Court Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D086",
+      "serial_no": 200,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Jail Petition",
+      "category_id": "affidavit",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Petition/Appeal not accompanied by affidavit declaring that no similar case has been filed earlier",
+      "requirement": "Petition/Appeal to be accompanied by affidavit declaring that no similar case has been filed earlier",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Index for the page number of the Affidavit.",
+        "Check the Affidavit filed with the jail petition/appeal for a declaration that no similar case has been filed by the petitioner earlier."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [
+        "Index"
+      ],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to auto-draft the affidavit accompanying the main Petition incorporating the required affirmation with an option for the User to review and edit the draft. Prompt the User to get the affidavit duly sworn and provide an option to upload the duly sworn affidavit with Jubeex.",
+        "Option for the User to re-upload the duly sworn corrected affidavit containing the required affirmation"
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 142 of the PDF Court Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D087",
+      "serial_no": 201,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Jail Petition",
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Requisite particulars of case or Court not disclosed from whose order the petition/appeal arises and such particulars cannot be ascertained from documents filed",
+      "requirement": "Requisite particulars of case or Court must be disclosed from whose order the petition/appeal arises and such particulars are able to be ascertained from documents filed",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Index and identify the impugned judgment/order and Main Petition/Appeal.",
+        "Check the cause title and the opening paragraphs of the jail petition/appeal for the case number and the name of the Court from whose order it arises.",
+        "If these particulars are not stated, check the Impugned Judgment/Order and the other documents filed to see whether they can be ascertained from the record."
+      ],
+      "inspect_parts": [
+        "Main Petition",
+        "Impugned Order"
+      ],
+      "context_parts": [
+        "Index"
+      ],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to extract the requisite particulars of the case or Court from the uploaded documents and populate the petition/appeal accordingly.",
+        "Option for the User to review and edit the particulars with Jubeex."
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 142 of the PDF Court Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D088",
+      "serial_no": 202,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Jail Petition",
+      "category_id": "parties",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Complete memo of parties not filed",
+      "requirement": "Complete memo of parties must be filed",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Index for an entry titled 'Memo of Parties'.",
+        "Check the Memo of Parties for the complete array of parties with their addresses, and cross-check it against the parties shown in the cause title of the Impugned Judgment/Order."
+      ],
+      "inspect_parts": [
+        "Memo of Parties",
+        "Impugned Order"
+      ],
+      "context_parts": [
+        "Index"
+      ],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to draft and complete the Memo of Parties using the information available and the details provided by the User.",
+        "Option for the User to upload the Memo of Parties with Jubeex."
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 143 of the PDF Court Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D089",
+      "serial_no": 203,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Jail Petition",
+      "category_id": "annexures",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Certified copy of impugned judgment/order not filed",
+      "requirement": "Certified copy of impugned judgment/order should be filed",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check for the Impugned Judgment/Order after the Synopsis and List of Dates."
+      ],
+      "inspect_parts": [
+        "Impugned Order"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for User to upload the certified copy of the impugned judgment/order."
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 143 of the PDF Court Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D090",
+      "serial_no": 204,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Original Suit (Civil), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Interlocutory Applications",
+      "category_id": "applications",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Case number not correctly mentioned in IAs filed separately from the Main Petition/Appeal.",
+      "requirement": "Case number must be correctly mentioned in IAs filed separately from the Main Petition/Appeal.",
+      "trigger_words": "Interlocutory Applications, I.A.",
+      "where_to_look": [
+        "Check the cause title at the head of the application/I.A. for the case number of the main matter.",
+        "Compare it with the cause title of the Main Petition and with the Record of Proceedings/order in the main case."
+      ],
+      "inspect_parts": [
+        "Main Petition",
+        "Record of Proceedings"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Auto-pull the case number from the main case record",
+        "Edit Option for the user to edit application",
+        "Mark as not applicable for original/fresh filings"
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 99 of the PDFCourt Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D091",
+      "serial_no": 205,
+      "main_category": "SLP (Civil), SLP (Criminal), Civil Appeal, Criminal Appeal, Writ Petition (Civil), Writ Petition (Criminal), Transfer Petition (Civil), Transfer Petition (Criminal), Review Petition (Civil), Review Petition (Criminal), Original Suit (Civil), Contempt Petition (Civil), Contempt Petition (Criminal), Election Petition (Civil), Arbitration Petition, Curative Petition (Civil), Curative Petition (Criminal)",
+      "special_category": "Interlocutory Applications",
+      "category_id": "applications",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Memo of parties has not been filed, in case of application for directions",
+      "requirement": "Memo of parties must be filed, in case of application for directions",
+      "trigger_words": "Interlocutory Applications, I.A.",
+      "where_to_look": [
+        "Look for an application for directions.",
+        "Check whether a Memo of Parties is filed along with that application, immediately after it."
+      ],
+      "inspect_parts": [
+        "Memo of Parties"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to draft and complete the Memo of Parties using the information available and the details provided by the User.",
+        "Option for the User to upload the completed Memo of Parties."
+      ],
+      "applicable_rule": null,
+      "location_source": "Page 99 of the PDFCourt Processes Handbook.pdf"
+    },
+    {
+      "check_id": "D092",
+      "serial_no": 231,
+      "main_category": "SLP (Civil), SLP (Criminal)",
+      "special_category": null,
+      "category_id": "advocate_checklist",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "The Advocate-on-Record failed to certify that the SLP is confined only to the pleadings before the Court/Tribunal whose order is challenged and the documents relied upon therein; that no additional facts, documents or grounds have been taken or relied upon; and that the annexures are necessary to answer the question of law raised. The certificate fails to add that it is given on the basis of the petitioner's instructions",
+      "requirement": "The Advocate-on-Record must certify that the SLP is confined only to the pleadings before the Court/Tribunal whose order is challenged and the documents relied upon therein; that no additional facts, documents or grounds have been taken or relied upon; and that the annexures are necessary to answer the question of law raised. The certificate must add that it is given on the basis of the petitioner's instructions",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the AOR’s Certificate filed after the Prayer and before the Affidavit.",
+        "Verify that the Certificate states that the SLP is confined to the pleadings before the Court/Tribunal whose order is challenged and the documents relied upon therein.",
+        "Verify that the Certificate states that no additional facts, documents or grounds have been taken or relied upon and that the Annexures are necessary to answer the question of law raised.",
+        "Verify that the Certificate states that it is given on the basis of the Petitioner’s instructions."
+      ],
+      "inspect_parts": [
+        "AOR's Certificate"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to auto-draft the AOR's certification/Declaration to the effect and prompt the User to get it signed, along with an option for the user to re-upload the same.",
+        "Option for the User to upload the AOR's Certificate/Declaration with Jubeex."
+      ],
+      "applicable_rule": null,
+      "location_source": "Circulars dt. 6.8.1997 & 1.9.1997; Order XVI Rule 5(1)/Order XXI Rule 3(5), Page 185 of the PDF 2024042371.pdf"
+    },
+    {
+      "check_id": "D093",
+      "serial_no": 232,
+      "main_category": "SLP (Civil), SLP (Criminal)",
+      "special_category": null,
+      "category_id": "applications",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "Additional documents and/or grounds are relied upon in the petition without filing an application seeking permission to rely upon and place such additional documents and/or grounds on record.",
+      "requirement": "Where any additional documents and/or grounds are sought to be relied upon, an application seeking permission to file/rely upon such additional documents and/or grounds shall be filed.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the Annexures for any document, ground or fact not forming part of the record before the Court below. (compare against the documents referred to in the Impugned Order and the List of Dates).",
+        "Check the Applications placed after the Annexures for an application seeking permission to file additional documents or to raise additional grounds."
+      ],
+      "inspect_parts": [
+        "Annexures",
+        "Impugned Order"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "If we are not able to determine ourselves then prompt the user to confirm that no document, or ground or fact,  filed in the lower court has been filed.",
+        "If he discloses additional grounds or documents are relied upon, Option for Jubeex to draft the application seeking permission to file additional documents or grounds relied upon.",
+        "Option for the User to upload the application with Jubeex."
+      ],
+      "applicable_rule": null,
+      "location_source": "Circulars dt. 6.8.1997 & 1.9.1997; Order XVI Rule 5(1)/Order XXI Rule 3(5), Page 185 of the PDF 2024042371.pdf"
+    },
+    {
+      "check_id": "D094",
+      "serial_no": 270,
+      "main_category": "SLP (Criminal)",
+      "special_category": null,
+      "category_id": "filing_formalities",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "SLP (Criminal) does not contain statement supported by affidavit, as to whether an earlier SLP was filed against the same order",
+      "requirement": "Petition must contain a statement as to whether the petitioner had filed any petition for special leave to appeal against the impugned judgment or order earlier, and if so, with what result, duly supported by an affidavit of the petitioner",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check the SLP and check whether there is a paragrpah for declration in terms of rule 2 (2), Check the portion headed 'DECLARATION IN TERMS OF RULE 2(2)' in the SLP (Criminal) for a statement as to whether an earlier SLP was filed against the same order.",
+        "Check the Affidavit filed after the SLP"
+      ],
+      "inspect_parts": [
+        "Main Petition",
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "1 Prompt user to confirm that no earlier SLP was filed against the same order.",
+        "2. If the user confirms that an earlier SLP was filed, ask User to provide the details and result, with an option for Jubeex to fill the relevant portion of the petition.",
+        "3. Option for the User to add and edit the disclosure with Jubeex.",
+        "Affidavit Supporting Disclosure",
+        "1. Option for Jubeex to auto-draft the affidavit of the petitioner supporting the Main Petition to include the requisite averment;prompt the User to get the affidavit duly sworn and provide an option to upload the sworn affidavit drafted by Jubeex.",
+        "2. Option for the User to upload the duly sworn affidavit with Jubeex."
+      ],
+      "applicable_rule": "Order XXII, Rule 2(2)",
+      "location_source": "SCR, 2013, Page 33 of the PDF        2024011691-1.pdf"
+    },
+    {
+      "check_id": "D095",
+      "serial_no": 271,
+      "main_category": "SLP (Criminal)",
+      "special_category": null,
+      "category_id": "affidavit",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "SLP (Criminal) is not accompanied by affidavit in support of facts of statement of facts contained in the petition",
+      "requirement": "SLP (Criminal) must be accompanied by affidavit in support of facts of statement of facts contained in the petition",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check for the Affidavit filed after the SLP (Criminal), following the AOR's Certificate, in support of the statement of facts contained in the petition, with a complete attestation."
+      ],
+      "inspect_parts": [
+        "Affidavit"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to auto-draft the affidavit; prompt the User to get the affidavit duly sworn and provide an option to upload the sworn affidavit drafted by Jubeex.",
+        "Option for the User to upload the duly sworn affidavit with Jubeex."
+      ],
+      "applicable_rule": "Order XXII, Rule 3",
+      "location_source": "SCR, 2013, Page 33 of the PDF        2024011691-1.pdf"
+    },
+    {
+      "check_id": "D096",
+      "serial_no": 272,
+      "main_category": "SLP (Criminal)",
+      "special_category": null,
+      "category_id": "annexures",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "SLP (Criminal) is not accompanied by certified copy of judgment/order",
+      "requirement": "SLP (Criminal) must be accompanied by certified copy of judgment/order",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check after synopisis and LOD"
+      ],
+      "inspect_parts": [
+        "Impugned Order"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for the User to upload the certified copy of the judgment/order with Jubeex."
+      ],
+      "applicable_rule": "Order XXII, Rule 3",
+      "location_source": "SCR, 2013, Page 33 of the PDF        2024011691-1.pdf"
+    },
+    {
+      "check_id": "D097",
+      "serial_no": 273,
+      "main_category": "SLP (Criminal)",
+      "special_category": null,
+      "category_id": "applications",
+      "parent_check_id": null,
+      "overlap_note": null,
+      "defect": "SLP (Criminal) is not accompanied by the certified copy of the impugned judgment/order, and/or an application seeking exemption from filing the certified copy of the judgment/order has not been filed.",
+      "requirement": "SLP (Criminal) shall be accompanied by the certified copy of the impugned judgment/order; where the certified copy is not filed, an application seeking exemption from filing the certified copy of the judgment/order shall be filed.",
+      "trigger_words": null,
+      "where_to_look": [
+        "Check after the annexures for such applications"
+      ],
+      "inspect_parts": [
+        "Impugned Order",
+        "Annexures"
+      ],
+      "context_parts": [],
+      "exclude_parts": [],
+      "how_to_cure": [
+        "Option for Jubeex to Auto-draft the Application for exemption from filing certified copy of judgement/order",
+        "Option for the User to upload the Application."
+      ],
+      "applicable_rule": "Order XXII, Rule 3",
+      "location_source": "SCR, 2013, Page 33 of the PDF        2024011691-1.pdf"
     }
   ]
 }

@@ -212,3 +212,61 @@ def test_defects_for_filing_type_includes_multi_category_rows(monkeypatch) -> No
     assert criminal == ["D100", "D300", "D301"]
     assert writ == ["D100", "D300"]
     assert tp_criminal == ["D100"]
+
+
+def test_slash_separated_main_category_matches_both_slp_sides() -> None:
+    defect = _defect("D231", "SLP (Civil)/SLP (Criminal)")
+    assert defect.main_categories == ("SLP (Civil)", "SLP (Criminal)")
+    assert _applies_to_filing(defect, "slp_civil")
+    assert _applies_to_filing(defect, "slp_criminal")
+    assert not _applies_to_filing(defect, "writ_petition_civil")
+
+
+def test_review_contempt_and_original_suit_aliases() -> None:
+    assert normalize_filing_type("Review Petition (Civil)") == "review_petition_civil"
+    assert (
+        normalize_filing_type("Contempt Petition (Criminal)")
+        == "contempt_petition_criminal"
+    )
+    assert (
+        normalize_filing_type("Election Petition (Civil)") == "election_petition_civil"
+    )
+    assert (
+        normalize_filing_type("Curative Petition (Civil)") == "curative_petition_civil"
+    )
+    assert normalize_filing_type("Original Suit (Civil)") == "original_suit_civil"
+    assert categories_for_filing_type("REVIEW_PETITION_CIVIL") == frozenset(
+        {"global", "review_petition", "review_petition_civil"}
+    )
+
+
+def test_imported_csv_defects_select_by_slp_side(monkeypatch) -> None:
+    rules_mod.get_catalogue.cache_clear()
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
+
+    catalogue = rules_mod.get_catalogue()
+    assert catalogue.catalogue_version == "2.3.0"
+    assert len(catalogue.defects) == 94
+
+    by_serial = {str(d.serial_no): d.check_id for d in catalogue.defects}
+    form28 = {by_serial[s] for s in ("162", "163", "164", "165", "166", "167")}
+    shared_slp = {by_serial[s] for s in ("231", "232")}
+    jail_ia = {by_serial[s] for s in ("199", "200", "201", "202", "203", "204", "205")}
+    criminal_only = {by_serial[s] for s in ("270", "271", "272", "273")}
+
+    civil = {d.check_id for d in defects_for_filing_type("SLP_CIVIL")}
+    criminal = {d.check_id for d in defects_for_filing_type("SLP_CRIMINAL")}
+
+    assert form28 <= civil
+    assert form28.isdisjoint(criminal)
+    assert criminal_only <= criminal
+    assert criminal_only.isdisjoint(civil)
+    assert shared_slp <= civil & criminal
+    assert jail_ia <= civil & criminal
+
+    d092 = catalogue.defect(by_serial["231"])
+    assert d092.main_category == "SLP (Civil), SLP (Criminal)"
+    assert d092.inspect_parts == ["AOR's Certificate"]
+    d079 = catalogue.defect(by_serial["162"])
+    assert d079.category_id == "filing_formalities"
+    assert d079.inspect_parts == ["Main Petition"]

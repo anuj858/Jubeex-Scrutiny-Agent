@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from extraction_review.llm import LLMError
-from extraction_review.scrutiny.rules import get_catalogue
+from extraction_review.scrutiny.rules import defects_for_filing_type, get_catalogue
 from extraction_review.scrutiny.schema import DefectResponse, LlmUsage
 from extraction_review.scrutiny_workflow import (
     ScrutinyEvent,
@@ -192,12 +192,13 @@ async def test_scrutiny_runs_enabled_defects_and_streams_partials(
 
 
 @pytest.mark.asyncio
-async def test_scrutiny_all_seventy_four_checks_mocked(
+async def test_scrutiny_all_enabled_checks_mocked(
     scrutiny_env: FakeLlamaCloud,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
     monkeypatch.setenv("SCRUTINY_CONCURRENCY", "6")
+    get_catalogue.cache_clear()
     calls: list[str] = []
 
     async def fake_llm(**kwargs: Any) -> tuple[DefectResponse, LlmUsage]:
@@ -221,18 +222,21 @@ async def test_scrutiny_all_seventy_four_checks_mocked(
     assert isinstance(result, ScrutinyResponse)
     report = result.report
     catalogue = get_catalogue()
-    assert report.planned_checks == len(catalogue.defects) == 75
+    # SLP_CIVIL filing: Global/General + SLP family + SLP (Civil) + multi-type rows.
+    expected = len(defects_for_filing_type("SLP_CIVIL"))
+    assert len(catalogue.defects) == 94
+    assert report.planned_checks == expected
     assert report.stopped_early is False
-    assert len(report.findings) == 75
-    assert len(calls) == 75
-    assert len(partials) == 75
-    assert [p.completed for p in partials] == list(range(1, 76))
+    assert len(report.findings) == expected
+    assert len(calls) == expected
+    assert len(partials) == expected
+    assert [p.completed for p in partials] == list(range(1, expected + 1))
     last = scrutiny_env.beta.agent_data.updates[-1]["metadata"]["scrutiny_report"]
-    assert len(last["findings"]) == 75
+    assert len(last["findings"]) == expected
 
 
 @pytest.mark.asyncio
-async def test_scrutiny_stops_on_llm_error_keeps_completed_results(
+async def test_scrutiny_continues_on_llm_error_keeps_failed_finding(
     scrutiny_env: FakeLlamaCloud,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,21 +264,18 @@ async def test_scrutiny_stops_on_llm_error_keeps_completed_results(
 
     assert isinstance(result, ScrutinyResponse)
     report = result.report
-    assert report.stopped_early is True
+    assert report.stopped_early is False
     assert report.planned_checks == 4
-    ids = {f.check_id for f in report.findings}
-    assert "D003" in ids
+    assert {f.check_id for f in report.findings} == {"D003", "D004", "D005", "D006"}
     failed = next(f for f in report.findings if f.check_id == "D003")
     assert failed.status == "not_determined"
     assert failed.error
-    assert "D006" not in calls
-    assert "D004" not in calls
-    assert len(calls) <= 2
-    assert partials[-1].stopped_early is True
+    assert set(calls) == {"D003", "D004", "D005", "D006"}
+    assert partials[-1].stopped_early is False
     assert scrutiny_env.beta.agent_data.updates
     last = scrutiny_env.beta.agent_data.updates[-1]["metadata"]["scrutiny_report"]
-    assert last["stopped_early"] is True
-    assert len(last["findings"]) == len(report.findings)
+    assert last["stopped_early"] is False
+    assert len(last["findings"]) == 4
 
 
 @pytest.mark.asyncio
@@ -373,9 +374,13 @@ async def test_low_confidence_finding_is_needs_review(
 
 @pytest.mark.asyncio
 async def test_all_defects_are_catalogue_sized() -> None:
+    get_catalogue.cache_clear()
     catalogue = get_catalogue()
-    assert len(catalogue.defects) == 75
+    assert len(catalogue.defects) == 94
+    assert catalogue.catalogue_version == "2.3.0"
     assert catalogue.defect("D018").check_id == "D018"
+    assert catalogue.defect("D079").serial_no == 162
+    assert catalogue.defect("D097").serial_no == 273
 
 
 @pytest.mark.asyncio
