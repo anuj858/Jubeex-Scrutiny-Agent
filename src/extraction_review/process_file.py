@@ -519,6 +519,8 @@ class PreparedPart(BaseModel):
     document_id: str | None = None
     download_url: str | None = None
     name: str | None = None
+    label: str | None = None
+    page_span: str | None = None
 
 
 class SourceDocument(BaseModel):
@@ -1234,6 +1236,8 @@ class ProcessFileWorkflow(Workflow):
                     slot_id=item.slot_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
+                    label=item.label,
+                    page_span=item.page_span,
                 )
             )
             if item.page_span:
