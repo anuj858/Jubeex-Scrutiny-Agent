@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.1",
-  "catalogue_version": "2.2.8",
+  "catalogue_version": "2.2.9",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record.",
   "sources": [
@@ -968,7 +968,7 @@
         "Check if a caveat on behalf of the respondent has been attached to the file."
       ],
       "inspect_parts": [
-        "Caveat Report"
+        "Vakalatnama"
       ],
       "context_parts": [
         "Main Petition",
