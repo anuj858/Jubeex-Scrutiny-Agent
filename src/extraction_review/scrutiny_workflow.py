@@ -22,7 +22,18 @@ from workflows.resource import Resource
 
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
+from .document_parts import (
+    filing_type_label,
+    max_chunks_for_defect,
+    missing_required_parts,
+    parts_named_in_where_to_look,
+    preferred_parts_for_defect,
+    select_chunks_for_defect,
+    slice_record_for_defect,
+)
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
+from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
     build_defect_prompt,
     build_evidence_queries,
@@ -55,16 +66,6 @@ from .vector_store import (
     pinecone_enabled,
     scrutiny_max_chunks,
 )
-from .document_parts import (
-    max_chunks_for_defect,
-    missing_required_parts,
-    parts_named_in_where_to_look,
-    preferred_parts_for_defect,
-    select_chunks_for_defect,
-    slice_record_for_defect,
-)
-from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
-from .s3_artifacts import STEP_DEFECTS, upload_step_json
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +133,7 @@ def assert_filing_ready_for_scrutiny(
             f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
         )
     if status and status not in SCRUTINY_ALLOWED_STATUSES:
-        raise ValueError(
-            f"Scrutiny cannot run while {label} is '{review_status}'."
-        )
+        raise ValueError(f"Scrutiny cannot run while {label} is '{review_status}'.")
 
 
 async def _load_item(
@@ -255,9 +254,7 @@ async def _chunks_for_defect(
         return []
 
     queries = build_evidence_queries(defect)
-    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
     gather_cap = max(
         max_chunks,
@@ -345,10 +342,7 @@ async def collect_defect_findings(
     finally:
         leftovers = await asyncio.gather(*tasks, return_exceptions=True)
         for result in leftovers:
-            if (
-                isinstance(result, DefectFinding)
-                and result.check_id not in seen
-            ):
+            if isinstance(result, DefectFinding) and result.check_id not in seen:
                 seen.add(result.check_id)
                 findings.append(result)
                 added_after_cancel = True
@@ -453,12 +447,16 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
 
+        category_labels = ", ".join(
+            sorted({cat for d in defects for cat in d.main_categories})
+        )
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
-                    f"Checking {file_name or 'filing'} against "
-                    f"{len(defects)} defect(s) "
+                    f"Checking {file_name or 'filing'} "
+                    f"({filing_type_label(filing_type)}) against "
+                    f"{len(defects)} defect(s) in {category_labels} "
                     f"({concurrency} at a time)"
                 ),
             )
@@ -473,8 +471,7 @@ class ScrutinyWorkflow(Workflow):
             return ScrutinyReport(
                 catalogue_id=catalogue.catalogue_id,
                 catalogue_version=catalogue.catalogue_version,
-                agent_data_id=str(getattr(item, "id", "") or "")
-                or event.agent_data_id,
+                agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
                 file_name=file_name,
                 petition_type=filing_type,
@@ -487,9 +484,7 @@ class ScrutinyWorkflow(Workflow):
                 stopped_early=stopped_early,
             )
 
-        async def publish(
-            current: list[DefectFinding], stopped_early: bool
-        ) -> None:
+        async def publish(current: list[DefectFinding], stopped_early: bool) -> None:
             report = build_report(current, stopped_early=stopped_early)
             ctx.write_event_to_stream(
                 ScrutinyPartial(
