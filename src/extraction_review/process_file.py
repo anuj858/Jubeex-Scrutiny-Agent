@@ -1,7 +1,7 @@
-"""Classify and LlamaSplit a bundled PDF, slice it, then extract.
+"""Classify and LlamaSplit a bundled PDF, then stop.
 
-``upload_compiled`` classifies, splits, and slices, then runs
-process-split-files (parse, extract, Agent Data, Pinecone).
+``upload_compiled`` classifies, splits, and slices. Parse/extract runs later
+when the backend sends ``upload_separate`` after Assemble.
 ``upload_separate`` skips classify/split and runs process-split-files only.
 """
 
@@ -357,9 +357,9 @@ class FileEvent(StartEvent):
 
     Backend (no Llama UI): POST this to ``process-file``.
 
-    - ``job_type=upload_compiled`` (or ``full``): classify, slice, then extract.
+    - ``job_type=upload_compiled`` (or ``full``): classify and slice only.
     - ``job_type=upload_separate`` (or ``split``) plus ``documents[]``:
-      already-split files; runs process-split-files internally.
+      already-split files; runs process-split-files (parse, extract).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -513,7 +513,7 @@ class ExtractedInvalidEvent(Event):
 
 class PreparedPart(BaseModel):
     slot_id: str
-    file_id: str
+    file_id: str | None = None
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
@@ -939,7 +939,7 @@ async def _run_split_from_file_event(
         filing_type=filing_type,
         parts=split_parts,
         echo=echo,
-        require_all_slots=True,
+        require_all_slots=False,
     )
     prepared = [
         PreparedPart(
@@ -1229,15 +1229,9 @@ class ProcessFileWorkflow(Workflow):
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
         for item in slices:
-            file_id = await _upload_slot_pdf(
-                llama_cloud_client,
-                filename=item.filename,
-                pdf_bytes=item.pdf_bytes,
-            )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
-                    file_id=file_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
                 )
@@ -1275,51 +1269,21 @@ class ProcessFileWorkflow(Workflow):
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
-
-        from .process_split_files import SplitPartEvent
-
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
-                    "Extracting sliced compiled petition "
-                    f"({len(prepared)} document part(s))"
+                    "Split JSON ready; parse and extract wait for Assemble "
+                    f"({len(slices)} document part(s))"
                 ),
             )
         )
-        echo = {
-            "job_type": state.job_type,
-            "organization_id": state.organization_id,
-            "workspace_id": state.workspace_id,
-            "user_id": state.user_id,
-            "org_id": state.org_id,
-        }
-        agent_data_id = await _extract_sliced_parts(
-            ctx,
-            filing_type=catalog.filing_type,
-            fallback_file_id=state.file_id,
-            parts=[
-                SplitPartEvent(
-                    slot_id=item.slot_id,
-                    file_id=item.file_id,
-                    file_hash=item.file_hash,
-                    filename=item.filename,
-                    document_id=item.document_id,
-                    file_url=item.download_url,
-                )
-                for item in prepared
-                if item.file_id
-            ],
-            echo=echo,
-            require_all_slots=False,
-        )
         return BundlePrepared(
-            result=agent_data_id,
             filing_type=catalog.filing_type,
             parts=prepared,
             documents=list(state.source_documents),
             slot_pages=slot_pages,
-            agent_data_id=agent_data_id,
+            agent_data_id=None,
             job_type=state.job_type,
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
