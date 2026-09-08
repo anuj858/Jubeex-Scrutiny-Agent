@@ -11,7 +11,6 @@ from typing import Annotated, Any, cast
 
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
-from llama_cloud.types.configuration_response import ExtractV2Parameters
 from pydantic import BaseModel, Field, field_validator, model_validator
 from workflows import Context, Workflow, step
 from workflows.events import StartEvent, StopEvent
@@ -32,7 +31,17 @@ from .extract_record import (
     stamp_source_pages,
     unwrap_extracted_record,
 )
-from .s3_artifacts import STEP_EXTRACT, upload_step_json
+from .layout_index import (
+    LAYOUT_ARTIFACT_KEY_KEY,
+    LAYOUT_ARTIFACT_URL_KEY,
+    coerce_page_layout,
+    compact_sidecar_pages,
+    download_sidecar_pages,
+    dump_layout_index,
+    grounded_items_url,
+    merge_granular_bboxes,
+    stitch_slot_layouts,
+)
 from .process_file import (
     ExtractedEvent,
     ExtractedInvalidEvent,
@@ -44,6 +53,7 @@ from .process_file import (
     ingest_remote_file,
     normalize_org_id,
 )
+from .s3_artifacts import STEP_EXTRACT, STEP_LAYOUT, upload_step_json
 from .split_upload import (
     PETITION_SLOT_ID,
     SplitPartInput,
@@ -127,6 +137,7 @@ class SplitFilesState(BaseModel):
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
+    page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ProcessSplitFilesWorkflow(Workflow):
@@ -205,13 +216,16 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
 
-        pages_by_slot, parse_job_ids = await _parse_labeled_files(
+        pages_by_slot, parse_job_ids, layouts_by_slot = await _parse_labeled_files(
             llama_cloud_client,
             parse_config=parse_config,
             parts=parts,
             ctx=ctx,
         )
         page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
+        page_layout = stitch_slot_layouts(
+            catalog, parts, pages_by_slot, layouts_by_slot
+        )
 
         async with ctx.store.edit_state() as state:
             state.filing_type = catalog.filing_type
@@ -231,7 +245,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                     filename=item.filename,
                     document_id=(
                         item.document_id
-                        or getattr(ingested_by_slot.get(item.slot_id), "document_id", None)
+                        or getattr(
+                            ingested_by_slot.get(item.slot_id), "document_id", None
+                        )
                     ),
                     file_url=getattr(
                         ingested_by_slot.get(item.slot_id), "file_url", None
@@ -246,6 +262,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.parse_job_ids = parse_job_ids
             state.page_markdown = page_markdown
             state.page_parts = page_parts
+            state.page_layout = page_layout
 
         ctx.write_event_to_stream(
             Status(
@@ -433,6 +450,15 @@ class ProcessSplitFilesWorkflow(Workflow):
                 data.metadata["workspace_id"] = state.workspace_id
             if state.user_id:
                 data.metadata["user_id"] = state.user_id
+            layout_record = upload_step_json(
+                STEP_LAYOUT,
+                dump_layout_index(coerce_page_layout(state.page_layout)),
+                organization_id=state.organization_id or state.org_id,
+                workspace_id=state.workspace_id,
+            )
+            if layout_record:
+                data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
+                data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
             extracted_event = ExtractedEvent(data=data)
         except InvalidExtractionData as exc:
             logger.exception("Error validating extracted data")
@@ -455,7 +481,23 @@ class ProcessSplitFilesWorkflow(Workflow):
         data_dict = extracted_data.model_dump()
         inner = unwrap_extracted_record(data_dict)
         stamp_source_pages(inner)
-        meta = data_dict.get("metadata") if isinstance(data_dict.get("metadata"), dict) else {}
+        meta = (
+            data_dict.get("metadata")
+            if isinstance(data_dict.get("metadata"), dict)
+            else {}
+        )
+        src_meta = (
+            extracted_data.metadata
+            if isinstance(getattr(extracted_data, "metadata", None), dict)
+            else {}
+        )
+        if src_meta:
+            if not isinstance(data_dict.get("metadata"), dict):
+                data_dict["metadata"] = dict(meta)
+                meta = data_dict["metadata"]
+            for key in (LAYOUT_ARTIFACT_URL_KEY, LAYOUT_ARTIFACT_KEY_KEY):
+                if src_meta.get(key):
+                    meta[key] = src_meta[key]
         confidence = (meta.get("extract_confidence") or {}).get("overall")
         inner = apply_extract_envelope(
             inner,
@@ -540,7 +582,7 @@ async def _parse_one_file(
     part: SplitPartInput,
     semaphore: asyncio.Semaphore,
     ctx: Context[SplitFilesState],
-) -> tuple[str, dict[int, str], str | None]:
+) -> tuple[str, dict[int, str], str | None, dict[int, dict[str, Any]]]:
     async with semaphore:
         label = part.filename or part.slot_id
         try:
@@ -558,6 +600,7 @@ async def _parse_one_file(
                         exclude_none=True,
                     )
                 )
+            merge_granular_bboxes(create_kwargs)
             parse_job = await client.parsing.create(**create_kwargs)
             await _wait_for_parse(client, parse_job.id)
             parse_result = await client.parsing.get(
@@ -566,13 +609,17 @@ async def _parse_one_file(
                 project_id=project_id,
             )
             pages = _extract_page_markdown(parse_result)
+            sidecar_pages = await download_sidecar_pages(
+                grounded_items_url(parse_result)
+            )
+            layout = compact_sidecar_pages(sidecar_pages, slot_id=part.slot_id)
             ctx.write_event_to_stream(
                 Status(
                     level="info",
                     message=f"Parsed {len(pages)} page(s) from {label}",
                 )
             )
-            return part.slot_id, pages, parse_job.id
+            return part.slot_id, pages, parse_job.id, layout
         except Exception as exc:
             logger.exception("Parse failed for %s", label)
             ctx.write_event_to_stream(
@@ -581,7 +628,7 @@ async def _parse_one_file(
                     message=f"Parse failed for {label}; continuing without page text: {exc}",
                 )
             )
-            return part.slot_id, {}, None
+            return part.slot_id, {}, None, {}
 
 
 async def _parse_labeled_files(
@@ -590,7 +637,9 @@ async def _parse_labeled_files(
     parse_config: ParseConfig,
     parts: list[SplitPartInput],
     ctx: Context[SplitFilesState],
-) -> tuple[dict[str, dict[int, str]], dict[str, str]]:
+) -> tuple[
+    dict[str, dict[int, str]], dict[str, str], dict[str, dict[int, dict[str, Any]]]
+]:
     semaphore = asyncio.Semaphore(PARSE_CONCURRENCY)
     results = await asyncio.gather(
         *[
@@ -606,11 +655,13 @@ async def _parse_labeled_files(
     )
     pages_by_slot: dict[str, dict[int, str]] = {}
     parse_job_ids: dict[str, str] = {}
-    for slot_id, pages, job_id in results:
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    for slot_id, pages, job_id, layout in results:
         pages_by_slot[slot_id] = pages
+        layouts_by_slot[slot_id] = layout
         if job_id:
             parse_job_ids[slot_id] = job_id
-    return pages_by_slot, parse_job_ids
+    return pages_by_slot, parse_job_ids, layouts_by_slot
 
 
 async def _index_split_upload(

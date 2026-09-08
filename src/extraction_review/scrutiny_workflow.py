@@ -31,6 +31,7 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
+from .layout_index import LAYOUT_ARTIFACT_URL_KEY, load_layout_index
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -210,6 +211,7 @@ async def _run_defect(
     chunks: list[dict[str, Any]],
     file_name: str | None,
     filing_type: str | None,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectFinding:
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     coverage = Coverage(
@@ -239,6 +241,7 @@ async def _run_defect(
         coverage=coverage,
         usage=usage,
         chunks=chunks,
+        layout=layout,
     )
 
 
@@ -398,6 +401,14 @@ class ScrutinyWorkflow(Workflow):
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
         filing_type = metadata.get("classification") or record.get("petition_type")
+        layout_url = (
+            metadata.get(LAYOUT_ARTIFACT_URL_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        layout = await load_layout_index(
+            layout_url if isinstance(layout_url, str) else None
+        )
 
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
@@ -517,6 +528,7 @@ class ScrutinyWorkflow(Workflow):
                     chunks=chunks,
                     file_name=file_name,
                     filing_type=filing_type,
+                    layout=layout,
                 )
             except asyncio.CancelledError:
                 raise

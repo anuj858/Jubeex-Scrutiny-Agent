@@ -878,7 +878,10 @@
     "product_type": "parse_v2",
     "configuration_id": null,
     "tier": "agentic",
-    "version": "latest"
+    "version": "latest",
+    "output_options": {
+      "granular_bboxes": ["word", "line"]
+    }
   },
   "split": {
     "product_type": "split_v1",

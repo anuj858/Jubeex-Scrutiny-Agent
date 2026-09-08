@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 STEP_SPLIT = "split"
 STEP_EXTRACT = "extract"
+STEP_LAYOUT = "layout"
 STEP_DEFECTS = "defects"
 
 _job_id: ContextVar[str | None] = ContextVar("artifact_job_id", default=None)
