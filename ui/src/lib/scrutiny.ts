@@ -80,6 +80,8 @@ export interface DefectFinding {
   check_id: string;
   serial_no?: number | string;
   title: string;
+  defect?: string;
+  requirement?: string;
   main_category?: string;
   special_category?: string | null;
   status: ResultState;
@@ -346,6 +348,14 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
               )
               .join("")}</ul>`
           : "";
+      const catalogueText = [
+        finding.defect
+          ? `<p><b>Defect</b></p><p>${escapeHtml(finding.defect)}</p>`
+          : "",
+        finding.requirement
+          ? `<p><b>Requirement</b></p><p>${escapeHtml(finding.requirement)}</p>`
+          : "",
+      ].join("");
       const fix = finding.suggested_fix
         ? `<p style="background:#EFF6FF;border-left:4px solid #2563EB;padding:8px 12px;"><b>Suggested fix:</b> ${escapeHtml(finding.suggested_fix)}${finding.fix_rationale ? `<br/><span style="color:#1E3A8A;">${escapeHtml(finding.fix_rationale)}</span>` : ""}</p>`
         : "";
@@ -394,6 +404,7 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
       return `<h2 style="margin:28px 0 8px;font-size:14pt;">${escapeHtml(heading)}</h2>
         <p>${statusBadge(finding.status)} <span style="color:#64748B;">${Math.round(finding.confidence * 100)}% confident${finding.usage?.cost_usd != null ? ` · ${escapeHtml(formatUsd(finding.usage.cost_usd))}` : ""}</span></p>
         <p>${escapeHtml(finding.title)}</p>
+        ${catalogueText}
         <p>${escapeHtml(finding.summary)}</p>
         ${finding.reasoning ? `<p>${escapeHtml(finding.reasoning)}</p>` : ""}
         ${evidence}

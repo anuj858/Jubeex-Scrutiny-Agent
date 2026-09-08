@@ -30,6 +30,7 @@ from extraction_review.scrutiny.schema import (
     apply_status_policy,
     apply_undetermined_policy,
     build_finding,
+    failed_finding,
 )
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import (
@@ -401,9 +402,10 @@ def test_overlay_split_documents_replaces_index_slang() -> None:
         }
     }
     overlay_split_documents(payload, {50: "Vakalatnama"})
-    items = payload["data"]["filing_summary"]["documents"]["items"]
-    assert items == ["Vakalatnama (p. 50)"]
-    assert "V/A" not in items
+    assert "filing_summary" not in payload["data"]
+    assert payload["data"]["documents"] == [
+        {"name": "Vakalatnama", "start_page": 50, "end_page": 50},
+    ]
 
 
 def test_keep_nearby_scores_drops_far_neighbours() -> None:
@@ -875,6 +877,8 @@ def test_build_finding_validates_title_reasoning_and_source() -> None:
     assert "SCI_CHECKLIST_2025" not in (finding.reasoning or "")
     assert "checklist" in finding.reasoning.lower() or "check list" in finding.reasoning.lower()
     assert "filing page 2" in finding.reasoning.lower()
+    assert finding.defect == defect.defect
+    assert finding.requirement == defect.requirement
 
 
 def test_build_finding_says_page_missing_without_citation() -> None:
@@ -1119,4 +1123,43 @@ def test_build_finding_uses_chunk_pages_when_citation_has_none() -> None:
     assert finding.location == (
         "Filing page missing — no page number on the citation. "
         "Excerpts were reviewed on page 4 — Advocate's Checklist."
+    )
+
+
+def test_finding_json_copies_catalogue_defect_and_requirement() -> None:
+    catalogue = get_catalogue()
+    for check_id in ("D028", "D029"):
+        defect = catalogue.defect(check_id)
+        finding = build_finding(
+            defect,
+            DefectResponse(
+                check_id=check_id,
+                status="compliant",
+                confidence=0.9,
+                summary="The affidavit satisfies this check.",
+                reasoning="The Affidavit excerpts show the required particulars.",
+                evidence=[EvidenceRef(page=12, quote="AFFIDAVIT")],
+                suggested_fix=None,
+                fix_rationale=None,
+            ),
+            evidence_ids=["aff"],
+            coverage=Coverage(chunks_reviewed=1, pages_reviewed=[12]),
+        )
+        dumped = finding.model_dump(mode="json")
+        assert dumped["defect"] == defect.defect
+        assert dumped["requirement"] == defect.requirement
+        failed = failed_finding(defect, "OpenRouter timed out")
+        assert failed.defect == defect.defect
+        assert failed.requirement == defect.requirement
+    assert catalogue.defect("D028").defect == (
+        "The affidavit contains a blank portion in the body or in the affirmation clause."
+    )
+    assert catalogue.defect("D028").requirement == (
+        "Any blank portions in the body or in the affirmation clause of an affidavit must be duly filled."
+    )
+    assert catalogue.defect("D029").defect == (
+        "The affidavit is not filed in the cause, appeal or matter for which it is sworn."
+    )
+    assert catalogue.defect("D029").requirement == (
+        "Every affidavit shall be filed in the cause, appeal or matter for which it is sworn."
     )

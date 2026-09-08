@@ -396,6 +396,10 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         )
         notes[part] = (notes.get(part) or "").rstrip() + extra
     notes.setdefault(
+        "Memo of Appearance",
+        "Use only for advocates_on_record.",
+    )
+    notes.setdefault(
         "Vakalatnama",
         "Use only for advocates_on_record.",
     )
@@ -406,7 +410,7 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         "is confined only to the pleadings. Use the signature or DRAWN & FILED BY "
         "block only for advocates_on_record.",
     )
-    for part in ("Vakalatnama", "AOR's Certificate"):
+    for part in ("Memo of Appearance", "Vakalatnama", "AOR's Certificate"):
         if "Do not copy petitioner or respondent names" not in notes[part]:
             notes[part] = (
                 notes[part].rstrip()
@@ -454,8 +458,9 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "- formatted_title: Cover Page names are main_petitioner and main_respondent. "
             "Store those names without And Anr, And Ors, Petitioner, or Respondent. "
             "Each side is 'MainName' (1 party), 'MainName and Anr.' (exactly 2), "
-            "'MainName and Ors.' (3 or more). Join with ' VS '. Do not append and Anr. "
-            "or and Ors. if that suffix is already on the name.",
+            "'MainName and Ors.' (3 or more). Join with ' VS '. Never use square "
+            "brackets: write 'and Anr.' and 'and Ors.', not '[And ors.]' or '[and Anr.]'. "
+            "Do not append and Anr. or and Ors. if that suffix is already on the name.",
             "- kind: INDIVIDUAL or ORGANIZATION from the printed name. Organization "
             "prefixes: M/s, M/s., Messrs, The, Union, Government of, Ministry of, "
             "Department of. Suffixes: Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, "
@@ -551,8 +556,9 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         extra += (
             " main_petitioner and main_respondent are the names on the Cover Page "
             "cause-title line without And Anr / And Ors / Petitioner / Respondent. "
-            "formatted_title uses and Anr. for exactly one extra "
-            "party on that side and and Ors. for two or more extras. "
+            "formatted_title uses Cover Page main names plus and Anr. for exactly "
+            "one extra party on that side and and Ors. for two or more extras. "
+            "Never wrap and Anr. or and Ors. in square brackets. "
             "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
             "Respondent(s), with or without dots, as a spelling mismatch. "
             "Do not write 'and Anr. and Anr.' "
@@ -623,7 +629,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         lines.append(line)
     lines.extend(
         [
-            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page without And Anr / And Ors.",
+            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page without And Anr / And Ors. Never use [And ors.] or other square brackets.",
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",

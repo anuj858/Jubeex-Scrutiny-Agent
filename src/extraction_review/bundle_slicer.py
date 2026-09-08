@@ -41,8 +41,9 @@ def map_slot_pages(
 
     A page is copied into every matching slot. Pages that match no known slot
     are leftover; ``slice_bundle_pdf`` puts them in the optional Undefined
-    slot. A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
-    expanded to Vakalatnama and PoA/BR so both slots receive those pages.
+    slot.     A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
+    expanded to Vakalatnama and PoA/BR so the combined Vakalatnama slot and
+    the PoA/BR slot both receive those pages.
     """
     pages_by_slot: dict[str, list[int]] = {slot.id: [] for slot in catalog.slots}
     for page, raw_labels in page_parts.items():

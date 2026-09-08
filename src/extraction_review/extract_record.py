@@ -71,7 +71,11 @@ _ROLE_TAIL = re.compile(
     re.IGNORECASE,
 )
 _ANR_ORS_TAIL = re.compile(
-    r"(?:\s*[,&]?\s*(?:and\s+)?(?:anrs?|ors|another|others)\.?)+\s*$",
+    r"(?:\s*[,&]?\s*[\[(]?\s*(?:and\s+)?(?:anrs?|ors|another|others)\.?\s*[\])]?)+\s*$",
+    re.IGNORECASE,
+)
+_BRACKETED_ANR_ORS = re.compile(
+    r"\[+\s*((?:and\s+)?(?:anrs?|ors)\.?)\s*\]+",
     re.IGNORECASE,
 )
 _LIST_SERIAL = re.compile(r"^\s*(?:\(\s*)?\d+\s*[.)]\s*")
@@ -257,7 +261,7 @@ def clean_relief_sort(text: str | None) -> str | None:
 
 
 def strip_anr_ors_suffix(text: str | None) -> str:
-    """Drop trailing And Anr / And Ors / & Anr. already printed on the Cover Page."""
+    """Drop trailing And Anr / And Ors / [And ors.] already printed on the Cover Page."""
     cleaned = strip_party_role_label(text)
     while True:
         updated = _ANR_ORS_TAIL.sub("", cleaned).rstrip(" .,&")
@@ -265,6 +269,15 @@ def strip_anr_ors_suffix(text: str | None) -> str:
             break
         cleaned = updated
     return cleaned
+
+
+def strip_formatted_title_brackets(text: str | None) -> str | None:
+    """Keep 'and Anr.' / 'and Ors.' as plain text, never [And ors.]."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    cleaned = _BRACKETED_ANR_ORS.sub(r" \1", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
+    return cleaned or None
 
 
 def format_side_title(main_name: str | None, count: int) -> str | None:
@@ -764,6 +777,10 @@ def _normalize_parties(payload: dict[str, Any]) -> None:
         )
         if formatted:
             cause["formatted_title"] = formatted
+        elif cause.get("formatted_title"):
+            stripped = strip_formatted_title_brackets(str(cause.get("formatted_title")))
+            if stripped:
+                cause["formatted_title"] = stripped
 
 
 def _append_missing_acting_through(payload: dict[str, Any]) -> None:
@@ -878,7 +895,7 @@ def _petition_type_name(record: dict[str, Any], filing_type: str | None) -> str 
 
 
 def _drop_removed_fields(payload: dict[str, Any]) -> None:
-    for key in ("classification", "applications", "relief"):
+    for key in ("classification", "applications", "relief", "filing_summary"):
         payload.pop(key, None)
     for key in ("petitioners", "respondents"):
         for party in payload.get(key) or []:

@@ -22,11 +22,13 @@ logger = logging.getLogger(__name__)
 EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
 
 JUBEEX_FILING_TYPES = [
-    "SLP_CIVIL", 
-    "SLP_CRIMINAL", 
-    "ARBITRATION_PETITION", 
-    "WRIT_PETITION_CIVIL", 
-    "WRIT_PETITION_CRIMINAL", 
+    "SLP_CIVIL",
+    "SLP_CRIMINAL",
+    "TRANSFER_PETITION_CIVIL",
+    "TRANSFER_PETITION_CRIMINAL",
+    "ARBITRATION_PETITION",
+    "WRIT_PETITION_CIVIL",
+    "WRIT_PETITION_CRIMINAL",
     "other"
 ]
 
@@ -91,7 +93,9 @@ class CauseTitle(BaseModel):
             "'MainName and Ors.' if that side has 3 or more. "
             "Join sides with ' VS '. Example: two petitioners and four respondents → "
             "'Meera Krishnan and Anr. VS Union of India and Ors.' "
-            "Main names come from the Cover Page. Do not invent extra parties."
+            "Never write [And ors.], [and Anr.], or any square brackets around "
+            "and Anr./and Ors. Main names come from the Cover Page. "
+            "Do not invent extra parties."
         ),
     )
     raw_text: str | None = Field(default=None, description="The cause title verbatim, including '...and others' / '...and another'")
@@ -272,20 +276,6 @@ class Inconsistencies(BaseModel):
         return value
 
 
-class DocumentList(BaseModel):
-    count: int | None = Field(default=0, description="Count of items")
-    items: list[str] = Field(default_factory=list, description="List of the items")
-
-
-class FilingSummary(BaseModel):
-    """High-level summary. Documents are filled by the pipeline from the stitch."""
-    matter_title: str | None = Field(default=None, description="Short human title, normally the cause title")
-    matter_type: str | None = Field(default=None, description="Petition type label")
-    documents: DocumentList | None = Field(default=None, description="List of parts present in the filing")
-    annexures: DocumentList | None = Field(default=None, description="Annexures named in the Index")
-    estimated_review_minutes: int | None = Field(default=None, description="Estimated human review time based on complexity")
-
-
 class DocumentSpan(BaseModel):
     name: str | None = Field(default=None, description="Split document part name")
     start_page: int | None = Field(default=None, description="First global page")
@@ -310,7 +300,7 @@ class LegalExtractRecord(BaseModel):
     petition_type: str | None = Field(
         default=None,
         description=(
-            "Petition type as printed, e.g. Special Leave Petition (Civil). "
+            "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
             "Office Report on Limitation, Affidavit, and Memo of Parties."
         ),
@@ -385,7 +375,6 @@ class CoreFilingRecord(LegalExtractRecord):
     primary_document_id: str | None = Field(default=None, description="Leave null.")
     documents: list[DocumentSpan] = Field(default_factory=list, description="Leave empty. Filled from the stitch.")
     document_counts: DocumentCounts | None = Field(default=None, description="Leave null. Filled from the stitch.")
-    filing_summary: FilingSummary | None = Field(default=None, description="Leave null. Document lists may be filled from the stitch.")
     overall_confidence: ConfidencePercent = Field(default=None, description="Leave null. Filled from LlamaExtract confidence scores as a percentage string such as 91%.")
     generated_at: str | None = Field(default=None, description="Leave null. Filled by the pipeline.")
 
@@ -397,6 +386,8 @@ class ExtractionSchema(CoreFilingRecord):
 FILING_SCHEMAS = {
     "SLP_CIVIL": CoreFilingRecord,
     "SLP_CRIMINAL": CoreFilingRecord,
+    "TRANSFER_PETITION_CIVIL": CoreFilingRecord,
+    "TRANSFER_PETITION_CRIMINAL": CoreFilingRecord,
     "ARBITRATION_PETITION": CoreFilingRecord,
     "WRIT_PETITION_CIVIL": CoreFilingRecord,
     "WRIT_PETITION_CRIMINAL": CoreFilingRecord,

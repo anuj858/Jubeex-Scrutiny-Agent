@@ -172,7 +172,6 @@ def build_filing_chunk_text(
     aor = _first_dict(
         data.get("advocates_on_record") or data.get("advocate_on_record")
     )
-    summary = _as_dict(data.get("filing_summary"))
 
     petitioners = data.get("petitioners") or []
     respondents = data.get("respondents") or []
@@ -208,7 +207,7 @@ def build_filing_chunk_text(
         f"({impugned.get('Forum') or impugned.get('forum') or impugned.get('court_name') or impugned.get('earlier_court')}) "
         f"dated {impugned.get('order_date') or impugned.get('date_of_impugned_order')}",
         f"AOR: {aor.get('name')} ({aor.get('registration_number')})",
-        f"Summary title: {cause.get('formatted_title') or cause.get('title') or summary.get('matter_title')}",
+        f"Summary title: {cause.get('formatted_title') or cause.get('title')}",
     ]
     return "\n".join(p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None"))
 

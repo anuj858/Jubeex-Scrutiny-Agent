@@ -43,8 +43,11 @@ def test_catalog(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert "SLP_CIVIL" in body["filing_types"]
+    assert "TRANSFER_PETITION_CIVIL" in body["filing_types"]
+    assert "TRANSFER_PETITION_CRIMINAL" in body["filing_types"]
     assert "upload_separate" in body["job_types"]
     assert "SLP_CIVIL" in body["split_upload_types"]
+    assert "TRANSFER_PETITION_CIVIL" in body["split_upload_types"]
 
 
 def test_create_filing_rejects_empty_body(client: TestClient) -> None:

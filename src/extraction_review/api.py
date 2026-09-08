@@ -113,7 +113,7 @@ class CreateFilingRequest(BaseModel):
     job_type: str = Field(examples=["upload_separate", "upload_compiled"])
     filing_type: str | None = Field(
         default=None,
-        examples=["SLP_CIVIL", "SLP_CRIMINAL"],
+        examples=["SLP_CIVIL", "SLP_CRIMINAL", "TRANSFER_PETITION_CIVIL", "TRANSFER_PETITION_CRIMINAL"],
     )
     organization_id: str | None = None
     workspace_id: str | None = None
@@ -154,7 +154,7 @@ class CreateFilingRequest(BaseModel):
             if not self.filing_type:
                 raise ValueError(
                     "filing_type is required for upload_separate. "
-                    "Use a real type such as SLP_CIVIL, not 'string' or a test value."
+                    "Use a real type such as SLP_CIVIL or TRANSFER_PETITION_CIVIL, not 'string' or a test value."
                 )
             if catalog_types and self.filing_type not in catalog_types:
                 allowed = ", ".join(sorted(catalog_types))

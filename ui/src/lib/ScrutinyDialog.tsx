@@ -139,6 +139,24 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               <p className="text-sm text-muted-foreground">{finding.reasoning}</p>
             )}
             <EvidenceList evidence={finding.evidence ?? []} />
+            {(finding.defect || finding.requirement) && (
+              <div className="mt-3 space-y-2 text-sm">
+                {finding.defect && (
+                  <div>
+                    <div className="text-xs font-semibold">Defect</div>
+                    <p className="mt-1 text-muted-foreground">{finding.defect}</p>
+                  </div>
+                )}
+                {finding.requirement && (
+                  <div>
+                    <div className="text-xs font-semibold">Requirement</div>
+                    <p className="mt-1 text-muted-foreground">
+                      {finding.requirement}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
             <SuggestedFix
               suggestedFix={finding.suggested_fix}
               rationale={finding.fix_rationale}

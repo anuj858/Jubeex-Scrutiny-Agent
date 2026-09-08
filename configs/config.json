@@ -12,6 +12,14 @@
         "description": "Special Leave Petition (Criminal) is filed against any judgment, decree, determination, sentence or order in a criminal proceeding passed or made by any court or tribunal in the territory of India."
       },
       {
+        "type": "TRANSFER_PETITION_CIVIL",
+        "description": "Transfer Petition (Civil) is filed seeking transfer of a civil case from one High Court to another, or from one court to another, typically under Article 139A of the Constitution or Section 25 of the Code of Civil Procedure."
+      },
+      {
+        "type": "TRANSFER_PETITION_CRIMINAL",
+        "description": "Transfer Petition (Criminal) is filed seeking transfer of a criminal case from one court to another, typically under Section 406 of the Code of Criminal Procedure."
+      },
+      {
         "type": "ARBITRATION_PETITION",
         "description": "Arbitration Petition typically involves matters related to appointment of arbitrators or challenging arbitral awards."
       },
@@ -196,7 +204,7 @@
                 }
               ],
               "default": null,
-              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Main names come from the Cover Page. Do not invent extra parties.",
+              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
               "title": "Formatted Title"
             },
             "raw_text": {
@@ -784,7 +792,7 @@
             }
           ],
           "default": null,
-          "description": "Petition type as printed, e.g. Special Leave Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
           "title": "Petition Type"
         },
         "cause_title": {
@@ -918,7 +926,7 @@
       },
       {
         "name": "Main Petition",
-        "description": "Main Petition body (Form 28): Special Leave Petition or writ/arbitration petition, grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, Office Report on Limitation, or the page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
+        "description": "Main Petition body (Form 28 or Transfer Petition): Special Leave Petition, transfer petition, or writ/arbitration petition, grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, Office Report on Limitation, or the page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
         "name": "Affidavit",
@@ -951,6 +959,10 @@
       {
         "name": "PoA/BR",
         "description": "Power of Attorney or Board Resolution authorising the signatory. Distinct from the Vakalatnama."
+      },
+      {
+        "name": "Filing Memo",
+        "description": "Filing Memo or filing memorandum listing the papers filed with the Registry, often near the Vakalatnama at the end of the paper book. Distinct from Memo of Parties, Memo of Appearance, and Index."
       },
       {
         "name": "Court Fees",
@@ -989,11 +1001,11 @@
       },
       "cause_title": {
         "fill": [
-          "Memo of Parties",
           "Cover Page"
         ],
         "verify": [
-          "Main Petition"
+          "Main Petition",
+          "Memo of Parties"
         ]
       },
       "petitioners": {
@@ -1151,17 +1163,10 @@
             "required": false
           },
           {
-            "id": "memo_of_appearance",
-            "label": "Memo of Appearance",
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
             "parts": [
-              "Memo of Appearance"
-            ],
-            "required": true
-          },
-          {
-            "id": "vakalatnama",
-            "label": "Vakalatnama",
-            "parts": [
+              "Memo of Appearance",
               "Vakalatnama"
             ],
             "required": true
@@ -1309,17 +1314,304 @@
             "required": false
           },
           {
-            "id": "memo_of_appearance",
-            "label": "Memo of Appearance",
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
             "parts": [
-              "Memo of Appearance"
+              "Memo of Appearance",
+              "Vakalatnama"
             ],
             "required": true
           },
           {
-            "id": "vakalatnama",
-            "label": "Vakalatnama",
+            "id": "poa_br",
+            "label": "PoA/BR",
             "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      },
+      "TRANSFER_PETITION_CIVIL": {
+        "label": "Transfer Petition (Civil)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "filing_memo",
+            "label": "Filing Memo",
+            "parts": [
+              "Filing Memo"
+            ],
+            "required": true
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      },
+      "TRANSFER_PETITION_CRIMINAL": {
+        "label": "Transfer Petition (Criminal)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
               "Vakalatnama"
             ],
             "required": true

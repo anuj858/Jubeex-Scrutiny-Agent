@@ -159,7 +159,12 @@ def test_slot_id_from_document_name() -> None:
         slot_id_from_name("03_Annexure_P1_Impugned_Order.pdf", "SLP_CIVIL")
         == "annexures"
     )
-    assert slot_id_from_name("04_Vakalatnama.pdf", "SLP_CIVIL") == "vakalatnama"
+    assert slot_id_from_name("04_Vakalatnama.pdf", "SLP_CIVIL") == (
+        "vakalatnama_appearance"
+    )
+    assert slot_id_from_name("Filing_Memo.pdf", "TRANSFER_PETITION_CIVIL") == (
+        "filing_memo"
+    )
 
 
 def test_upload_separate_documents_payload() -> None:
@@ -197,7 +202,7 @@ def test_upload_separate_documents_payload() -> None:
     assert event.workspace_id == "b20c7d91-4e55-48aa-a013-9d6e2f88c104"
     assert event.user_id == "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447"
     slots = {item.slot_id for item in event.documents}
-    assert slots == {"petition", "synopsis_lod", "annexures", "vakalatnama"}
+    assert slots == {"petition", "synopsis_lod", "annexures", "vakalatnama_appearance"}
     petition = next(item for item in event.documents if item.slot_id == "petition")
     assert petition.document_id == "11aa22bb-33cc-44dd-85ee-66ff77889900"
     assert petition.filename == "01_Petition.pdf"
@@ -233,6 +238,32 @@ def test_compiled_accepts_optional_filing_type() -> None:
         ],
     )
     assert event.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_accepts_transfer_petition_types() -> None:
+    civil_type, civil_catalog = resolve_compiled_filing_type(
+        "TRANSFER_PETITION_CIVIL", None
+    )
+    assert civil_type == "TRANSFER_PETITION_CIVIL"
+    assert civil_catalog.filing_type == "TRANSFER_PETITION_CIVIL"
+    assert "filing_memo" in {slot.id for slot in civil_catalog.slots}
+    criminal_type, criminal_catalog = resolve_compiled_filing_type(
+        "other", "TRANSFER_PETITION_CRIMINAL"
+    )
+    assert criminal_type == "TRANSFER_PETITION_CRIMINAL"
+    assert criminal_catalog.filing_type == "TRANSFER_PETITION_CRIMINAL"
+    assert "filing_memo" not in {slot.id for slot in criminal_catalog.slots}
+    event = FileEvent(
+        job_type="upload_compiled",
+        filing_type="TRANSFER_PETITION_CIVIL",
+        documents=[
+            {
+                "name": "compiled-tp-civil.pdf",
+                "download_url": "https://example.com/compiled.pdf",
+            }
+        ],
+    )
+    assert event.filing_type == "TRANSFER_PETITION_CIVIL"
 
 
 def test_compiled_catalog_override_skips_classify() -> None:
