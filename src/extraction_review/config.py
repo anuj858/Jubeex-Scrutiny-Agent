@@ -402,6 +402,7 @@ class ClassifyConfig(ClassifyV2Parameters):
     configuration_id: str | None = None
 
 class ParseConfig(ParseV2Parameters):
+    model_config = ConfigDict(extra="allow")
     configuration_id: str | None = None
 
 class SplitConfig(SplitV1Parameters):

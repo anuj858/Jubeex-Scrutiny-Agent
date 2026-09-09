@@ -14,9 +14,24 @@ export type ResultState =
   | "not_determined"
   | "needs_review";
 
+export interface BoundingBox {
+  page: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export type BoxesStatus = "matched" | "page_only" | "unavailable";
+
 export interface EvidenceRef {
   page: number | null;
   quote: string;
+  bounding_boxes?: BoundingBox[];
+  boxes_status?: BoxesStatus;
+  document_part?: string | null;
+  slot_id?: string | null;
+  local_page?: number | null;
 }
 
 export interface SubcheckResult {

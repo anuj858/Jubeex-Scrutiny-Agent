@@ -1,7 +1,8 @@
 """Classify and LlamaSplit a bundled PDF, then stop.
 
-``upload_compiled`` classifies, splits, and slices. Parse/extract runs later
-when the backend sends ``upload_separate`` after Assemble.
+``upload_compiled`` classifies, splits, and slices slot PDFs. Parse/extract
+runs only after Submit (UI ``process-split-files``) or backend
+``upload_separate``.
 ``upload_separate`` skips classify/split and runs process-split-files only.
 """
 
@@ -11,6 +12,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import re
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
@@ -46,6 +48,19 @@ from .split_upload import (
 logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
+_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def upload_sliced_slot_pdfs() -> bool:
+    """Upload sliced slot PDFs to LlamaCloud for the split-upload form.
+
+    The UI needs a LlamaCloud ``file_id`` per slot to fill Upload, enable
+    Download, and Submit parse/extract. Skip only when a backend explicitly
+    sets ``SKIP_SLOT_PDF_UPLOAD``.
+    """
+    skip = (os.getenv("SKIP_SLOT_PDF_UPLOAD") or "").strip().lower()
+    return skip not in _TRUTHY
+
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 600.0
@@ -390,7 +405,8 @@ class FileEvent(StartEvent):
 
     Backend (no Llama UI): POST this to ``process-file``.
 
-    - ``job_type=upload_compiled`` (or ``full``): classify and slice only.
+    - ``job_type=upload_compiled`` (or ``full``): classify, slice, and upload
+      slot PDFs, then stop. Parse/extract wait for Submit.
     - ``job_type=upload_separate`` (or ``split``) plus ``documents[]``:
       already-split files; runs process-split-files (parse, extract).
     """
@@ -1264,12 +1280,21 @@ class ProcessFileWorkflow(Workflow):
             )
         )
 
+        upload_slots = upload_sliced_slot_pdfs()
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
         for item in slices:
+            file_id = None
+            if upload_slots:
+                file_id = await _upload_slot_pdf(
+                    llama_cloud_client,
+                    filename=item.filename,
+                    pdf_bytes=item.pdf_bytes,
+                )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
+                    file_id=file_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
                     label=item.label,
@@ -1296,26 +1321,33 @@ class ProcessFileWorkflow(Workflow):
                 "workspace_id": state.workspace_id,
                 "parts": [
                     {
-                        "slot_id": item.slot_id,
-                        "label": item.label,
-                        "filename": item.filename,
-                        "page_span": item.page_span,
-                        "file_hash": item.file_hash,
+                        "slot_id": part.slot_id,
+                        "label": part.label,
+                        "filename": part.filename,
+                        "page_span": part.page_span,
+                        "file_hash": part.file_hash,
+                        "file_id": part.file_id,
                     }
-                    for item in slices
+                    for part in prepared
                 ],
                 "slot_pages": slot_pages,
             },
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
+        if upload_slots:
+            ready_message = (
+                "Split ready. Review the document slots, then Submit to "
+                f"parse and extract ({len(slices)} document part(s))"
+            )
+        else:
+            ready_message = (
+                f"Split JSON ready ({len(slices)} document part(s))"
+            )
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=(
-                    "Split JSON ready; parse and extract wait for Assemble "
-                    f"({len(slices)} document part(s))"
-                ),
+                message=ready_message,
             )
         )
         return BundlePrepared(

@@ -11,8 +11,19 @@ import json
 import re
 from typing import Any
 
-from .rules import Catalogue, Defect, DefectCategory, normalize_filing_type
-from ..document_parts import filing_type_label, format_document_parts, pinecone_queries_for_defect, parts_named_in_where_to_look
+from ..document_parts import (
+    filing_type_label,
+    format_document_parts,
+    parts_named_in_where_to_look,
+    pinecone_queries_for_defect,
+)
+from .rules import (
+    Catalogue,
+    Defect,
+    DefectCategory,
+    normalize_filing_type,
+    split_main_categories,
+)
 
 MAX_EVIDENCE_CHARS = 60_000
 
@@ -33,8 +44,9 @@ def _system_prompt(catalogue: Catalogue, filing_type: str | None = None) -> str:
     label = filing_type_label(filing_type)
     filing_block = (
         f"\nThis filing is classified as {label}. Apply only the standards that "
-        "belong to this petition type. Checks that apply to every petition type "
-        "still apply. Do not treat this as a different kind of petition.\n"
+        "belong to this petition type. Shared family checks (for example every "
+        "SLP check on an SLP Civil filing) and checks that apply to every "
+        "petition type still apply. Do not treat this as a different kind of petition.\n"
     )
 
     return f"""You are a pre-filing scrutiny assistant for the {catalogue.jurisdiction}. \
@@ -107,9 +119,16 @@ def _format_category(defect: Defect, category: DefectCategory | None) -> str:
 
 
 def _filing_phrase(main_category: str) -> str:
-    if normalize_filing_type(main_category) == "global":
+    parts = split_main_categories(main_category)
+    if len(parts) > 1:
+        return "this filing (the check applies to " + ", ".join(parts) + ")"
+    label = parts[0] if parts else main_category
+    key = normalize_filing_type(label)
+    if key == "global":
         return "this filing (the check applies to every petition type)"
-    return f"this {main_category} filing"
+    if key in {"slp", "transfer_petition", "writ_petition"}:
+        return f"this {label} filing (shared across civil and criminal)"
+    return f"this {label} filing"
 
 
 def _prune(value: Any) -> Any:
@@ -222,9 +241,33 @@ def _lc_first(text: str) -> str:
 
 def _content_tokens(text: str) -> set[str]:
     stop = {
-        "the", "a", "an", "of", "and", "or", "to", "in", "for", "must", "shall",
-        "does", "not", "duly", "be", "is", "has", "have", "with", "along",
-        "every", "this", "that", "as", "if", "so", "whether",
+        "the",
+        "a",
+        "an",
+        "of",
+        "and",
+        "or",
+        "to",
+        "in",
+        "for",
+        "must",
+        "shall",
+        "does",
+        "not",
+        "duly",
+        "be",
+        "is",
+        "has",
+        "have",
+        "with",
+        "along",
+        "every",
+        "this",
+        "that",
+        "as",
+        "if",
+        "so",
+        "whether",
     }
     words = re.sub(r"[^a-z0-9]+", " ", text.lower()).split()
     return {w for w in words if w not in stop and len(w) > 1}
@@ -369,7 +412,9 @@ def _cure_aim(step: str) -> str:
     text = re.sub(r"^draft\s+", "Include ", text, flags=re.IGNORECASE)
     text = re.sub(r"^upload\s+", "File ", text, flags=re.IGNORECASE)
     text = re.sub(r"^re-upload\s+", "Re-file ", text, flags=re.IGNORECASE)
-    text = re.sub(r"^supply missing\s+", "Include the missing ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^supply missing\s+", "Include the missing ", text, flags=re.IGNORECASE
+    )
     text = re.sub(r"^provide details of\s+", "State ", text, flags=re.IGNORECASE)
     text = re.sub(
         r"^review and edit the statement\.?$",
@@ -468,9 +513,7 @@ def finding_title(defect: Defect, catalogue: Catalogue | None = None) -> str:
     return objection
 
 
-def readable_location_source(
-    defect: Defect, catalogue: Catalogue | None = None
-) -> str:
+def readable_location_source(defect: Defect, catalogue: Catalogue | None = None) -> str:
     """Official-source citation. Never looks like a page of this filing."""
     raw = (defect.location_source or "").strip()
     if not raw or "did not give" in raw.lower():
@@ -486,9 +529,7 @@ def readable_location_source(
     if titles:
         head = titles[0] if len(titles) == 1 else "; ".join(titles)
         if page:
-            return (
-                f"Official source (not a page of this filing): {head}, page {page}"
-            )
+            return f"Official source (not a page of this filing): {head}, page {page}"
         return (
             f"Official source page missing — {head} "
             f"(rulebook page not recorded; this is not a filing page)."
@@ -600,9 +641,7 @@ def fallback_reasoning(
             f"{page_bit}"
         )
     if status == "compliant":
-        return (
-            f"This filing meets the check: {requirement}{page_bit}"
-        )
+        return f"This filing meets the check: {requirement}{page_bit}"
     if status == "needs_review":
         return (
             f"This check could not be decided from the excerpts. "
@@ -613,9 +652,7 @@ def fallback_reasoning(
             f"This check does not apply to this filing. "
             f"The catalogue test is: {requirement}"
         )
-    return (
-        f"This check could not be completed. The test is: {requirement}{page_bit}"
-    )
+    return f"This check could not be completed. The test is: {requirement}{page_bit}"
 
 
 def _strip_rulebook_noise(text: str) -> str:
@@ -786,9 +823,9 @@ def build_defect_prompt(
                 "Use these aims as the substance of the cure — describe the "
                 "document contents, not a product workflow:"
             ),
-            "\n".join(cure_lines) if cure_lines else (
-                "State the missing or incomplete material in filing terms."
-            ),
+            "\n".join(cure_lines)
+            if cure_lines
+            else ("State the missing or incomplete material in filing terms."),
             "",
             "## Structured filing record",
             _format_record(record),

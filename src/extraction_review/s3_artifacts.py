@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 STEP_SPLIT = "split"
 STEP_EXTRACT = "extract"
+STEP_LAYOUT = "layout"
 STEP_DEFECTS = "defects"
 
 _job_id: ContextVar[str | None] = ContextVar("artifact_job_id", default=None)
@@ -79,10 +80,10 @@ def artifact_key(
     workspace = _safe_segment(workspace_id or _workspace_id.get() or "", "workspace")
     job = _safe_segment(job_id or _job_id.get() or str(uuid.uuid4()), "job")
     token = _safe_segment(object_id or str(uuid.uuid4()), "file")
-    return (
-        f"org/{org}/filing-workspace/{workspace}/"
-        f"{job}-v001-agent-{_safe_segment(step)}-{token}.json"
-    )
+    folder = f"org/{org}/filing-workspace/{workspace}/"
+    if step == STEP_LAYOUT:
+        folder = f"{folder}coordinate/"
+    return f"{folder}{job}-v001-agent-{_safe_segment(step)}-{token}.json"
 
 
 def _json_bytes(payload: Any) -> bytes:

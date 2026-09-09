@@ -15,15 +15,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .rules import Defect, get_catalogue
-from .prompts import (
-    display_cure_steps,
-    finding_title,
-    filing_location,
-    readable_location_source,
-    validated_reasoning,
-    validated_summary,
-)
 from ..document_parts import (
     allows_index_evidence,
     missing_required_parts,
@@ -31,6 +22,16 @@ from ..document_parts import (
     parts_on_page,
     preferred_parts_for_defect,
 )
+from ..layout_index import boxes_for_quote, page_entry, part_for_page
+from .prompts import (
+    display_cure_steps,
+    filing_location,
+    finding_title,
+    readable_location_source,
+    validated_reasoning,
+    validated_summary,
+)
+from .rules import Defect, get_catalogue
 
 ResultState = Literal[
     "defect_found",
@@ -40,9 +41,15 @@ ResultState = Literal[
     "needs_review",
 ]
 
+BoxesStatus = Literal["matched", "page_only", "unavailable"]
+
 
 class EvidenceRef(BaseModel):
-    """A pointer back into the source document for one observation."""
+    """A pointer back into the source document for one observation.
+
+    This is the model-facing shape. Do not add coordinates here — the LLM
+    schema is derived from DefectResponse and must stay {page, quote}.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +62,32 @@ class EvidenceRef(BaseModel):
         )
     )
     quote: str = Field(description="Verbatim excerpt supporting the finding")
+
+
+class BoundingBox(BaseModel):
+    """One highlight strip on a PDF page. Coordinates are normalized 0–1."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page: int
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class FindingEvidence(BaseModel):
+    """Evidence on a server-assembled finding, including highlight boxes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page: int | None = None
+    quote: str
+    bounding_boxes: list[BoundingBox] = Field(default_factory=list)
+    boxes_status: BoxesStatus = "unavailable"
+    document_part: str | None = None
+    slot_id: str | None = None
+    local_page: int | None = None
 
 
 class DefectResponse(BaseModel):
@@ -113,7 +146,7 @@ class LlmUsage(BaseModel):
     generation_id: str | None = None
     generation_ids: list[str] = Field(default_factory=list)
 
-    def plus(self, other: "LlmUsage") -> "LlmUsage":
+    def plus(self, other: LlmUsage) -> LlmUsage:
         cost: float | None = None
         if self.cost_usd is not None or other.cost_usd is not None:
             cost = (self.cost_usd or 0.0) + (other.cost_usd or 0.0)
@@ -202,7 +235,7 @@ class DefectFinding(BaseModel):
     summary: str
     confidence: float
     reasoning: str
-    evidence: list[EvidenceRef] = Field(default_factory=list)
+    evidence: list[FindingEvidence] = Field(default_factory=list)
     suggested_fix: str | None = None
     fix_rationale: str | None = None
     how_to_cure: list[str] = Field(default_factory=list)
@@ -256,8 +289,7 @@ def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
             end_i = int(end) if end is not None else start_i
         except (TypeError, ValueError):
             end_i = start_i
-        if end_i < start_i:
-            end_i = start_i
+        end_i = max(end_i, start_i)
         pages.update(range(start_i, end_i + 1))
     return pages
 
@@ -297,6 +329,45 @@ def _chunk_part_rank(chunk: dict[str, Any], preferred: list[str]) -> int:
     return 1
 
 
+def attach_evidence_boxes(
+    refs: list[EvidenceRef],
+    *,
+    layout: dict[int, dict[str, Any]] | None = None,
+    chunks: list[dict[str, Any]] | None = None,
+) -> list[FindingEvidence]:
+    """Attach per-line boxes after page snap. Empty layout → unavailable."""
+    attached: list[FindingEvidence] = []
+    for ref in refs:
+        boxes, status = boxes_for_quote(ref.quote or "", ref.page, layout)
+        boxes_status: BoxesStatus = (
+            status
+            if status in ("matched", "page_only", "unavailable")
+            else "unavailable"
+        )
+        page_meta = page_entry(layout, ref.page) if layout else None
+        local_page = None
+        slot_id = None
+        if page_meta is not None:
+            slot_id = str(page_meta.get("slot_id") or "").strip() or None
+            raw_local = page_meta.get("local_page")
+            try:
+                local_page = int(raw_local) if raw_local is not None else None
+            except (TypeError, ValueError):
+                local_page = None
+        attached.append(
+            FindingEvidence(
+                page=ref.page,
+                quote=ref.quote or "",
+                bounding_boxes=[BoundingBox.model_validate(box) for box in boxes],
+                boxes_status=boxes_status,
+                document_part=part_for_page(chunks, ref.page),
+                slot_id=slot_id,
+                local_page=local_page,
+            )
+        )
+    return attached
+
+
 def apply_evidence_pages(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
@@ -323,9 +394,7 @@ def apply_evidence_pages(
         ]
         if not allow_index:
             content_matches = [
-                chunk
-                for chunk in matches
-                if _chunk_part_rank(chunk, preferred) >= 0
+                chunk for chunk in matches if _chunk_part_rank(chunk, preferred) >= 0
             ]
             # Index listing lines are not proof for content checks — drop them.
             if matches and not content_matches:
@@ -475,6 +544,7 @@ def build_finding(
     coverage: Coverage,
     usage: LlmUsage | None = None,
     chunks: list[dict[str, Any]] | None = None,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectFinding:
     suggested = response.suggested_fix if response.status == "defect_found" else None
     rationale = response.fix_rationale if response.status == "defect_found" else None
@@ -511,7 +581,7 @@ def build_finding(
             pages=pages,
             evidence_pages=evidence_pages,
         ),
-        evidence=response.evidence,
+        evidence=attach_evidence_boxes(response.evidence, layout=layout, chunks=chunks),
         suggested_fix=suggested,
         fix_rationale=rationale,
         how_to_cure=display_cure_steps(defect.how_to_cure),
@@ -553,7 +623,9 @@ def failed_finding(
     )
 
 
-def summarize_usage(findings: list[DefectFinding], *, model: str | None) -> UsageSummary:
+def summarize_usage(
+    findings: list[DefectFinding], *, model: str | None
+) -> UsageSummary:
     combined = LlmUsage(model=model)
     for finding in findings:
         if finding.usage:

@@ -878,7 +878,10 @@
     "product_type": "parse_v2",
     "configuration_id": null,
     "tier": "agentic",
-    "version": "latest"
+    "version": "latest",
+    "output_options": {
+      "granular_bboxes": ["word", "line"]
+    }
   },
   "split": {
     "product_type": "split_v1",
@@ -886,19 +889,15 @@
     "categories": [
       {
         "name": "Advocate's Checklist",
-        "description": "Advocate's Check List or Proposed Advocate's Check List, usually a numbered YES/NO/N.A. list certified by the Advocate-on-Record."
-      },
-      {
-        "name": "Caveat Report",
-        "description": "Caveat or Caveat Report filed in the Supreme Court."
+        "description": "Starts in the first 2-3 lines with ADVOCATE'S CHECK LIST or PROPOSED ADVOCATE'S CHECK LIST (CHECK LIST, CHECKLIST, CHECK-LIST). Looks like a numbered YES/NO/N.A. list, often a table, usually 2-4 pages. Almost always has YES, NO, or N.A., and the AOR declaration: I hereby declare that I have personally verified the petition and its contents and it is in conformity with the Supreme Court Rules, 2013. I certify that the above requirements of this Check List have been complied with. I further certify that all the documents necessary for the purpose of hearing of the matter have been filed. Ends on the last page with the AOR name, code, signature, and date; a stamp is optional. Not Cover Page, not Listing Proforma, and not AOR's Certificate."
       },
       {
         "name": "Cover Page",
-        "description": "Outer cover or title sheet of the paper book. Do not use this for Office Report on Limitation, Vakalatnama, Memo of Appearance, or a page that has the cause title and then the word CERTIFICATE (AOR's Certificate), even if the SLP caption is repeated at the top."
+        "description": "Starts at the top with IN THE SUPREME COURT OF INDIA; the second or third line has JURISDICTION. Usually 1 page, at most 1-3. Often includes For Index Please See Inside. Ends with ADVOCATE FOR THE PETITIONER or ADVOCATE FOR THE RESPONDENT (or similar). Outer title sheet of the paper book. Not Office Report on Limitation — if OFFICE REPORT ON LIMITATION is printed, use that category even when the Supreme Court caption appears at the top. Not Vakalatnama, not Memo of Appearance, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
         "name": "Record of Proceedings",
-        "description": "Record of Proceedings or court order sheets of this Court."
+        "description": "Starts with RECORD OF PROCEEDING or RECORD OF PROCEEDINGS. Usually 1 page, at most 1-2, in table format. Often includes Date of Record of Proceeding. Ends where the table ends. Court order sheets of this Court. Not Index, not Cover Page, and not Main Petition."
       },
       {
         "name": "AOR's Certificate",
@@ -906,11 +905,11 @@
       },
       {
         "name": "Index",
-        "description": "Index of the paper book listing document names and page numbers. This part appears once, near the front (usually after the Cover Page). Do not label a later similar contents list as Index; that later list is a different document."
+        "description": "Starts with the heading INDEX. Table listing PARTICULARS OF DOCUMENT and PAGE NO or PAGE No. Usually 1-2 pages but may be longer. Ends where the table ends; AOR signature or details are sometimes present but often absent. This part appears once, near the front (usually after the Cover Page). Do not label a later similar contents list as Index. Not Listing Proforma, not Filing Memo, and not Office Report on Limitation."
       },
       {
         "name": "Office Report on Limitation",
-        "description": "Page titled OFFICE REPORT ON LIMITATION (O/R on Limitation), including when the SLP caption and parties appear above that heading. Contains statements whether the petition is within time and delay in filing or re-filing. Not the Index line that merely names O/R on Limitation."
+        "description": "May start with IN THE SUPREME COURT OF INDIA and JURISDICTION on the second or third line, then the heading OFFICE REPORT ON LIMITATION (O/R on Limitation). Always one page. States whether the petition is within time and delay in filing or re-filing. Ends with Dated and Place, and may have a Branch Officer signature or stamp. Not Cover Page, even though the caption is similar. Not the Index line that merely names O/R on Limitation."
       },
       {
         "name": "Listing Proforma",

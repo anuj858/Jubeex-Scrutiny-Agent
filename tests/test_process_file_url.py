@@ -17,6 +17,7 @@ from extraction_review.process_file import (
     intake_mode,
     resolve_compiled_filing_type,
     slot_id_from_name,
+    upload_sliced_slot_pdfs,
 )
 
 
@@ -29,6 +30,28 @@ def test_file_event_accepts_file_url_without_file_id() -> None:
 def test_file_event_requires_file_id_or_url() -> None:
     with pytest.raises(ValueError, match="download_url or file_id"):
         FileEvent()
+
+
+def test_upload_sliced_slot_pdfs_defaults_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("DEVELOPMENT", raising=False)
+    assert upload_sliced_slot_pdfs() is True
+
+
+def test_upload_sliced_slot_pdfs_skip_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
+    assert upload_sliced_slot_pdfs() is False
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "1")
+    assert upload_sliced_slot_pdfs() is False
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "no")
+    assert upload_sliced_slot_pdfs() is True
+    monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
+    assert upload_sliced_slot_pdfs() is True
 
 
 def test_full_petition_from_parts_slot() -> None:
