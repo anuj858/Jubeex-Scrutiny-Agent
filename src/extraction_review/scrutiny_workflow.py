@@ -71,7 +71,8 @@ from .vector_store import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONCURRENCY = 3
+DEFAULT_CONCURRENCY = 8
+DEFAULT_PERSIST_EVERY = 10
 
 
 class ScrutinyEvent(StartEvent):
@@ -444,6 +445,7 @@ class ScrutinyWorkflow(Workflow):
             )
 
         concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
+        persist_every = max(1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY))
         max_chunks = scrutiny_max_chunks()
         use_pinecone = pinecone_enabled() and bool(file_hash)
 
@@ -515,6 +517,18 @@ class ScrutinyWorkflow(Workflow):
                 stopped_early=stopped_early,
             )
 
+        persist_lock = asyncio.Lock()
+        persist_tasks: set[asyncio.Task[None]] = set()
+
+        async def persist_report(report: ScrutinyReport) -> None:
+            async with persist_lock:
+                await self._persist(llama_cloud_client, item, payload, report, ctx)
+
+        def schedule_persist(report: ScrutinyReport) -> None:
+            task = asyncio.create_task(persist_report(report))
+            persist_tasks.add(task)
+            task.add_done_callback(persist_tasks.discard)
+
         async def publish(current: list[DefectFinding], stopped_early: bool) -> None:
             report = build_report(current, stopped_early=stopped_early)
             ctx.write_event_to_stream(
@@ -525,7 +539,9 @@ class ScrutinyWorkflow(Workflow):
                     stopped_early=stopped_early,
                 )
             )
-            await self._persist(llama_cloud_client, item, payload, report, ctx)
+            done = stopped_early or len(current) >= planned
+            if done or len(current) % persist_every == 0:
+                schedule_persist(report)
 
         async def run_one(defect: Defect) -> DefectFinding:
             ctx.write_event_to_stream(
@@ -590,6 +606,9 @@ class ScrutinyWorkflow(Workflow):
             on_update=publish,
         )
         report = build_report(findings, stopped_early=stopped_early)
+        if persist_tasks:
+            await asyncio.gather(*persist_tasks, return_exceptions=True)
+        await persist_report(report)
         defects_payload = report.model_dump(mode="json")
         if isinstance(defects_payload, dict):
             defects_payload.setdefault("organization_id", event.organization_id)

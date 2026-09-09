@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from pinecone import Pinecone
@@ -42,6 +44,11 @@ pinecone_embed_model = os.getenv("PINECONE_EMBED_MODEL", "llama-text-embed-v2")
 pinecone_namespace = os.getenv("PINECONE_NAMESPACE", "jubeex-filings")
 pinecone_text_field = os.getenv("PINECONE_TEXT_FIELD", DEFAULT_TEXT_FIELD)
 vector_backend = (os.getenv("VECTOR_BACKEND") or "pinecone").strip().lower()
+
+_cached_client: Pinecone | None = None
+_cached_index: Any = None
+_cached_text_field: str | None = None
+_cache_lock = threading.Lock()
 
 # Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
 DEFAULT_TOP_K = 8
@@ -73,13 +80,21 @@ def pinecone_enabled() -> bool:
 
 
 def get_pinecone_client() -> Pinecone:
+    global _cached_client
     if not pinecone_api_key:
         raise ValueError("PINECONE_API_KEY is not set")
-    return Pinecone(api_key=pinecone_api_key)
+    if _cached_client is None:
+        with _cache_lock:
+            if _cached_client is None:
+                _cached_client = Pinecone(api_key=pinecone_api_key)
+    return _cached_client
 
 
 def resolve_text_field(pc: Pinecone | None = None) -> str:
     """Read the index field_map when available; fall back to PINECONE_TEXT_FIELD."""
+    global _cached_text_field
+    if _cached_text_field:
+        return _cached_text_field
     client = pc or get_pinecone_client()
     try:
         desc = client.describe_index(pinecone_index_name)
@@ -91,38 +106,49 @@ def resolve_text_field(pc: Pinecone | None = None) -> str:
                 embed.get("field_map") if isinstance(embed, dict) else None
             )
             if isinstance(field_map, dict) and field_map.get("text"):
-                return str(field_map["text"])
+                _cached_text_field = str(field_map["text"])
+                return _cached_text_field
     except Exception as e:
         logger.debug("Could not resolve Pinecone text field from index: %s", e)
-    return pinecone_text_field
+    with _cache_lock:
+        if _cached_text_field is None:
+            _cached_text_field = pinecone_text_field
+    return _cached_text_field
 
 
 def ensure_index(pc: Pinecone | None = None) -> Any:
     """Create an integrated-embedding index if missing; return a data-plane Index."""
-    client = pc or get_pinecone_client()
-    name = pinecone_index_name
-    if not client.has_index(name):
-        logger.info(
-            "[Pinecone] Creating index %s with embed model %s (%s/%s, field=%s)",
-            name,
-            pinecone_embed_model,
-            pinecone_cloud,
-            pinecone_region,
-            pinecone_text_field,
-        )
-        client.create_index_for_model(
-            name=name,
-            cloud=pinecone_cloud,
-            region=pinecone_region,
-            embed={
-                "model": pinecone_embed_model,
-                "field_map": {"text": pinecone_text_field},
-            },
-        )
-        logger.info("[Pinecone] Index %s created", name)
-    else:
-        logger.info("[Pinecone] Using existing index %s", name)
-    return client.Index(name)
+    global _cached_index
+    if _cached_index is not None:
+        return _cached_index
+    with _cache_lock:
+        if _cached_index is not None:
+            return _cached_index
+        client = pc or get_pinecone_client()
+        name = pinecone_index_name
+        if not client.has_index(name):
+            logger.info(
+                "[Pinecone] Creating index %s with embed model %s (%s/%s, field=%s)",
+                name,
+                pinecone_embed_model,
+                pinecone_cloud,
+                pinecone_region,
+                pinecone_text_field,
+            )
+            client.create_index_for_model(
+                name=name,
+                cloud=pinecone_cloud,
+                region=pinecone_region,
+                embed={
+                    "model": pinecone_embed_model,
+                    "field_map": {"text": pinecone_text_field},
+                },
+            )
+            logger.info("[Pinecone] Index %s created", name)
+        else:
+            logger.info("[Pinecone] Using existing index %s", name)
+        _cached_index = client.Index(name)
+        return _cached_index
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -667,32 +693,42 @@ def gather_filing_evidence(
         ):
             seen[record_id] = chunk
 
+    jobs: list[tuple[str, dict[str, Any]]] = []
     for query in queries:
-        if not query or not query.strip():
-            continue
-        try:
-            for chunk in search_filing_chunks(query, file_hash=file_hash, top_k=top_k):
-                _absorb(chunk)
-        except Exception as e:
-            logger.warning("[Pinecone] Query failed (%s): %s", query[:60], e)
-
+        if query and query.strip():
+            jobs.append((query.strip(), {"file_hash": file_hash, "top_k": top_k}))
     for part in document_parts or []:
         label = (part or "").strip()
-        if not label:
-            continue
-        try:
-            for chunk in search_filing_chunks(
-                label,
-                file_hash=file_hash,
-                top_k=top_k,
-                chunk_kind="page",
-                document_part=label,
-            ):
-                _absorb(chunk)
-        except Exception as e:
-            logger.warning(
-                "[Pinecone] Part-filtered query failed (%s): %s", label[:60], e
+        if label:
+            jobs.append(
+                (
+                    label,
+                    {
+                        "file_hash": file_hash,
+                        "top_k": top_k,
+                        "chunk_kind": "page",
+                        "document_part": label,
+                    },
+                )
             )
+
+    def _run_one(query: str, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return search_filing_chunks(query, **kwargs)
+        except Exception as e:
+            kind = "Part-filtered query" if kwargs.get("document_part") else "Query"
+            logger.warning("[Pinecone] %s failed (%s): %s", kind, query[:60], e)
+            return []
+
+    if len(jobs) <= 1:
+        hits = [_run_one(query, kwargs) for query, kwargs in jobs]
+    else:
+        workers = min(8, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            hits = list(pool.map(lambda job: _run_one(job[0], job[1]), jobs))
+    for chunks in hits:
+        for chunk in chunks:
+            _absorb(chunk)
 
     chunks = sorted(
         seen.values(),
