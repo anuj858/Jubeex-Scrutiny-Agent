@@ -1,4 +1,5 @@
 from extraction_review.s3_artifacts import (
+    STEP_DEFECTS,
     STEP_EXTRACT,
     STEP_LAYOUT,
     artifact_key,
@@ -15,11 +16,10 @@ def test_artifact_key_matches_filing_workspace_layout() -> None:
         "20cb771e-a750-4c11-b490-aa9c5b696d8d",
     )
     key = artifact_key(STEP_EXTRACT, object_id="abc-def")
-    assert key.startswith(
+    assert key == (
         "org/486653bd-9e95-49cb-9cdc-4e73a4db0f25/filing-workspace/"
-        "20cb771e-a750-4c11-b490-aa9c5b696d8d/job-123-v001-agent-extract-"
+        "20cb771e-a750-4c11-b490-aa9c5b696d8d/extract/extract.json"
     )
-    assert key.endswith(".json")
 
 
 def test_layout_artifact_key_uses_coordinate_folder() -> None:
@@ -32,7 +32,21 @@ def test_layout_artifact_key_uses_coordinate_folder() -> None:
     assert key == (
         "org/486653bd-9e95-49cb-9cdc-4e73a4db0f25/filing-workspace/"
         "20cb771e-a750-4c11-b490-aa9c5b696d8d/coordinate/"
-        "job-123-v001-agent-layout-abc-def.json"
+        "layout.json"
+    )
+
+
+def test_defects_artifact_key_uses_defect_folder() -> None:
+    set_job_context(
+        "a736e03a-46c7-41c3-9f0f-69a69b8d852e",
+        "36cc5708-56df-4754-8579-55f8faed93b8",
+        "e56ab02b-fdde-4a51-8a81-3848110deb53",
+    )
+    key = artifact_key(STEP_DEFECTS, object_id="1f43c6d6-5919-452a-98b5-984a87945b0a")
+    assert key == (
+        "org/36cc5708-56df-4754-8579-55f8faed93b8/filing-workspace/"
+        "e56ab02b-fdde-4a51-8a81-3848110deb53/defect/"
+        "defects.json"
     )
 
 

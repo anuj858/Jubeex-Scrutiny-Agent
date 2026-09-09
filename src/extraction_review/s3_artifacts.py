@@ -18,6 +18,18 @@ STEP_SPLIT = "split"
 STEP_EXTRACT = "extract"
 STEP_LAYOUT = "layout"
 STEP_DEFECTS = "defects"
+STEP_FOLDERS = {
+    STEP_SPLIT: "split",
+    STEP_EXTRACT: "extract",
+    STEP_LAYOUT: "coordinate",
+    STEP_DEFECTS: "defect",
+}
+STEP_FILENAMES = {
+    STEP_SPLIT: "split.json",
+    STEP_EXTRACT: "extract.json",
+    STEP_LAYOUT: "layout.json",
+    STEP_DEFECTS: "defects.json",
+}
 
 _job_id: ContextVar[str | None] = ContextVar("artifact_job_id", default=None)
 _organization_id: ContextVar[str | None] = ContextVar(
@@ -68,6 +80,14 @@ def _safe_segment(value: str, fallback: str = "unknown") -> str:
     return cleaned[:80] or fallback
 
 
+def artifact_folder(step: str) -> str:
+    return STEP_FOLDERS.get(step) or _safe_segment(step, "file")
+
+
+def artifact_filename(step: str) -> str:
+    return STEP_FILENAMES.get(step) or f"{_safe_segment(step, 'file')}.json"
+
+
 def artifact_key(
     step: str,
     *,
@@ -76,14 +96,11 @@ def artifact_key(
     job_id: str | None = None,
     object_id: str | None = None,
 ) -> str:
+    del job_id, object_id
     org = _safe_segment(organization_id or _organization_id.get() or "", "org")
     workspace = _safe_segment(workspace_id or _workspace_id.get() or "", "workspace")
-    job = _safe_segment(job_id or _job_id.get() or str(uuid.uuid4()), "job")
-    token = _safe_segment(object_id or str(uuid.uuid4()), "file")
-    folder = f"org/{org}/filing-workspace/{workspace}/"
-    if step == STEP_LAYOUT:
-        folder = f"{folder}coordinate/"
-    return f"{folder}{job}-v001-agent-{_safe_segment(step)}-{token}.json"
+    folder = artifact_folder(step)
+    return f"org/{org}/filing-workspace/{workspace}/{folder}/{artifact_filename(step)}"
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -190,7 +207,7 @@ def upload_step_json(
                 "Bucket": bucket,
                 "Key": key,
                 "ResponseContentDisposition": (
-                    f'attachment; filename="{step}.json"'
+                    f'attachment; filename="{artifact_filename(step)}"'
                 ),
             },
             ExpiresIn=_url_expires(),
