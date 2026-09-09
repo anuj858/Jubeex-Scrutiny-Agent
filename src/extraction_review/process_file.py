@@ -48,20 +48,19 @@ from .split_upload import (
 logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
-_DEV_ENVIRONMENTS = frozenset({"development", "dev"})
 _TRUTHY = frozenset({"1", "true", "yes"})
 
 
 def upload_sliced_slot_pdfs() -> bool:
-    """LlamaIndex UI (ENVIRONMENT=development) uploads sliced slot PDFs.
+    """Upload sliced slot PDFs to LlamaCloud for the split-upload form.
 
-    The microservice leaves this unset so classify/split does not re-upload
-    each slot to LlamaCloud.
+    The UI needs a LlamaCloud ``file_id`` per slot to fill Upload, enable
+    Download, and Submit parse/extract. Skip only when a backend explicitly
+    sets ``SKIP_SLOT_PDF_UPLOAD``.
     """
-    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
-    if environment in _DEV_ENVIRONMENTS:
-        return True
-    return (os.getenv("DEVELOPMENT") or "").strip().lower() in _TRUTHY
+    skip = (os.getenv("SKIP_SLOT_PDF_UPLOAD") or "").strip().lower()
+    return skip not in _TRUTHY
+
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 600.0
@@ -1322,13 +1321,14 @@ class ProcessFileWorkflow(Workflow):
                 "workspace_id": state.workspace_id,
                 "parts": [
                     {
-                        "slot_id": item.slot_id,
-                        "label": item.label,
-                        "filename": item.filename,
-                        "page_span": item.page_span,
-                        "file_hash": item.file_hash,
+                        "slot_id": part.slot_id,
+                        "label": part.label,
+                        "filename": part.filename,
+                        "page_span": part.page_span,
+                        "file_hash": part.file_hash,
+                        "file_id": part.file_id,
                     }
-                    for item in slices
+                    for part in prepared
                 ],
                 "slot_pages": slot_pages,
             },

@@ -81,18 +81,27 @@ function asPreparedParts(value: unknown): PreparedPart[] {
     if (!row) {
       continue;
     }
-    const slotId = typeof row.slot_id === "string" ? row.slot_id : "";
-    const fileId = typeof row.file_id === "string" ? row.file_id : "";
+    const slotId =
+      typeof row.slot_id === "string"
+        ? row.slot_id
+        : typeof row.slotId === "string"
+          ? row.slotId
+          : "";
+    const fileId =
+      typeof row.file_id === "string"
+        ? row.file_id
+        : typeof row.fileId === "string"
+          ? row.fileId
+          : "";
     if (!slotId || !fileId) {
       continue;
     }
+    const fileHash = row.file_hash ?? row.fileHash;
     parts.push({
       slot_id: slotId,
       file_id: fileId,
       file_hash:
-        typeof row.file_hash === "string" || row.file_hash === null
-          ? row.file_hash
-          : null,
+        typeof fileHash === "string" || fileHash === null ? fileHash : null,
       filename: typeof row.filename === "string" ? row.filename : null,
     });
   }
@@ -155,6 +164,21 @@ function asSlotPages(value: unknown): Record<string, string> {
   return pages;
 }
 
+function isBundlePreparedSource(
+  source: Record<string, unknown> | null,
+): source is Record<string, unknown> {
+  if (!source || typeof source.filing_type !== "string" || !source.filing_type) {
+    return false;
+  }
+  // FileClassifiedEvent also has filing_type. Require split payload fields
+  // so classify does not lock the form before sliced file_ids arrive.
+  return (
+    Array.isArray(source.parts) ||
+    asRecord(source.slot_pages) !== null ||
+    asRecord(source.slotPages) !== null
+  );
+}
+
 export function readBundlePrepared(payload: unknown): BundlePrepared | null {
   const event = asRecord(payload);
   if (!event) {
@@ -162,20 +186,20 @@ export function readBundlePrepared(payload: unknown): BundlePrepared | null {
   }
   const nested = asRecord(event.data) ?? asRecord(event.result);
   const source =
-    event.type === "BundlePrepared" && nested
+    event.type === "BundlePrepared" && isBundlePreparedSource(nested)
       ? nested
-      : typeof event.filing_type === "string"
+      : isBundlePreparedSource(event)
         ? event
-        : nested && typeof nested.filing_type === "string"
+        : isBundlePreparedSource(nested)
           ? nested
           : null;
-  if (!source || typeof source.filing_type !== "string") {
+  if (!source) {
     return null;
   }
   return {
-    filing_type: source.filing_type,
+    filing_type: source.filing_type as string,
     parts: asPreparedParts(source.parts),
-    slot_pages: asSlotPages(source.slot_pages),
+    slot_pages: asSlotPages(source.slot_pages ?? source.slotPages),
   };
 }
 
@@ -222,13 +246,6 @@ export function SplitUploadForm({
     .every((slot) => Boolean(uploads[slot.id]));
 
   const applyPrepared = (prepared: BundlePrepared, handlerId?: string) => {
-    if (handlerId && preparedFor.current === handlerId) {
-      setPreparing(false);
-      return;
-    }
-    if (handlerId) {
-      preparedFor.current = handlerId;
-    }
     if (!types[prepared.filing_type]) {
       toast.error(
         `No split-upload form for ${prepared.filing_type}. Upload the documents manually.`,
@@ -244,17 +261,35 @@ export function SplitUploadForm({
         filename: part.filename || `${part.slot_id}.pdf`,
       };
     }
-    setFilingType(prepared.filing_type);
-    setUploads(nextUploads);
-    setSlotPages(prepared.slot_pages ?? {});
-    setTypeLocked(true);
-    setPreparing(false);
     const found = Object.keys(nextUploads).length;
-    toast.success(
-      found
-        ? `Loaded ${found} sliced file${found === 1 ? "" : "s"} from the bundled PDF`
-        : "Split finished. Upload the missing required documents, then Submit.",
+    const alreadyApplied = Boolean(
+      handlerId && preparedFor.current === handlerId,
     );
+    if (handlerId) {
+      preparedFor.current = handlerId;
+    }
+    setFilingType(prepared.filing_type);
+    setTypeLocked(true);
+    setSlotPages((prev) =>
+      alreadyApplied
+        ? { ...prev, ...(prepared.slot_pages ?? {}) }
+        : (prepared.slot_pages ?? {}),
+    );
+    if (found > 0) {
+      setUploads((prev) =>
+        alreadyApplied ? { ...prev, ...nextUploads } : nextUploads,
+      );
+    } else if (!alreadyApplied) {
+      setUploads({});
+    }
+    setPreparing(false);
+    if (!alreadyApplied) {
+      toast.success(
+        found
+          ? `Loaded ${found} sliced file${found === 1 ? "" : "s"} from the bundled PDF`
+          : "Split finished. Upload the missing required documents, then Submit.",
+      );
+    }
   };
 
   useEffect(() => {
@@ -264,6 +299,10 @@ export function SplitUploadForm({
     }
     const handlerId = prepareHandler.handler_id;
     if (preparedFor.current === handlerId) {
+      const later = readBundlePrepared(prepareHandler.result);
+      if (later && later.parts.length > 0) {
+        applyPrepared(later, handlerId);
+      }
       setPreparing(false);
       return;
     }

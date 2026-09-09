@@ -32,26 +32,25 @@ def test_file_event_requires_file_id_or_url() -> None:
         FileEvent()
 
 
-def test_upload_sliced_slot_pdfs_defaults_off(
+def test_upload_sliced_slot_pdfs_defaults_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("DEVELOPMENT", raising=False)
-    assert upload_sliced_slot_pdfs() is False
+    assert upload_sliced_slot_pdfs() is True
 
 
-def test_upload_sliced_slot_pdfs_on_for_development(
+def test_upload_sliced_slot_pdfs_skip_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("DEVELOPMENT", raising=False)
-    monkeypatch.setenv("ENVIRONMENT", "development")
-    assert upload_sliced_slot_pdfs() is True
-    monkeypatch.setenv("ENVIRONMENT", "DEV")
-    assert upload_sliced_slot_pdfs() is True
-    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
     assert upload_sliced_slot_pdfs() is False
-    monkeypatch.delenv("ENVIRONMENT", raising=False)
-    monkeypatch.setenv("DEVELOPMENT", "true")
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "1")
+    assert upload_sliced_slot_pdfs() is False
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "no")
+    assert upload_sliced_slot_pdfs() is True
+    monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
     assert upload_sliced_slot_pdfs() is True
 
 
