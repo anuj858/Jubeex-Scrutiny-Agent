@@ -33,6 +33,7 @@ from extraction_review.extract_record import (
     is_organization_name,
     is_party_role_label_mismatch,
     names_are_spelling_variants,
+    stamp_review_status,
     stamp_source_pages,
     strip_party_role_label,
 )
@@ -622,6 +623,20 @@ def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
     assert "classification" not in wrapped
     assert "applications" not in wrapped
     assert "filing_summary" not in wrapped
+
+
+def test_stamp_review_status_replaces_llamaextract_error() -> None:
+    stamped = stamp_review_status(
+        {
+            "status": "error",
+            "file_name": "Cover_Page.pdf",
+            "data": {"petition_type": "SLP_CIVIL"},
+        }
+    )
+    assert stamped["status"] == "pending_review"
+    assert stamped["metadata"]["extract_status"] == "error"
+    already = stamp_review_status({"status": "rejected", "metadata": {}})
+    assert already["status"] == "rejected"
 
 
 def test_formatted_title_anr_and_ors() -> None:

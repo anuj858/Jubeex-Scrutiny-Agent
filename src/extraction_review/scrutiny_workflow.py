@@ -118,22 +118,19 @@ def scrutiny_enabled() -> bool:
     )
 
 
-SCRUTINY_ALLOWED_STATUSES = frozenset({"approved", "pending_review"})
-
-
 def assert_filing_ready_for_scrutiny(
     review_status: object, file_name: object = None
 ) -> None:
-    """Allow extract-complete filings. Block only rejected records."""
+    """Allow extract-complete filings. Block only rejected records.
+
+    LlamaExtract stores job status on the same ``status`` field (``error``,
+    ``success``, …). That is not a user rejection and must not block scrutiny.
+    """
     status = str(review_status or "").strip().lower()
     label = str(file_name or "").strip() or "this document"
     if status == "rejected":
         raise ValueError(
             f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
-        )
-    if status and status not in SCRUTINY_ALLOWED_STATUSES:
-        raise ValueError(
-            f"Scrutiny cannot run while {label} is '{review_status}'."
         )
 
 
