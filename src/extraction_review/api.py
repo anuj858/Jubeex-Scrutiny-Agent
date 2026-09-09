@@ -41,6 +41,7 @@ from .process_file import (
     normalize_job_type,
 )
 from .process_file import workflow as process_file_workflow
+from .extract_record import stamp_review_status
 from .queue import enqueue_job, sqs_enabled
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
@@ -500,6 +501,42 @@ def _as_data_dict(data: Any) -> dict[str, Any]:
     return {}
 
 
+async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
+    """Move LlamaExtract job status off the review-status field before the worker runs."""
+    client = get_llama_cloud_client()
+    try:
+        item = await client.beta.agent_data.get(agent_data_id)
+    except Exception:
+        logger.warning(
+            "Could not load Agent Data %s before scrutiny; worker will load it",
+            agent_data_id,
+        )
+        return
+    data = _as_data_dict(getattr(item, "data", None))
+    current = str(data.get("status") or "").strip().lower()
+    if current == "rejected":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Scrutiny cannot run on a rejected filing.",
+        )
+    stamped = stamp_review_status(data)
+    if str(stamped.get("status") or "").strip().lower() == current:
+        return
+    try:
+        await client.beta.agent_data.update(agent_data_id, data=stamped)
+        logger.info(
+            "Normalized Agent Data %s status %r → pending_review before scrutiny",
+            agent_data_id,
+            data.get("status"),
+        )
+    except Exception:
+        logger.warning(
+            "Could not normalize Agent Data %s status before scrutiny",
+            agent_data_id,
+            exc_info=True,
+        )
+
+
 def _filing_out(agent_data_id: str, item: Any, data: Any) -> dict[str, Any]:
     return {
         "id": getattr(item, "id", agent_data_id),
@@ -571,6 +608,7 @@ async def create_scrutiny(
     background_tasks: BackgroundTasks,
     body: CreateScrutinyRequest | None = None,
 ) -> JobAccepted:
+    await prepare_extracted_filing_for_scrutiny(agent_data_id)
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
         file_hash=(body.file_hash if body else None),

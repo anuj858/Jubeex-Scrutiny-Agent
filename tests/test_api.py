@@ -29,6 +29,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL", raising=False)
+
+    async def _skip_prepare(_agent_data_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api.prepare_extracted_filing_for_scrutiny",
+        _skip_prepare,
+    )
     return TestClient(app)
 
 
@@ -379,3 +387,33 @@ def test_create_scrutiny_drops_swagger_placeholders(
     event = captured["event"]
     assert getattr(event, "file_hash") is None
     assert getattr(event, "file_url") is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_extracted_filing_normalizes_llamaextract_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored = {"status": "error", "file_name": "Cover_Page.pdf"}
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(id=item_id, data=dict(stored))
+
+        async def update(self, item_id: str, data=None, **_):
+            stored.clear()
+            stored.update(data or {})
+            return SimpleNamespace(id=item_id, data=dict(stored))
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    monkeypatch.setattr(
+        "extraction_review.api.get_llama_cloud_client",
+        lambda: FakeClient(),
+    )
+    from extraction_review.api import prepare_extracted_filing_for_scrutiny
+
+    await prepare_extracted_filing_for_scrutiny("agd-err-1")
+    assert stored["status"] == "pending_review"
+    assert stored["metadata"]["extract_status"] == "error"

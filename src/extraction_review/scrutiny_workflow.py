@@ -22,6 +22,7 @@ from workflows.resource import Resource
 
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
+from .extract_record import stamp_review_status
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .scrutiny.prompts import (
     build_defect_prompt,
@@ -385,6 +386,26 @@ class ScrutinyWorkflow(Workflow):
         )
 
         payload: dict[str, Any] = dict(getattr(item, "data", None) or {})
+        extract_status = payload.get("status")
+        payload = stamp_review_status(payload)
+        if payload.get("status") != extract_status:
+            item_id = str(getattr(item, "id", "") or event.agent_data_id or "")
+            if item_id:
+                try:
+                    await llama_cloud_client.beta.agent_data.update(
+                        item_id, data=payload
+                    )
+                    logger.info(
+                        "Normalized Agent Data %s status %r → pending_review",
+                        item_id,
+                        extract_status,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist pending_review on Agent Data %s",
+                        item_id,
+                        exc_info=True,
+                    )
         review_status = payload.get("status")
         file_name = payload.get("file_name")
         file_hash = payload.get("file_hash") or event.file_hash
