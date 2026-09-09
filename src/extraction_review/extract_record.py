@@ -16,6 +16,7 @@ from .scrutiny.rules import normalize_filing_type
 
 SCHEMA_VERSION = "extraction-v1"
 JOB_TYPE = "compiled_petition"
+REVIEW_STATUSES = frozenset({"pending_review", "approved", "rejected"})
 LEGAL_EXTRACT_FIELDS = (
     "court",
     "petition_type",
@@ -957,6 +958,21 @@ def apply_extract_envelope(
             timespec="seconds"
         )
     payload["generated_at"] = generated_at
+    return payload
+
+
+def stamp_review_status(extracted: dict[str, Any]) -> dict[str, Any]:
+    """Keep LlamaExtract job status off the Agent Data review-status field."""
+    payload = dict(extracted)
+    current = str(payload.get("status") or "").strip().lower()
+    if current in REVIEW_STATUSES:
+        return payload
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["extract_status"] = payload.get("status")
+    payload["metadata"] = metadata
+    payload["status"] = "pending_review"
     return payload
 
 

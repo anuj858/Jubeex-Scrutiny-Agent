@@ -32,6 +32,7 @@ from .document_parts import (
     slice_record_for_defect,
 )
 from .layout_index import LAYOUT_ARTIFACT_URL_KEY, load_layout_index
+from .extract_record import stamp_review_status
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -120,21 +121,20 @@ def scrutiny_enabled() -> bool:
     )
 
 
-SCRUTINY_ALLOWED_STATUSES = frozenset({"approved", "pending_review"})
-
-
 def assert_filing_ready_for_scrutiny(
     review_status: object, file_name: object = None
 ) -> None:
-    """Allow extract-complete filings. Block only rejected records."""
+    """Allow extract-complete filings. Block only rejected records.
+
+    LlamaExtract stores job status on the same ``status`` field (``error``,
+    ``success``, …). That is not a user rejection and must not block scrutiny.
+    """
     status = str(review_status or "").strip().lower()
     label = str(file_name or "").strip() or "this document"
     if status == "rejected":
         raise ValueError(
             f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
         )
-    if status and status not in SCRUTINY_ALLOWED_STATUSES:
-        raise ValueError(f"Scrutiny cannot run while {label} is '{review_status}'.")
 
 
 async def _load_item(
@@ -385,6 +385,26 @@ class ScrutinyWorkflow(Workflow):
         )
 
         payload: dict[str, Any] = dict(getattr(item, "data", None) or {})
+        extract_status = payload.get("status")
+        payload = stamp_review_status(payload)
+        if payload.get("status") != extract_status:
+            item_id = str(getattr(item, "id", "") or event.agent_data_id or "")
+            if item_id:
+                try:
+                    await llama_cloud_client.beta.agent_data.update(
+                        item_id, data=payload
+                    )
+                    logger.info(
+                        "Normalized Agent Data %s status %r → pending_review",
+                        item_id,
+                        extract_status,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist pending_review on Agent Data %s",
+                        item_id,
+                        exc_info=True,
+                    )
         review_status = payload.get("status")
         file_name = payload.get("file_name")
         file_hash = payload.get("file_hash") or event.file_hash

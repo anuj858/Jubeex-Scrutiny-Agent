@@ -28,6 +28,7 @@ from .extract_record import (
     apply_extract_envelope,
     field_confidence_from_job,
     overall_confidence_from_job,
+    stamp_review_status,
     stamp_source_pages,
     unwrap_extracted_record,
 )
@@ -513,6 +514,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         if isinstance(data_dict, dict):
             data_dict.setdefault("organization_id", org_id)
             data_dict.setdefault("workspace_id", state.workspace_id)
+            data_dict = stamp_review_status(data_dict)
         upload_step_json(
             STEP_EXTRACT,
             data_dict,
