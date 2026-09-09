@@ -350,8 +350,20 @@ class LegalExtractRecord(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def coerce_legacy_relief(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or value.get("relief_sort"):
+    def coerce_null_lists_and_relief(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        for key in (
+            "impugned_orders",
+            "petitioners",
+            "respondents",
+            "advocates_on_record",
+            "documents",
+        ):
+            if value.get(key) is None:
+                value = dict(value)
+                value[key] = []
+        if value.get("relief_sort"):
             return value
         relief = value.get("relief")
         sought = None

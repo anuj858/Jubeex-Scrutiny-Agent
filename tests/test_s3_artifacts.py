@@ -2,6 +2,7 @@ from extraction_review.s3_artifacts import (
     STEP_DEFECTS,
     STEP_EXTRACT,
     STEP_LAYOUT,
+    STEP_SPLIT,
     artifact_key,
     recorded_artifacts,
     set_job_context,
@@ -15,38 +16,31 @@ def test_artifact_key_matches_filing_workspace_layout() -> None:
         "486653bd-9e95-49cb-9cdc-4e73a4db0f25",
         "20cb771e-a750-4c11-b490-aa9c5b696d8d",
     )
-    key = artifact_key(STEP_EXTRACT, object_id="abc-def")
+    key = artifact_key(STEP_EXTRACT, object_id="abc-def", job_id="job-123")
     assert key == (
         "org/486653bd-9e95-49cb-9cdc-4e73a4db0f25/filing-workspace/"
-        "20cb771e-a750-4c11-b490-aa9c5b696d8d/extract/extract.json"
+        "20cb771e-a750-4c11-b490-aa9c5b696d8d/extractedfiles/"
+        "abc-def-v001-agent-extract-job-123.json"
     )
 
 
-def test_layout_artifact_key_uses_coordinate_folder() -> None:
-    set_job_context(
-        "job-123",
-        "486653bd-9e95-49cb-9cdc-4e73a4db0f25",
-        "20cb771e-a750-4c11-b490-aa9c5b696d8d",
+def test_split_defect_and_layout_use_their_own_folders() -> None:
+    org = "36cc5708-56df-4754-8579-55f8faed93b8"
+    workspace = "e56ab02b-fdde-4a51-8a81-3848110deb53"
+    object_id = "1f43c6d6-5919-452a-98b5-984a87945b0a"
+    job_id = "a736e03a-46c7-41c3-9f0f-69a69b8d852e"
+    set_job_context(job_id, org, workspace)
+    assert artifact_key(STEP_SPLIT, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/splitfiles/"
+        f"{object_id}-v001-agent-split-{job_id}.json"
     )
-    key = artifact_key(STEP_LAYOUT, object_id="abc-def")
-    assert key == (
-        "org/486653bd-9e95-49cb-9cdc-4e73a4db0f25/filing-workspace/"
-        "20cb771e-a750-4c11-b490-aa9c5b696d8d/coordinate/"
-        "layout.json"
+    assert artifact_key(STEP_DEFECTS, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/defectfiles/"
+        f"{object_id}-v001-agent-defects-{job_id}.json"
     )
-
-
-def test_defects_artifact_key_uses_defect_folder() -> None:
-    set_job_context(
-        "a736e03a-46c7-41c3-9f0f-69a69b8d852e",
-        "36cc5708-56df-4754-8579-55f8faed93b8",
-        "e56ab02b-fdde-4a51-8a81-3848110deb53",
-    )
-    key = artifact_key(STEP_DEFECTS, object_id="1f43c6d6-5919-452a-98b5-984a87945b0a")
-    assert key == (
-        "org/36cc5708-56df-4754-8579-55f8faed93b8/filing-workspace/"
-        "e56ab02b-fdde-4a51-8a81-3848110deb53/defect/"
-        "defects.json"
+    assert artifact_key(STEP_LAYOUT, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/layoutfiles/"
+        f"{object_id}-v001-agent-layout-{job_id}.json"
     )
 
 
@@ -77,6 +71,8 @@ def test_upload_step_json_writes_object_and_records_url(
     put = calls["put"]
     assert put["ContentType"] == "application/json"
     assert b'"court"' in put["Body"]
+    assert "/extractedfiles/" in put["Key"]
+    assert "agent-extract" in put["Key"]
 
 
 def test_upload_step_json_skips_without_bucket(monkeypatch) -> None:
@@ -109,4 +105,23 @@ def test_upload_step_json_uses_explicit_ids_without_context(monkeypatch) -> None
     )
     assert record is not None
     assert "org-9" in record["key"]
+    assert "/extractedfiles/" in record["key"]
     assert recorded_artifacts("job-9")[STEP_EXTRACT]["url"] == record["url"]
+
+
+def test_legal_extract_record_treats_null_lists_as_empty() -> None:
+    from extraction_review.config import LegalExtractRecord
+
+    record = LegalExtractRecord.model_validate(
+        {
+            "court": "Supreme Court of India",
+            "impugned_orders": None,
+            "petitioners": None,
+            "respondents": None,
+            "advocates_on_record": None,
+        }
+    )
+    assert record.impugned_orders == []
+    assert record.petitioners == []
+    assert record.respondents == []
+    assert record.advocates_on_record == []

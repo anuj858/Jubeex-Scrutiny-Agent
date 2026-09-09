@@ -19,16 +19,16 @@ STEP_EXTRACT = "extract"
 STEP_LAYOUT = "layout"
 STEP_DEFECTS = "defects"
 STEP_FOLDERS = {
-    STEP_SPLIT: "split",
-    STEP_EXTRACT: "extract",
-    STEP_LAYOUT: "coordinate",
-    STEP_DEFECTS: "defect",
+    STEP_SPLIT: "splitfiles",
+    STEP_EXTRACT: "extractedfiles",
+    STEP_LAYOUT: "layoutfiles",
+    STEP_DEFECTS: "defectfiles",
 }
-STEP_FILENAMES = {
-    STEP_SPLIT: "split.json",
-    STEP_EXTRACT: "extract.json",
-    STEP_LAYOUT: "layout.json",
-    STEP_DEFECTS: "defects.json",
+STEP_LABELS = {
+    STEP_SPLIT: "agent-split",
+    STEP_EXTRACT: "agent-extract",
+    STEP_LAYOUT: "agent-layout",
+    STEP_DEFECTS: "agent-defects",
 }
 
 _job_id: ContextVar[str | None] = ContextVar("artifact_job_id", default=None)
@@ -81,11 +81,25 @@ def _safe_segment(value: str, fallback: str = "unknown") -> str:
 
 
 def artifact_folder(step: str) -> str:
-    return STEP_FOLDERS.get(step) or _safe_segment(step, "file")
+    return STEP_FOLDERS.get(step) or f"{_safe_segment(step, 'file')}files"
 
 
-def artifact_filename(step: str) -> str:
-    return STEP_FILENAMES.get(step) or f"{_safe_segment(step, 'file')}.json"
+def artifact_filename(
+    step: str,
+    *,
+    object_id: str | None = None,
+    job_id: str | None = None,
+) -> str:
+    label = STEP_LABELS.get(step) or f"agent-{_safe_segment(step, 'file')}"
+    stem = _safe_segment(object_id or "", "")
+    job = _safe_segment(job_id or "", "")
+    if stem and job:
+        return f"{stem}-v001-{label}-{job}.json"
+    if stem:
+        return f"{stem}-v001-{label}.json"
+    if job:
+        return f"{job}-v001-{label}.json"
+    return f"{label}.json"
 
 
 def artifact_key(
@@ -96,11 +110,13 @@ def artifact_key(
     job_id: str | None = None,
     object_id: str | None = None,
 ) -> str:
-    del job_id, object_id
     org = _safe_segment(organization_id or _organization_id.get() or "", "org")
     workspace = _safe_segment(workspace_id or _workspace_id.get() or "", "workspace")
-    folder = artifact_folder(step)
-    return f"org/{org}/filing-workspace/{workspace}/{folder}/{artifact_filename(step)}"
+    return (
+        f"org/{org}/filing-workspace/{workspace}/"
+        f"{artifact_folder(step)}/"
+        f"{artifact_filename(step, object_id=object_id, job_id=job_id)}"
+    )
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -156,6 +172,25 @@ def _id_from_payload(payload: Any, key: str) -> str | None:
     return None
 
 
+def _first_document_id(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    buckets = [payload.get("documents"), payload.get("parts")]
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        buckets.append(metadata.get("documents"))
+    for bucket in buckets:
+        if not isinstance(bucket, list):
+            continue
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            found = _clean_id(str(item.get("document_id") or item.get("id") or ""))
+            if found:
+                return found
+    return None
+
+
 def upload_step_json(
     step: str,
     payload: Any,
@@ -177,6 +212,14 @@ def upload_step_json(
         or _id_from_payload(payload, "workspace_id")
     )
     job = _clean_id(job_id) or _job_id.get()
+    object_id = (
+        _id_from_payload(payload, "primary_document_id")
+        or _id_from_payload(payload, "document_id")
+        or _id_from_payload(payload, "file_id")
+        or _first_document_id(payload)
+        or job
+        or workspace
+    )
     if not bucket:
         logger.warning("Skipping %s artifact upload: AWS_S3_BUCKET is not set", step)
         return None
@@ -186,11 +229,13 @@ def upload_step_json(
             step,
         )
         return None
+    filename = artifact_filename(step, object_id=object_id, job_id=job)
     key = artifact_key(
         step,
         organization_id=org,
         workspace_id=workspace,
         job_id=job,
+        object_id=object_id,
     )
     body = _json_bytes(payload)
     try:
@@ -207,7 +252,7 @@ def upload_step_json(
                 "Bucket": bucket,
                 "Key": key,
                 "ResponseContentDisposition": (
-                    f'attachment; filename="{artifact_filename(step)}"'
+                    f'attachment; filename="{filename}"'
                 ),
             },
             ExpiresIn=_url_expires(),
