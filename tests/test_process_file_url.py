@@ -165,6 +165,33 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("Filing_Memo.pdf", "TRANSFER_PETITION_CIVIL") == (
         "filing_memo"
     )
+    assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "undefined"
+
+
+def test_upload_separate_maps_application_pdf_to_undefined() -> None:
+    event = FileEvent(
+        job_type="upload_separate",
+        filing_type="SLP_CIVIL",
+        documents=[
+            {
+                "slot_id": "petition",
+                "name": "Petition.pdf",
+                "download_url": "https://example.com/Petition.pdf",
+            },
+            {
+                "name": "Application 3.pdf",
+                "download_url": "https://example.com/Application%203.pdf",
+            },
+            {
+                "slot_id": "listing-proforma",
+                "name": "Listing Proforma.pdf",
+                "download_url": "https://example.com/listing.pdf",
+            },
+        ],
+    )
+    by_name = {item.filename: item.slot_id for item in event.documents}
+    assert by_name["Application 3.pdf"] == "undefined"
+    assert by_name["Listing Proforma.pdf"] == "listing_proforma"
 
 
 def test_upload_separate_documents_payload() -> None:

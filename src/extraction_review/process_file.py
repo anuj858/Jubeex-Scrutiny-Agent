@@ -1,7 +1,7 @@
-"""Classify and LlamaSplit a bundled PDF, slice it, then extract.
+"""Classify and LlamaSplit a bundled PDF, then stop.
 
-``upload_compiled`` classifies, splits, and slices, then runs
-process-split-files (parse, extract, Agent Data, Pinecone).
+``upload_compiled`` classifies, splits, and slices. Parse/extract runs later
+when the backend sends ``upload_separate`` after Assemble.
 ``upload_separate`` skips classify/split and runs process-split-files only.
 """
 
@@ -36,7 +36,12 @@ from .clients import get_llama_cloud_client, project_id
 from .config import ClassifyConfig, SplitConfig
 from .document_parts import page_parts_from_split, parts_on_page
 from .s3_artifacts import STEP_SPLIT, upload_step_json
-from .split_upload import SplitUploadError, type_catalog, ui_catalog
+from .split_upload import (
+    UNDEFINED_SLOT_ID,
+    SplitUploadError,
+    type_catalog,
+    ui_catalog,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,9 @@ _SLOT_NAME_ALIASES = {
     "vakalatnama": "vakalatnama_appearance",
     "memo_of_appearance": "vakalatnama_appearance",
     "filing_memorandum": "filing_memo",
+    "aor_s_certificate": "aors_declaration",
+    "aor_s_declaration": "aors_declaration",
+    "listing_proforma": "listing_proforma",
 }
 
 
@@ -195,6 +203,8 @@ def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
         return "fullpetition"
     if stem.startswith("annexure"):
         return "annexures"
+    if stem.startswith("application"):
+        return UNDEFINED_SLOT_ID
     known = _known_slot_ids(filing_type)
     if stem in known:
         return stem
@@ -207,6 +217,23 @@ def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
     return None
 
 
+def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
+    known = set(_known_slot_ids(filing_type))
+    key = (slot or "").strip()
+    if key in known:
+        return key
+    underscored = key.replace("-", "_").lower()
+    if underscored in known:
+        return underscored
+    alias = _SLOT_NAME_ALIASES.get(underscored)
+    if alias in known:
+        return alias
+    from_name = slot_id_from_name(key, filing_type)
+    if from_name in known:
+        return from_name
+    return UNDEFINED_SLOT_ID
+
+
 def resolve_document_slot(
     item: FilingPartIn,
     *,
@@ -215,7 +242,11 @@ def resolve_document_slot(
 ) -> str:
     explicit = blank_or_placeholder(item.slot_id)
     if explicit:
-        return explicit
+        return (
+            coerce_slot_id(explicit, filing_type=filing_type)
+            if mode == "split"
+            else explicit
+        )
     if mode == "full":
         return "fullpetition"
     names = [
@@ -225,7 +256,9 @@ def resolve_document_slot(
     for name in names:
         resolved = slot_id_from_name(name, filing_type)
         if resolved and resolved not in FULL_PETITION_SLOTS:
-            return resolved
+            return coerce_slot_id(resolved, filing_type=filing_type)
+    if mode == "split":
+        return UNDEFINED_SLOT_ID
     label = item.filename or item.document_id or item.file_url or "document"
     raise ValueError(
         f"Could not map {label!r} to a document slot. "
@@ -357,9 +390,9 @@ class FileEvent(StartEvent):
 
     Backend (no Llama UI): POST this to ``process-file``.
 
-    - ``job_type=upload_compiled`` (or ``full``): classify, slice, then extract.
+    - ``job_type=upload_compiled`` (or ``full``): classify and slice only.
     - ``job_type=upload_separate`` (or ``split``) plus ``documents[]``:
-      already-split files; runs process-split-files internally.
+      already-split files; runs process-split-files (parse, extract).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -462,13 +495,16 @@ class FileEvent(StartEvent):
                 allowed = ", ".join(sorted(ui_catalog()))
                 raise ValueError(f"{exc}. Use one of: {allowed}") from exc
             allowed_slots = catalog.slot_by_id()
+            coerced: list[FilingPartIn] = []
             for item in self.documents:
-                slot = (item.slot_id or "").strip()
+                slot = coerce_slot_id(
+                    (item.slot_id or "").strip(),
+                    filing_type=self.filing_type,
+                )
                 if slot not in allowed_slots:
-                    raise ValueError(
-                        f"Unknown slot {slot!r} for {catalog.filing_type}. "
-                        f"Use one of: {', '.join(allowed_slots)}"
-                    )
+                    slot = UNDEFINED_SLOT_ID
+                coerced.append(item.model_copy(update={"slot_id": slot}))
+            self.documents = coerced
             return self
         file_id, file_url, _name, _hash = compiled_source(self)
         if not file_id and not file_url:
@@ -513,12 +549,14 @@ class ExtractedInvalidEvent(Event):
 
 class PreparedPart(BaseModel):
     slot_id: str
-    file_id: str
+    file_id: str | None = None
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
     download_url: str | None = None
     name: str | None = None
+    label: str | None = None
+    page_span: str | None = None
 
 
 class SourceDocument(BaseModel):
@@ -939,7 +977,7 @@ async def _run_split_from_file_event(
         filing_type=filing_type,
         parts=split_parts,
         echo=echo,
-        require_all_slots=True,
+        require_all_slots=False,
     )
     prepared = [
         PreparedPart(
@@ -1229,17 +1267,13 @@ class ProcessFileWorkflow(Workflow):
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
         for item in slices:
-            file_id = await _upload_slot_pdf(
-                llama_cloud_client,
-                filename=item.filename,
-                pdf_bytes=item.pdf_bytes,
-            )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
-                    file_id=file_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
+                    label=item.label,
+                    page_span=item.page_span,
                 )
             )
             if item.page_span:
@@ -1275,51 +1309,21 @@ class ProcessFileWorkflow(Workflow):
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
-
-        from .process_split_files import SplitPartEvent
-
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
-                    "Extracting sliced compiled petition "
-                    f"({len(prepared)} document part(s))"
+                    "Split JSON ready; parse and extract wait for Assemble "
+                    f"({len(slices)} document part(s))"
                 ),
             )
         )
-        echo = {
-            "job_type": state.job_type,
-            "organization_id": state.organization_id,
-            "workspace_id": state.workspace_id,
-            "user_id": state.user_id,
-            "org_id": state.org_id,
-        }
-        agent_data_id = await _extract_sliced_parts(
-            ctx,
-            filing_type=catalog.filing_type,
-            fallback_file_id=state.file_id,
-            parts=[
-                SplitPartEvent(
-                    slot_id=item.slot_id,
-                    file_id=item.file_id,
-                    file_hash=item.file_hash,
-                    filename=item.filename,
-                    document_id=item.document_id,
-                    file_url=item.download_url,
-                )
-                for item in prepared
-                if item.file_id
-            ],
-            echo=echo,
-            require_all_slots=False,
-        )
         return BundlePrepared(
-            result=agent_data_id,
             filing_type=catalog.filing_type,
             parts=prepared,
             documents=list(state.source_documents),
             slot_pages=slot_pages,
-            agent_data_id=agent_data_id,
+            agent_data_id=None,
             job_type=state.job_type,
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,

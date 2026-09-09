@@ -94,7 +94,7 @@ def test_create_filing_rejects_unknown_filing_type(client: TestClient) -> None:
     assert "SLP_CIVIL" in response.text
 
 
-def test_create_filing_rejects_swagger_slot_id_without_mappable_name(
+def test_create_filing_maps_unlabeled_application_to_undefined(
     client: TestClient,
 ) -> None:
     response = client.post(
@@ -107,22 +107,18 @@ def test_create_filing_rejects_swagger_slot_id_without_mappable_name(
             "user_id": "test123",
             "documents": [
                 {
-                    "name": "test",
-                    "document_id": "test",
-                    "download_url": (
-                        "https://example.com/uploads/"
-                        "uuid-Defect_SLP_Civil_-3_.pdf"
-                    ),
-                    "slot_id": "string",
-                    "file_id": "string",
-                    "filename": "string",
-                    "file_url": "string",
-                }
+                    "name": "Petition.pdf",
+                    "download_url": "https://example.com/Petition.pdf",
+                    "slot_id": "petition",
+                },
+                {
+                    "name": "Application 3.pdf",
+                    "download_url": "https://example.com/Application%203.pdf",
+                },
             ],
         },
     )
-    assert response.status_code == 422
-    assert "slot" in response.text.lower() or "upload_compiled" in response.text
+    assert response.status_code == 202
 
 
 def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> None:

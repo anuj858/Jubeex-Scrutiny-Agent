@@ -438,7 +438,7 @@ async def create_filing(
             for slot in catalog.slots
             if slot.required and slot.id not in seen
         ]
-        if missing:
+        if missing and len(event.documents) <= 1:
             hint = ""
             if len(event.documents) == 1:
                 hint = (

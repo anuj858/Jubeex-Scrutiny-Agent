@@ -20,7 +20,10 @@ async def test_process_file_workflow(
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
 
+    called = {"extract": 0}
+
     async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        called["extract"] += 1
         return "agd-compiled-1"
 
     monkeypatch.setattr(
@@ -35,7 +38,8 @@ async def test_process_file_workflow(
     assert result is not None
     assert isinstance(result, BundlePrepared)
     assert result.filing_type
-    assert result.agent_data_id == "agd-compiled-1"
+    assert result.agent_data_id is None
+    assert called["extract"] == 0
 
 
 @pytest.mark.asyncio

@@ -237,8 +237,6 @@ def validate_parts(
         item = _part_from_mapping(raw)
         if not item.slot_id:
             raise SplitUploadError("Each uploaded file must include slot_id")
-        if item.slot_id in seen:
-            raise SplitUploadError(f"Duplicate slot: {item.slot_id}")
         seen.add(item.slot_id)
         slot = allowed.get(item.slot_id)
         if slot is None:
@@ -273,8 +271,13 @@ def validate_parts(
 def ordered_parts(
     catalog: UploadTypeCatalog, parts: Sequence[SplitPartInput]
 ) -> list[SplitPartInput]:
-    by_id = {item.slot_id: item for item in parts}
-    return [by_id[slot.id] for slot in catalog.slots if slot.id in by_id]
+    grouped: dict[str, list[SplitPartInput]] = {}
+    for item in parts:
+        grouped.setdefault(item.slot_id, []).append(item)
+    ordered: list[SplitPartInput] = []
+    for slot in catalog.slots:
+        ordered.extend(grouped.get(slot.id, []))
+    return ordered
 
 
 def bundle_file_hash(parts: Sequence[SplitPartInput]) -> str:

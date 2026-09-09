@@ -55,6 +55,7 @@ from extraction_review.split_upload import (
     coerce_page_parts,
     extract_source_parts,
     inject_where_to_look,
+    ordered_parts,
     stitch_parsed_parts,
     type_catalog,
     ui_catalog,
@@ -315,11 +316,17 @@ def test_unknown_filing_type_fails() -> None:
         validate_parts("WRIT_PETITION_CIVIL", [])
 
 
-def test_duplicate_slot_fails() -> None:
+def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
     parts = _required_parts("SLP_CRIMINAL")
     parts.append({"slot_id": "petition", "file_id": "file-petition-2"})
-    with pytest.raises(SplitUploadError, match="Duplicate slot"):
-        validate_parts("SLP_CRIMINAL", parts)
+    catalog, parsed = validate_parts("SLP_CRIMINAL", parts)
+    petition_files = [
+        item.file_id for item in parsed if item.slot_id == "petition"
+    ]
+    assert petition_files == ["file-petition", "file-petition-2"]
+    ordered = [item.file_id for item in ordered_parts(catalog, parsed)]
+    first = ordered.index("file-petition")
+    assert ordered[first + 1] == "file-petition-2"
 
 
 def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
@@ -1088,7 +1095,10 @@ def test_process_file_prepare_does_not_extract() -> None:
     assert "classify.create" in source
     assert "_split_page_parts" in source
     assert "slice_bundle_pdf" in source
-    assert "_extract_sliced_parts" in source
+    assert "_extract_sliced_parts" in module
+    assert "_extract_sliced_parts" not in inspect.getsource(
+        ProcessFileWorkflow.prepare_bundle
+    )
 
 
 def _blank_pdf(page_count: int) -> bytes:
