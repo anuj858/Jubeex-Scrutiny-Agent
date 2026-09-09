@@ -499,7 +499,7 @@ export function SplitUploadForm({
             {preparing
               ? "Classifying and splitting the uploaded PDF into document files…"
               : typeLocked
-                ? "Files below were sliced from the bundled PDF. Upload any missing required documents, then Submit."
+                ? "Files below were sliced from the bundled PDF. Review them, then Submit to parse and extract."
                 : "Choose the matter type, then upload each document. Submit maps each PDF to its document part — the filename is not used."}
           </p>
         </div>

@@ -1,7 +1,8 @@
 """Classify and LlamaSplit a bundled PDF, then stop.
 
-``upload_compiled`` classifies, splits, and slices. Parse/extract runs later
-when the backend sends ``upload_separate`` after Assemble.
+``upload_compiled`` classifies, splits, and slices slot PDFs. Parse/extract
+runs only after Submit (UI ``process-split-files``) or backend
+``upload_separate``.
 ``upload_separate`` skips classify/split and runs process-split-files only.
 """
 
@@ -11,6 +12,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import os
 import re
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
@@ -46,6 +48,20 @@ from .split_upload import (
 logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
+_DEV_ENVIRONMENTS = frozenset({"development", "dev"})
+_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def upload_sliced_slot_pdfs() -> bool:
+    """LlamaIndex UI (ENVIRONMENT=development) uploads sliced slot PDFs.
+
+    The microservice leaves this unset so classify/split does not re-upload
+    each slot to LlamaCloud.
+    """
+    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    if environment in _DEV_ENVIRONMENTS:
+        return True
+    return (os.getenv("DEVELOPMENT") or "").strip().lower() in _TRUTHY
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 600.0
@@ -390,7 +406,8 @@ class FileEvent(StartEvent):
 
     Backend (no Llama UI): POST this to ``process-file``.
 
-    - ``job_type=upload_compiled`` (or ``full``): classify and slice only.
+    - ``job_type=upload_compiled`` (or ``full``): classify, slice, and upload
+      slot PDFs, then stop. Parse/extract wait for Submit.
     - ``job_type=upload_separate`` (or ``split``) plus ``documents[]``:
       already-split files; runs process-split-files (parse, extract).
     """
@@ -1264,12 +1281,21 @@ class ProcessFileWorkflow(Workflow):
             )
         )
 
+        upload_slots = upload_sliced_slot_pdfs()
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
         for item in slices:
+            file_id = None
+            if upload_slots:
+                file_id = await _upload_slot_pdf(
+                    llama_cloud_client,
+                    filename=item.filename,
+                    pdf_bytes=item.pdf_bytes,
+                )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
+                    file_id=file_id,
                     file_hash=item.file_hash,
                     filename=item.filename,
                     label=item.label,
@@ -1309,13 +1335,19 @@ class ProcessFileWorkflow(Workflow):
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
+        if upload_slots:
+            ready_message = (
+                "Split ready. Review the document slots, then Submit to "
+                f"parse and extract ({len(slices)} document part(s))"
+            )
+        else:
+            ready_message = (
+                f"Split JSON ready ({len(slices)} document part(s))"
+            )
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=(
-                    "Split JSON ready; parse and extract wait for Assemble "
-                    f"({len(slices)} document part(s))"
-                ),
+                message=ready_message,
             )
         )
         return BundlePrepared(

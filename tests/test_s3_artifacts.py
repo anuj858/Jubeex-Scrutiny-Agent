@@ -1,5 +1,6 @@
 from extraction_review.s3_artifacts import (
     STEP_EXTRACT,
+    STEP_LAYOUT,
     artifact_key,
     recorded_artifacts,
     set_job_context,
@@ -19,6 +20,20 @@ def test_artifact_key_matches_filing_workspace_layout() -> None:
         "20cb771e-a750-4c11-b490-aa9c5b696d8d/job-123-v001-agent-extract-"
     )
     assert key.endswith(".json")
+
+
+def test_layout_artifact_key_uses_coordinate_folder() -> None:
+    set_job_context(
+        "job-123",
+        "486653bd-9e95-49cb-9cdc-4e73a4db0f25",
+        "20cb771e-a750-4c11-b490-aa9c5b696d8d",
+    )
+    key = artifact_key(STEP_LAYOUT, object_id="abc-def")
+    assert key == (
+        "org/486653bd-9e95-49cb-9cdc-4e73a4db0f25/filing-workspace/"
+        "20cb771e-a750-4c11-b490-aa9c5b696d8d/coordinate/"
+        "job-123-v001-agent-layout-abc-def.json"
+    )
 
 
 def test_upload_step_json_writes_object_and_records_url(

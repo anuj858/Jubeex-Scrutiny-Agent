@@ -1096,9 +1096,10 @@ def test_process_file_prepare_does_not_extract() -> None:
     assert "_split_page_parts" in source
     assert "slice_bundle_pdf" in source
     assert "_extract_sliced_parts" in module
-    assert "_extract_sliced_parts" not in inspect.getsource(
-        ProcessFileWorkflow.prepare_bundle
-    )
+    prepare_source = inspect.getsource(ProcessFileWorkflow.prepare_bundle)
+    assert "_extract_sliced_parts" not in prepare_source
+    assert "_upload_slot_pdf" in prepare_source
+    assert "upload_sliced_slot_pdfs" in prepare_source
 
 
 def _blank_pdf(page_count: int) -> bytes:
