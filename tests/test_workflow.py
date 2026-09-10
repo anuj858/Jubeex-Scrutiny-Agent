@@ -101,3 +101,8 @@ async def test_metadata_workflow() -> None:
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]
     assert "court_fees" not in criminal_ids
+    assert result.config["config_id"] == "jubeex_parse"
+    assert result.config["config_version"] == "1.0.0"
+    assert result.config["classify"]["config_version"] == "1.0.0"
+    assert result.config["extract"]["config_version"] == "1.0.0"
+    assert result.config["split"]["config_version"] == "1.0.0"

@@ -19,6 +19,14 @@ export interface Metadata {
   schemas: Record<string, any>;
   extracted_data_collection: string;
   split_upload_types?: Record<string, SplitUploadType>;
+  config?: {
+    config_id?: string;
+    schema_version?: string;
+    config_version?: string;
+    classify?: { schema_version?: string; config_version?: string };
+    extract?: { schema_version?: string; config_version?: string };
+    split?: { schema_version?: string; config_version?: string };
+  };
 }
 
 export interface UseMetadataResult {

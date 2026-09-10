@@ -33,7 +33,7 @@ from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
 from .s3_artifacts import recorded_artifacts, set_job_context
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
-from .config import JUBEEX_FILING_TYPES
+from .config import JUBEEX_FILING_TYPES, config_identity
 from .process_file import (
     FileEvent,
     blank_or_placeholder,
@@ -399,6 +399,7 @@ async def catalog() -> dict[str, Any]:
         "split_upload_types": ui_catalog(),
         "collection": FILING_COLLECTION,
         "job_types": ["upload_compiled", "upload_separate"],
+        "config": config_identity(),
     }
 
 

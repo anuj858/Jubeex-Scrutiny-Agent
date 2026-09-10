@@ -10,6 +10,7 @@ from .config import (
     JUBEEX_FILING_TYPES,
     CoreFilingRecord,
     ExtractConfig,
+    config_identity,
 )
 from .split_upload import ui_catalog
 
@@ -24,6 +25,7 @@ class MetadataResponse(StopEvent):
     discriminator_field: str
     extracted_data_collection: str
     split_upload_types: dict[str, Any]
+    config: dict[str, Any]
 
 
 async def get_presentation_schema(
@@ -63,6 +65,7 @@ class MetadataWorkflow(Workflow):
             discriminator_field=presentation["discriminator_field"],
             extracted_data_collection=EXTRACTED_DATA_COLLECTION,
             split_upload_types=ui_catalog(),
+            config=config_identity(),
         )
 
 

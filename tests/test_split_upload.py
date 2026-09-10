@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -15,6 +17,7 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
+from extraction_review.config import Config
 from extraction_review.document_parts import (
     _split_categories,
     explode_repeating_split_parts,
@@ -57,6 +60,7 @@ from extraction_review.split_upload import (
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
+    display_filename,
     extract_source_parts,
     inject_where_to_look,
     ordered_parts,
@@ -90,6 +94,47 @@ def _required_parts(
     if extra:
         parts.extend(extra)
     return parts
+
+
+def test_config_json_has_versioning() -> None:
+    from extraction_review.config import (
+        dump_api_configuration,
+        load_config_payload,
+    )
+    from extraction_review.process_file import _split_api_configuration
+    from extraction_review.split_upload import extract_configuration, type_catalog
+
+    path = Path(__file__).resolve().parents[1] / "configs" / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["config_id"] == "jubeex_parse"
+    assert data["schema_version"] == "1.0"
+    assert data["config_version"] == "1.0.0"
+    assert data["classify"]["schema_version"] == "1.0"
+    assert data["classify"]["config_version"] == "1.0.0"
+    assert data["extract-jubeex"]["schema_version"] == "1.0"
+    assert data["extract-jubeex"]["config_version"] == "1.0.0"
+    assert data["split"]["schema_version"] == "1.0"
+    assert data["split"]["config_version"] == "1.0.0"
+    load_config_payload.cache_clear()
+    config = Config.model_validate(data)
+    assert config.config_id == "jubeex_parse"
+    assert config.schema_version == "1.0"
+    assert config.config_version == "1.0.0"
+    assert config.classify.config_version == "1.0.0"
+    assert config.extract_jubeex.config_version == "1.0.0"
+    assert config.split is not None
+    assert config.split.config_version == "1.0.0"
+    classify_sent = dump_api_configuration(config.classify)
+    assert classify_sent["schema_version"] == "1.0"
+    assert classify_sent["config_version"] == "1.0.0"
+    extract_sent = extract_configuration(
+        config.extract_jubeex, type_catalog("SLP_CIVIL")
+    )
+    assert extract_sent["schema_version"] == "1.0"
+    assert extract_sent["config_version"] == "1.0.0"
+    split_sent = _split_api_configuration(config.split)
+    assert split_sent["schema_version"] == "1.0"
+    assert split_sent["config_version"] == "1.0.0"
 
 
 def test_ui_catalog_is_driven_by_config_types() -> None:
@@ -1022,6 +1067,25 @@ def test_bundle_hash_is_stable() -> None:
     assert bundle_file_hash(parts) == bundle_file_hash(list(reversed(parts)))
 
 
+def test_display_filename_prefers_uploaded_bundle_name() -> None:
+    parts = [
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="1",
+            filename="Cover Page.pdf",
+        ),
+        SplitPartInput(
+            slot_id="petition",
+            file_id="2",
+            filename="Main Petition.pdf",
+        ),
+    ]
+    assert (
+        display_filename("SLP_CIVIL", parts, original="Defect_SLP_Civil.pdf")
+        == "Defect_SLP_Civil.pdf"
+    )
+
+
 def test_empty_parse_still_stamps_document_part() -> None:
     catalog, parts = validate_parts(
         "SLP_CRIMINAL",
@@ -1082,6 +1146,10 @@ async def test_metadata_exposes_split_upload_types() -> None:
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]
     assert "court_fees" not in criminal_ids
+    assert result.config["config_id"] == "jubeex_parse"
+    assert result.config["classify"]["config_version"] == "1.0.0"
+    assert result.config["extract"]["config_version"] == "1.0.0"
+    assert result.config["split"]["config_version"] == "1.0.0"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
