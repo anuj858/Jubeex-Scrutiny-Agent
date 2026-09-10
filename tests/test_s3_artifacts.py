@@ -83,6 +83,26 @@ def test_upload_step_json_skips_without_bucket(monkeypatch) -> None:
     assert recorded_artifacts("job-1") == {}
 
 
+def test_upload_step_json_uses_jubeex_bucket_alias(monkeypatch) -> None:
+    class FakeS3:
+        def put_object(self, **kwargs):
+            return None
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return "https://s3.example/extract.json"
+
+    monkeypatch.delenv("AWS_S3_BUCKET", raising=False)
+    monkeypatch.setenv("JUBEEX_ARTIFACT_BUCKET", "jubeex-alias-bucket")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    set_job_context("job-alias", "org-1", "ws-1")
+    record = upload_step_json(STEP_EXTRACT, {"court": "SCI"})
+    assert record is not None
+    assert record["bucket"] == "jubeex-alias-bucket"
+
+
 def test_upload_step_json_uses_explicit_ids_without_context(monkeypatch) -> None:
     class FakeS3:
         def put_object(self, **kwargs):

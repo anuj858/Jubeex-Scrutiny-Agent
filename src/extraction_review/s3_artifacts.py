@@ -8,9 +8,16 @@ import os
 import uuid
 from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from .queue import _client_kwargs
+
+# llamactl workflows do not import api.py, so they never saw `.env` unless
+# the var was also listed in pyproject / deployment secrets.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +228,10 @@ def upload_step_json(
         or workspace
     )
     if not bucket:
-        logger.warning("Skipping %s artifact upload: AWS_S3_BUCKET is not set", step)
+        logger.warning(
+            "Skipping %s artifact upload: AWS_S3_BUCKET/JUBEEX_ARTIFACT_BUCKET is not set",
+            step,
+        )
         return None
     if not org or not workspace:
         logger.warning(

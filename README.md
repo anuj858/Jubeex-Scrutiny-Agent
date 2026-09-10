@@ -44,7 +44,7 @@ uvx llamactl auth login
 uvx llamactl deployments apply -f deployment.yaml
 ```
 
-`deployment.yaml` maps Pinecone env vars into LlamaCloud deployment secrets so vector indexing works in the cloud.
+`deployment.yaml` maps Pinecone and S3 env vars into LlamaCloud deployment secrets. A local `.env` is not uploaded (it is gitignored), so hosted agents only see secrets listed there or in `[tool.llamadeploy.env]`.
 
 ## Features
 

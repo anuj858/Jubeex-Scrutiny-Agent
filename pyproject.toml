@@ -68,7 +68,12 @@ timeout_method = "thread"
 [tool.llamadeploy]
 env_files = [".env"]
 llama_cloud = true
-required_env_vars = ["PINECONE_API_KEY", "OPENROUTER_API_KEY"]
+required_env_vars = [
+    "PINECONE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+]
 
 # Optional runtime defaults. .env overrides these. Do not put secrets here.
 [tool.llamadeploy.env]
@@ -88,6 +93,8 @@ SCRUTINY_DEFECTS = "D025,D010,D077,D078"
 SCRUTINY_CONCURRENCY = "6"
 SCRUTINY_TOP_K = "8"
 SCRUTINY_MAX_CHUNKS = "12"
+AWS_S3_BUCKET = "jubeex-893338224943-ap-south-1-an"
+AWS_REGION = "ap-south-1"
 
 [tool.llamadeploy.workflows]
 process-file = "extraction_review.process_file:workflow"

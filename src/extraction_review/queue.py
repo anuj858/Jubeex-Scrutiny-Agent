@@ -40,16 +40,29 @@ def _visibility_timeout() -> int:
         return DEFAULT_VISIBILITY_TIMEOUT
 
 
+def _first_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return default
+
+
 def _client_kwargs() -> dict[str, str]:
     kwargs = {
-        "region_name": os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "ap-south-1",
+        "region_name": _first_env(
+            "AWS_REGION",
+            "AWS_DEFAULT_REGION",
+            "JUBEEX_AWS_REGION",
+            default="ap-south-1",
+        ),
     }
-    access_key = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
-    secret_key = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
+    access_key = _first_env("AWS_ACCESS_KEY_ID", "JUBEEX_AWS_ACCESS_KEY_ID")
+    secret_key = _first_env("AWS_SECRET_ACCESS_KEY", "JUBEEX_AWS_SECRET_ACCESS_KEY")
     if access_key and secret_key:
         kwargs["aws_access_key_id"] = access_key
         kwargs["aws_secret_access_key"] = secret_key
-        session_token = (os.getenv("AWS_SESSION_TOKEN") or "").strip()
+        session_token = _first_env("AWS_SESSION_TOKEN", "JUBEEX_AWS_SESSION_TOKEN")
         if session_token:
             kwargs["aws_session_token"] = session_token
     return kwargs
