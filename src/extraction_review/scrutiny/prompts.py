@@ -497,7 +497,7 @@ def _short_objection(text: str) -> str:
 
 
 def finding_title(defect: Defect, catalogue: Catalogue | None = None) -> str:
-    """Short UI/API title: category plus the objection, not the raw spreadsheet cell."""
+    """Short UI/API title: serial number, category, then the objection."""
     objection = _short_objection(defect.defect)
     label = None
     if catalogue:
@@ -509,8 +509,18 @@ def finding_title(defect: Defect, catalogue: Catalogue | None = None) -> str:
     if label:
         folded_label = label.lower()
         if not objection.lower().startswith(folded_label):
-            return f"{label}: {objection}"
-    return objection
+            title = f"{label}: {objection}"
+        else:
+            title = objection
+    else:
+        title = objection
+    serial = defect.serial_no
+    if serial is None or str(serial).strip() == "":
+        return title
+    prefix = f"{serial}. "
+    if title.startswith(prefix) or title.startswith(f"{serial} "):
+        return title
+    return f"{prefix}{title}"
 
 
 def readable_location_source(defect: Defect, catalogue: Catalogue | None = None) -> str:
