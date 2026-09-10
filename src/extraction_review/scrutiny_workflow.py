@@ -32,7 +32,11 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
-from .layout_index import LAYOUT_ARTIFACT_URL_KEY, load_layout_index
+from .layout_index import (
+    LAYOUT_ARTIFACT_KEY_KEY,
+    LAYOUT_ARTIFACT_URL_KEY,
+    load_layout_index,
+)
 from .extract_record import stamp_review_status
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
@@ -430,9 +434,31 @@ class ScrutinyWorkflow(Workflow):
             if isinstance(metadata, dict)
             else None
         )
-        layout = await load_layout_index(
-            layout_url if isinstance(layout_url, str) else None
+        layout_key = (
+            metadata.get(LAYOUT_ARTIFACT_KEY_KEY)
+            if isinstance(metadata, dict)
+            else None
         )
+        layout = await load_layout_index(
+            layout_url if isinstance(layout_url, str) else None,
+            key=layout_key if isinstance(layout_key, str) else None,
+        )
+        if not layout:
+            logger.warning(
+                "Layout index empty pages=0; defect findings will have no "
+                "highlight coordinates url=%s key=%s",
+                layout_url if isinstance(layout_url, str) else None,
+                layout_key if isinstance(layout_key, str) else None,
+            )
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        "No page layout is stored for this filing, so defect "
+                        "findings will not include highlight coordinates"
+                    ),
+                )
+            )
 
         assert_filing_ready_for_scrutiny(review_status, file_name)
 

@@ -1,10 +1,13 @@
 """Layout index: sidecar compacting, page remap, quote-to-line boxes."""
 
+import pytest
+
 from extraction_review.layout_index import (
     boxes_for_quote,
     compact_sidecar_pages,
     dump_layout_index,
     grounded_items_url,
+    load_layout_index,
     locate_quote,
     merge_granular_bboxes,
     parse_sidecar_jsonl,
@@ -17,6 +20,7 @@ from extraction_review.scrutiny.schema import (
     Coverage,
     DefectResponse,
     EvidenceRef,
+    _as_bounding_boxes,
     apply_evidence_pages,
     attach_evidence_boxes,
     build_finding,
@@ -648,3 +652,124 @@ def test_empty_evidence_ignores_non_numeric_chunk_pages() -> None:
     )
     assert finding.error is None
     assert finding.evidence == []
+
+
+@pytest.mark.asyncio
+async def test_load_layout_index_falls_back_to_s3_key(monkeypatch) -> None:
+    dumped = dump_layout_index(
+        _sentence_layout(34, "DRAWN ON 11.04.2026", slot_id="petition")
+    )
+
+    def fake_download(key: str | None):
+        assert key == "org/llamacloud/filing-workspace/default/layoutfiles/job.json"
+        return dumped
+
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        fake_download,
+    )
+    loaded = await load_layout_index(
+        None,
+        key="org/llamacloud/filing-workspace/default/layoutfiles/job.json",
+    )
+    assert 34 in loaded
+    assert loaded[34]["words"]
+
+
+@pytest.mark.asyncio
+async def test_load_layout_index_uses_key_when_url_fails(monkeypatch) -> None:
+    dumped = dump_layout_index(
+        _sentence_layout(12, "hereby undertakes that the facts stated", slot_id="vakalatnama")
+    )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            raise RuntimeError("expired presign")
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url: str):
+            del url
+            return FakeResponse()
+
+    monkeypatch.setattr("extraction_review.layout_index.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda key: dumped if key == "layout-key-1" else None,
+    )
+    loaded = await load_layout_index(
+        "https://s3.example/expired",
+        key="layout-key-1",
+    )
+    assert 12 in loaded
+
+
+def test_build_finding_d077_drawn_on_quote_matches_boxes() -> None:
+    catalogue = get_catalogue()
+    layout = _sentence_layout(34, "DRAWN ON 11.04.2026", slot_id="petition")
+    finding = build_finding(
+        catalogue.defect("D077"),
+        DefectResponse(
+            check_id="D077",
+            status="defect_found",
+            confidence=0.9,
+            summary="Drafting date is after the affidavit date.",
+            reasoning="The drafting date is on page 34 of the Main Petition.",
+            evidence=[
+                EvidenceRef(page=34, quote="**DRAWN ON**: 11.04.2026"),
+            ],
+            suggested_fix="Correct the drafting date.",
+            fix_rationale="Required to compare dates.",
+        ),
+        evidence_ids=["p34"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[34]),
+        chunks=[
+            {
+                "record_id": "p34",
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Main Petition",
+                "text": "prayer only",
+            }
+        ],
+        layout=layout,
+    )
+    assert finding.evidence[0].page == 34
+    assert finding.evidence[0].boxes_status == "matched"
+    assert finding.evidence[0].bounding_boxes
+    assert finding.evidence[0].slot_id == "petition"
+    assert finding.evidence[0].document_part == "Main Petition"
+
+
+def test_as_bounding_boxes_keeps_in_range_unit_boxes() -> None:
+    boxes = _as_bounding_boxes(
+        [{"page": 34, "x": 0.42, "y": 0.61, "w": 0.14, "h": 0.028}]
+    )
+    assert len(boxes) == 1
+    assert boxes[0].page == 34
+    assert boxes[0].x == 0.42
+    assert boxes[0].y == 0.61
+    assert boxes[0].w == 0.14
+    assert boxes[0].h == 0.028
+
+
+def test_as_bounding_boxes_normalizes_pixel_coords_instead_of_dropping() -> None:
+    boxes = _as_bounding_boxes(
+        [{"page": 12, "x": 42.0, "y": 61.0, "w": 14.0, "h": 2.8}]
+    )
+    assert len(boxes) == 1
+    assert 0.0 <= boxes[0].x < 1.0
+    assert 0.0 < boxes[0].w <= 1.0
+    assert 0.0 <= boxes[0].y < 1.0
+    assert 0.0 < boxes[0].h <= 1.0

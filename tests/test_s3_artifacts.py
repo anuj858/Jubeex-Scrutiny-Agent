@@ -1,4 +1,6 @@
 from extraction_review.s3_artifacts import (
+    FALLBACK_ORGANIZATION_ID,
+    FALLBACK_WORKSPACE_ID,
     STEP_DEFECTS,
     STEP_EXTRACT,
     STEP_LAYOUT,
@@ -127,6 +129,62 @@ def test_upload_step_json_uses_explicit_ids_without_context(monkeypatch) -> None
     assert "org-9" in record["key"]
     assert "/extractedfiles/" in record["key"]
     assert recorded_artifacts("job-9")[STEP_EXTRACT]["url"] == record["url"]
+
+
+def test_upload_step_json_without_org_workspace_still_uploads(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            calls["put"] = kwargs
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return f"https://s3.example/{Params['Key']}"
+
+    monkeypatch.setenv("AWS_S3_BUCKET", "jubeex-893338224943-ap-south-1-an")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    set_job_context(None, None, None)
+    record = upload_step_json(
+        STEP_LAYOUT,
+        {"schema": "layout_index_v1", "pages": {"34": {"words": []}}},
+        job_id="job-ui-1",
+    )
+    assert record is not None
+    assert FALLBACK_ORGANIZATION_ID in record["key"]
+    assert FALLBACK_WORKSPACE_ID in record["key"]
+    assert "/layoutfiles/" in record["key"]
+    put = calls["put"]
+    assert put["Bucket"] == "jubeex-893338224943-ap-south-1-an"
+    assert put["Key"] == record["key"]
+
+
+def test_download_json_object_reads_s3_key(monkeypatch) -> None:
+    from extraction_review.s3_artifacts import download_json_object
+
+    class FakeBody:
+        def read(self) -> bytes:
+            return b'{"schema": "layout_index_v1", "pages": {"34": {"words": []}}}'
+
+    class FakeS3:
+        def get_object(self, **kwargs):
+            assert kwargs["Bucket"] == "jubeex-893338224943-ap-south-1-an"
+            assert kwargs["Key"] == "org/llamacloud/filing-workspace/default/layoutfiles/x.json"
+            return {"Body": FakeBody()}
+
+    monkeypatch.setenv("AWS_S3_BUCKET", "jubeex-893338224943-ap-south-1-an")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    payload = download_json_object(
+        "org/llamacloud/filing-workspace/default/layoutfiles/x.json"
+    )
+    assert payload is not None
+    assert payload["schema"] == "layout_index_v1"
+    assert "34" in payload["pages"]
 
 
 def test_legal_extract_record_treats_null_lists_as_empty() -> None:

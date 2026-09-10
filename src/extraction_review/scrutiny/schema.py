@@ -400,16 +400,39 @@ def _as_bounding_boxes(raw: Any) -> list[BoundingBox]:
             box = BoundingBox.model_validate(item)
         except ValidationError:
             continue
-        if box.w <= 0 or box.h <= 0:
-            continue
-        x = min(max(float(box.x), 0.0), 1.0)
-        y = min(max(float(box.y), 0.0), 1.0)
-        width = min(max(float(box.w), 0.0), round(1.0 - x, 6))
-        height = min(max(float(box.h), 0.0), round(1.0 - y, 6))
+        x = float(box.x)
+        y = float(box.y)
+        width = float(box.w)
+        height = float(box.h)
         if width <= 0 or height <= 0:
             continue
+        max_x = x + width
+        max_y = y + height
+        if x > 1.5 or y > 1.5 or max_x > 1.5 or max_y > 1.5:
+            scale_x = max(max_x, 1.0)
+            scale_y = max(max_y, 1.0)
+            x /= scale_x
+            width /= scale_x
+            y /= scale_y
+            height /= scale_y
+        x = min(max(x, 0.0), 1.0)
+        y = min(max(y, 0.0), 1.0)
+        width = min(max(width, 0.0), round(1.0 - x, 6))
+        height = min(max(height, 0.0), round(1.0 - y, 6))
+        if width <= 0:
+            width = min(0.001, 1.0 - x) if x < 1.0 else 0.001
+            x = min(x, 1.0 - width)
+        if height <= 0:
+            height = min(0.001, 1.0 - y) if y < 1.0 else 0.001
+            y = min(y, 1.0 - height)
         boxes.append(
-            BoundingBox(page=int(box.page), x=x, y=y, w=width, h=height)
+            BoundingBox(
+                page=int(box.page),
+                x=round(x, 6),
+                y=round(y, 6),
+                w=round(width, 6),
+                h=round(height, 6),
+            )
         )
     return boxes
 
