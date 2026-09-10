@@ -27,14 +27,37 @@ GRANULAR_BBOXES = ("word", "line")
 LINE_Y_EPSILON = 0.012
 
 _WS = re.compile(r"\s+")
+_PUNCT = re.compile(r"[^\w./-]+")
 
 PageLayout = dict[str, Any]
 LayoutIndex = dict[int, PageLayout]
 
 
+_ORDINAL = re.compile(r"^(\d{1,2})(st|nd|rd|th)$")
+_SLASH_DATE = re.compile(r"^\d{1,4}([./-]\d{1,4}){1,2}$")
+_MIN_TOKEN_RUN = 5
+_MAX_NEEDLE_TOKENS = 48
+
+
 def _norm_text(text: str) -> str:
     collapsed = _WS.sub(" ", (text or "").replace("…", " ").replace("...", " "))
-    return collapsed.strip().lower()
+    collapsed = _PUNCT.sub(" ", collapsed.lower())
+    return _WS.sub(" ", collapsed).strip()
+
+
+def _canon_token(token: str) -> str:
+    """Collapse 17th / 17/4 / 17.04.2026 so OCR and model quotes still align."""
+    ordinal = _ORDINAL.match(token)
+    if ordinal:
+        return ordinal.group(1)
+    if _SLASH_DATE.match(token):
+        return token.split("/")[0].split(".")[0].split("-")[0]
+    return token
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """True when the quote (or a stable span of it) appears in excerpt/OCR text."""
+    return _match_span(_norm_text(quote), _norm_text(text)) is not None
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any] | None:
@@ -332,6 +355,49 @@ def _join_words(
     return " ".join(pieces), spans
 
 
+def _token_starts(tokens: Sequence[str]) -> list[int]:
+    starts: list[int] = []
+    cursor = 0
+    for index, token in enumerate(tokens):
+        starts.append(cursor)
+        cursor += len(token) + (1 if index < len(tokens) - 1 else 0)
+    return starts
+
+
+def _span_from_tokens(
+    haystack_tokens: Sequence[str], starts: Sequence[int], hay_at: int, run: int
+) -> tuple[int, int]:
+    last = hay_at + run - 1
+    return starts[hay_at], starts[last] + len(haystack_tokens[last])
+
+
+def _token_run_span(needle: str, haystack: str) -> tuple[int, int] | None:
+    needle_tokens = needle.split()[:_MAX_NEEDLE_TOKENS]
+    haystack_tokens = haystack.split()
+    if not needle_tokens or not haystack_tokens:
+        return None
+    needle_canon = [_canon_token(token) for token in needle_tokens]
+    haystack_canon = [_canon_token(token) for token in haystack_tokens]
+    starts = _token_starts(haystack_tokens)
+    nlen = len(needle_canon)
+    hlen = len(haystack_canon)
+    if nlen >= 2 and hlen >= nlen:
+        for hay_at in range(hlen - nlen + 1):
+            if haystack_canon[hay_at : hay_at + nlen] == needle_canon:
+                return _span_from_tokens(haystack_tokens, starts, hay_at, nlen)
+    min_run = min(_MIN_TOKEN_RUN, nlen) if nlen >= 3 else nlen
+    if min_run < 2:
+        return None
+    for run in range(nlen - 1, min_run - 1, -1):
+        for needle_at in range(nlen - run + 1):
+            window = needle_canon[needle_at : needle_at + run]
+            for hay_at in range(hlen - run + 1):
+                if haystack_canon[hay_at : hay_at + run] != window:
+                    continue
+                return _span_from_tokens(haystack_tokens, starts, hay_at, run)
+    return None
+
+
 def _match_span(needle: str, haystack: str) -> tuple[int, int] | None:
     if not needle or not haystack:
         return None
@@ -343,7 +409,7 @@ def _match_span(needle: str, haystack: str) -> tuple[int, int] | None:
         at = haystack.find(snippet)
         if at >= 0:
             return at, at + len(snippet)
-    return None
+    return _token_run_span(needle, haystack)
 
 
 def _group_line_key(word: Mapping[str, Any]) -> tuple[int, float]:
@@ -390,24 +456,15 @@ def union_line_boxes(
     return boxes
 
 
-def boxes_for_quote(
-    quote: str,
-    page: int | None,
-    layout: LayoutIndex | None,
+def _boxes_on_page(
+    quote: str, page: int, layout: LayoutIndex
 ) -> tuple[list[dict[str, float | int]], str]:
-    """Map a quote to per-line boxes. Never invents coordinates.
-
-    Returns (boxes, boxes_status) where status is matched, page_only, or
-    unavailable.
-    """
-    if not layout:
-        return [], "unavailable"
-    if page is None:
-        return [], "unavailable"
     page_layout = layout.get(page)
     if not isinstance(page_layout, Mapping):
         return [], "page_only"
     words = page_layout.get("words") or []
+    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+        return [], "page_only"
     if not words:
         return [], "page_only"
     haystack, spans = _join_words(words)
@@ -423,6 +480,83 @@ def boxes_for_quote(
     if not matched:
         return [], "page_only"
     return union_line_boxes(matched, page), "matched"
+
+
+def _page_search_order(
+    layout: LayoutIndex,
+    page: int | None,
+    prefer_pages: Sequence[int] | None,
+) -> list[int]:
+    order: list[int] = []
+    seen: set[int] = set()
+    for candidate in (*(prefer_pages or ()), page, *sorted(layout)):
+        if candidate is None:
+            continue
+        try:
+            number = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if number in seen:
+            continue
+        seen.add(number)
+        order.append(number)
+    return order
+
+
+def locate_quote(
+    quote: str,
+    page: int | None,
+    layout: LayoutIndex | None,
+    *,
+    prefer_pages: Sequence[int] | None = None,
+) -> tuple[list[dict[str, float | int]], str, int | None]:
+    """Map a quote to per-line boxes. Never invents coordinates.
+
+    When ``page`` is missing, search retrieved pages then the rest of the
+    layout. Returns (boxes, boxes_status, resolved_page). Never raises.
+    """
+    resolved_page = page if isinstance(page, int) else None
+    try:
+        if page is not None and not isinstance(page, int):
+            resolved_page = int(page)
+    except (TypeError, ValueError):
+        resolved_page = None
+    try:
+        if not isinstance(layout, Mapping) or not layout:
+            return [], "unavailable", resolved_page
+        needle = (quote or "").strip()
+        if not needle:
+            if resolved_page is None:
+                return [], "unavailable", None
+            return [], "page_only", resolved_page
+        for candidate in _page_search_order(layout, resolved_page, prefer_pages):
+            boxes, status = _boxes_on_page(needle, candidate, layout)
+            if status == "matched":
+                return boxes, "matched", candidate
+        if resolved_page is not None:
+            return [], "page_only", resolved_page
+        return [], "unavailable", None
+    except Exception:
+        logger.warning("locate_quote failed", exc_info=True)
+        return [], "unavailable", resolved_page
+
+
+def boxes_for_quote(
+    quote: str,
+    page: int | None,
+    layout: LayoutIndex | None,
+    *,
+    prefer_pages: Sequence[int] | None = None,
+) -> tuple[list[dict[str, float | int]], str]:
+    """Map a quote to per-line boxes. Never invents coordinates.
+
+    Returns (boxes, boxes_status) where status is matched, page_only, or
+    unavailable.
+    """
+    boxes, status, _resolved = locate_quote(
+        quote, page, layout, prefer_pages=prefer_pages
+    )
+    return boxes, status
 
 
 def part_for_page(

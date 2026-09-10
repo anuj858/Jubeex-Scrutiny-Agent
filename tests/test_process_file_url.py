@@ -180,18 +180,21 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("02_List_of_Dates.pdf", "SLP_CIVIL") == "synopsis_lod"
     assert (
         slot_id_from_name("03_Annexure_P1_Impugned_Order.pdf", "SLP_CIVIL")
-        == "annexures"
+        == "annexure_p1"
     )
+    assert slot_id_from_name("Annexure P-2.pdf", "SLP_CIVIL") == "annexure_p2"
+    assert slot_id_from_name("Annexure_P-10.pdf", "SLP_CIVIL") == "annexure_p10"
+    assert slot_id_from_name("Annexure P-100.pdf", "SLP_CIVIL") == "annexure_p100"
     assert slot_id_from_name("04_Vakalatnama.pdf", "SLP_CIVIL") == (
         "vakalatnama_appearance"
     )
     assert slot_id_from_name("Filing_Memo.pdf", "TRANSFER_PETITION_CIVIL") == (
         "filing_memo"
     )
-    assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "undefined"
+    assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "application_3"
 
 
-def test_upload_separate_maps_application_pdf_to_undefined() -> None:
+def test_upload_separate_maps_application_pdf_to_numbered_slot() -> None:
     event = FileEvent(
         job_type="upload_separate",
         filing_type="SLP_CIVIL",
@@ -213,7 +216,7 @@ def test_upload_separate_maps_application_pdf_to_undefined() -> None:
         ],
     )
     by_name = {item.filename: item.slot_id for item in event.documents}
-    assert by_name["Application 3.pdf"] == "undefined"
+    assert by_name["Application 3.pdf"] == "application_3"
     assert by_name["Listing Proforma.pdf"] == "listing_proforma"
 
 
@@ -252,7 +255,12 @@ def test_upload_separate_documents_payload() -> None:
     assert event.workspace_id == "b20c7d91-4e55-48aa-a013-9d6e2f88c104"
     assert event.user_id == "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447"
     slots = {item.slot_id for item in event.documents}
-    assert slots == {"petition", "synopsis_lod", "annexures", "vakalatnama_appearance"}
+    assert slots == {
+        "petition",
+        "synopsis_lod",
+        "annexure_p1",
+        "vakalatnama_appearance",
+    }
     petition = next(item for item in event.documents if item.slot_id == "petition")
     assert petition.document_id == "11aa22bb-33cc-44dd-85ee-66ff77889900"
     assert petition.filename == "01_Petition.pdf"
