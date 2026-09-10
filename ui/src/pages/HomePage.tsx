@@ -117,9 +117,16 @@ function TaskList() {
             workflowName="process-file"
             contentHash={{ enabled: true }}
             customWorkflowInput={(files) => {
+              const file = files[0] as {
+                fileId: string;
+                contentHash?: string | null;
+                name?: string;
+                filename?: string;
+              };
               return {
-                file_id: files[0].fileId,
-                file_hash: files[0].contentHash ?? null,
+                file_id: file.fileId,
+                file_hash: file.contentHash ?? null,
+                filename: file.name ?? file.filename ?? null,
               };
             }}
             onSuccess={(handler) => {

@@ -763,12 +763,9 @@ def extract_configuration(
     extract_config: Any,
     catalog: UploadTypeCatalog,
 ) -> dict[str, Any]:
-    from .config import LegalExtractRecord
+    from .config import LegalExtractRecord, dump_api_configuration
 
-    dumped = extract_config.model_dump(
-        exclude={"configuration_id", "product_type"},
-        exclude_none=True,
-    )
+    dumped = dump_api_configuration(extract_config)
     dumped["data_schema"] = inject_where_to_look(
         LegalExtractRecord.model_json_schema(),
         catalog.extract_field_sources,
@@ -784,14 +781,23 @@ def find_part(parts: Sequence[SplitPartInput], slot_id: str) -> SplitPartInput |
     return None
 
 
-def display_filename(filing_type: str, parts: Sequence[SplitPartInput]) -> str:
+def display_filename(
+    filing_type: str,
+    parts: Sequence[SplitPartInput],
+    original: str | None = None,
+) -> str:
+    from .job_timing import uploaded_filename
+
+    named = uploaded_filename(original)
+    if named:
+        return named
     cover = find_part(parts, "cover_page")
     if cover and cover.filename:
-        return cover.filename
+        return uploaded_filename(cover.filename) or cover.filename
     petition = find_part(parts, PETITION_SLOT_ID)
     if petition and petition.filename:
-        return petition.filename
+        return uploaded_filename(petition.filename) or petition.filename
     for item in parts:
         if item.filename:
-            return item.filename
+            return uploaded_filename(item.filename) or item.filename
     return f"{filing_type} split upload"

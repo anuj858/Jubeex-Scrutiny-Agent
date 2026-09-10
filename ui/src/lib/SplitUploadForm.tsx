@@ -30,6 +30,8 @@ export type BundlePrepared = {
   filing_type: string;
   parts: PreparedPart[];
   slot_pages?: Record<string, string>;
+  filename?: string | null;
+  classify_split_seconds?: number | null;
 };
 
 type PresignedFile = {
@@ -200,6 +202,20 @@ export function readBundlePrepared(payload: unknown): BundlePrepared | null {
     filing_type: source.filing_type as string,
     parts: asPreparedParts(source.parts),
     slot_pages: asSlotPages(source.slot_pages ?? source.slotPages),
+    filename:
+      typeof source.filename === "string"
+        ? source.filename
+        : typeof source.file_name === "string"
+          ? source.file_name
+          : null,
+    classify_split_seconds:
+      typeof source.classify_split_seconds === "number"
+        ? source.classify_split_seconds
+        : typeof source.classifySplitSeconds === "number"
+          ? source.classifySplitSeconds
+          : typeof asRecord(source.timing)?.classify_split_seconds === "number"
+            ? (asRecord(source.timing)?.classify_split_seconds as number)
+            : null,
   };
 }
 
@@ -370,6 +386,12 @@ export function SplitUploadForm({
   const [slotPages, setSlotPages] = useState<Record<string, string>>({});
   const [annexureCount, setAnnexureCount] = useState(1);
   const [applicationCount, setApplicationCount] = useState(1);
+  const [originalFilename, setOriginalFilename] = useState<string | null>(
+    null,
+  );
+  const [classifySplitSeconds, setClassifySplitSeconds] = useState<
+    number | null
+  >(null);
   const [typeLocked, setTypeLocked] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
@@ -449,6 +471,12 @@ export function SplitUploadForm({
         ? { ...prev, ...(prepared.slot_pages ?? {}) }
         : (prepared.slot_pages ?? {}),
     );
+    if (!alreadyApplied || prepared.filename) {
+      setOriginalFilename(prepared.filename ?? null);
+    }
+    if (!alreadyApplied || prepared.classify_split_seconds != null) {
+      setClassifySplitSeconds(prepared.classify_split_seconds ?? null);
+    }
     if (found > 0) {
       setUploads((prev) =>
         alreadyApplied ? { ...prev, ...nextUploads } : nextUploads,
@@ -527,6 +555,8 @@ export function SplitUploadForm({
     setAnnexureCount(1);
     setApplicationCount(1);
     setUploadingSlot(null);
+    setOriginalFilename(null);
+    setClassifySplitSeconds(null);
   };
 
   const pickFile = (slot: SplitUploadSlot) => {
@@ -698,6 +728,8 @@ export function SplitUploadForm({
       const created = await wf.createHandler({
         filing_type: filingType,
         parts,
+        filename: originalFilename,
+        classify_split_seconds: classifySplitSeconds,
       });
       onStarted(created);
       toast.success(`Started ${catalog.label} split upload`);

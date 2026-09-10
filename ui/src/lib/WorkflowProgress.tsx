@@ -175,12 +175,17 @@ export const WorkflowProgress = ({
     requestAnimationFrame(() => {
       setStatusVisible(true);
     });
+    const hideMs = /bundle upload|slot submit|classifying\+splitting|parse\+extract/.test(
+      statusMessage.message,
+    )
+      ? 120000
+      : 15000;
     hideTimerRef.current = window.setTimeout(() => {
       setStatusVisible(false);
       clearTimerRef.current = window.setTimeout(() => {
         setStatusMessage(undefined);
       }, 300);
-    }, 15000);
+    }, hideMs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusMessage?.level, statusMessage?.message]);
 

@@ -14,6 +14,7 @@ from extraction_review.process_file import (
     compiled_catalog_override,
     compiled_source,
     ingest_remote_file,
+    intake_echo,
     intake_mode,
     resolve_compiled_filing_type,
     slot_id_from_name,
@@ -25,6 +26,16 @@ def test_file_event_accepts_file_url_without_file_id() -> None:
     event = FileEvent(file_url="https://example.com/a/b/filing.pdf")
     assert event.file_id is None
     assert event.file_url.endswith("filing.pdf")
+
+
+def test_intake_echo_uses_uploaded_basename() -> None:
+    event = FileEvent(
+        file_id="file-1",
+        filename="folder/Defect_SLP_Civil.pdf",
+        organization_id="org-1",
+    )
+    echo = intake_echo(event)
+    assert echo["filename"] == "Defect_SLP_Civil.pdf"
 
 
 def test_file_event_requires_file_id_or_url() -> None:
