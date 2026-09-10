@@ -5,8 +5,10 @@ from extraction_review.layout_index import (
     compact_sidecar_pages,
     dump_layout_index,
     grounded_items_url,
+    locate_quote,
     merge_granular_bboxes,
     parse_sidecar_jsonl,
+    quote_in_text,
     stitch_slot_layouts,
 )
 from extraction_review.llm import strict_json_schema
@@ -16,6 +18,7 @@ from extraction_review.scrutiny.schema import (
     DefectResponse,
     EvidenceRef,
     apply_evidence_pages,
+    attach_evidence_boxes,
     build_finding,
 )
 from extraction_review.split_upload import SplitPartInput, UploadSlot, UploadTypeCatalog
@@ -335,3 +338,313 @@ def test_build_finding_without_layout_is_unavailable() -> None:
     assert finding.evidence[0].boxes_status == "unavailable"
     assert finding.evidence[0].bounding_boxes == []
     assert finding.evidence[0].document_part == "Advocate's Checklist"
+
+
+def _sentence_layout(page: int, text: str, slot_id: str = "affidavit") -> dict:
+    tokens = text.split()
+    row = [(token, 0.08 + index * 0.03, 0.62, 0.028, 0.018) for index, token in enumerate(tokens)]
+    compact = compact_sidecar_pages([_rows_to_sidecar([row])], slot_id=slot_id)
+    payload = compact[1]
+    payload["slot_id"] = slot_id
+    payload["local_page"] = 1
+    return {page: payload}
+
+
+def test_null_page_quote_is_found_on_layout_page() -> None:
+    layout = _sentence_layout(
+        26,
+        "Verified at Una on 17th day of April 2026 that the contents of Para 1 to 3 of the affidavit are true and correct to the best of my knowledge and belief.",
+    )
+    boxes, status, page = locate_quote(
+        "Verified at Una on 17/4 day of April, 2026 that the contents of Para 1 to 3 of the affidavit are true and correct to the best of my knowledge and belief.",
+        None,
+        layout,
+        prefer_pages=[21, 25, 26],
+    )
+    assert status == "matched"
+    assert page == 26
+    assert boxes
+    assert boxes[0]["page"] == 26
+
+
+def test_build_finding_fills_null_page_from_layout() -> None:
+    catalogue = get_catalogue()
+    layout = _sentence_layout(
+        26,
+        "Verified at Una on 17th day of April 2026 that the contents of Para 1 to 3 of the affidavit are true and correct to the best of my knowledge and belief.",
+        slot_id="affidavit",
+    )
+    finding = build_finding(
+        catalogue.defect("D077"),
+        DefectResponse(
+            check_id="D077",
+            status="defect_found",
+            confidence=0.9,
+            summary="Affidavit date cannot be checked against drafting date.",
+            reasoning="The affidavit verification is on filing page 26.",
+            evidence=[
+                EvidenceRef(
+                    page=None,
+                    quote=(
+                        "Verified at Una on 17/4 day of April, 2026 that the "
+                        "contents of Para 1 to 3 of the affidavit are true and "
+                        "correct to the best of my knowledge and belief."
+                    ),
+                )
+            ],
+            suggested_fix="State the drafting date.",
+            fix_rationale="Required to compare dates.",
+        ),
+        evidence_ids=["p26"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[26]),
+        chunks=[
+            {
+                "record_id": "p26",
+                "chunk_kind": "page",
+                "page": 26,
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT truncated pinecone excerpt",
+            }
+        ],
+        layout=layout,
+    )
+    ref = finding.evidence[0]
+    assert ref.page == 26
+    assert ref.boxes_status == "matched"
+    assert ref.bounding_boxes
+    assert ref.document_part == "Affidavit"
+    assert ref.slot_id == "affidavit"
+    assert ref.local_page == 1
+
+
+def test_build_finding_empty_evidence_uses_retrieved_inspect_pages() -> None:
+    catalogue = get_catalogue()
+    layout = _sentence_layout(
+        25,
+        "Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
+        slot_id="petition",
+    )
+    finding = build_finding(
+        catalogue.defect("D010"),
+        DefectResponse(
+            check_id="D010",
+            status="needs_review",
+            confidence=0.5,
+            summary="The drafting date page is not in the excerpts.",
+            reasoning="The Main Petition end was not retrieved.",
+            evidence=[],
+            suggested_fix=None,
+            fix_rationale=None,
+        ),
+        evidence_ids=["p25"],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[25]),
+        chunks=[
+            {
+                "record_id": "p25",
+                "chunk_kind": "page",
+                "page": 25,
+                "document_part": "Main Petition",
+                "text": "Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
+            }
+        ],
+        layout=layout,
+    )
+    assert finding.evidence
+    ref = finding.evidence[0]
+    assert ref.page == 25
+    assert ref.boxes_status == "matched"
+    assert ref.bounding_boxes
+    assert "Filing page 25" in (finding.location or "")
+
+
+def test_locate_quote_does_not_raise_on_garbage_layout() -> None:
+    boxes, status, _page = locate_quote("any quote at all", 12, ["not-a-mapping"])  # type: ignore[arg-type]
+    assert boxes == []
+    assert status == "unavailable"
+    boxes, status, _page = locate_quote(
+        "any quote at all",
+        12,
+        {12: {"words": "broken"}},
+    )
+    assert status in {"page_only", "unavailable"}
+    assert boxes == []
+
+
+def test_empty_quote_is_unavailable_without_page() -> None:
+    boxes, status, page = locate_quote("   ", None, _mid_line_layout())
+    assert boxes == []
+    assert status == "unavailable"
+    assert page is None
+
+
+def test_prefer_pages_wins_when_quote_is_on_two_pages() -> None:
+    page_25 = _sentence_layout(25, QUOTE, slot_id="petition")
+    page_26 = _sentence_layout(26, QUOTE, slot_id="affidavit")
+    layout = {**page_25, **page_26}
+    _boxes, status, page = locate_quote(QUOTE, None, layout, prefer_pages=[26, 25])
+    assert status == "matched"
+    assert page == 26
+
+
+def test_date_ocr_variants_count_as_the_same_quote() -> None:
+    ocr = (
+        "Verified at Una on 17th day of April 2026 that the contents of Para 1 "
+        "to 3 of the affidavit are true and correct"
+    )
+    model = (
+        "Verified at Una on 17/4 day of April, 2026 that the contents of Para 1 "
+        "to 3 of the affidavit are true and correct"
+    )
+    assert quote_in_text(model, ocr)
+    layout = _sentence_layout(26, ocr)
+    boxes, status, page = locate_quote(model, None, layout)
+    assert status == "matched"
+    assert page == 26
+    assert boxes
+
+
+def test_unrelated_quote_does_not_false_match() -> None:
+    layout = _sentence_layout(26, "Verified at Una on 17th day of April 2026")
+    boxes, status, page = locate_quote(
+        "Advocate's Check List whether the petition is in Form 28",
+        None,
+        layout,
+    )
+    assert boxes == []
+    assert status == "unavailable"
+    assert page is None
+
+
+def test_attach_evidence_boxes_survives_broken_citation() -> None:
+    layout = _sentence_layout(
+        25,
+        "Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
+        slot_id="petition",
+    )
+    attached = attach_evidence_boxes(
+        [
+            EvidenceRef(page=None, quote=""),
+            EvidenceRef(
+                page=25,
+                quote="Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
+            ),
+        ],
+        layout=layout,
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": 25,
+                "document_part": "Main Petition",
+                "text": "Drawn By AOR Filed on 15.04.2026",
+            }
+        ],
+    )
+    assert attached[0].boxes_status in {"unavailable", "page_only"}
+    assert attached[0].bounding_boxes == []
+    assert attached[1].boxes_status == "matched"
+    assert attached[1].page == 25
+    assert attached[1].bounding_boxes
+    for box in attached[1].bounding_boxes:
+        assert 0.0 <= box.x <= 1.0
+        assert 0.0 <= box.y <= 1.0
+        assert box.w > 0
+        assert box.h > 0
+        assert box.x + box.w <= 1.000001
+        assert box.y + box.h <= 1.000001
+
+
+def test_build_finding_mixed_d077_citations() -> None:
+    catalogue = get_catalogue()
+    petition = _sentence_layout(
+        25,
+        "Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
+        slot_id="petition",
+    )
+    affidavit = _sentence_layout(
+        26,
+        "Verified at Una on 17th day of April 2026 that the contents of Para 1 to 3 of the affidavit are true and correct to the best of my knowledge and belief.",
+        slot_id="affidavit",
+    )
+    finding = build_finding(
+        catalogue.defect("D077"),
+        DefectResponse(
+            check_id="D077",
+            status="defect_found",
+            confidence=0.95,
+            summary="Drafting date is missing so the affidavit date cannot be checked.",
+            reasoning="Page 25 of the Main Petition and page 26 of the Affidavit were inspected.",
+            evidence=[
+                EvidenceRef(
+                    page=25,
+                    quote="Drawn By:\n\nFiled on: 15.04.2026\n\nFiled By",
+                ),
+                EvidenceRef(
+                    page=None,
+                    quote=(
+                        "Verified at Una on 17/4 day of April, 2026 that the "
+                        "contents of Para 1 to 3 of the affidavit are true and "
+                        "correct to the best of my knowledge and belief."
+                    ),
+                ),
+            ],
+            suggested_fix="State the drafting date.",
+            fix_rationale="Required to compare dates.",
+        ),
+        evidence_ids=["p25", "p26"],
+        coverage=Coverage(chunks_reviewed=2, pages_reviewed=[25, 26]),
+        chunks=[
+            {
+                "record_id": "p25",
+                "chunk_kind": "page",
+                "page": 25,
+                "document_part": "Main Petition",
+                "text": "prayer only, no drafting date line",
+            },
+            {
+                "record_id": "p26",
+                "chunk_kind": "page",
+                "page": 26,
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT truncated pinecone excerpt",
+            },
+        ],
+        layout={**petition, **affidavit},
+    )
+    assert len(finding.evidence) == 2
+    assert finding.evidence[0].page == 25
+    assert finding.evidence[0].boxes_status == "matched"
+    assert finding.evidence[0].bounding_boxes
+    assert finding.evidence[1].page == 26
+    assert finding.evidence[1].boxes_status == "matched"
+    assert finding.evidence[1].bounding_boxes
+    assert finding.evidence[1].document_part == "Affidavit"
+
+
+def test_empty_evidence_ignores_non_numeric_chunk_pages() -> None:
+    catalogue = get_catalogue()
+    finding = build_finding(
+        catalogue.defect("D010"),
+        DefectResponse(
+            check_id="D010",
+            status="needs_review",
+            confidence=0.5,
+            summary="Drafting date could not be checked.",
+            reasoning="The Main Petition excerpts are incomplete.",
+            evidence=[],
+            suggested_fix=None,
+            fix_rationale=None,
+        ),
+        evidence_ids=[],
+        coverage=Coverage(chunks_reviewed=1, pages_reviewed=[]),
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": "unknown",
+                "document_part": "Main Petition",
+                "text": "Drawn By AOR Filed on 15.04.2026",
+            }
+        ],
+        layout=_sentence_layout(25, "Drawn By AOR Filed on 15.04.2026", slot_id="petition"),
+    )
+    assert finding.error is None
+    assert finding.evidence == []

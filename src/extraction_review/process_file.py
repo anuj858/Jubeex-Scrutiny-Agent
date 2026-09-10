@@ -41,6 +41,7 @@ from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
+    dynamic_upload_slot,
     type_catalog,
     ui_catalog,
 )
@@ -90,6 +91,8 @@ SPLIT_JOB_TYPES = frozenset(
 )
 DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
 SWAGGER_PLACEHOLDERS = frozenset({"string", "str", "none", "null"})
+_ANNEXURE_SLOT_RE = re.compile(r"annexure_p_?(\d+)")
+_APPLICATION_SLOT_RE = re.compile(r"application_?(\d+)")
 _SLOT_NAME_ALIASES = {
     "list_of_dates": "synopsis_lod",
     "list_of_dates_events": "synopsis_lod",
@@ -209,6 +212,32 @@ def _known_slot_ids(filing_type: str | None) -> list[str]:
     return ids
 
 
+def _numbered_slot_id(stem: str, known: list[str]) -> str | None:
+    annexure = _ANNEXURE_SLOT_RE.search(stem)
+    if annexure:
+        number = int(annexure.group(1))
+        candidate = f"annexure_p{number}"
+        if 1 <= number <= 999 and (
+            not known
+            or candidate in known
+            or "annexures" in known
+            or "annexure_p1" in known
+        ):
+            return candidate
+    application = _APPLICATION_SLOT_RE.search(stem)
+    if application:
+        number = int(application.group(1))
+        candidate = f"application_{number}"
+        if 1 <= number <= 999 and (
+            not known
+            or candidate in known
+            or "applications" in known
+            or "application_1" in known
+        ):
+            return candidate
+    return None
+
+
 def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
     """Map `01_Petition.pdf` / `List of Dates` onto a split-upload slot id."""
     stem = normalize_document_stem(name)
@@ -216,13 +245,16 @@ def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
         return None
     if stem in FULL_PETITION_SLOTS or stem == "full_petition":
         return "fullpetition"
-    if stem.startswith("annexure"):
-        return "annexures"
-    if stem.startswith("application"):
-        return UNDEFINED_SLOT_ID
     known = _known_slot_ids(filing_type)
     if stem in known:
         return stem
+    numbered = _numbered_slot_id(stem, known)
+    if numbered:
+        return numbered
+    if stem.startswith("annexure") and (not known or "annexures" in known):
+        return "annexures"
+    if stem.startswith("application") and (not known or "applications" in known):
+        return "applications"
     alias = _SLOT_NAME_ALIASES.get(stem)
     if alias and (not known or alias in known or alias == "fullpetition"):
         return alias
@@ -243,8 +275,11 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
     alias = _SLOT_NAME_ALIASES.get(underscored)
     if alias in known:
         return alias
+    dynamic = dynamic_upload_slot(underscored) or dynamic_upload_slot(key)
+    if dynamic and (not known or "annexures" in known or "applications" in known or dynamic.id in known):
+        return dynamic.id
     from_name = slot_id_from_name(key, filing_type)
-    if from_name in known:
+    if from_name in known or (from_name and dynamic_upload_slot(from_name)):
         return from_name
     return UNDEFINED_SLOT_ID
 
@@ -517,7 +552,7 @@ class FileEvent(StartEvent):
                     (item.slot_id or "").strip(),
                     filing_type=self.filing_type,
                 )
-                if slot not in allowed_slots:
+                if slot not in allowed_slots and dynamic_upload_slot(slot) is None:
                     slot = UNDEFINED_SLOT_ID
                 coerced.append(item.model_copy(update={"slot_id": slot}))
             self.documents = coerced
