@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -19,7 +20,18 @@ from .document_parts import MAIN_PETITION_PART, parts_on_page
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
-EXTRACT_PACK_EXCLUDED_PARTS = frozenset({"Annexures", "Appendix"})
+EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
+    {"Annexures", "Appendix", "Application"}
+)
+
+
+def _excluded_from_extract_pack(name: str) -> bool:
+    folded = (name or "").strip().lower()
+    if (name or "").strip() in EXTRACT_PACK_EXCLUDED_PARTS:
+        return True
+    return folded.startswith("annexure") or folded.startswith("application")
+
+
 # Main Petition grounds stay out of Extract. Keep page 1 (parties) and the last
 # pages (prayer / relief).
 PETITION_PACK_FIRST_PAGES = 1
@@ -27,6 +39,8 @@ PETITION_PACK_LAST_PAGES = 3
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
+_ANNEXURE_SLOT_RE = re.compile(r"^annexure_p(\d{1,3})$")
+_APPLICATION_SLOT_RE = re.compile(r"^application_(\d{1,3})$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
 
@@ -41,6 +55,44 @@ class UploadSlot:
     label: str
     parts: tuple[str, ...]
     required: bool = True
+
+
+def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
+    """Annexure P-n / Application n slots are created when those files appear."""
+    key = (slot_id or "").strip()
+    match = _ANNEXURE_SLOT_RE.fullmatch(key)
+    if match:
+        number = int(match.group(1))
+        return UploadSlot(
+            id=key,
+            label=f"Annexure P-{number}",
+            parts=(f"Annexure P-{number}",),
+            required=False,
+        )
+    match = _APPLICATION_SLOT_RE.fullmatch(key)
+    if match:
+        number = int(match.group(1))
+        return UploadSlot(
+            id=key,
+            label=f"Application {number}",
+            parts=(f"Application {number}",),
+            required=False,
+        )
+    return None
+
+
+def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot | None:
+    return catalog.slot_by_id().get(slot_id) or dynamic_upload_slot(slot_id)
+
+
+def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int]:
+    match = _ANNEXURE_SLOT_RE.fullmatch(slot_id)
+    if match:
+        return (0, int(match.group(1)))
+    match = _APPLICATION_SLOT_RE.fullmatch(slot_id)
+    if match:
+        return (1, int(match.group(1)))
+    return (2, 0)
 
 
 @dataclass(frozen=True)
@@ -174,8 +226,41 @@ def type_catalog(
     )
 
 
+def _ui_slot_dict(slot: UploadSlot) -> dict[str, Any]:
+    return {
+        "id": slot.id,
+        "label": slot.label,
+        "parts": list(slot.parts),
+        "required": slot.required,
+    }
+
+
+def _repeatable_ui_slot(group: str, number: int = 1) -> dict[str, Any]:
+    if group == "annexures":
+        return {
+            "id": f"annexure_p{number}",
+            "label": f"Annexure P-{number}",
+            "parts": [f"Annexure P-{number}"],
+            "required": False,
+            "repeatable": True,
+            "repeat_group": "annexures",
+        }
+    return {
+        "id": f"application_{number}",
+        "label": f"Application {number}",
+        "parts": [f"Application {number}"],
+        "required": False,
+        "repeatable": True,
+        "repeat_group": "applications",
+    }
+
+
 def ui_catalog(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Filing-type labels and slots for the UI. No extract internals."""
+    """Filing-type labels and slots for the UI. No extract internals.
+
+    Catch-all Annexures / Applications slots become the first numbered upload
+    (P-1 / Application 1) with ``repeatable`` so the form can Add P-2, P-3, …
+    """
     block = load_split_upload_config(payload)
     types = block.get("types") if isinstance(block.get("types"), Mapping) else {}
     catalog: dict[str, Any] = {}
@@ -188,17 +273,18 @@ def ui_catalog(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
             entry = type_catalog(str(filing_type), payload)
         except SplitUploadError:
             continue
+        ui_slots: list[dict[str, Any]] = []
+        for slot in entry.slots:
+            if slot.id == "annexures":
+                ui_slots.append(_repeatable_ui_slot("annexures", 1))
+                continue
+            if slot.id == "applications":
+                ui_slots.append(_repeatable_ui_slot("applications", 1))
+                continue
+            ui_slots.append(_ui_slot_dict(slot))
         catalog[entry.filing_type] = {
             "label": entry.label,
-            "slots": [
-                {
-                    "id": slot.id,
-                    "label": slot.label,
-                    "parts": list(slot.parts),
-                    "required": slot.required,
-                }
-                for slot in entry.slots
-            ],
+            "slots": ui_slots,
         }
     return catalog
 
@@ -238,7 +324,7 @@ def validate_parts(
         if not item.slot_id:
             raise SplitUploadError("Each uploaded file must include slot_id")
         seen.add(item.slot_id)
-        slot = allowed.get(item.slot_id)
+        slot = allowed.get(item.slot_id) or dynamic_upload_slot(item.slot_id)
         if slot is None:
             raise SplitUploadError(
                 f"Unknown slot {item.slot_id!r} for {catalog.filing_type}"
@@ -275,8 +361,35 @@ def ordered_parts(
     for item in parts:
         grouped.setdefault(item.slot_id, []).append(item)
     ordered: list[SplitPartInput] = []
+    consumed: set[str] = set()
+    annexure_ids = sorted(
+        (slot_id for slot_id in grouped if _ANNEXURE_SLOT_RE.fullmatch(slot_id)),
+        key=_numbered_slot_sort_key,
+    )
+    application_ids = sorted(
+        (slot_id for slot_id in grouped if _APPLICATION_SLOT_RE.fullmatch(slot_id)),
+        key=_numbered_slot_sort_key,
+    )
     for slot in catalog.slots:
+        if slot.id == "annexures":
+            for slot_id in annexure_ids:
+                ordered.extend(grouped[slot_id])
+                consumed.add(slot_id)
+            ordered.extend(grouped.get("annexures", []))
+            consumed.add("annexures")
+            continue
+        if slot.id == "applications":
+            for slot_id in application_ids:
+                ordered.extend(grouped[slot_id])
+                consumed.add(slot_id)
+            ordered.extend(grouped.get("applications", []))
+            consumed.add("applications")
+            continue
         ordered.extend(grouped.get(slot.id, []))
+        consumed.add(slot.id)
+    for slot_id, items in grouped.items():
+        if slot_id not in consumed:
+            ordered.extend(items)
     return ordered
 
 
@@ -347,17 +460,17 @@ def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
         for spec in catalog.extract_field_sources.values()
         for part in spec.all_parts()
     }
-    return names - EXTRACT_PACK_EXCLUDED_PARTS
+    return names - {part for part in names if _excluded_from_extract_pack(part)}
 
 
 def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool:
     labels = [name for name in names if name]
     if not labels:
         return False
-    if all(name in EXTRACT_PACK_EXCLUDED_PARTS for name in labels):
+    if all(_excluded_from_extract_pack(name) for name in labels):
         return False
     if not source_parts:
-        return not any(name in EXTRACT_PACK_EXCLUDED_PARTS for name in labels)
+        return not any(_excluded_from_extract_pack(name) for name in labels)
     return any(name in source_parts for name in labels)
 
 
