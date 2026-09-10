@@ -7,23 +7,22 @@ onto the finding in Python so they stay aligned with the defect API payload.
 
 from __future__ import annotations
 
-import logging
 import os
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..document_parts import (
-    _part_match,
     allows_index_evidence,
     missing_required_parts,
     parts_named_in_where_to_look,
     parts_on_page,
     preferred_parts_for_defect,
 )
-from ..layout_index import locate_quote, page_entry, part_for_page, quote_in_text
+from ..layout_index import boxes_for_quote, page_entry, part_for_page
 from .prompts import (
     display_cure_steps,
     filing_location,
@@ -33,8 +32,6 @@ from .prompts import (
     validated_summary,
 )
 from .rules import Defect, get_catalogue
-
-logger = logging.getLogger(__name__)
 
 ResultState = Literal[
     "defect_found",
@@ -261,15 +258,6 @@ class DefectFinding(BaseModel):
 DEFAULT_REVIEW_CONFIDENCE = 0.6
 
 
-def _safe_page_number(value: Any) -> int | None:
-    try:
-        if value is None or isinstance(value, bool):
-            return None
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def review_confidence_threshold() -> float:
     raw = os.getenv("SCRUTINY_REVIEW_CONFIDENCE", "")
     try:
@@ -277,6 +265,11 @@ def review_confidence_threshold() -> float:
     except ValueError:
         value = DEFAULT_REVIEW_CONFIDENCE
     return min(1.0, max(0.0, value))
+
+
+def _norm_quote(text: str) -> str:
+    collapsed = re.sub(r"\s+", " ", (text or "").replace("…", " ").replace("...", " "))
+    return collapsed.strip().lower()
 
 
 def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
@@ -301,9 +294,20 @@ def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
     return pages
 
 
+def _quote_in_text(quote: str, text: str) -> bool:
+    needle = _norm_quote(quote)
+    haystack = _norm_quote(text)
+    if not needle or not haystack:
+        return False
+    if needle in haystack:
+        return True
+    snippet = needle[:80].strip()
+    return len(snippet) >= 12 and snippet in haystack
+
+
 def _chunk_page_for_quote(quote: str, chunk: dict[str, Any]) -> int | None:
     text = chunk.get("text") or ""
-    if not quote_in_text(quote, text):
+    if not _quote_in_text(quote, text):
         return None
     start = chunk.get("page")
     try:
@@ -317,101 +321,12 @@ def _chunk_part_rank(chunk: dict[str, Any], preferred: list[str]) -> int:
     names = [n.lower() for n in parts_on_page(chunk.get("document_part"))]
     if not names:
         return 0
-    if preferred and _part_match(chunk, preferred):
+    preferred_l = [p.lower() for p in preferred]
+    if any(n in preferred_l or any(p in n for p in preferred_l) for n in names):
         return 2
     if set(names) <= {"index"}:
         return -1
     return 1
-
-
-def _page_allowed_for_evidence(
-    page_chunks: list[dict[str, Any]],
-    page: int | None,
-    preferred: list[str],
-    allow_index: bool,
-) -> bool:
-    if page is None:
-        return False
-    for chunk in page_chunks:
-        try:
-            chunk_page = int(chunk["page"]) if chunk.get("page") is not None else None
-        except (TypeError, ValueError):
-            continue
-        if chunk_page != page:
-            continue
-        if allow_index or _chunk_part_rank(chunk, preferred) >= 0:
-            return True
-    return False
-
-
-_SNIPPET_MAX = 280
-
-
-def _snippet_for_boxes(text: str) -> str:
-    collapsed = " ".join((text or "").split())
-    if len(collapsed) <= _SNIPPET_MAX:
-        return collapsed
-    return collapsed[-_SNIPPET_MAX:]
-
-
-def _evidence_from_chunks(
-    chunks: list[dict[str, Any]], defect: Defect
-) -> list[EvidenceRef]:
-    """When the model cites nothing, box the inspected pages we actually retrieved."""
-    preferred = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
-    page_chunks = [chunk for chunk in chunks if chunk.get("chunk_kind") != "summary"]
-    ranked = sorted(
-        page_chunks,
-        key=lambda chunk: (
-            _chunk_part_rank(chunk, preferred),
-            _safe_page_number(chunk.get("page")) or -1,
-        ),
-        reverse=True,
-    )
-    refs: list[EvidenceRef] = []
-    seen: set[int] = set()
-    for chunk in ranked:
-        if preferred and _chunk_part_rank(chunk, preferred) < 2:
-            continue
-        try:
-            page = _safe_page_number(chunk.get("page"))
-        except (TypeError, ValueError):
-            page = None
-        if page is None or page in seen:
-            continue
-        quote = _snippet_for_boxes(str(chunk.get("text") or ""))
-        if not quote:
-            continue
-        seen.add(page)
-        refs.append(EvidenceRef(page=page, quote=quote))
-        if len(refs) >= 2:
-            break
-    return refs
-
-
-def _as_bounding_boxes(raw: Any) -> list[BoundingBox]:
-    boxes: list[BoundingBox] = []
-    if not isinstance(raw, list):
-        return boxes
-    for item in raw:
-        try:
-            box = BoundingBox.model_validate(item)
-        except ValidationError:
-            continue
-        if box.w <= 0 or box.h <= 0:
-            continue
-        x = min(max(float(box.x), 0.0), 1.0)
-        y = min(max(float(box.y), 0.0), 1.0)
-        width = min(max(float(box.w), 0.0), round(1.0 - x, 6))
-        height = min(max(float(box.h), 0.0), round(1.0 - y, 6))
-        if width <= 0 or height <= 0:
-            continue
-        boxes.append(
-            BoundingBox(page=int(box.page), x=x, y=y, w=width, h=height)
-        )
-    return boxes
 
 
 def attach_evidence_boxes(
@@ -422,50 +337,34 @@ def attach_evidence_boxes(
 ) -> list[FindingEvidence]:
     """Attach per-line boxes after page snap. Empty layout → unavailable."""
     attached: list[FindingEvidence] = []
-    prefer_pages = sorted(_retrieved_pages(chunks or []))
     for ref in refs:
-        try:
-            boxes, status, page = locate_quote(
-                ref.quote or "",
-                ref.page,
-                layout,
-                prefer_pages=prefer_pages,
+        boxes, status = boxes_for_quote(ref.quote or "", ref.page, layout)
+        boxes_status: BoxesStatus = (
+            status
+            if status in ("matched", "page_only", "unavailable")
+            else "unavailable"
+        )
+        page_meta = page_entry(layout, ref.page) if layout else None
+        local_page = None
+        slot_id = None
+        if page_meta is not None:
+            slot_id = str(page_meta.get("slot_id") or "").strip() or None
+            raw_local = page_meta.get("local_page")
+            try:
+                local_page = int(raw_local) if raw_local is not None else None
+            except (TypeError, ValueError):
+                local_page = None
+        attached.append(
+            FindingEvidence(
+                page=ref.page,
+                quote=ref.quote or "",
+                bounding_boxes=[BoundingBox.model_validate(box) for box in boxes],
+                boxes_status=boxes_status,
+                document_part=part_for_page(chunks, ref.page),
+                slot_id=slot_id,
+                local_page=local_page,
             )
-            boxes_status: BoxesStatus = (
-                status
-                if status in ("matched", "page_only", "unavailable")
-                else "unavailable"
-            )
-            page_meta = page_entry(layout, page) if layout else None
-            local_page = None
-            slot_id = None
-            if page_meta is not None:
-                slot_id = str(page_meta.get("slot_id") or "").strip() or None
-                local_page = _safe_page_number(page_meta.get("local_page"))
-            attached.append(
-                FindingEvidence(
-                    page=page,
-                    quote=ref.quote or "",
-                    bounding_boxes=_as_bounding_boxes(boxes),
-                    boxes_status=boxes_status,
-                    document_part=part_for_page(chunks, page),
-                    slot_id=slot_id,
-                    local_page=local_page,
-                )
-            )
-        except Exception:
-            logger.warning(
-                "Failed to attach highlight boxes; leaving citation unboxed",
-                exc_info=True,
-            )
-            attached.append(
-                FindingEvidence(
-                    page=getattr(ref, "page", None),
-                    quote=(getattr(ref, "quote", None) or ""),
-                    bounding_boxes=[],
-                    boxes_status="unavailable",
-                )
-            )
+        )
     return attached
 
 
@@ -511,12 +410,7 @@ def apply_evidence_pages(
                 reverse=True,
             )
             page = _chunk_page_for_quote(quote, matches[0])
-        elif ref.page in _retrieved_pages(chunks) and _page_allowed_for_evidence(
-            page_chunks, ref.page, preferred, allow_index
-        ):
-            # Keep a retrieved page so layout matching can still box the quote
-            # when Pinecone OCR differs from the model quote.
-            page = ref.page
+        # Do not keep a model page when the quote is not in any excerpt.
         grounded.append(EvidenceRef(page=page, quote=quote))
     response.evidence = grounded
     return response
@@ -655,11 +549,7 @@ def build_finding(
     suggested = response.suggested_fix if response.status == "defect_found" else None
     rationale = response.fix_rationale if response.status == "defect_found" else None
     catalogue = get_catalogue()
-    refs = list(response.evidence)
-    if not refs and chunks:
-        refs = _evidence_from_chunks(chunks, defect)
-    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
-    evidence_pages = [ref.page for ref in evidence if ref.page is not None]
+    evidence_pages = [ref.page for ref in response.evidence if ref.page is not None]
     pages = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     parts = _parts_for_pages(chunks, evidence_pages or pages)
     location = filing_location(
@@ -691,7 +581,7 @@ def build_finding(
             pages=pages,
             evidence_pages=evidence_pages,
         ),
-        evidence=evidence,
+        evidence=attach_evidence_boxes(response.evidence, layout=layout, chunks=chunks),
         suggested_fix=suggested,
         fix_rationale=rationale,
         how_to_cure=display_cure_steps(defect.how_to_cure),

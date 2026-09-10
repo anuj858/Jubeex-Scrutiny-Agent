@@ -17,12 +17,10 @@ from extraction_review.bundle_slicer import (
 )
 from extraction_review.document_parts import (
     _split_categories,
-    explode_repeating_split_parts,
     filing_type_label,
     format_page_span,
     normalize_part_name,
     overlay_split_documents,
-    page_parts_from_split,
     parts_named_in_text,
 )
 from extraction_review.extract_record import (
@@ -116,21 +114,6 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
     assert "filing_memo" not in civil_ids
-    assert "annexure_p1" in civil_ids
-    assert "application_1" in civil_ids
-    assert "annexures" not in civil_ids
-    assert "applications" not in civil_ids
-    annexure_slot = next(
-        slot for slot in catalog["SLP_CIVIL"]["slots"] if slot["id"] == "annexure_p1"
-    )
-    assert annexure_slot["repeatable"] is True
-    assert annexure_slot["repeat_group"] == "annexures"
-    assert annexure_slot["label"] == "Annexure P-1"
-    application_slot = next(
-        slot for slot in catalog["SLP_CIVIL"]["slots"] if slot["id"] == "application_1"
-    )
-    assert application_slot["repeatable"] is True
-    assert application_slot["repeat_group"] == "applications"
     assert civil_ids[-1] == "undefined"
     assert criminal_ids[-1] == "undefined"
     assert tp_civil_ids[-1] == "undefined"
@@ -188,8 +171,7 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert tp_civil_required["vakalatnama_appearance"] is True
     assert tp_civil_required["memo_of_parties"] is False
     assert tp_civil_required["poa_br"] is False
-    assert tp_civil_required["annexure_p1"] is False
-    assert tp_civil_required["application_1"] is False
+    assert tp_civil_required["annexures"] is False
     assert "court_fees" not in tp_civil_required
     assert "filing_memo" not in tp_criminal_required
     assert tp_criminal_required["vakalatnama_appearance"] is True
@@ -426,8 +408,6 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         12: "petition prayer page three",
         13: "affidavit deponent",
         14: "office report limitation",
-        15: "annexure p-1 body",
-        16: "application 1 sheweth",
     }
     page_parts = {
         1: ["Cover Page"],
@@ -444,8 +424,6 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         12: ["Main Petition"],
         13: ["Affidavit"],
         14: ["Office Report on Limitation"],
-        15: ["Annexure P-1"],
-        16: ["Application 1"],
     }
     pack = build_extract_pack_markdown(
         page_markdown,
@@ -476,10 +454,6 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "appendix text" not in pack
     assert "Annexures" not in pack
     assert "Appendix" not in pack
-    assert "annexure p-1 body" not in pack
-    assert "application 1 sheweth" not in pack
-    assert "[Annexure P-1]" not in pack
-    assert "[Application 1]" not in pack
 
 
 def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
@@ -1086,10 +1060,6 @@ async def test_metadata_exposes_split_upload_types() -> None:
     ]
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
-    civil_ids = [slot["id"] for slot in result.split_upload_types["SLP_CIVIL"]["slots"]]
-    assert "annexure_p1" in civil_ids
-    assert "application_1" in civil_ids
-    assert "annexures" not in civil_ids
 
 
 def test_process_split_files_does_not_call_llama_split() -> None:
@@ -1293,151 +1263,6 @@ def test_filing_memo_maps_on_transfer_petition_civil() -> None:
     criminal = type_catalog("TRANSFER_PETITION_CRIMINAL")
     assert "filing_memo" not in {slot.id for slot in criminal.slots}
     assert "court_fees" not in {slot.id for slot in catalog.slots}
-
-
-def test_numbered_annexure_and_application_map_to_own_slots() -> None:
-    catalog = type_catalog("SLP_CIVIL")
-    pages = map_slot_pages(
-        catalog,
-        {
-            20: ["Annexure P-1"],
-            21: ["Annexure P-2"],
-            22: ["Annexures"],
-            30: ["Application 1"],
-            31: ["Application 3"],
-            32: ["Application"],
-        },
-    )
-    assert pages["annexure_p1"] == [20]
-    assert pages["annexure_p2"] == [21]
-    assert pages["annexures"] == [22]
-    assert pages["application_1"] == [30]
-    assert pages["application_3"] == [31]
-    assert pages["applications"] == [32]
-    assert "20" not in str(pages.get("annexures", []))
-
-
-def test_validate_parts_accepts_dynamic_annexure_and_application_slots() -> None:
-    extra = [
-        {"slot_id": "annexure_p7", "file_id": "file-p7"},
-        {"slot_id": "annexure_p100", "file_id": "file-p100"},
-        {"slot_id": "application_7", "file_id": "file-app7"},
-    ]
-    _, parts = validate_parts(
-        "SLP_CIVIL",
-        _required_parts("SLP_CIVIL", extra=extra),
-    )
-    present = {item.slot_id: item for item in parts}
-    assert present["annexure_p7"].document_parts == ("Annexure P-7",)
-    assert present["annexure_p100"].document_parts == ("Annexure P-100",)
-    assert present["application_7"].document_parts == ("Application 7",)
-
-
-def test_contiguous_annexure_segments_number_without_gaps() -> None:
-    from types import SimpleNamespace
-
-    job = SimpleNamespace(
-        result=SimpleNamespace(
-            segments=[
-                SimpleNamespace(category="Annexures", pages=[20, 21]),
-                SimpleNamespace(category="Annexures", pages=[22, 23]),
-                SimpleNamespace(category="Annexures", pages=[24]),
-                SimpleNamespace(category="Annexures", pages=[25, 26]),
-                SimpleNamespace(category="Annexures", pages=[27]),
-                SimpleNamespace(category="Annexures", pages=[28]),
-                SimpleNamespace(category="Annexures", pages=[29]),
-            ]
-        )
-    )
-    mapping = page_parts_from_split(job)
-    assert mapping[20] == ["Annexure P-1"]
-    assert mapping[22] == ["Annexure P-2"]
-    assert mapping[24] == ["Annexure P-3"]
-    assert mapping[25] == ["Annexure P-4"]
-    assert mapping[27] == ["Annexure P-5"]
-    assert mapping[28] == ["Annexure P-6"]
-    assert mapping[29] == ["Annexure P-7"]
-    catalog = type_catalog("SLP_CIVIL")
-    pages = map_slot_pages(catalog, mapping)
-    for number in range(1, 8):
-        assert f"annexure_p{number}" in pages
-
-
-def test_merged_annexures_split_on_p_n_headings_through_last_number() -> None:
-    page_parts = {page: ["Annexures"] for page in range(1, 8)}
-    texts = {page: f"ANNEXURE P-{page}\nExhibit body" for page in range(1, 8)}
-    exploded = explode_repeating_split_parts(page_parts, texts)
-    for page in range(1, 8):
-        assert exploded[page] == [f"Annexure P-{page}"]
-    catalog = type_catalog("SLP_CIVIL")
-    pages = map_slot_pages(catalog, exploded)
-    assert pages["annexure_p1"] == [1]
-    assert pages["annexure_p7"] == [7]
-    assert "annexure_p100" not in pages
-
-
-def test_application_headings_number_consecutively() -> None:
-    page_parts = {
-        1: ["Application"],
-        2: ["Application"],
-        3: ["Application"],
-        4: ["Application"],
-    }
-    texts = {
-        1: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nMOST RESPECTFULLY SHOWETH",
-        2: "2. The applicant repeats the facts.",
-        3: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nFOR EXEMPTION",
-        4: "Prayer and AOR details.",
-    }
-    exploded = explode_repeating_split_parts(page_parts, texts)
-    assert exploded[1] == ["Application 1"]
-    assert exploded[2] == ["Application 1"]
-    assert exploded[3] == ["Application 2"]
-    assert exploded[4] == ["Application 2"]
-
-
-def test_remaining_split_descriptions_cover_user_cues() -> None:
-    _split_categories.cache_clear()
-    cats = dict(_split_categories())
-    listing = cats["Listing Proforma"]
-    assert "PROFORMA FOR FIRST LISTING" in listing
-    assert "Central Act" in listing
-    assert "The case pertains to" in listing
-    synopsis = cats["Synopsis"]
-    assert "SYNOPSIS" in synopsis
-    lod = cats["List of Dates & Events"]
-    assert "LIST OF DATES" in lod
-    assert "DD/MM/YYYY" in lod
-    impugned = cats["Impugned Order"]
-    assert "judgment or order under challenge" in impugned
-    assert "LIST OF DATES" not in impugned
-    petition = cats["Main Petition"]
-    assert "IN THE SUPREME COURT OF INDIA" in petition
-    assert "Grounds" in petition
-    assert "Prayer" in petition
-    affidavit = cats["Affidavit"]
-    assert "A F F I D A V I T" in affidavit
-    assert "Deponent" in affidavit
-    assert "Verification" in affidavit
-    annexure = cats["Annexures"]
-    assert "P-1" in annexure
-    assert "P-100" in annexure
-    assert "P-1 through P-7" in annexure
-    appendix = cats["Appendix"]
-    assert "Appendix" in appendix
-    application = cats["Application"]
-    assert "APPLICATION" in application
-    assert "RESPECTFULLY SHOWETH" in application
-    assert "Application 1 through 7" in application
-    filing = cats["Filing Memo"]
-    assert "FILING INDEX" in filing or "INDEX OF FILING" in filing
-    parties = cats["Memo of Parties"]
-    assert "MEMO OF PARTIES" in parties
-    assert "VAKALATNAMA" not in parties
-    vakalatnama = cats["Vakalatnama"]
-    assert "VAKALATNAMA" in vakalatnama
-    appearance = cats["Memo of Appearance"]
-    assert "MEMO OF APPEARANCE" in appearance
 
 
 def test_slice_uses_one_indexed_split_pages() -> None:

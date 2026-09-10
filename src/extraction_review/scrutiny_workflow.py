@@ -23,7 +23,6 @@ from workflows.resource import Resource
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
 from .document_parts import (
-    expand_parts_for_retrieval,
     filing_type_label,
     max_chunks_for_defect,
     missing_required_parts,
@@ -259,9 +258,7 @@ async def _chunks_for_defect(
         return []
 
     queries = build_evidence_queries(defect)
-    targets = expand_parts_for_retrieval(
-        parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
-    )
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
     gather_cap = max(
         max_chunks,
