@@ -708,6 +708,35 @@ def test_invented_evidence_page_becomes_null() -> None:
     assert grounded.evidence[0].quote == "something that was never retrieved"
 
 
+def test_evidence_keeps_retrieved_page_when_quote_ocr_differs() -> None:
+    chunks = [
+        {
+            "record_id": "aff1",
+            "chunk_kind": "page",
+            "page": 26,
+            "document_part": "Affidavit",
+            "text": "AFFIDAVIT truncated pinecone excerpt",
+        }
+    ]
+    response = DefectResponse(
+        check_id="D077",
+        status="defect_found",
+        confidence=0.9,
+        summary="Affidavit date cannot be compared.",
+        reasoning="The affidavit verification is on filing page 26.",
+        evidence=[
+            EvidenceRef(
+                page=26,
+                quote="Verified at Una on 17/4 day of April, 2026",
+            )
+        ],
+        suggested_fix="State the drafting date.",
+        fix_rationale="Required.",
+    )
+    grounded = apply_evidence_pages(response, chunks)
+    assert grounded.evidence[0].page == 26
+
+
 def test_missing_visual_mark_is_defect_not_undetermined() -> None:
     catalogue = get_catalogue()
     vakalatnama = [
@@ -790,12 +819,14 @@ def test_visual_prompt_treats_missing_marks_as_defects() -> None:
 
 def test_finding_title_is_short_and_named_for_the_defect() -> None:
     catalogue = get_catalogue()
-    d003 = finding_title(catalogue.defect("D003"), catalogue)
-    assert d003.startswith("Advocate's Check List:")
+    d003_def = catalogue.defect("D003")
+    d003 = finding_title(d003_def, catalogue)
+    assert d003.startswith(f"{d003_def.serial_no}. Advocate's Check List:")
     assert "checklist" in d003.lower() or "check list" in d003.lower()
-    assert len(d003) < len(catalogue.defect("D003").defect) + 40
-    d004 = finding_title(catalogue.defect("D004"), catalogue)
-    assert d004.startswith("Listing Proforma:")
+    assert len(d003) < len(d003_def.defect) + 48
+    d004_def = catalogue.defect("D004")
+    d004 = finding_title(d004_def, catalogue)
+    assert d004.startswith(f"{d004_def.serial_no}. Listing Proforma:")
     assert "6" in d004 and "7" in d004
 
 
@@ -869,7 +900,7 @@ def test_build_finding_validates_title_reasoning_and_source() -> None:
             }
         ],
     )
-    assert finding.title.startswith("Advocate's Check List:")
+    assert finding.title.startswith(f"{catalogue.defect('D003').serial_no}. Advocate's Check List:")
     assert finding.location == "Filing page 2 — Advocate's Checklist."
     assert finding.location_source and finding.location_source.startswith(
         "Official source (not a page of this filing):"
