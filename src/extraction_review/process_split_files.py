@@ -100,7 +100,7 @@ class SplitFilesEvent(StartEvent):
     workspace_id: str | None = None
     user_id: str | None = None
     parts: list[SplitPartEvent]
-    require_all_slots: bool = True
+    require_all_slots: bool = False
     fallback_file_id: str | None = None
 
     @field_validator(
@@ -127,7 +127,7 @@ class SplitFilesState(BaseModel):
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
-    require_all_slots: bool = True
+    require_all_slots: bool = False
     parts: list[SplitPartEvent] = Field(default_factory=list)
     filename: str | None = None
     file_hash: str | None = None

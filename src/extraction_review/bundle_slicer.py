@@ -73,13 +73,15 @@ def map_slot_pages(
     """Map 1-indexed LlamaSplit pages onto catalog slots.
 
     A page is copied into every matching slot. Pages that match no known slot
-    are leftover; ``slice_bundle_pdf`` puts them in the optional Undefined
+    are     leftover; ``slice_bundle_pdf`` puts them in the optional Undefined
     slot.     A leftover combined ``Vakalatnama + PoA/BR`` LlamaSplit label is
     expanded to Vakalatnama and PoA/BR so the combined Vakalatnama slot and
     the PoA/BR slot both receive those pages.
 
     Numbered annexures and applications (P-1…P-n, Application 1…n) become
-    their own slots even when those ids are not listed in the catalog.
+    their own slots even when those ids are not listed in the catalog. A
+    merged Annexures / Applications run with no P-n labels is promoted to
+    P-1 / Application 1 so the UI row receives the sliced PDF.
     """
     pages_by_slot: dict[str, list[int]] = {slot.id: [] for slot in catalog.slots}
     for page, raw_labels in page_parts.items():
@@ -92,9 +94,13 @@ def map_slot_pages(
             continue
         for slot_id in _slot_ids_for_labels(labels, catalog):
             pages_by_slot.setdefault(slot_id, []).append(number)
-    return {
-        slot_id: sorted(set(pages)) for slot_id, pages in pages_by_slot.items() if pages
-    }
+    return _promote_repeatable_catchall(
+        {
+            slot_id: sorted(set(pages))
+            for slot_id, pages in pages_by_slot.items()
+            if pages
+        }
+    )
 
 
 def leftover_pages(
@@ -112,6 +118,29 @@ def leftover_pages(
             except (TypeError, ValueError):
                 continue
     return [number for number in range(1, int(page_count) + 1) if number not in assigned]
+
+
+def _promote_repeatable_catchall(
+    pages_by_slot: dict[str, list[int]],
+) -> dict[str, list[int]]:
+    """Map a lone Annexures/Applications blob onto P-1 / Application 1.
+
+    The UI lists those under the Annexures and Applications headings as
+    ``annexure_p1`` / ``application_1``. Keep the catch-all only when
+    numbered siblings already exist (leftover "Other annexures").
+    """
+    promoted = dict(pages_by_slot)
+    if "annexures" in promoted and not any(
+        key.startswith("annexure_p") for key in promoted
+    ):
+        promoted["annexure_p1"] = promoted.pop("annexures")
+    has_numbered_apps = any(
+        key.startswith("application_") and key != "applications"
+        for key in promoted
+    )
+    if "applications" in promoted and not has_numbered_apps:
+        promoted["application_1"] = promoted.pop("applications")
+    return promoted
 
 
 def extract_pdf_pages(pdf_bytes: bytes, pages: Sequence[int]) -> bytes:

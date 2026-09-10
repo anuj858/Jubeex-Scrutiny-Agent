@@ -129,7 +129,19 @@ def test_create_filing_maps_unlabeled_application_to_undefined(
     assert response.status_code == 202
 
 
-def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> None:
+def test_create_filing_split_accepts_whatever_documents_backend_sends(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-test-cover",
+        result="agd-test-cover",
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(prepared),
+    )
     response = client.post(
         "/v1/filings",
         json={
@@ -145,9 +157,7 @@ def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> No
             ],
         },
     )
-    assert response.status_code == 422
-    assert "upload_compiled" in response.text
-    assert "Missing required documents" in response.text
+    assert response.status_code == 202
 
 
 def test_create_filing_and_poll(

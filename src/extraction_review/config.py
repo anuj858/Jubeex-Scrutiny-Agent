@@ -425,7 +425,7 @@ class SplitUploadSlot(BaseModel):
     id: str
     label: str
     parts: list[str]
-    required: bool = True
+    required: bool = False
 
 class SplitUploadType(BaseModel):
     label: str

@@ -324,6 +324,37 @@ function expandRepeatableSlots(
   return expanded;
 }
 
+function nestedSlotLabel(slot: SplitUploadSlot): string {
+  const annexure = numberedIndex(slot.id, "annexures");
+  if (annexure) {
+    return `P-${annexure}`;
+  }
+  if (slot.id === "annexures") {
+    return "Other annexures";
+  }
+  const application = numberedIndex(slot.id, "applications");
+  if (application) {
+    return `Application ${application}`;
+  }
+  if (slot.id === "applications") {
+    return "Other applications";
+  }
+  return slot.label;
+}
+
+function groupHeadingForSlot(
+  slot: SplitUploadSlot,
+  previous: SplitUploadSlot | undefined,
+): string | null {
+  if (isAnnexureGroup(slot) && (!previous || !isAnnexureGroup(previous))) {
+    return "Annexures";
+  }
+  if (isApplicationGroup(slot) && (!previous || !isApplicationGroup(previous))) {
+    return "Applications";
+  }
+  return null;
+}
+
 export function SplitUploadForm({
   onStarted,
   prepareHandler,
@@ -372,9 +403,7 @@ export function SplitUploadForm({
     [catalog?.slots, annexureCount, applicationCount, leftoverIds],
   );
 
-  const requiredReady = slots
-    .filter((slot) => slot.required)
-    .every((slot) => Boolean(uploads[slot.id]));
+  const canSubmit = Object.keys(uploads).length > 0;
 
   const applyPrepared = (prepared: BundlePrepared, handlerId?: string) => {
     if (!types[prepared.filing_type]) {
@@ -432,7 +461,7 @@ export function SplitUploadForm({
       toast.success(
         found
           ? `Loaded ${found} sliced file${found === 1 ? "" : "s"} from the bundled PDF`
-          : "Split finished. Upload the missing required documents, then Submit.",
+          : "Split finished. Review the files that were found, then Submit.",
       );
     }
   };
@@ -638,7 +667,7 @@ export function SplitUploadForm({
     if (
       !filingType ||
       !catalog ||
-      !requiredReady ||
+      !canSubmit ||
       submitting ||
       preparing
     ) {
@@ -702,7 +731,7 @@ export function SplitUploadForm({
               ? "Classifying and splitting the uploaded PDF into document files…"
               : typeLocked
                 ? "Files below were sliced from the bundled PDF. Review them, then Submit to parse and extract."
-                : "Choose the matter type, then upload each document on its own row. Annexures (P-1, P-2, …) and applications each have a separate Upload button — use Add annexure or Add application for more."}
+                : "Choose the matter type, then upload each document on its own row. Annexures are grouped (P-1, P-2, …) and applications the same way — use Add annexure or Add application for more."}
           </p>
         </div>
         <label className={styles.typeLabel}>
@@ -728,22 +757,21 @@ export function SplitUploadForm({
           const busy = uploadingSlot === slot.id;
           const pages = slotPages[slot.id];
           const next = slots[index + 1];
+          const previous = slots[index - 1];
+          const heading = groupHeadingForSlot(slot, previous);
+          const nested = isAnnexureGroup(slot) || isApplicationGroup(slot);
           const showAddAnnexure =
-            slot.repeat_group === "annexures" &&
-            next?.repeat_group !== "annexures";
+            isAnnexureGroup(slot) && (!next || !isAnnexureGroup(next));
           const showAddApplication =
-            slot.repeat_group === "applications" &&
-            next?.repeat_group !== "applications";
+            isApplicationGroup(slot) && (!next || !isApplicationGroup(next));
           return (
             <Fragment key={slot.id}>
-            <li className={styles.row}>
+            {heading ? (
+              <li className={styles.groupHeading}>{heading}</li>
+            ) : null}
+            <li className={nested ? styles.nestedRow : styles.row}>
               <div className={styles.name}>
-                <span>{slot.label}</span>
-                {slot.required ? (
-                  <span className={styles.required}>required</span>
-                ) : (
-                  <span className={styles.optional}>optional</span>
-                )}
+                <span>{nestedSlotLabel(slot)}</span>
                 {pages ? (
                   <span className={styles.pageSpan}>{pages}</span>
                 ) : null}
@@ -858,7 +886,7 @@ export function SplitUploadForm({
                 ? "Submitting…"
                 : "Submit"
           }
-          disabled={!requiredReady || formBusy}
+          disabled={!canSubmit || formBusy}
           onClick={() => void onSubmit()}
         />
       </div>

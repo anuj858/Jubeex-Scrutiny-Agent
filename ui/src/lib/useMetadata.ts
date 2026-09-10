@@ -27,7 +27,7 @@ export interface UseMetadataResult {
   error: string | undefined;
 }
 
-const METADATA_CACHE_KEY = "jubeex-metadata-v4";
+const METADATA_CACHE_KEY = "jubeex-metadata-v5";
 
 function readCachedMetadata(): Metadata | undefined {
   try {

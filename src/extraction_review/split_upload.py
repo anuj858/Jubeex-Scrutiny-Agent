@@ -54,7 +54,7 @@ class UploadSlot:
     id: str
     label: str
     parts: tuple[str, ...]
-    required: bool = True
+    required: bool = False
 
 
 def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
@@ -163,7 +163,7 @@ def _parse_slot(raw: Mapping[str, Any]) -> UploadSlot | None:
         id=slot_id,
         label=label or slot_id,
         parts=parts,
-        required=bool(raw.get("required", True)),
+        required=bool(raw.get("required", False)),
     )
 
 
@@ -313,7 +313,7 @@ def validate_parts(
     parts: Sequence[Mapping[str, Any] | SplitPartInput],
     payload: Mapping[str, Any] | None = None,
     *,
-    require_all_slots: bool = True,
+    require_all_slots: bool = False,
 ) -> tuple[UploadTypeCatalog, list[SplitPartInput]]:
     catalog = type_catalog(filing_type, payload)
     allowed = catalog.slot_by_id()
@@ -549,7 +549,8 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
     lines = [
         "# Extraction rules",
         "Copy printed text only. Do not invent names, addresses, dates, or "
-        "categories. If a value is not printed in the allowed fill section, leave it null.",
+        "categories. If a fill-source document part is not in this pack, or the "
+        "value is not printed there, write N/A. Do not guess from other parts.",
         "",
     ]
     sources = catalog.extract_field_sources if catalog is not None else {}
@@ -659,12 +660,13 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         extra += (
             " Prefer Memo of Parties; if it is missing, use the first page of the "
             "Main Petition. If a field is blank in one of those parts, fill it from the "
-            "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
+            "other. If neither Memo of Parties nor Main Petition is in this pack, "
+            "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
             "Memo of Appearance, AOR's Certificate, or Cover Page. Use Cover Page "
             "only to decide which already-listed party is primary. Extra petitioners "
             "and respondents are listed on Memo of Parties or the Main Petition; "
             "Cover Page And Anr/Ors is not the second party's name. Do not invent "
-            "parties. Leave a field null if it is not printed on a fill source. "
+            "parties. Write N/A if a field is not printed on a fill source that is present. "
             "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
             "ORGANIZATION without acting_through is an inconsistencies item."
         )
@@ -732,7 +734,8 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
         "Each section is labelled with its document part, for example ## [Cover Page] (p. 1).",
         "Copy printed text only. Do not invent or complete a field from a document "
-        "part that is not a fill source for that field. If it is not printed there, leave it null.",
+        "part that is not a fill source for that field. If that fill-source document is "
+        "not in this pack, or the value is not printed there, write N/A.",
         "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
         "source_pages must be the integer page numbers in the headings, for example (p. 6).",
         "Ignore Annexures and Appendix.",

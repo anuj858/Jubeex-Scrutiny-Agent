@@ -1062,7 +1062,7 @@
             "parts": [
               "Advocate's Checklist"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "cover_page",
@@ -1070,7 +1070,7 @@
             "parts": [
               "Cover Page"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "record_of_proceedings",
@@ -1078,7 +1078,7 @@
             "parts": [
               "Record of Proceedings"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "aors_declaration",
@@ -1086,7 +1086,7 @@
             "parts": [
               "AOR's Certificate"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "index",
@@ -1094,7 +1094,7 @@
             "parts": [
               "Index"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "office_report_on_limitation",
@@ -1102,7 +1102,7 @@
             "parts": [
               "Office Report on Limitation"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "listing_proforma",
@@ -1110,7 +1110,7 @@
             "parts": [
               "Listing Proforma"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "synopsis_lod",
@@ -1119,7 +1119,7 @@
               "Synopsis",
               "List of Dates & Events"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "impugned_order",
@@ -1127,7 +1127,7 @@
             "parts": [
               "Impugned Order"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "petition",
@@ -1135,7 +1135,7 @@
             "parts": [
               "Main Petition"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "affidavit",
@@ -1143,7 +1143,7 @@
             "parts": [
               "Affidavit"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "annexures",
@@ -1184,7 +1184,7 @@
               "Memo of Appearance",
               "Vakalatnama"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "poa_br",
@@ -1221,7 +1221,7 @@
             "parts": [
               "Advocate's Checklist"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "cover_page",
@@ -1229,7 +1229,7 @@
             "parts": [
               "Cover Page"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "record_of_proceedings",
@@ -1237,7 +1237,7 @@
             "parts": [
               "Record of Proceedings"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "aors_declaration",
@@ -1245,7 +1245,7 @@
             "parts": [
               "AOR's Certificate"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "index",
@@ -1253,7 +1253,7 @@
             "parts": [
               "Index"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "office_report_on_limitation",
@@ -1261,7 +1261,7 @@
             "parts": [
               "Office Report on Limitation"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "listing_proforma",
@@ -1269,7 +1269,7 @@
             "parts": [
               "Listing Proforma"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "synopsis_lod",
@@ -1278,7 +1278,7 @@
               "Synopsis",
               "List of Dates & Events"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "impugned_order",
@@ -1286,7 +1286,7 @@
             "parts": [
               "Impugned Order"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "petition",
@@ -1294,7 +1294,7 @@
             "parts": [
               "Main Petition"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "affidavit",
@@ -1302,7 +1302,7 @@
             "parts": [
               "Affidavit"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "annexures",
@@ -1343,7 +1343,7 @@
               "Memo of Appearance",
               "Vakalatnama"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "poa_br",
@@ -1372,7 +1372,7 @@
             "parts": [
               "Advocate's Checklist"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "cover_page",
@@ -1380,7 +1380,7 @@
             "parts": [
               "Cover Page"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "record_of_proceedings",
@@ -1388,7 +1388,7 @@
             "parts": [
               "Record of Proceedings"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "index",
@@ -1396,7 +1396,7 @@
             "parts": [
               "Index"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "office_report_on_limitation",
@@ -1404,7 +1404,7 @@
             "parts": [
               "Office Report on Limitation"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "listing_proforma",
@@ -1412,7 +1412,7 @@
             "parts": [
               "Listing Proforma"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "synopsis_lod",
@@ -1421,7 +1421,7 @@
               "Synopsis",
               "List of Dates & Events"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "impugned_order",
@@ -1429,7 +1429,7 @@
             "parts": [
               "Impugned Order"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "petition",
@@ -1437,7 +1437,7 @@
             "parts": [
               "Main Petition"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "aors_declaration",
@@ -1445,7 +1445,7 @@
             "parts": [
               "AOR's Certificate"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "affidavit",
@@ -1453,7 +1453,7 @@
             "parts": [
               "Affidavit"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "annexures",
@@ -1494,7 +1494,7 @@
               "Memo of Appearance",
               "Vakalatnama"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "poa_br",
@@ -1510,7 +1510,7 @@
             "parts": [
               "Filing Memo"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "undefined",
@@ -1531,7 +1531,7 @@
             "parts": [
               "Advocate's Checklist"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "cover_page",
@@ -1539,7 +1539,7 @@
             "parts": [
               "Cover Page"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "record_of_proceedings",
@@ -1547,7 +1547,7 @@
             "parts": [
               "Record of Proceedings"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "index",
@@ -1555,7 +1555,7 @@
             "parts": [
               "Index"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "office_report_on_limitation",
@@ -1563,7 +1563,7 @@
             "parts": [
               "Office Report on Limitation"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "listing_proforma",
@@ -1571,7 +1571,7 @@
             "parts": [
               "Listing Proforma"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "synopsis_lod",
@@ -1580,7 +1580,7 @@
               "Synopsis",
               "List of Dates & Events"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "impugned_order",
@@ -1588,7 +1588,7 @@
             "parts": [
               "Impugned Order"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "petition",
@@ -1596,7 +1596,7 @@
             "parts": [
               "Main Petition"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "aors_declaration",
@@ -1604,7 +1604,7 @@
             "parts": [
               "AOR's Certificate"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "affidavit",
@@ -1612,7 +1612,7 @@
             "parts": [
               "Affidavit"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "annexures",
@@ -1653,7 +1653,7 @@
               "Memo of Appearance",
               "Vakalatnama"
             ],
-            "required": true
+            "required": false
           },
           {
             "id": "poa_br",

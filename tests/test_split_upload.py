@@ -48,6 +48,7 @@ from extraction_review.process_split_files import (
     extract_input_file_id,
 )
 from extraction_review.split_upload import (
+    UNDEFINED_SLOT_ID,
     FieldSources,
     SplitPartInput,
     SplitUploadError,
@@ -74,7 +75,8 @@ def _required_parts(
     omit: set[str] | None = None,
 ) -> list[dict]:
     catalog = type_catalog(filing_type)
-    skip = omit or set()
+    skip = {UNDEFINED_SLOT_ID, "annexures", "applications"}
+    skip.update(omit or ())
     parts = [
         {
             "slot_id": slot.id,
@@ -83,7 +85,7 @@ def _required_parts(
             "filename": f"{slot.id}.pdf",
         }
         for slot in catalog.slots
-        if slot.required and slot.id not in skip
+        if slot.id not in skip
     ]
     if extra:
         parts.extend(extra)
@@ -141,16 +143,16 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     criminal_required = {
         slot["id"]: slot["required"] for slot in catalog["SLP_CRIMINAL"]["slots"]
     }
-    assert civil_required["memo_of_parties"] is False
-    assert civil_required["court_fees"] is False
-    assert civil_required["undefined"] is False
-    assert civil_required["petition"] is True
-    assert criminal_required["memo_of_parties"] is False
-    assert criminal_required["vakalatnama_appearance"] is True
-    assert criminal_required["poa_br"] is False
-    assert criminal_required["undefined"] is False
+    assert set(civil_required.values()) == {False}
+    assert set(criminal_required.values()) == {False}
+    assert "memo_of_parties" in civil_required
+    assert "court_fees" in civil_required
+    assert "undefined" in civil_required
+    assert "petition" in civil_required
+    assert "vakalatnama_appearance" in criminal_required
+    assert "poa_br" in criminal_required
     assert "court_fees" not in criminal_required
-    assert civil_required["vakalatnama_appearance"] is True
+    assert "vakalatnama_appearance" in civil_required
     assert "memo_of_appearance" not in civil_required
     assert "vakalatnama" not in civil_required
     assert "memo_of_appearance" not in criminal_required
@@ -184,16 +186,16 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
         slot["id"]: slot["required"]
         for slot in catalog["TRANSFER_PETITION_CRIMINAL"]["slots"]
     }
-    assert tp_civil_required["filing_memo"] is True
-    assert tp_civil_required["vakalatnama_appearance"] is True
+    assert set(tp_civil_required.values()) == {False}
+    assert tp_civil_required["filing_memo"] is False
+    assert tp_civil_required["vakalatnama_appearance"] is False
     assert tp_civil_required["memo_of_parties"] is False
     assert tp_civil_required["poa_br"] is False
     assert tp_civil_required["annexure_p1"] is False
     assert tp_civil_required["application_1"] is False
     assert "court_fees" not in tp_civil_required
     assert "filing_memo" not in tp_criminal_required
-    assert tp_criminal_required["vakalatnama_appearance"] is True
-    assert tp_criminal_required["petition"] is True
+    assert set(tp_criminal_required.values()) == {False}
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -201,10 +203,10 @@ def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     assert catalog.filing_type == "SLP_CIVIL"
     present = {item.slot_id for item in parts}
     assert "annexures" not in present
-    assert "memo_of_parties" not in present
-    assert "court_fees" not in present
-    assert "poa_br" not in present
     assert "undefined" not in present
+    assert "memo_of_parties" in present
+    assert "court_fees" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     assert "vakalatnama" not in present
     assert "memo_of_appearance" not in present
@@ -239,8 +241,8 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
     _, parts = validate_parts("SLP_CRIMINAL", _required_parts("SLP_CRIMINAL"))
     present = {item.slot_id for item in parts}
     assert "court_fees" not in present
-    assert "memo_of_parties" not in present
-    assert "poa_br" not in present
+    assert "memo_of_parties" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     with pytest.raises(SplitUploadError, match="Unknown slot"):
         validate_parts(
@@ -257,7 +259,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
         )
 
 
-def test_transfer_petition_civil_requires_filing_memo() -> None:
+def test_transfer_petition_civil_includes_filing_memo() -> None:
     catalog, parts = validate_parts(
         "TRANSFER_PETITION_CIVIL",
         _required_parts("TRANSFER_PETITION_CIVIL"),
@@ -267,13 +269,11 @@ def test_transfer_petition_civil_requires_filing_memo() -> None:
     assert "filing_memo" in present
     assert "court_fees" not in present
     assert "annexures" not in present
-    assert "memo_of_parties" not in present
-    assert "poa_br" not in present
+    assert "memo_of_parties" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     assert "aors_declaration" in present
     extra = [
-        {"slot_id": "memo_of_parties", "file_id": "file-memo-of-parties"},
-        {"slot_id": "poa_br", "file_id": "file-poa-br"},
         {"slot_id": "annexures", "file_id": "file-annexures"},
     ]
     _, with_optional = validate_parts(
@@ -312,9 +312,14 @@ def test_transfer_petition_criminal_omits_filing_memo_and_rejects_it() -> None:
         )
 
 
-def test_missing_required_petition_fails() -> None:
-    with pytest.raises(SplitUploadError, match="Main Petition"):
-        validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
+def test_missing_petition_is_allowed() -> None:
+    catalog, parts = validate_parts(
+        "SLP_CIVIL",
+        _required_parts("SLP_CIVIL", omit={"petition"}),
+    )
+    present = {item.slot_id for item in parts}
+    assert "petition" not in present
+    assert "cover_page" in present
 
 
 def test_compiled_slices_skip_missing_required_slots() -> None:
@@ -349,10 +354,9 @@ def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
 
 
 def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
-    extra = [{"slot_id": "poa_br", "file_id": "file-poa-br"}]
     catalog, parts = validate_parts(
         "SLP_CRIMINAL",
-        _required_parts("SLP_CRIMINAL", extra=extra),
+        _required_parts("SLP_CRIMINAL"),
     )
     pages_by_slot = {item.slot_id: {1: f"text for {item.slot_id}"} for item in parts}
     _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
@@ -582,6 +586,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     assert "Prefer Memo of Parties" in petitioners
     assert "first page of the Main Petition" in petitioners
     assert "fill it from the other" in petitioners
+    assert "set party names to N/A" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Look only in" not in updated["properties"]["court"]["description"]
     assert schema["properties"]["cause_title"]["description"] == "Cause title."
@@ -593,6 +598,7 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     assert "cause_title: fill Cover Page; verify Main Petition, Memo of Parties" in prompt
     assert "Never use [And ors.] or other square brackets" in prompt
     assert "Copy printed text only" in prompt
+    assert "write N/A" in prompt
     assert "inconsistencies: one item per spelling" in prompt
     assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
     assert "Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources" in prompt
@@ -1315,6 +1321,71 @@ def test_numbered_annexure_and_application_map_to_own_slots() -> None:
     assert pages["application_3"] == [31]
     assert pages["applications"] == [32]
     assert "20" not in str(pages.get("annexures", []))
+
+
+def test_catchall_annexures_and_applications_promote_to_first_numbered_slot() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            20: ["Annexures"],
+            21: ["Annexures"],
+            30: ["Application"],
+            31: ["Application"],
+        },
+    )
+    assert pages["annexure_p1"] == [20, 21]
+    assert pages["application_1"] == [30, 31]
+    assert "annexures" not in pages
+    assert "applications" not in pages
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            _blank_pdf(31),
+            catalog,
+            {
+                20: ["Annexures"],
+                21: ["Annexures"],
+                30: ["Application"],
+                31: ["Application"],
+            },
+        )
+    }
+    assert slices["annexure_p1"].filename == "Annexure P-1.pdf"
+    assert slices["annexure_p1"].pages == (20, 21)
+    assert slices["application_1"].filename == "Application 1.pdf"
+    assert slices["application_1"].pages == (30, 31)
+
+
+def test_heading_split_annexures_each_get_their_own_slot_pdf() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Annexures"],
+        3: ["Annexures"],
+        4: ["Annexures"],
+        5: ["Application"],
+        6: ["Application"],
+    }
+    texts = {
+        2: "ANNEXURE P-1\nImpugned order",
+        3: "ANNEXURE P-2\nTrial court judgment",
+        4: "ANNEXURE P-3\nEvidence",
+        5: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nCONDONATION",
+        6: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nEXEMPTION",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(6), catalog, exploded)
+    }
+    assert slices["annexure_p1"].pages == (2,)
+    assert slices["annexure_p2"].pages == (3,)
+    assert slices["annexure_p3"].pages == (4,)
+    assert slices["application_1"].pages == (5,)
+    assert slices["application_2"].pages == (6,)
+    assert "annexures" not in slices
+    assert "applications" not in slices
 
 
 def test_validate_parts_accepts_dynamic_annexure_and_application_slots() -> None:
