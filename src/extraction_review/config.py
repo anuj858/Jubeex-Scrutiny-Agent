@@ -4,7 +4,11 @@ Configuration for the extraction review application.
 Adapted for JubeeX Core Filing Record schema with deep descriptive context.
 """
 
+import json
 import logging
+from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any
 
 from llama_cloud.types.beta.split_category import SplitCategory
@@ -407,9 +411,13 @@ FILING_SCHEMAS = {
 }
 
 class ExtractConfig(ExtractV2Parameters):
+    schema_version: str
+    config_version: str
     configuration_id: str | None = None
 
 class ClassifyConfig(ClassifyV2Parameters):
+    schema_version: str
+    config_version: str
     rules: list[Rule] = []
     configuration_id: str | None = None
 
@@ -418,6 +426,8 @@ class ParseConfig(ParseV2Parameters):
     configuration_id: str | None = None
 
 class SplitConfig(SplitV1Parameters):
+    schema_version: str
+    config_version: str
     categories: list[SplitCategory] = []
     configuration_id: str | None = None
 
@@ -438,8 +448,61 @@ class SplitUploadConfig(BaseModel):
 
 class Config(BaseModel):
     """Root configuration model for configs/config.json."""
+    config_id: str
+    schema_version: str
+    config_version: str
     classify: ClassifyConfig
     extract_jubeex: ExtractConfig = Field(alias="extract-jubeex")
     parse: ParseConfig | None = None
     split: SplitConfig | None = None
     split_upload: SplitUploadConfig | None = None
+
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
+_API_EXCLUDE = {"configuration_id", "product_type"}
+
+
+def _block_versions(block: Any) -> dict[str, str]:
+    if isinstance(block, Mapping):
+        schema = block.get("schema_version")
+        version = block.get("config_version")
+    else:
+        schema = getattr(block, "schema_version", None)
+        version = getattr(block, "config_version", None)
+    out: dict[str, str] = {}
+    if schema:
+        out["schema_version"] = str(schema)
+    if version:
+        out["config_version"] = str(version)
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_config_payload() -> dict[str, Any]:
+    with _CONFIG_PATH.open(encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return payload if isinstance(payload, dict) else {}
+
+
+def config_identity(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Version stamp included in metadata, artifacts, and stored extract JSON."""
+    data = payload if payload is not None else load_config_payload()
+    return {
+        "config_id": data.get("config_id"),
+        "schema_version": data.get("schema_version"),
+        "config_version": data.get("config_version"),
+        "classify": _block_versions(data.get("classify")),
+        "extract": _block_versions(data.get("extract-jubeex")),
+        "split": _block_versions(data.get("split")),
+    }
+
+
+def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
+    """JSON sent to LlamaCloud classify / extract / split, including versions."""
+    return config.model_dump(exclude=_API_EXCLUDE, exclude_none=True)
+
+
+def with_config_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    stamped = dict(payload)
+    stamped["config"] = config_identity()
+    return stamped
