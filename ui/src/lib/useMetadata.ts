@@ -6,8 +6,6 @@ export interface SplitUploadSlot {
   label: string;
   parts: string[];
   required: boolean;
-  repeatable?: boolean;
-  repeat_group?: "annexures" | "applications";
 }
 
 export interface SplitUploadType {
@@ -27,7 +25,7 @@ export interface UseMetadataResult {
   error: string | undefined;
 }
 
-const METADATA_CACHE_KEY = "jubeex-metadata-v4";
+const METADATA_CACHE_KEY = "jubeex-metadata-v3";
 
 function readCachedMetadata(): Metadata | undefined {
   try {

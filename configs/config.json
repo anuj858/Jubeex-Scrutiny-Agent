@@ -204,7 +204,7 @@
                 }
               ],
               "default": null,
-              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents \u2192 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
+              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
               "title": "Formatted Title"
             },
             "raw_text": {
@@ -543,7 +543,7 @@
                 }
               ],
               "default": null,
-              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition (and Memo of Parties). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of \u2026), not every word 'the'. Always uppercase. Leave null if unclear.",
+              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition (and Memo of Parties). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
               "title": "Kind"
             },
             "name": {
@@ -849,7 +849,7 @@
             }
           ],
           "default": null,
-          "description": "Main prayer body only from the Main Petition last 2-3 pages. Copy the text under the heading Main Prayer or Prayer. Do not include the heading, clause number, markdown, or HTML (for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). Start at the prayer sentence, e.g. 'In the circumstances stated above\u2026'. Leave null if that heading is not printed.",
+          "description": "Main prayer body only from the Main Petition last 2-3 pages. Copy the text under the heading Main Prayer or Prayer. Do not include the heading, clause number, markdown, or HTML (for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). Start at the prayer sentence, e.g. 'In the circumstances stated above…'. Leave null if that heading is not printed.",
           "title": "Relief Sort"
         },
         "inconsistencies": {
@@ -862,7 +862,7 @@
             }
           ],
           "default": null,
-          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cover Page main petitioner or main respondent versus Memo of Parties or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". items[].id is '1', '2', \u2026."
+          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cover Page main petitioner or main respondent versus Memo of Parties or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". items[].id is '1', '2', …."
         }
       },
       "title": "LegalExtractRecord",
@@ -880,10 +880,7 @@
     "tier": "agentic",
     "version": "latest",
     "output_options": {
-      "granular_bboxes": [
-        "word",
-        "line"
-      ]
+      "granular_bboxes": ["word", "line"]
     }
   },
   "split": {
@@ -896,7 +893,7 @@
       },
       {
         "name": "Cover Page",
-        "description": "Starts at the top with IN THE SUPREME COURT OF INDIA; the second or third line has JURISDICTION. Usually 1 page, at most 1-3. Often includes For Index Please See Inside. Ends with ADVOCATE FOR THE PETITIONER or ADVOCATE FOR THE RESPONDENT (or similar). Outer title sheet of the paper book. Not Office Report on Limitation \u2014 if OFFICE REPORT ON LIMITATION is printed, use that category even when the Supreme Court caption appears at the top. Not Vakalatnama, not Memo of Appearance, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
+        "description": "Starts at the top with IN THE SUPREME COURT OF INDIA; the second or third line has JURISDICTION. Usually 1 page, at most 1-3. Often includes For Index Please See Inside. Ends with ADVOCATE FOR THE PETITIONER or ADVOCATE FOR THE RESPONDENT (or similar). Outer title sheet of the paper book. Not Office Report on Limitation — if OFFICE REPORT ON LIMITATION is printed, use that category even when the Supreme Court caption appears at the top. Not Vakalatnama, not Memo of Appearance, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
         "name": "Record of Proceedings",
@@ -904,7 +901,7 @@
       },
       {
         "name": "AOR's Certificate",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and the cause title at the top (petition type and number, IN THE MATTER OF, petitioner versus respondent). Usually 1-2 pages (mostly 1). Then the word CERTIFICATE, either as one word or letter-spaced C E R T I F I C A T E. CERTIFICATE is always printed. Directly under that heading the body starts Certified that or CERTIFIED that the Special Leave Petition (or petition) is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. It may or may not add an exception for additional facts or grounds with an application. It further certifies that the annexures are necessary for the question(s) of law, and that the certificate is given on the petitioner's instructions, with the supporting affidavit. Ends with FILED ON, Dated, and AOR details (name, signature or stamp, code, contact). Signature may be advocate name with CC No./code, mobile, date and place, or PLACE / Filed on / DRAWN & FILED BY with the advocate's name; code and mobile are often omitted. Cause title without the word CERTIFICATE is Cover Page or Main Petition, not this page. This is not Vakalatnama, Advocate's Check List, Affidavit, Application, or Main Petition \u2014 do not fold a page that has cause title then CERTIFICATE into the petition body even if it follows Main Prayer."
+        "description": "A page that always has two things, in this order: (1) the cause title at the top — IN THE SUPREME COURT OF INDIA, petition type and number, IN THE MATTER OF, petitioner versus respondent; then (2) the word CERTIFICATE, either as one word or letter-spaced C E R T I F I C A T E. CERTIFICATE is always printed. Directly under that heading the body starts Certified that or CERTIFIED that the Special Leave Petition (or petition) is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. It may or may not add an exception for additional facts or grounds with an application. It further certifies that the annexures are necessary for the question(s) of law, and that the certificate is given on the petitioner's instructions, with the supporting affidavit. Signature may be advocate name with CC No./code, mobile, date and place, or PLACE / Filed on / DRAWN & FILED BY with the advocate's name; code and mobile are often omitted. Cause title without the word CERTIFICATE is Cover Page or Main Petition, not this page. This is not Vakalatnama, Advocate's Check List, or Main Petition — do not fold a page that has cause title then CERTIFICATE into the petition body even if it follows Main Prayer."
       },
       {
         "name": "Index",
@@ -916,51 +913,47 @@
       },
       {
         "name": "Listing Proforma",
-        "description": "Starts with PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA (Proforma for First Listing). Usually 2-4 pages in table format. Includes Central Act and The case pertains to (please tick/check the correct box). Ends with Dated and AOR details (name, signature or stamp, code, contact). Not Index, not Cover Page, and not Advocate's Checklist."
+        "description": "Listing Proforma or Proforma for First Listing (Proforma for First Listing) with numbered columns."
       },
       {
         "name": "Synopsis",
-        "description": "Starts with SYNOPSIS. Narrative summary of the case, often immediately before List of Dates & Events. Not Main Petition (no Grounds, Prayer, or questions of law as the petition body). Not Cover Page, not Index, and not Impugned Order."
+        "description": "Synopsis of the case."
       },
       {
         "name": "List of Dates & Events",
-        "description": "Starts with LIST OF DATES or LIST OF DATES & EVENTS. Chronological list or table with a date in front of each event (DD/MM/YYYY or MM/YYYY such as 04/2026). Ends at the last dated entry. Not Index, not Record of Proceedings, not Synopsis alone (use Synopsis when the page is only the synopsis heading without dates), and not Impugned Order."
+        "description": "List of Dates and Events."
       },
       {
         "name": "Main Petition",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION on the second or third line, and a cause title, then the petition body in numbered paragraphs (Form 28, Special Leave Petition, transfer petition, or writ/arbitration petition). Contains Grounds, Prayer, and questions of law. Ends with Drawn By, Filed on, AOR, Advocate for Petitioner/Respondent, signature or stamp. Not Cover Page, not Office Report on Limitation, not Affidavit, not Application, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
+        "description": "Main Petition body (Form 28 or Transfer Petition): Special Leave Petition, transfer petition, or writ/arbitration petition, grounds, questions of law, and prayers. Not Vakalatnama, Memo of Appearance, Office Report on Limitation, or the page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
         "name": "Affidavit",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading AFFIDAVIT or letter-spaced A F F I D A V I T. Usually 1-3 pages (mostly 2). Has a notary stamp and a date stamp. Ends with Deponent and Verification. Not Main Petition, not AOR's Certificate, not Application, and not an annexure that merely repeats a verification block."
+        "description": "Supporting affidavit of the petitioner, usually headed AFFIDAVIT."
       },
       {
         "name": "Annexures",
-        "description": "Each annexed exhibit is its own document, marked Annexure P-1, P-1, P1, R-1 (or P-2, P-100, and so on). Starts with that mark or the annexed heading (for example FIRST INFORMATION REPORT) plus Annexure P-n. Pages stay in that annexure until the next P-n / R-n heading. Numbering is consecutive from P-1: if the last annexure is P-7, there MUST be a separate segment for every number P-1 through P-7 \u2014 never skip P-2 through P-6, never jump, never stop at P-1 when later marks exist. The same rule holds through P-100. Start a NEW segment at every new P-n mark even though the category name is Annexures. Not Main Petition, not Appendix, not Affidavit, not Index."
+        "description": "Annexures marked P1, P2,P3,P4,P5 or P-1, P-2, P-3, P-4, P-5 etc."
       },
       {
         "name": "Appendix",
-        "description": "Starts with Appendix. Sets out sections of an Act or Rules with a short description of each. May end with a signature or stamp. Not Annexures, not Index, not Main Petition."
-      },
-      {
-        "name": "Application",
-        "description": "Each interlocutory or miscellaneous application is its own document. Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and its own cause title, then APPLICATION. Contains RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH, addressed to THE HON'BLE CHIEF JUSTICE OF INDIA AND HIS COMPANION JUDGES. Ends FILED ON, FILED BY, Dated, and AOR details. Numbering is consecutive from Application 1: if the last application is Application 7, there MUST be a separate segment for every Application 1 through 7 \u2014 never skip. A later application with a new cause title is the next number, not this page. Not Main Petition, not Affidavit, not AOR's Certificate."
+        "description": "Appendix to the petition."
       },
       {
         "name": "Memo of Parties",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading MEMO OF PARTIES and IN THE MATTER OF, listing petitioner and respondent names and addresses. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Vakalatnama, not Cover Page."
+        "description": "Memo of Parties listing petitioner and respondent names and addresses. Not Memo of Appearance."
       },
       {
         "name": "Memo of Appearance",
-        "description": "Letter titled MEMO OF APPEARANCE, often with IN THE SUPREME COURT OF INDIA and a cause title, addressed To the Registrar, asking to enter appearance. Usually 1-3 pages with Vakalatnama. Wording: Memo of Appearance, Identified, accepted and certified. Ends FILED ON, FILED BY, Dated, AOR details, Place. Distinct from Memo of Parties and from Vakalatnama."
+        "description": "Letter titled MEMO OF APPEARANCE addressed To the Registrar, Supreme Court of India, asking to enter appearance on behalf of a party, signed by the advocate. Distinct from Memo of Parties and from Vakalatnama."
       },
       {
         "name": "Impugned Order",
-        "description": "Copy of the High Court or other court judgment or order under challenge. Starts with a court caption such as COURT or HIGH COURT. Not Main Petition, not List of Dates & Events, not Cover Page, not Annexures except where this order is itself marked as an annexure \u2014 prefer Impugned Order when the page is the challenged judgment."
+        "description": "Copy of the High Court or other court judgment or order under challenge."
       },
       {
         "name": "Vakalatnama",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA and/or VAKALATNAMA (V/A), JURISDICTION, and a cause title. Appoints an advocate; wording Vakalatnama, Identified, accepted and certified. Usually 1-3 pages with Memo of Appearance. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Memo of Parties, and not a Power of Attorney or Board Resolution."
+        "description": "Page titled VAKALATNAMA (V/A) appointing an advocate, with execution date and signatures. Not Memo of Appearance and not a Power of Attorney or Board Resolution."
       },
       {
         "name": "PoA/BR",
@@ -968,7 +961,7 @@
       },
       {
         "name": "Filing Memo",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading INDEX OF FILING, FILING INDEX, or FILING MEMO. Usually 1-2 pages listing papers filed. Ends FILED ON, FILED BY, Dated, AOR details. Not the paper-book Index (PARTICULARS OF DOCUMENT / PAGE NO near the front), not Memo of Parties, not Memo of Appearance."
+        "description": "Filing Memo or filing memorandum listing the papers filed with the Registry, often near the Vakalatnama at the end of the paper book. Distinct from Memo of Parties, Memo of Appearance, and Index."
       },
       {
         "name": "Court Fees",
@@ -976,8 +969,7 @@
       }
     ],
     "splitting_strategy": {
-      "allow_uncategorized": "include",
-      "custom_instructions": "Paper-book order is usually Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then annexures, Appendix, applications, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page with OFFICE REPORT ON LIMITATION is never Cover Page. A page with CERTIFICATE or C E R T I F I C A T E after the cause title is AOR's Certificate, not Main Petition. AFFIDAVIT / A F F I D A V I T with Deponent and Verification is Affidavit. Each Annexure P-n / P-n / P1 / R-n heading starts a NEW Annexures segment; keep those pages until the next P-n heading. Numbers are consecutive from P-1: if the last mark is P-7, emit P-1, P-2, P-3, P-4, P-5, P-6, and P-7 \u2014 never skip, never jump to P-10, and the same rule applies through P-100. Each application with a fresh cause title plus APPLICATION / RESPECTFULLY SHOWETH is the next Application 1, 2, 3\u2026 in appearance order with no gaps. INDEX OF FILING / FILING INDEX / FILING MEMO is Filing Memo, not Index. Blank backs continue the previous document."
+      "allow_uncategorized": "include"
     }
   },
   "split_upload": {
@@ -1162,14 +1154,6 @@
             "required": false
           },
           {
-            "id": "applications",
-            "label": "Applications",
-            "parts": [
-              "Application"
-            ],
-            "required": false
-          },
-          {
             "id": "memo_of_parties",
             "label": "Memo of Parties",
             "parts": [
@@ -1321,14 +1305,6 @@
             "required": false
           },
           {
-            "id": "applications",
-            "label": "Applications",
-            "parts": [
-              "Application"
-            ],
-            "required": false
-          },
-          {
             "id": "memo_of_parties",
             "label": "Memo of Parties",
             "parts": [
@@ -1468,14 +1444,6 @@
             "label": "Appendix",
             "parts": [
               "Appendix"
-            ],
-            "required": false
-          },
-          {
-            "id": "applications",
-            "label": "Applications",
-            "parts": [
-              "Application"
             ],
             "required": false
           },
@@ -1627,14 +1595,6 @@
             "label": "Appendix",
             "parts": [
               "Appendix"
-            ],
-            "required": false
-          },
-          {
-            "id": "applications",
-            "label": "Applications",
-            "parts": [
-              "Application"
             ],
             "required": false
           },

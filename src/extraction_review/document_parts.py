@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -61,12 +60,7 @@ CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
         "Listing Proforma",
         "Advocate's Checklist",
     ),
-    "applications": (
-        MAIN_PETITION_PART,
-        "Annexures",
-        "Index",
-        "Application",
-    ),
+    "applications": (MAIN_PETITION_PART, "Annexures", "Index"),
     "annexures": ("Annexures", "Index", "List of Dates & Events"),
     "parties": ("Memo of Parties", "Cover Page", MAIN_PETITION_PART),
     "dates_execution": (
@@ -104,11 +98,6 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
         "c e r t i f i c a t e",
         "aor's declaration",
         "aors declaration",
-    ),
-    "Affidavit": (
-        "a f f i d a v i t",
-        "deponent",
-        "verification",
     ),
     "Impugned Order": (
         "impugned judgment",
@@ -456,167 +445,6 @@ def filing_type_label(filing_type: str | None) -> str:
     return raw or "this filing"
 
 
-MAX_NUMBERED_PART = 999
-ANNEXURE_FAMILY = "Annexures"
-APPLICATION_FAMILY = "Application"
-
-_ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
-    r"\s*[-/:]?\s*(\d{1,3})\b"
-    r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?[PR][-\s]?(\d{1,3})\b",
-    re.IGNORECASE,
-)
-_APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
-
-
-def family_split_name(name: str) -> str:
-    """Collapse Annexure P-n / Application n onto the LlamaSplit family name."""
-    folded = _fold(name)
-    if folded.startswith("annexure"):
-        return ANNEXURE_FAMILY
-    if folded.startswith("application"):
-        return APPLICATION_FAMILY
-    return name
-
-
-def numbered_part_slot_id(name: str) -> str | None:
-    """Map `Annexure P-12` / `Application 7` onto a dynamic slot id."""
-    folded = _fold(name)
-    if folded in {"annexures", "annexure"}:
-        return "annexures"
-    match = re.fullmatch(r"annexure p-?(\d{1,3})", folded)
-    if match:
-        number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
-            return f"annexure_p{number}"
-    if folded == "application":
-        return "applications"
-    match = re.fullmatch(r"application (\d{1,3})", folded)
-    if match:
-        number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
-            return f"application_{number}"
-    return None
-
-
-def annexure_mark_in_heading(text: str) -> int | None:
-    head = "\n".join((text or "").splitlines()[:15])[:1200]
-    match = _ANNEXURE_HEADING_RE.search(head)
-    if not match:
-        return None
-    number = int(match.group(1) or match.group(2) or 0)
-    if 1 <= number <= MAX_NUMBERED_PART:
-        return number
-    return None
-
-
-def page_starts_application(text: str) -> bool:
-    head = "\n".join((text or "").splitlines()[:12])[:1200]
-    if re.search(
-        r"(?m)^(?:A\s+P\s+P\s+L\s+I\s+C\s+A\s+T\s+I\s+O\s+N|APPLICATION)\b",
-        head,
-    ):
-        return True
-    return bool(
-        _APPLICATION_CAUSE_RE.search(head) and re.search(r"(?m)^APPLICATION\b", head)
-    )
-
-
-def _replace_family_label(names: list[str], family: str, label: str) -> list[str]:
-    replaced = [label if family_split_name(name) == family else name for name in names]
-    if label not in replaced:
-        replaced.append(label)
-    return replaced
-
-
-def _apply_segment_numbers(
-    page_parts: PagePartMap,
-    groups: list[list[int]],
-    family: str,
-    label_fmt: str,
-) -> PagePartMap:
-    updated = {page: list(names) for page, names in page_parts.items()}
-    index = 0
-    for group in groups:
-        pages = [
-            page
-            for page in group
-            if page in updated
-            and any(family_split_name(name) == family for name in updated[page])
-        ]
-        if not pages:
-            continue
-        index += 1
-        label = label_fmt.format(index)
-        for page in pages:
-            updated[page] = _replace_family_label(updated[page], family, label)
-    return updated
-
-
-def _sequential_family_labels(
-    pages: list[int],
-    page_text: Mapping[int, str],
-    family: str,
-) -> dict[int, str] | None:
-    if len(pages) < 2:
-        return None
-    labels: dict[int, str] = {}
-    index = 0
-    seen_marks: set[int] = set()
-    starts = 0
-    for offset, page in enumerate(pages):
-        text = page_text.get(page, "")
-        is_start = False
-        if family == ANNEXURE_FAMILY:
-            mark = annexure_mark_in_heading(text)
-            if mark and mark not in seen_marks:
-                seen_marks.add(mark)
-                is_start = True
-        else:
-            is_start = offset == 0 or page_starts_application(text)
-        if offset == 0:
-            index = 1
-            starts = 1
-        elif is_start:
-            index += 1
-            starts += 1
-        if index:
-            labels[page] = (
-                f"Annexure P-{index}" if family == ANNEXURE_FAMILY else f"Application {index}"
-            )
-    if starts < 2:
-        return None
-    return labels
-
-
-def explode_repeating_split_parts(
-    page_parts: PagePartMap,
-    page_text: Mapping[int, str] | None = None,
-) -> PagePartMap:
-    """Split a merged Annexures/Application run into consecutive P-n / Application n.
-
-    Numbering is sequential with no gaps: the first annexure is P-1, the next
-    new heading is P-2, and so on through whatever last number appears (P-7,
-    P-100, …). Same rule for applications at each new cause title.
-    """
-    updated = {page: list(names) for page, names in page_parts.items()}
-    texts = page_text or {}
-    for family in (ANNEXURE_FAMILY, APPLICATION_FAMILY):
-        pages = sorted(
-            page
-            for page, names in updated.items()
-            if any(family_split_name(name) == family for name in names)
-        )
-        if not pages:
-            continue
-        labels = _sequential_family_labels(pages, texts, family) if texts else None
-        if not labels:
-            continue
-        for page, label in labels.items():
-            updated[page] = _replace_family_label(updated[page], family, label)
-    return updated
-
-
 def page_parts_from_split(job: Any) -> PagePartMap:
     """Map 1-indexed page number → one or more split category names."""
     result = getattr(job, "result", None) or job
@@ -627,8 +455,6 @@ def page_parts_from_split(job: Any) -> PagePartMap:
         return {}
 
     mapping: PagePartMap = {}
-    annexure_groups: list[list[int]] = []
-    application_groups: list[list[int]] = []
     for segment in segments:
         if isinstance(segment, dict):
             category = segment.get("category")
@@ -636,30 +462,16 @@ def page_parts_from_split(job: Any) -> PagePartMap:
         else:
             category = getattr(segment, "category", None)
             pages = getattr(segment, "pages", None) or []
-        numbers: list[int] = []
-        for page in pages:
-            try:
-                numbers.append(int(page))
-            except (TypeError, ValueError):
-                continue
-        parts = parts_on_page(category)
-        for part in parts:
-            family = family_split_name(part)
-            for page in numbers:
-                current = mapping.setdefault(page, [])
-                if family not in current:
-                    current.append(family)
-        if any(family_split_name(part) == ANNEXURE_FAMILY for part in parts):
-            annexure_groups.append(numbers)
-        if any(family_split_name(part) == APPLICATION_FAMILY for part in parts):
-            application_groups.append(numbers)
-    collapsed = collapse_repeated_split_pages(mapping)
-    numbered = _apply_segment_numbers(
-        collapsed, annexure_groups, ANNEXURE_FAMILY, "Annexure P-{}"
-    )
-    return _apply_segment_numbers(
-        numbered, application_groups, APPLICATION_FAMILY, "Application {}"
-    )
+        for part in parts_on_page(category):
+            for page in pages:
+                try:
+                    number = int(page)
+                except (TypeError, ValueError):
+                    continue
+                current = mapping.setdefault(number, [])
+                if part not in current:
+                    current.append(part)
+    return collapse_repeated_split_pages(mapping)
 
 
 def parts_named_in_text(text: str) -> list[str]:
@@ -1020,45 +832,13 @@ def slice_record_for_defect(
     return sliced or record
 
 
-def _part_families(name: str) -> set[str]:
-    folded = (name or "").strip().lower()
-    families = {folded}
-    if folded.startswith("annexure"):
-        families.add("annexures")
-        families.add("annexure")
-    if folded.startswith("application"):
-        families.add("application")
-    return families
-
-
-def expand_parts_for_retrieval(parts: list[str]) -> list[str]:
-    """Include numbered Annexure P-n / Application n labels under catch-alls."""
-    extra: list[str] = []
-    names = split_part_names()
-    for part in parts:
-        if part not in extra:
-            extra.append(part)
-        folded = part.lower()
-        if folded in {"annexures", "annexure"}:
-            for name in names:
-                if name.lower().startswith("annexure") and name not in extra:
-                    extra.append(name)
-        elif folded == "application":
-            for name in names:
-                if name.lower().startswith("application") and name not in extra:
-                    extra.append(name)
-    return extra
-
-
 def _part_match(chunk: dict[str, Any], preferred: list[str]) -> bool:
     names = parts_on_page(chunk.get("document_part"))
     if not names or not preferred:
         return False
     preferred_l = [p.lower() for p in preferred]
     return any(
-        name.lower() == needle
-        or needle in name.lower()
-        or needle in _part_families(name)
+        name.lower() == needle or needle in name.lower()
         for name in names
         for needle in preferred_l
     )

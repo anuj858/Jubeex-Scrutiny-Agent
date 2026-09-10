@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   useCloudApiClient,
@@ -6,7 +6,7 @@ import {
   useWorkflow,
   type HandlerState,
 } from "@llamaindex/ui";
-import { Download, Plus } from "lucide-react";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
 import { useMetadataContext } from "./MetadataProvider";
 import type { SplitUploadSlot } from "./useMetadata";
@@ -211,119 +211,6 @@ function stopSubscription(sub: {
   sub?.unsubscribe?.();
 }
 
-const ANNEXURE_SLOT_RE = /^annexure_p(\d+)$/;
-const APPLICATION_SLOT_RE = /^application_(\d+)$/;
-const MAX_REPEATABLE = 999;
-
-function annexureSlot(n: number): SplitUploadSlot {
-  return {
-    id: `annexure_p${n}`,
-    label: `Annexure P-${n}`,
-    parts: [`Annexure P-${n}`],
-    required: false,
-    repeatable: true,
-    repeat_group: "annexures",
-  };
-}
-
-function applicationSlot(n: number): SplitUploadSlot {
-  return {
-    id: `application_${n}`,
-    label: `Application ${n}`,
-    parts: [`Application ${n}`],
-    required: false,
-    repeatable: true,
-    repeat_group: "applications",
-  };
-}
-
-function numberedIndex(slotId: string, kind: "annexures" | "applications"): number {
-  const match =
-    kind === "annexures"
-      ? ANNEXURE_SLOT_RE.exec(slotId)
-      : APPLICATION_SLOT_RE.exec(slotId);
-  return match ? Number(match[1]) : 0;
-}
-
-function maxNumberedIndex(
-  ids: Iterable<string>,
-  kind: "annexures" | "applications",
-): number {
-  let max = 0;
-  for (const id of ids) {
-    max = Math.max(max, numberedIndex(id, kind));
-  }
-  return max;
-}
-
-function isAnnexureGroup(slot: SplitUploadSlot): boolean {
-  return (
-    slot.id === "annexures" ||
-    slot.repeat_group === "annexures" ||
-    ANNEXURE_SLOT_RE.test(slot.id)
-  );
-}
-
-function isApplicationGroup(slot: SplitUploadSlot): boolean {
-  return (
-    slot.id === "applications" ||
-    slot.repeat_group === "applications" ||
-    APPLICATION_SLOT_RE.test(slot.id)
-  );
-}
-
-function expandRepeatableSlots(
-  catalogSlots: SplitUploadSlot[],
-  annexureCount: number,
-  applicationCount: number,
-  leftoverIds: Iterable<string>,
-): SplitUploadSlot[] {
-  const leftover = new Set(leftoverIds);
-  const expanded: SplitUploadSlot[] = [];
-  let annexuresDone = false;
-  let applicationsDone = false;
-  for (const slot of catalogSlots) {
-    if (isAnnexureGroup(slot)) {
-      if (annexuresDone) {
-        continue;
-      }
-      annexuresDone = true;
-      for (let n = 1; n <= Math.max(1, annexureCount); n += 1) {
-        expanded.push(annexureSlot(n));
-      }
-      if (leftover.has("annexures")) {
-        expanded.push({
-          id: "annexures",
-          label: "Other annexures",
-          parts: ["Annexures"],
-          required: false,
-        });
-      }
-      continue;
-    }
-    if (isApplicationGroup(slot)) {
-      if (applicationsDone) {
-        continue;
-      }
-      applicationsDone = true;
-      for (let n = 1; n <= Math.max(1, applicationCount); n += 1) {
-        expanded.push(applicationSlot(n));
-      }
-      if (leftover.has("applications")) {
-        expanded.push({
-          id: "applications",
-          label: "Other applications",
-          parts: ["Application"],
-          required: false,
-        });
-      }
-      continue;
-    }
-    expanded.push(slot);
-  }
-  return expanded;
-}
-
 export function SplitUploadForm({
   onStarted,
   prepareHandler,
@@ -337,8 +224,6 @@ export function SplitUploadForm({
   const [filingType, setFilingType] = useState(typeIds[0] ?? "");
   const [uploads, setUploads] = useState<Record<string, UploadedPart>>({});
   const [slotPages, setSlotPages] = useState<Record<string, string>>({});
-  const [annexureCount, setAnnexureCount] = useState(1);
-  const [applicationCount, setApplicationCount] = useState(1);
   const [typeLocked, setTypeLocked] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
@@ -354,23 +239,7 @@ export function SplitUploadForm({
   });
 
   const catalog = filingType ? types[filingType] : undefined;
-  const leftoverIds = useMemo(
-    () =>
-      Object.keys(uploads).filter(
-        (id) => id === "annexures" || id === "applications",
-      ),
-    [uploads],
-  );
-  const slots = useMemo(
-    () =>
-      expandRepeatableSlots(
-        catalog?.slots ?? [],
-        annexureCount,
-        applicationCount,
-        leftoverIds,
-      ),
-    [catalog?.slots, annexureCount, applicationCount, leftoverIds],
-  );
+  const slots = catalog?.slots ?? [];
 
   const requiredReady = slots
     .filter((slot) => slot.required)
@@ -401,20 +270,6 @@ export function SplitUploadForm({
     }
     setFilingType(prepared.filing_type);
     setTypeLocked(true);
-    setAnnexureCount((prev) =>
-      Math.max(
-        1,
-        alreadyApplied ? prev : 0,
-        maxNumberedIndex(Object.keys(nextUploads), "annexures"),
-      ),
-    );
-    setApplicationCount((prev) =>
-      Math.max(
-        1,
-        alreadyApplied ? prev : 0,
-        maxNumberedIndex(Object.keys(nextUploads), "applications"),
-      ),
-    );
     setSlotPages((prev) =>
       alreadyApplied
         ? { ...prev, ...(prepared.slot_pages ?? {}) }
@@ -495,8 +350,6 @@ export function SplitUploadForm({
     setFilingType(next);
     setUploads({});
     setSlotPages({});
-    setAnnexureCount(1);
-    setApplicationCount(1);
     setUploadingSlot(null);
   };
 
@@ -605,14 +458,6 @@ export function SplitUploadForm({
     setDownloadingSlot(null);
   };
 
-  const addAnnexure = () => {
-    setAnnexureCount((count) => Math.min(MAX_REPEATABLE, count + 1));
-  };
-
-  const addApplication = () => {
-    setApplicationCount((count) => Math.min(MAX_REPEATABLE, count + 1));
-  };
-
   const removeFile = (slotId: string) => {
     setUploads((prev) => {
       const next = { ...prev };
@@ -624,14 +469,6 @@ export function SplitUploadForm({
       delete next[slotId];
       return next;
     });
-    const annexure = numberedIndex(slotId, "annexures");
-    if (annexure > 1 && annexure === annexureCount) {
-      setAnnexureCount(annexure - 1);
-    }
-    const application = numberedIndex(slotId, "applications");
-    if (application > 1 && application === applicationCount) {
-      setApplicationCount(application - 1);
-    }
   };
 
   const onSubmit = async () => {
@@ -702,7 +539,7 @@ export function SplitUploadForm({
               ? "Classifying and splitting the uploaded PDF into document files…"
               : typeLocked
                 ? "Files below were sliced from the bundled PDF. Review them, then Submit to parse and extract."
-                : "Choose the matter type, then upload each document on its own row. Annexures (P-1, P-2, …) and applications each have a separate Upload button — use Add annexure or Add application for more."}
+                : "Choose the matter type, then upload each document. Submit maps each PDF to its document part — the filename is not used."}
           </p>
         </div>
         <label className={styles.typeLabel}>
@@ -723,20 +560,12 @@ export function SplitUploadForm({
       </div>
 
       <ul className={styles.list}>
-        {slots.map((slot, index) => {
+        {slots.map((slot) => {
           const uploaded = uploads[slot.id];
           const busy = uploadingSlot === slot.id;
           const pages = slotPages[slot.id];
-          const next = slots[index + 1];
-          const showAddAnnexure =
-            slot.repeat_group === "annexures" &&
-            next?.repeat_group !== "annexures";
-          const showAddApplication =
-            slot.repeat_group === "applications" &&
-            next?.repeat_group !== "applications";
           return (
-            <Fragment key={slot.id}>
-            <li className={styles.row}>
+            <li key={slot.id} className={styles.row}>
               <div className={styles.name}>
                 <span>{slot.label}</span>
                 {slot.required ? (
@@ -791,8 +620,7 @@ export function SplitUploadForm({
                   disabled={formBusy}
                   onClick={() => pickFile(slot)}
                 />
-                {uploaded ||
-                (slot.repeat_group && numberedIndex(slot.id, slot.repeat_group) > 1) ? (
+                {uploaded ? (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -803,33 +631,6 @@ export function SplitUploadForm({
                 ) : null}
               </div>
             </li>
-            {showAddAnnexure ? (
-              <li className={styles.addRow}>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  label="Add annexure"
-                  startIcon={<Plus className="h-3.5 w-3.5" />}
-                  disabled={formBusy || annexureCount >= MAX_REPEATABLE}
-                  title="Add another annexure upload (P-2, P-3, …)"
-                  onClick={addAnnexure}
-                />
-              </li>
-            ) : null}
-            {showAddApplication ? (
-              <li className={styles.addRow}>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  label="Add application"
-                  startIcon={<Plus className="h-3.5 w-3.5" />}
-                  disabled={formBusy || applicationCount >= MAX_REPEATABLE}
-                  title="Add another application upload"
-                  onClick={addApplication}
-                />
-              </li>
-            ) : null}
-            </Fragment>
           );
         })}
       </ul>
