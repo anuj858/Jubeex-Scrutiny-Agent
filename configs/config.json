@@ -2,9 +2,21 @@
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
   "config_version": "1.0.0",
+  "pipeline_versions": {
+    "classify": {
+      "schema_version": "1.0",
+      "config_version": "1.0.0"
+    },
+    "extract": {
+      "schema_version": "1.0",
+      "config_version": "1.0.0"
+    },
+    "split": {
+      "schema_version": "1.0",
+      "config_version": "1.0.0"
+    }
+  },
   "classify": {
-    "schema_version": "1.0",
-    "config_version": "1.0.0",
     "product_type": "classify_v2",
     "configuration_id": null,
     "rules": [
@@ -47,8 +59,6 @@
     }
   },
   "extract-jubeex": {
-    "schema_version": "1.0",
-    "config_version": "1.0.0",
     "product_type": "extract_v2",
     "configuration_id": null,
     "data_schema": {
@@ -894,8 +904,6 @@
     }
   },
   "split": {
-    "schema_version": "1.0",
-    "config_version": "1.0.0",
     "product_type": "split_v1",
     "configuration_id": null,
     "categories": [

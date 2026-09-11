@@ -411,13 +411,9 @@ FILING_SCHEMAS = {
 }
 
 class ExtractConfig(ExtractV2Parameters):
-    schema_version: str
-    config_version: str
     configuration_id: str | None = None
 
 class ClassifyConfig(ClassifyV2Parameters):
-    schema_version: str
-    config_version: str
     rules: list[Rule] = []
     configuration_id: str | None = None
 
@@ -426,10 +422,17 @@ class ParseConfig(ParseV2Parameters):
     configuration_id: str | None = None
 
 class SplitConfig(SplitV1Parameters):
-    schema_version: str
-    config_version: str
     categories: list[SplitCategory] = []
     configuration_id: str | None = None
+
+class BlockVersion(BaseModel):
+    schema_version: str
+    config_version: str
+
+class PipelineVersions(BaseModel):
+    classify: BlockVersion
+    extract: BlockVersion
+    split: BlockVersion
 
 class SplitUploadSlot(BaseModel):
     id: str
@@ -451,6 +454,7 @@ class Config(BaseModel):
     config_id: str
     schema_version: str
     config_version: str
+    pipeline_versions: PipelineVersions
     classify: ClassifyConfig
     extract_jubeex: ExtractConfig = Field(alias="extract-jubeex")
     parse: ParseConfig | None = None
@@ -459,7 +463,12 @@ class Config(BaseModel):
 
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
-_API_EXCLUDE = {"configuration_id", "product_type"}
+_API_EXCLUDE = {
+    "configuration_id",
+    "product_type",
+    "schema_version",
+    "config_version",
+}
 
 
 def _block_versions(block: Any) -> dict[str, str]:
@@ -487,19 +496,49 @@ def load_config_payload() -> dict[str, Any]:
 def config_identity(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Version stamp included in metadata, artifacts, and stored extract JSON."""
     data = payload if payload is not None else load_config_payload()
+    versions = data.get("pipeline_versions")
+    version_map = versions if isinstance(versions, Mapping) else {}
     return {
         "config_id": data.get("config_id"),
         "schema_version": data.get("schema_version"),
         "config_version": data.get("config_version"),
-        "classify": _block_versions(data.get("classify")),
-        "extract": _block_versions(data.get("extract-jubeex")),
-        "split": _block_versions(data.get("split")),
+        "classify": _block_versions(
+            version_map.get("classify") or data.get("classify")
+        ),
+        "extract": _block_versions(
+            version_map.get("extract") or data.get("extract-jubeex")
+        ),
+        "split": _block_versions(version_map.get("split") or data.get("split")),
     }
 
 
 def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
-    """JSON sent to LlamaCloud classify / extract / split, including versions."""
-    return config.model_dump(exclude=_API_EXCLUDE, exclude_none=True)
+    """JSON sent to LlamaCloud classify / extract / split.
+
+    Only LlamaCloud's own fields are forwarded. Version keys stay on our
+    metadata and S3 artifacts.
+    """
+    dumped = config.model_dump(exclude_none=True)
+    for key in _API_EXCLUDE:
+        dumped.pop(key, None)
+    parent = next(
+        (
+            base
+            for base in type(config).__mro__[1:]
+            if base
+            in (
+                ClassifyV2Parameters,
+                ExtractV2Parameters,
+                SplitV1Parameters,
+                ParseV2Parameters,
+            )
+        ),
+        None,
+    )
+    if parent is not None:
+        allowed = set(parent.model_fields) - {"product_type"}
+        dumped = {key: value for key, value in dumped.items() if key in allowed}
+    return dumped
 
 
 def with_config_identity(payload: dict[str, Any]) -> dict[str, Any]:

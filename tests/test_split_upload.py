@@ -98,6 +98,7 @@ def _required_parts(
 
 def test_config_json_has_versioning() -> None:
     from extraction_review.config import (
+        config_identity,
         dump_api_configuration,
         load_config_payload,
     )
@@ -109,32 +110,60 @@ def test_config_json_has_versioning() -> None:
     assert data["config_id"] == "jubeex_parse"
     assert data["schema_version"] == "1.0"
     assert data["config_version"] == "1.0.0"
-    assert data["classify"]["schema_version"] == "1.0"
-    assert data["classify"]["config_version"] == "1.0.0"
-    assert data["extract-jubeex"]["schema_version"] == "1.0"
-    assert data["extract-jubeex"]["config_version"] == "1.0.0"
-    assert data["split"]["schema_version"] == "1.0"
-    assert data["split"]["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.0"
+    assert "schema_version" not in data["classify"]
+    assert "config_version" not in data["classify"]
+    assert "schema_version" not in data["extract-jubeex"]
+    assert "config_version" not in data["extract-jubeex"]
+    assert "schema_version" not in data["split"]
+    assert "config_version" not in data["split"]
     load_config_payload.cache_clear()
     config = Config.model_validate(data)
     assert config.config_id == "jubeex_parse"
     assert config.schema_version == "1.0"
     assert config.config_version == "1.0.0"
-    assert config.classify.config_version == "1.0.0"
-    assert config.extract_jubeex.config_version == "1.0.0"
-    assert config.split is not None
-    assert config.split.config_version == "1.0.0"
+    assert config.pipeline_versions.classify.config_version == "1.0.0"
+    assert config.pipeline_versions.extract.config_version == "1.0.0"
+    assert config.pipeline_versions.split.config_version == "1.0.0"
     classify_sent = dump_api_configuration(config.classify)
-    assert classify_sent["schema_version"] == "1.0"
-    assert classify_sent["config_version"] == "1.0.0"
+    assert "schema_version" not in classify_sent
+    assert "config_version" not in classify_sent
+    assert classify_sent["mode"] == "FAST"
     extract_sent = extract_configuration(
         config.extract_jubeex, type_catalog("SLP_CIVIL")
     )
-    assert extract_sent["schema_version"] == "1.0"
-    assert extract_sent["config_version"] == "1.0.0"
+    assert "schema_version" not in extract_sent
+    assert "config_version" not in extract_sent
+    assert config.split is not None
     split_sent = _split_api_configuration(config.split)
-    assert split_sent["schema_version"] == "1.0"
-    assert split_sent["config_version"] == "1.0.0"
+    assert "schema_version" not in split_sent
+    assert "config_version" not in split_sent
+    assert split_sent["categories"]
+    stamped = config_identity(data)
+    assert stamped["classify"]["config_version"] == "1.0.0"
+    assert stamped["extract"]["config_version"] == "1.0.0"
+    assert stamped["split"]["config_version"] == "1.0.0"
+
+
+def test_classify_dump_strips_unsupported_version_keys() -> None:
+    from extraction_review.config import ClassifyConfig, dump_api_configuration
+
+    dumped = dump_api_configuration(
+        ClassifyConfig.model_validate(
+            {
+                "product_type": "classify_v2",
+                "rules": [{"type": "other", "description": "x"}],
+                "mode": "FAST",
+                "schema_version": "1.0",
+                "config_version": "1.0.0",
+            }
+        )
+    )
+    assert "schema_version" not in dumped
+    assert "config_version" not in dumped
+    assert dumped["mode"] == "FAST"
 
 
 def test_ui_catalog_is_driven_by_config_types() -> None:
