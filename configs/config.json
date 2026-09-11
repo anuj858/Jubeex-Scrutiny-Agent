@@ -1220,6 +1220,14 @@
             "required": false
           },
           {
+            "id": "filing_memo",
+            "label": "Filing Memo",
+            "parts": [
+              "Filing Memo"
+            ],
+            "required": false
+          },
+          {
             "id": "undefined",
             "label": "Undefined",
             "parts": [
@@ -1367,6 +1375,14 @@
             "label": "PoA/BR",
             "parts": [
               "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "filing_memo",
+            "label": "Filing Memo",
+            "parts": [
+              "Filing Memo"
             ],
             "required": false
           },

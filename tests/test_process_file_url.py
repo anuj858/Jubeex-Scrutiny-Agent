@@ -202,6 +202,8 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("Filing_Memo.pdf", "TRANSFER_PETITION_CIVIL") == (
         "filing_memo"
     )
+    assert slot_id_from_name("Filing_Memo.pdf", "SLP_CIVIL") == "filing_memo"
+    assert slot_id_from_name("Filing Memo.pdf", "SLP_CRIMINAL") == "filing_memo"
     assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "application_3"
 
 

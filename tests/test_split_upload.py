@@ -191,7 +191,8 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert "court_fees" not in tp_criminal_ids
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
-    assert "filing_memo" not in civil_ids
+    assert "filing_memo" in civil_ids
+    assert "filing_memo" in criminal_ids
     assert "annexure_p1" in civil_ids
     assert "application_1" in civil_ids
     assert "annexures" not in civil_ids
@@ -221,6 +222,8 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert set(criminal_required.values()) == {False}
     assert "memo_of_parties" in civil_required
     assert "court_fees" in civil_required
+    assert "filing_memo" in civil_required
+    assert "filing_memo" in criminal_required
     assert "undefined" in civil_required
     assert "petition" in civil_required
     assert "vakalatnama_appearance" in criminal_required
@@ -280,6 +283,7 @@ def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     assert "undefined" not in present
     assert "memo_of_parties" in present
     assert "court_fees" in present
+    assert "filing_memo" in present
     assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     assert "vakalatnama" not in present
@@ -315,6 +319,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
     _, parts = validate_parts("SLP_CRIMINAL", _required_parts("SLP_CRIMINAL"))
     present = {item.slot_id for item in parts}
     assert "court_fees" not in present
+    assert "filing_memo" in present
     assert "memo_of_parties" in present
     assert "poa_br" in present
     assert "vakalatnama_appearance" in present
@@ -1190,6 +1195,8 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
     civil_ids = [slot["id"] for slot in result.split_upload_types["SLP_CIVIL"]["slots"]]
+    assert "filing_memo" in civil_ids
+    assert "filing_memo" in criminal_ids
     assert "annexure_p1" in civil_ids
     assert "application_1" in civil_ids
     assert "annexures" not in civil_ids
@@ -1396,6 +1403,15 @@ def test_filing_memo_maps_on_transfer_petition_civil() -> None:
     criminal = type_catalog("TRANSFER_PETITION_CRIMINAL")
     assert "filing_memo" not in {slot.id for slot in criminal.slots}
     assert "court_fees" not in {slot.id for slot in catalog.slots}
+
+
+def test_filing_memo_maps_on_slp_civil_and_criminal() -> None:
+    civil = type_catalog("SLP_CIVIL")
+    criminal = type_catalog("SLP_CRIMINAL")
+    assert map_slot_pages(civil, {60: ["Filing Memo"]})["filing_memo"] == [60]
+    assert map_slot_pages(criminal, {61: ["Filing Memo"]})["filing_memo"] == [61]
+    assert "filing_memo" in {slot.id for slot in civil.slots}
+    assert "filing_memo" in {slot.id for slot in criminal.slots}
 
 
 def test_numbered_annexure_and_application_map_to_own_slots() -> None:
