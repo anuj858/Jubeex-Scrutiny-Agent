@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from pypdf import PdfReader, PdfWriter
 
 from .document_parts import (
+    ANNEXURE_FAMILY,
     explode_repeating_split_parts,
+    family_split_name,
     format_page_span,
     numbered_part_slot_id,
     parts_on_page,
@@ -239,7 +241,15 @@ def slice_bundle_pdf(
         labels = parts_on_page(raw)
         if labels:
             normalized[number] = labels
-    page_texts = _pdf_page_texts(pdf_bytes, list(normalized))
+    annexure_pages = [
+        number
+        for number, labels in normalized.items()
+        if any(family_split_name(name) == ANNEXURE_FAMILY for name in labels)
+    ]
+    text_pages = set(normalized)
+    if annexure_pages:
+        text_pages.update(range(min(annexure_pages), max(annexure_pages) + 1))
+    page_texts = _pdf_page_texts(pdf_bytes, sorted(text_pages))
     exploded = explode_repeating_split_parts(normalized, page_texts)
     pages_by_slot = dict(map_slot_pages(catalog, exploded))
     if pdf_bytes and any(slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots):

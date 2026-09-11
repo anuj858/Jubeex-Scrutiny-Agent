@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -529,6 +529,100 @@ def _replace_family_label(names: list[str], family: str, label: str) -> list[str
     return replaced
 
 
+def _annexure_claimable(names: Sequence[str] | None) -> bool:
+    """Unlabeled or annexure-only pages may take a P-n label. Never steal other parts."""
+    parts = parts_on_page(names)
+    if not parts:
+        return True
+    return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
+
+
+def _assign_gap_to_missing_marks(
+    pages: Sequence[int], missing: Sequence[int]
+) -> dict[int, str]:
+    """Split gap pages across skipped P-n marks in order.
+
+    One skipped number gets the whole gap. Several skipped numbers share
+    the pages as evenly as possible, earlier marks first.
+    """
+    labels: dict[int, str] = {}
+    if not pages or not missing:
+        return labels
+    n_pages = len(pages)
+    n_marks = len(missing)
+    base, extra = divmod(n_pages, n_marks)
+    index = 0
+    for offset, mark in enumerate(missing):
+        count = base + (1 if offset < extra else 0)
+        for _ in range(count):
+            labels[int(pages[index])] = f"Annexure P-{mark}"
+            index += 1
+    return labels
+
+
+def _annexure_printed_labels(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> dict[int, str] | None:
+    """Label annexure pages from printed P-n marks, including unlabeled gaps.
+
+    Consecutive marks (P-2 then P-3) keep body pages with the earlier mark.
+    A skipped mark (P-2 then P-4) assigns the in-between pages to P-3.
+    """
+    annexure_pages = sorted(
+        page
+        for page, names in page_parts.items()
+        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+    )
+    if not annexure_pages:
+        return None
+    first = annexure_pages[0]
+    last = annexure_pages[-1]
+    starts: list[tuple[int, int]] = []
+    seen_marks: set[int] = set()
+    for page in range(first, last + 1):
+        if not _annexure_claimable(page_parts.get(page)):
+            continue
+        mark = annexure_mark_in_heading(page_text.get(page, ""))
+        if mark and mark not in seen_marks:
+            seen_marks.add(mark)
+            starts.append((page, mark))
+    if len(starts) < 2:
+        return None
+
+    labels: dict[int, str] = {}
+    first_start, first_mark = starts[0]
+    for page in range(first, first_start):
+        if _annexure_claimable(page_parts.get(page)):
+            labels[page] = f"Annexure P-{first_mark}"
+
+    for index, (start_page, mark) in enumerate(starts):
+        if index + 1 < len(starts):
+            next_page, next_mark = starts[index + 1]
+            if next_mark == mark + 1:
+                for page in range(start_page, next_page):
+                    if _annexure_claimable(page_parts.get(page)):
+                        labels[page] = f"Annexure P-{mark}"
+            elif next_mark > mark + 1:
+                if _annexure_claimable(page_parts.get(start_page)):
+                    labels[start_page] = f"Annexure P-{mark}"
+                gap = [
+                    page
+                    for page in range(start_page + 1, next_page)
+                    if _annexure_claimable(page_parts.get(page))
+                ]
+                labels.update(
+                    _assign_gap_to_missing_marks(gap, range(mark + 1, next_mark))
+                )
+            elif _annexure_claimable(page_parts.get(start_page)):
+                labels[start_page] = f"Annexure P-{mark}"
+            continue
+        for page in range(start_page, last + 1):
+            if _annexure_claimable(page_parts.get(page)):
+                labels[page] = f"Annexure P-{mark}"
+    return labels
+
+
 def _apply_segment_numbers(
     page_parts: PagePartMap,
     groups: list[list[int]],
@@ -558,22 +652,17 @@ def _sequential_family_labels(
     page_text: Mapping[int, str],
     family: str,
 ) -> dict[int, str] | None:
+    """Number application pages at each new cause title. Annexures use printed P-n."""
+    if family == ANNEXURE_FAMILY:
+        return None
     if len(pages) < 2:
         return None
     labels: dict[int, str] = {}
     index = 0
-    seen_marks: set[int] = set()
     starts = 0
     for offset, page in enumerate(pages):
         text = page_text.get(page, "")
-        is_start = False
-        if family == ANNEXURE_FAMILY:
-            mark = annexure_mark_in_heading(text)
-            if mark and mark not in seen_marks:
-                seen_marks.add(mark)
-                is_start = True
-        else:
-            is_start = offset == 0 or page_starts_application(text)
+        is_start = offset == 0 or page_starts_application(text)
         if offset == 0:
             index = 1
             starts = 1
@@ -581,9 +670,7 @@ def _sequential_family_labels(
             index += 1
             starts += 1
         if index:
-            labels[page] = (
-                f"Annexure P-{index}" if family == ANNEXURE_FAMILY else f"Application {index}"
-            )
+            labels[page] = f"Application {index}"
     if starts < 2:
         return None
     return labels
@@ -593,27 +680,40 @@ def explode_repeating_split_parts(
     page_parts: PagePartMap,
     page_text: Mapping[int, str] | None = None,
 ) -> PagePartMap:
-    """Split a merged Annexures/Application run into consecutive P-n / Application n.
+    """Split a merged Annexures/Application run into P-n / Application n.
 
-    Numbering is sequential with no gaps: the first annexure is P-1, the next
-    new heading is P-2, and so on through whatever last number appears (P-7,
-    P-100, …). Same rule for applications at each new cause title.
+    Annexure numbers come from printed P-n marks: consecutive marks keep body
+    pages with the earlier annexure; a skipped mark fills the gap as the
+    missing P-n, including unlabeled pages between the first and last
+    annexure page. Applications stay sequential at each new cause title.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     texts = page_text or {}
-    for family in (ANNEXURE_FAMILY, APPLICATION_FAMILY):
-        pages = sorted(
+    if texts:
+        annexure_labels = _annexure_printed_labels(updated, texts)
+        if annexure_labels:
+            for page, label in annexure_labels.items():
+                updated[page] = _replace_family_label(
+                    updated.get(page, []), ANNEXURE_FAMILY, label
+                )
+        app_pages = sorted(
             page
             for page, names in updated.items()
-            if any(family_split_name(name) == family for name in names)
+            if any(
+                family_split_name(name) == APPLICATION_FAMILY
+                for name in parts_on_page(names)
+            )
         )
-        if not pages:
-            continue
-        labels = _sequential_family_labels(pages, texts, family) if texts else None
-        if not labels:
-            continue
-        for page, label in labels.items():
-            updated[page] = _replace_family_label(updated[page], family, label)
+        app_labels = (
+            _sequential_family_labels(app_pages, texts, APPLICATION_FAMILY)
+            if app_pages
+            else None
+        )
+        if app_labels:
+            for page, label in app_labels.items():
+                updated[page] = _replace_family_label(
+                    updated.get(page, []), APPLICATION_FAMILY, label
+                )
     return updated
 
 

@@ -1560,6 +1560,143 @@ def test_merged_annexures_split_on_p_n_headings_through_last_number() -> None:
     assert "annexure_p100" not in pages
 
 
+def test_consecutive_annexure_headings_keep_body_pages_with_earlier_mark() -> None:
+    page_parts = {page: ["Annexures"] for page in range(20, 26)}
+    page_parts[26] = ["Annexures"]
+    page_parts[30] = ["Annexures"]
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nTrial court judgment",
+        27: "continuation without heading",
+        28: "scan body",
+        29: "scan body",
+        30: "ANNEXURE P-3\nEvidence",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert [exploded[page] for page in range(20, 26)] == [["Annexure P-1"]] * 6
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-2"]
+    assert exploded[28] == ["Annexure P-2"]
+    assert exploded[29] == ["Annexure P-2"]
+    assert exploded[30] == ["Annexure P-3"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["annexure_p1"] == list(range(20, 26))
+    assert pages["annexure_p2"] == [26, 27, 28, 29]
+    assert pages["annexure_p3"] == [30]
+    payload: dict = {}
+    overlay_split_documents(payload, exploded)
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Annexure P-2"] == {
+        "name": "Annexure P-2",
+        "start_page": 26,
+        "end_page": 29,
+    }
+    assert spans["Annexure P-3"]["start_page"] == 30
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(30), catalog, exploded)
+    }
+    assert slices["annexure_p2"].pages == (26, 27, 28, 29)
+    assert slices["annexure_p2"].page_span == "pp. 26–29"
+    assert slices["annexure_p3"].pages == (30,)
+    assert 27 not in slices["undefined"].pages
+    assert 28 not in slices["undefined"].pages
+    assert 29 not in slices["undefined"].pages
+
+
+def test_skipped_annexure_heading_fills_gap_as_missing_p_n() -> None:
+    page_parts = {page: ["Annexures"] for page in range(20, 26)}
+    page_parts[26] = ["Annexures"]
+    page_parts.update({page: ["Annexures"] for page in range(30, 41)})
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nTrial court judgment",
+        30: "ANNEXURE P-4\nHigh Court order",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-3"]
+    assert exploded[28] == ["Annexure P-3"]
+    assert exploded[29] == ["Annexure P-3"]
+    assert exploded[30] == ["Annexure P-4"]
+    assert exploded[40] == ["Annexure P-4"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["annexure_p2"] == [26]
+    assert pages["annexure_p3"] == [27, 28, 29]
+    assert pages["annexure_p4"] == list(range(30, 41))
+    payload: dict = {}
+    overlay_split_documents(payload, exploded)
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Annexure P-3"] == {
+        "name": "Annexure P-3",
+        "start_page": 27,
+        "end_page": 29,
+    }
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(40), catalog, exploded)
+    }
+    assert slices["annexure_p2"].pages == (26,)
+    assert slices["annexure_p3"].pages == (27, 28, 29)
+    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert slices["annexure_p4"].pages == tuple(range(30, 41))
+    assert 27 not in slices["undefined"].pages
+    assert 28 not in slices["undefined"].pages
+    assert 29 not in slices["undefined"].pages
+
+
+def test_annexure_gap_fill_does_not_steal_other_document_parts() -> None:
+    page_parts = {
+        26: ["Annexures"],
+        28: ["Cover Page"],
+        30: ["Annexures"],
+        31: ["Annexures"],
+    }
+    texts = {
+        26: "ANNEXURE P-2\nJudgment",
+        30: "ANNEXURE P-4\nOrder",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-3"]
+    assert exploded[28] == ["Cover Page"]
+    assert exploded[29] == ["Annexure P-3"]
+    assert exploded[30] == ["Annexure P-4"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["cover_page"] == [28]
+    assert pages["annexure_p3"] == [27, 29]
+
+
+def test_slice_bundle_pdf_fills_unlabeled_annexure_gaps_from_headings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nJudgment",
+        30: "ANNEXURE P-4\nOrder",
+    }
+    monkeypatch.setattr(
+        "extraction_review.bundle_slicer._pdf_page_texts",
+        lambda _pdf, pages: {int(page): texts.get(int(page), "") for page in pages},
+    )
+    page_parts = {page: ["Annexures"] for page in range(20, 27)}
+    page_parts.update({page: ["Annexures"] for page in range(30, 41)})
+    catalog = type_catalog("SLP_CIVIL")
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(40), catalog, page_parts)
+    }
+    assert slices["annexure_p2"].pages == (26,)
+    assert slices["annexure_p2"].page_span == "p. 26"
+    assert slices["annexure_p3"].pages == (27, 28, 29)
+    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert slices["annexure_p4"].pages == tuple(range(30, 41))
+    assert 27 not in slices["undefined"].pages
+
+
 def test_application_headings_number_consecutively() -> None:
     page_parts = {
         1: ["Application"],
