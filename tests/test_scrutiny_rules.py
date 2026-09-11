@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import json
+
+import jsonschema
+
 import extraction_review.scrutiny.rules as rules_mod
 from extraction_review.scrutiny.prompts import _filing_phrase
 from extraction_review.scrutiny.rules import (
     Catalogue,
     Defect,
     _applies_to_filing,
+    catalogue_schema_path,
     categories_for_filing_type,
     defects_for_filing_type,
     normalize_filing_type,
+    rewrite_location_source,
 )
 
 
@@ -240,33 +246,95 @@ def test_review_contempt_and_original_suit_aliases() -> None:
     )
 
 
-def test_imported_csv_defects_select_by_slp_side(monkeypatch) -> None:
+OPAQUE_SOURCE_FILES = {
+    "2024011691-1.pdf": "SCI_RULES_2013",
+    "Court Processes Handbook.pdf": "SCI_COURT_PROCESSES_HANDBOOK",
+    "Form 28 - SLP.pdf": "SCI_FORM_28",
+    "2024011779.pdf": "SCI_FORM_28",
+    "2025010980.pdf": "SCI_CHECKLIST_2025",
+    "Defect List.pdf": "SCI_CHECKLIST_2025",
+    "2024042371.pdf": "SCI_COMPENDIUM_CIRCULARS",
+    "12032020_071455.pdf": "SCI_CIRCULAR_2020",
+    "Advocate's checklist.pdf": "SCBA_ADVOCATE_CHECKLIST",
+    "circular_02.06.2017.pdf": "SCI_CIRCULAR_2017_06_02",
+    "2024042339.pdf": "SCI_CIRCULARS_GUIDELINES_COMPENDIUM",
+    "2024021053.pdf": "SCI_CIRCULAR_2024_02_07",
+    "2024042323-1.pdf": "SCI_CIRCULAR_2008_11_21",
+    "Armed Forces Tribunal Act.pdf": "AFT_ACT",
+    "2026032086.pdf": "SCI_CIRCULAR_2026",
+    "sc-amendment-rules-2019.pdf": "SCI_AMENDMENT_RULES_2019",
+    "23082023_120659.pdf": "SCI_CIRCULAR_2022_58",
+    "181015150934.pdf": "SCI_CIRCULAR_2018",
+    "2025010360.pdf": "SCI_CIRCULAR_2025",
+}
+
+
+def test_imported_csv_catalogue(monkeypatch) -> None:
     rules_mod.get_catalogue.cache_clear()
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
 
     catalogue = rules_mod.get_catalogue()
-    assert catalogue.catalogue_version == "2.3.0"
-    assert len(catalogue.defects) == 94
+    assert catalogue.catalogue_version == "2.5.0"
+    assert len(catalogue.defects) == 331
+    schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
+    jsonschema.validate(
+        json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
+        schema,
+    )
+    mapped = {
+        alias: source.source_id
+        for source in catalogue.sources
+        for alias in source.filename_aliases
+    }
+    for filename, source_id in OPAQUE_SOURCE_FILES.items():
+        assert mapped[filename] == source_id
 
-    by_serial = {str(d.serial_no): d.check_id for d in catalogue.defects}
-    form28 = {by_serial[s] for s in ("162", "163", "164", "165", "166", "167")}
-    shared_slp = {by_serial[s] for s in ("231", "232")}
-    jail_ia = {by_serial[s] for s in ("199", "200", "201", "202", "203", "204", "205")}
-    criminal_only = {by_serial[s] for s in ("270", "271", "272", "273")}
+    d063 = catalogue.defect("D063")
+    assert d063.serial_no == 63
+    assert d063.main_category == "General/Global"
+    assert d063.category_id == "advocate_checklist"
+    assert "Advocate's Checklist" in d063.inspect_parts
+    assert "SCI_CHECKLIST_2025" in d063.location_source
+    assert "Defect List.pdf" not in d063.location_source
+
+    d162 = catalogue.defect("D162")
+    assert d162.serial_no == 162
+    assert d162.main_category == "SLP (Civil)"
+    assert d162.category_id == "filing_formalities"
+    assert "Main Petition" in d162.inspect_parts
+    assert "SCI_FORM_28" in d162.location_source
+    assert "SCI_RULES_2013" in d162.location_source
+    assert "Form 28 - SLP.pdf" not in d162.location_source
+    assert "2024011691-1.pdf" not in d162.location_source
 
     civil = {d.check_id for d in defects_for_filing_type("SLP_CIVIL")}
     criminal = {d.check_id for d in defects_for_filing_type("SLP_CRIMINAL")}
+    assert "D162" in civil
+    assert "D162" not in criminal
+    assert "D063" in civil
+    assert "D063" in criminal
 
-    assert form28 <= civil
-    assert form28.isdisjoint(criminal)
-    assert criminal_only <= criminal
-    assert criminal_only.isdisjoint(civil)
-    assert shared_slp <= civil & criminal
-    assert jail_ia <= civil & criminal
+    for defect in catalogue.defects:
+        assert ".pdf" not in defect.location_source.lower()
 
-    d092 = catalogue.defect(by_serial["231"])
-    assert d092.main_category == "SLP (Civil), SLP (Criminal)"
-    assert d092.inspect_parts == ["AOR's Certificate"]
-    d079 = catalogue.defect(by_serial["162"])
-    assert d079.category_id == "filing_formalities"
-    assert d079.inspect_parts == ["Main Petition"]
+
+def test_rewrite_location_source_maps_opaque_pdf_names() -> None:
+    rules_mod.get_catalogue.cache_clear()
+    catalogue = rules_mod.get_catalogue()
+    for filename, source_id in OPAQUE_SOURCE_FILES.items():
+        rewritten = rewrite_location_source(
+            f"Page 30 of the PDF {filename}",
+            catalogue.sources,
+        )
+        assert source_id in rewritten
+        assert filename not in rewritten
+
+    both = rewrite_location_source(
+        "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\n"
+        "Form No. 28  Form 28 - SLP.pdf",
+        catalogue.sources,
+    )
+    assert "SCI_RULES_2013" in both
+    assert "SCI_FORM_28" in both
+    assert "2024011691-1.pdf" not in both
+    assert "Form 28 - SLP.pdf" not in both

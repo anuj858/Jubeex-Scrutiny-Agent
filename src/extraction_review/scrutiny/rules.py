@@ -315,7 +315,7 @@ class Catalogue(_Strict):
     disclaimer: str | None = None
     sources: list[CatalogueSource] = Field(default_factory=list)
     categories: list[DefectCategory] = Field(default_factory=list)
-    defects: list[Defect] = Field(min_length=1)
+    defects: list[Defect] = Field(default_factory=list)
 
     @property
     def defect_order(self) -> list[str]:

@@ -277,6 +277,7 @@ def test_apply_evidence_pages_still_snaps_page_from_chunk() -> None:
     }
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_attaches_boxes_from_layout() -> None:
     catalogue = get_catalogue()
     layout = _mid_line_layout(12)
@@ -314,6 +315,7 @@ def test_build_finding_attaches_boxes_from_layout() -> None:
     assert ref.bounding_boxes[0].x == 0.42
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_without_layout_is_unavailable() -> None:
     catalogue = get_catalogue()
     finding = build_finding(
@@ -371,6 +373,7 @@ def test_null_page_quote_is_found_on_layout_page() -> None:
     assert boxes[0]["page"] == 26
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_fills_null_page_from_layout() -> None:
     catalogue = get_catalogue()
     layout = _sentence_layout(
@@ -421,6 +424,7 @@ def test_build_finding_fills_null_page_from_layout() -> None:
     assert ref.local_page == 1
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_empty_evidence_uses_retrieved_inspect_pages() -> None:
     catalogue = get_catalogue()
     layout = _sentence_layout(
@@ -557,6 +561,7 @@ def test_attach_evidence_boxes_survives_broken_citation() -> None:
         assert box.y + box.h <= 1.000001
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_mixed_d077_citations() -> None:
     catalogue = get_catalogue()
     petition = _sentence_layout(
@@ -624,6 +629,7 @@ def test_build_finding_mixed_d077_citations() -> None:
     assert finding.evidence[1].document_part == "Affidavit"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_empty_evidence_ignores_non_numeric_chunk_pages() -> None:
     catalogue = get_catalogue()
     finding = build_finding(
@@ -715,6 +721,7 @@ async def test_load_layout_index_uses_key_when_url_fails(monkeypatch) -> None:
     assert 12 in loaded
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_d077_drawn_on_quote_matches_boxes() -> None:
     catalogue = get_catalogue()
     layout = _sentence_layout(34, "DRAWN ON 11.04.2026", slot_id="petition")

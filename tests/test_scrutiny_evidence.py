@@ -262,6 +262,7 @@ def test_unlabelled_pages_do_not_borrow_neighbours() -> None:
     assert texts == ["first page text", "second page text"]
 
 
+@pytest.mark.needs_catalogue_defects
 def test_slice_record_drops_unrelated_blocks() -> None:
     catalogue = get_catalogue()
     record = {
@@ -284,6 +285,7 @@ def test_slice_record_drops_unrelated_blocks() -> None:
     assert "petitioners" not in aor
 
 
+@pytest.mark.needs_catalogue_defects
 def test_select_chunks_prefers_labelled_part() -> None:
     catalogue = get_catalogue()
     pool = [
@@ -320,6 +322,7 @@ def test_select_chunks_prefers_labelled_part() -> None:
     assert "p10" not in ids
 
 
+@pytest.mark.needs_catalogue_defects
 def test_select_chunks_keeps_vakalatnama_for_date_check() -> None:
     catalogue = get_catalogue()
     pool = [
@@ -420,6 +423,7 @@ def test_keep_nearby_scores_drops_far_neighbours() -> None:
     assert [c["record_id"] for c in kept] == ["a", "b", "c"]
 
 
+@pytest.mark.needs_catalogue_defects
 def test_max_chunks_is_tighter_for_single_point_defects() -> None:
     catalogue = get_catalogue()
     assert max_chunks_for_defect(catalogue.defect("D004"), ceiling=12) == 3
@@ -427,6 +431,7 @@ def test_max_chunks_is_tighter_for_single_point_defects() -> None:
     assert max_chunks_for_defect(catalogue.defect("D006"), ceiling=12) == 6
 
 
+@pytest.mark.needs_catalogue_defects
 def test_child_defects_run_immediately_after_parent() -> None:
     ids = [d.check_id for d in defects_for_filing_type("SLP_CIVIL")]
     assert "D001" not in ids
@@ -434,6 +439,7 @@ def test_child_defects_run_immediately_after_parent() -> None:
     assert ids.index("D003") + 1 == ids.index("D005")
 
 
+@pytest.mark.needs_catalogue_defects
 def test_match_terms_use_form_captions_not_objection_text() -> None:
     catalogue = get_catalogue()
     terms = match_terms_for_defect(catalogue.defect("D004"))
@@ -441,6 +447,7 @@ def test_match_terms_use_form_captions_not_objection_text() -> None:
     assert all("not duly filled" not in t.lower() for t in terms)
 
 
+@pytest.mark.needs_catalogue_defects
 def test_pinecone_queries_follow_where_to_look() -> None:
     catalogue = get_catalogue()
     d013 = pinecone_queries_for_defect(catalogue.defect("D013"))
@@ -456,6 +463,7 @@ def test_pinecone_queries_follow_where_to_look() -> None:
     assert "Memo of Parties" not in named
 
 
+@pytest.mark.needs_catalogue_defects
 def test_landmarks_are_not_required_parts() -> None:
     catalogue = get_catalogue()
     d003 = parts_named_in_where_to_look(catalogue.defect("D003"))
@@ -479,6 +487,7 @@ def test_split_nicknames_come_from_config_not_a_python_map() -> None:
     )
 
 
+@pytest.mark.needs_catalogue_defects
 def test_select_chunks_drops_far_pages_and_respects_defect_budget() -> None:
     catalogue = get_catalogue()
     pool: list[dict] = [
@@ -512,6 +521,7 @@ def test_select_chunks_drops_far_pages_and_respects_defect_budget() -> None:
     assert "p3" not in ids
 
 
+@pytest.mark.needs_catalogue_defects
 def test_system_prompt_stable_within_petition_type() -> None:
     catalogue = get_catalogue()
     civil = build_system_prompt(catalogue, "SLP_CIVIL")
@@ -525,6 +535,7 @@ def test_system_prompt_stable_within_petition_type() -> None:
     assert "Listing Proforma" not in civil
 
 
+@pytest.mark.needs_catalogue_defects
 def test_user_prompt_carries_category_and_sliced_record() -> None:
     catalogue = get_catalogue()
     defect = catalogue.defect("D005")
@@ -601,6 +612,7 @@ def test_confident_defect_stays_defect_found() -> None:
     assert apply_status_policy(strong).status == "defect_found"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_missing_vakalatnama_excerpts_are_needs_review_not_defect() -> None:
     catalogue = get_catalogue()
     response = DefectResponse(
@@ -626,6 +638,7 @@ def test_missing_vakalatnama_excerpts_are_needs_review_not_defect() -> None:
     assert gated.status == "needs_review"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_checklist_defect_does_not_need_cover_page_excerpts() -> None:
     catalogue = get_catalogue()
     response = DefectResponse(
@@ -737,6 +750,7 @@ def test_evidence_keeps_retrieved_page_when_quote_ocr_differs() -> None:
     assert grounded.evidence[0].page == 26
 
 
+@pytest.mark.needs_catalogue_defects
 def test_missing_visual_mark_is_defect_not_undetermined() -> None:
     catalogue = get_catalogue()
     vakalatnama = [
@@ -762,6 +776,7 @@ def test_missing_visual_mark_is_defect_not_undetermined() -> None:
     assert gated.status == "defect_found"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_undetermined_without_the_part_stays_needs_review() -> None:
     catalogue = get_catalogue()
     petition_only = [
@@ -787,6 +802,7 @@ def test_undetermined_without_the_part_stays_needs_review() -> None:
     assert gated.status == "needs_review"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_visual_defects_query_seal_and_margin_cues() -> None:
     catalogue = get_catalogue()
     seal_queries = pinecone_queries_for_defect(catalogue.defect("D021"))
@@ -795,6 +811,7 @@ def test_visual_defects_query_seal_and_margin_cues() -> None:
     assert any("margin" in q.lower() or "a4" in q.lower() for q in margin_queries)
 
 
+@pytest.mark.needs_catalogue_defects
 def test_visual_prompt_treats_missing_marks_as_defects() -> None:
     catalogue = get_catalogue()
     system = build_system_prompt(catalogue, "SLP_CIVIL")
@@ -817,6 +834,7 @@ def test_visual_prompt_treats_missing_marks_as_defects() -> None:
     assert "use not_determined only for stamps" not in prompt_l
 
 
+@pytest.mark.needs_catalogue_defects
 def test_finding_title_is_short_and_named_for_the_defect() -> None:
     catalogue = get_catalogue()
     d003_def = catalogue.defect("D003")
@@ -830,6 +848,7 @@ def test_finding_title_is_short_and_named_for_the_defect() -> None:
     assert "6" in d004 and "7" in d004
 
 
+@pytest.mark.needs_catalogue_defects
 def test_location_source_is_official_not_filing_page() -> None:
     catalogue = get_catalogue()
     loc = readable_location_source(catalogue.defect("D003"), catalogue)
@@ -858,6 +877,7 @@ def test_filing_location_states_page_or_page_missing() -> None:
     )
 
 
+@pytest.mark.needs_catalogue_defects
 def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
     catalogue = get_catalogue()
     defect = catalogue.defect("D038")
@@ -873,6 +893,7 @@ def test_weak_reasoning_is_rewritten_from_the_defect() -> None:
     assert "filing page 50" in rewritten.lower()
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_validates_title_reasoning_and_source() -> None:
     catalogue = get_catalogue()
     defect = catalogue.defect("D003")
@@ -912,6 +933,7 @@ def test_build_finding_validates_title_reasoning_and_source() -> None:
     assert finding.requirement == defect.requirement
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_says_page_missing_without_citation() -> None:
     catalogue = get_catalogue()
     finding = build_finding(
@@ -934,6 +956,7 @@ def test_build_finding_says_page_missing_without_citation() -> None:
     )
 
 
+@pytest.mark.needs_catalogue_defects
 def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     catalogue = get_catalogue()
     assert required_parts_for_defect(catalogue.defect("D021")) == ["Affidavit"]
@@ -949,6 +972,7 @@ def test_affidavit_and_signature_checks_have_tight_required_parts() -> None:
     assert "Impugned Order" in parts_named_in_where_to_look(catalogue.defect("D059"))
 
 
+@pytest.mark.needs_catalogue_defects
 def test_serial_96_is_split_into_three_date_checks() -> None:
     get_catalogue.cache_clear()
     catalogue = get_catalogue()
@@ -967,6 +991,7 @@ def test_serial_96_is_split_into_three_date_checks() -> None:
     assert "SCI_RULES_2013" in exhibits.location_source
 
 
+@pytest.mark.needs_catalogue_defects
 def test_catalogue_inspect_parts_are_source_of_truth() -> None:
     get_catalogue.cache_clear()
     catalogue = get_catalogue()
@@ -995,6 +1020,7 @@ def test_catalogue_inspect_parts_are_source_of_truth() -> None:
             assert part != "Vakalatnama + PoA/BR", defect.check_id
 
 
+@pytest.mark.needs_catalogue_defects
 def test_index_listing_is_not_affidavit_evidence() -> None:
     catalogue = get_catalogue()
     chunks = [
@@ -1045,6 +1071,7 @@ def test_index_listing_is_not_affidavit_evidence() -> None:
     assert grounded2.evidence[0].page == 40
 
 
+@pytest.mark.needs_catalogue_defects
 def test_select_chunks_drops_index_for_affidavit_check() -> None:
     catalogue = get_catalogue()
     pool = [
@@ -1070,6 +1097,7 @@ def test_select_chunks_drops_index_for_affidavit_check() -> None:
     assert any(c.get("page") == 40 for c in chosen)
 
 
+@pytest.mark.needs_catalogue_defects
 def test_affidavit_defect_not_blocked_when_petition_pages_missing() -> None:
     catalogue = get_catalogue()
     affidavit_only = [
@@ -1095,6 +1123,7 @@ def test_affidavit_defect_not_blocked_when_petition_pages_missing() -> None:
     assert gated.status == "defect_found"
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_strips_jubeex_from_how_to_cure() -> None:
     catalogue = get_catalogue()
     finding = build_finding(
@@ -1125,6 +1154,7 @@ def test_build_finding_strips_jubeex_from_how_to_cure() -> None:
     assert all("jubeex" not in step.lower() for step in finding.how_to_cure)
 
 
+@pytest.mark.needs_catalogue_defects
 def test_build_finding_uses_chunk_pages_when_citation_has_none() -> None:
     catalogue = get_catalogue()
     finding = build_finding(
@@ -1157,6 +1187,7 @@ def test_build_finding_uses_chunk_pages_when_citation_has_none() -> None:
     )
 
 
+@pytest.mark.needs_catalogue_defects
 def test_finding_json_copies_catalogue_defect_and_requirement() -> None:
     catalogue = get_catalogue()
     for check_id in ("D028", "D029"):

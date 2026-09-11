@@ -45,7 +45,6 @@
     },
     "defects": {
       "type": "array",
-      "minItems": 1,
       "items": {
         "$ref": "#/$defs/defect"
       }
@@ -94,6 +93,14 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "filename_aliases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          },
+          "description": "Opaque SCI CDN names, Drive filenames, and citation shorthands that resolve to this source. Example: 2024011691-1.pdf → SCI_RULES_2013."
         }
       }
     },

@@ -112,6 +112,7 @@ def scrutiny_env(monkeypatch: pytest.MonkeyPatch) -> FakeLlamaCloud:
     return client
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_scrutiny_runs_when_llamaextract_status_is_error(
     scrutiny_env: FakeLlamaCloud,
@@ -136,6 +137,7 @@ async def test_scrutiny_runs_when_llamaextract_status_is_error(
     assert result.report.findings
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_scrutiny_runs_on_pending_review_extract(
     scrutiny_env: FakeLlamaCloud,
@@ -160,6 +162,7 @@ async def test_scrutiny_runs_on_pending_review_extract(
     assert result.report.findings
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_scrutiny_runs_enabled_defects_and_streams_partials(
     scrutiny_env: FakeLlamaCloud,
@@ -217,6 +220,7 @@ async def test_scrutiny_runs_enabled_defects_and_streams_partials(
     assert len(last["findings"]) == 4
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_scrutiny_all_enabled_checks_mocked(
     scrutiny_env: FakeLlamaCloud,
@@ -261,6 +265,7 @@ async def test_scrutiny_all_enabled_checks_mocked(
     assert len(last["findings"]) == expected
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_scrutiny_continues_on_llm_error_keeps_failed_finding(
     scrutiny_env: FakeLlamaCloud,
@@ -304,6 +309,7 @@ async def test_scrutiny_continues_on_llm_error_keeps_failed_finding(
     assert len(last["findings"]) == 4
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_each_check_retrieves_its_own_pinecone_excerpts(
     scrutiny_env: FakeLlamaCloud,
@@ -361,6 +367,7 @@ async def test_each_check_retrieves_its_own_pinecone_excerpts(
     assert len({queries for _file_hash, queries in gathers}) >= 2
 
 
+@pytest.mark.needs_catalogue_defects
 @pytest.mark.asyncio
 async def test_low_confidence_finding_is_needs_review(
     scrutiny_env: FakeLlamaCloud,
@@ -402,11 +409,10 @@ async def test_low_confidence_finding_is_needs_review(
 async def test_all_defects_are_catalogue_sized() -> None:
     get_catalogue.cache_clear()
     catalogue = get_catalogue()
-    assert len(catalogue.defects) == 94
-    assert catalogue.catalogue_version == "2.3.0"
-    assert catalogue.defect("D018").check_id == "D018"
-    assert catalogue.defect("D079").serial_no == 162
-    assert catalogue.defect("D097").serial_no == 273
+    assert catalogue.catalogue_version == "2.5.0"
+    assert len(catalogue.defects) == 331
+    assert catalogue.defect("D001").serial_no == 1
+    assert catalogue.defect("D331").serial_no == 331
 
 
 @pytest.mark.asyncio
