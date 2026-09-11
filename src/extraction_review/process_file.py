@@ -43,6 +43,7 @@ from .config import (
 )
 from .document_parts import page_parts_from_split, parts_on_page
 from .job_timing import (
+    attach_timing,
     elapsed_seconds,
     start_timer,
     timing_payload,
@@ -1399,29 +1400,38 @@ class ProcessFileWorkflow(Workflow):
                 )
             )
 
+        classify_split_seconds = elapsed_seconds(state.started_at)
+        file_name = uploaded_filename(state.filename)
+        timing = timing_payload(
+            file_name=file_name,
+            classify_split_seconds=classify_split_seconds,
+        )
         upload_step_json(
             STEP_SPLIT,
-            with_config_identity(
-                {
-                    "job_type": state.job_type,
-                    "filing_type": catalog.filing_type,
-                    "filename": state.filename,
-                    "file_id": state.file_id,
-                    "organization_id": state.organization_id,
-                    "workspace_id": state.workspace_id,
-                    "parts": [
-                        {
-                            "slot_id": part.slot_id,
-                            "label": part.label,
-                            "filename": part.filename,
-                            "page_span": part.page_span,
-                            "file_hash": part.file_hash,
-                            "file_id": part.file_id,
-                        }
-                        for part in prepared
-                    ],
-                    "slot_pages": slot_pages,
-                }
+            attach_timing(
+                with_config_identity(
+                    {
+                        "job_type": state.job_type,
+                        "filing_type": catalog.filing_type,
+                        "filename": state.filename,
+                        "file_id": state.file_id,
+                        "organization_id": state.organization_id,
+                        "workspace_id": state.workspace_id,
+                        "parts": [
+                            {
+                                "slot_id": part.slot_id,
+                                "label": part.label,
+                                "filename": part.filename,
+                                "page_span": part.page_span,
+                                "file_hash": part.file_hash,
+                                "file_id": part.file_id,
+                            }
+                            for part in prepared
+                        ],
+                        "slot_pages": slot_pages,
+                    }
+                ),
+                timing,
             ),
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
@@ -1440,12 +1450,6 @@ class ProcessFileWorkflow(Workflow):
                 level="info",
                 message=ready_message,
             )
-        )
-        classify_split_seconds = elapsed_seconds(state.started_at)
-        file_name = uploaded_filename(state.filename)
-        timing = timing_payload(
-            file_name=file_name,
-            classify_split_seconds=classify_split_seconds,
         )
         ctx.write_event_to_stream(
             Status(

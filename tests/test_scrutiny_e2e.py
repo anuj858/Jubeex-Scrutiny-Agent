@@ -98,7 +98,7 @@ def scrutiny_env(monkeypatch: pytest.MonkeyPatch) -> FakeLlamaCloud:
     client = FakeLlamaCloud()
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("SCRUTINY_ENABLED", "true")
-    monkeypatch.setenv("SCRUTINY_DEFECTS", "D003,D004,D005,D006")
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
     monkeypatch.setenv("SCRUTINY_CONCURRENCY", "2")
     monkeypatch.setenv("VECTOR_BACKEND", "off")
     monkeypatch.setattr(

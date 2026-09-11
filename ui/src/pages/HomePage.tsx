@@ -15,6 +15,7 @@ import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
 import { SplitUploadForm } from "@/lib/SplitUploadForm";
 import { useMetadataContext } from "@/lib/MetadataProvider";
+import { readJobTiming, timingLabel } from "@/lib/utils";
 
 export default function HomePage() {
   return <TaskList />;
@@ -78,6 +79,21 @@ function TaskList() {
       },
     }),
     [runScrutiny, viewSaved, scrutinyBusy],
+  );
+
+  const durationColumn = useMemo(
+    () => ({
+      key: "duration",
+      header: "Duration",
+      getValue: (item: AgentDataItem) =>
+        timingLabel(readJobTiming(item.data)) ?? "",
+      renderCell: (value: unknown) => (
+        <span className="text-xs whitespace-nowrap text-slate-600">
+          {typeof value === "string" && value ? value : "—"}
+        </span>
+      ),
+    }),
+    [],
   );
 
   return (
@@ -160,7 +176,7 @@ function TaskList() {
         <ExtractedDataItemGrid
           key={reloadSignal}
           onRowClick={goToItem}
-          customColumns={[scrutinyColumn]}
+          customColumns={[durationColumn, scrutinyColumn]}
           builtInColumns={{
             fileName: true,
             status: true,

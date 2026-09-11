@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useMetadataContext } from "./MetadataProvider";
 import type { SplitUploadSlot } from "./useMetadata";
 import { clickDownloadUrl, downloadFile } from "./export";
+import { formatDuration } from "./utils";
 import styles from "./SplitUploadForm.module.css";
 
 type UploadedPart = {
@@ -792,6 +793,12 @@ export function SplitUploadForm({
                 ? "Files below were sliced from the bundled PDF. Review them, then Submit to parse and extract."
                 : "Choose the matter type, then upload each document on its own row. Annexures are grouped (P-1, P-2, …) and applications the same way — use Add annexure or Add application for more."}
           </p>
+          {classifySplitSeconds != null ? (
+            <p className={styles.timing} data-testid="bundle-upload-duration">
+              {originalFilename ? `${originalFilename} · ` : ""}
+              Bundle upload took {formatDuration(classifySplitSeconds)}
+            </p>
+          ) : null}
         </div>
         <label className={styles.typeLabel}>
           Matter type

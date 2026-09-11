@@ -59,7 +59,29 @@ def timing_payload(
         "classify_split_seconds": classify_split_seconds,
         "parse_extract_seconds": parse_extract_seconds,
         "total_seconds": total,
+        "classify_split": format_duration(classify_split_seconds)
+        if classify_split_seconds is not None
+        else None,
+        "parse_extract": format_duration(parse_extract_seconds)
+        if parse_extract_seconds is not None
+        else None,
+        "total": format_duration(total) if total is not None else None,
     }
+
+
+def attach_timing(payload: dict[str, Any], timing: dict[str, Any]) -> dict[str, Any]:
+    """Put duration on the JSON artifact and under metadata so both are visible."""
+    stamped = dict(payload)
+    stamped["timing"] = timing
+    meta = stamped.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+        stamped["metadata"] = meta
+    else:
+        meta = dict(meta)
+        stamped["metadata"] = meta
+    meta["timing"] = timing
+    return stamped
 
 
 def timing_status_message(

@@ -16,7 +16,11 @@ import { modifyJsonSchema } from "@llamaindex/ui/lib";
 import { APP_TITLE } from "@/lib/config";
 import { downloadExtractedDataItem } from "@/lib/export";
 import { useMetadataContext } from "@/lib/MetadataProvider";
-import { convertBoundingBoxesToHighlights } from "@/lib/utils";
+import {
+  convertBoundingBoxesToHighlights,
+  readJobTiming,
+  timingLabel,
+} from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Schema-driven validation: reads "required" arrays from config.json schema
@@ -199,6 +203,8 @@ export default function ItemPage() {
 
   const classificationReasoning = (itemData?.data as ExtractedData<any>)
     ?.metadata?.classification_reasoning as string | undefined;
+  const jobTiming = readJobTiming(itemData?.data);
+  const durationText = timingLabel(jobTiming);
 
   // --- Validation: read "required" from the schema, check against data ---
   const missingFields = useMemo(() => {
@@ -279,6 +285,14 @@ export default function ItemPage() {
                   {classificationReasoning}
                 </div>
               )}
+            </div>
+          )}
+
+          {durationText && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 mb-4">
+              <div className="text-sm font-semibold text-slate-800">
+                Duration: {durationText}
+              </div>
             </div>
           )}
 

@@ -35,6 +35,7 @@ from .extract_record import (
     unwrap_extracted_record,
 )
 from .job_timing import (
+    attach_timing,
     elapsed_seconds,
     start_timer,
     timing_payload,
@@ -596,6 +597,14 @@ class ProcessSplitFilesWorkflow(Workflow):
             data_dict.setdefault("organization_id", org_id)
             data_dict.setdefault("workspace_id", state.workspace_id)
             data_dict = stamp_review_status(data_dict)
+            data_dict = attach_timing(
+                data_dict,
+                timing_payload(
+                    file_name=state.filename,
+                    classify_split_seconds=state.classify_split_seconds,
+                    parse_extract_seconds=elapsed_seconds(state.started_at),
+                ),
+            )
         upload_step_json(
             STEP_EXTRACT,
             with_config_identity(data_dict),

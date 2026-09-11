@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 CATALOGUE_FILENAME = "sci_registry_defects.v1.json"
 SCHEMA_FILENAME = "sci_registry_defects.schema.v1.json"
 
-DEFAULT_ENABLED_DEFECTS = ("D003", "D004", "D005", "D006")
-
 _DRIVE_FILE_MARKER = "/file/d/"
 
 

@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 
+from dotenv import load_dotenv
 from llama_cloud.types.beta.split_category import SplitCategory
 from llama_cloud.types.classify_v2_parameters import ClassifyV2Parameters, Rule
 from llama_cloud.types.extract_v2_parameters import ExtractV2Parameters
@@ -22,6 +23,17 @@ from .json_util import create_union_schema as create_union_schema
 from .json_util import get_extraction_schema as get_extraction_schema
 
 logger = logging.getLogger(__name__)
+
+_REPO_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
+def load_repo_dotenv() -> Path:
+    """Load the repo `.env` over process env so local runs match the file."""
+    load_dotenv(_REPO_ENV_PATH, override=True)
+    return _REPO_ENV_PATH
+
+
+load_repo_dotenv()
 
 EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
 
