@@ -128,16 +128,43 @@ function presignedFileUrl(value: unknown): string | null {
   return null;
 }
 
+async function fileDownloadPayload(
+  files: CloudFiles["files"],
+  fileId: string,
+): Promise<unknown> {
+  const methods: Array<(id: string) => Promise<PresignedFile>> = [];
+  // Call through the files object so Fern/OpenAPI clients keep `this._client`.
+  if (typeof files.content === "function") {
+    methods.push((id) => files.content!(id));
+  }
+  if (typeof files.get === "function") {
+    methods.push((id) => files.get!(id));
+  }
+  if (methods.length === 0) {
+    throw new Error("This LlamaCloud client cannot download files");
+  }
+  let lastError: unknown;
+  for (const method of methods) {
+    try {
+      return await method(fileId);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("This LlamaCloud client cannot download files");
+}
+
 async function downloadCloudPdf(
   cloud: CloudFiles,
   fileId: string,
   filename: string,
 ) {
-  const getter = cloud.files.get ?? cloud.files.content;
-  if (!getter) {
-    throw new Error("This LlamaCloud client cannot download files");
+  if (!cloud?.files) {
+    throw new Error("LlamaCloud file client is not configured");
   }
-  const url = presignedFileUrl(await getter(fileId));
+  const url = presignedFileUrl(await fileDownloadPayload(cloud.files, fileId));
   if (!url) {
     throw new Error(`No download URL for ${filename}`);
   }

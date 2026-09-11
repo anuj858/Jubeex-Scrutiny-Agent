@@ -847,6 +847,25 @@ def _upload_filename(name: str) -> str:
     return f"{cleaned[:80]}.pdf"
 
 
+def prefixed_slot_filename(slot_filename: str, bundle_name: str | None) -> str:
+    """Keep LlamaCloud slot PDFs unique across runs of the same paper book."""
+    slot = _upload_filename(slot_filename)
+    from .job_timing import uploaded_filename
+
+    bundle = uploaded_filename(bundle_name)
+    if not bundle:
+        return slot
+    stem = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem
+    ).strip("._") or "filing"
+    slot_stem = PurePosixPath(slot).stem
+    lowered = slot_stem.lower()
+    prefix = stem.lower()
+    if lowered == prefix or lowered.startswith(f"{prefix}-"):
+        return slot
+    return _upload_filename(f"{stem}-{slot_stem}.pdf")
+
+
 def _require_pdf_bytes(data: bytes, url: str) -> None:
     if data.startswith(b"%PDF"):
         return
@@ -1350,10 +1369,15 @@ class ProcessFileWorkflow(Workflow):
         slot_pages: dict[str, str] = {}
         for item in slices:
             file_id = None
+            filename = (
+                prefixed_slot_filename(item.filename, state.filename)
+                if upload_slots
+                else item.filename
+            )
             if upload_slots:
                 file_id = await _upload_slot_pdf(
                     llama_cloud_client,
-                    filename=item.filename,
+                    filename=filename,
                     pdf_bytes=item.pdf_bytes,
                 )
             prepared.append(
@@ -1361,7 +1385,7 @@ class ProcessFileWorkflow(Workflow):
                     slot_id=item.slot_id,
                     file_id=file_id,
                     file_hash=item.file_hash,
-                    filename=item.filename,
+                    filename=filename,
                     label=item.label,
                     page_span=item.page_span,
                 )

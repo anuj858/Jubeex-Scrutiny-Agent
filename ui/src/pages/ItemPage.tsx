@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AcceptReject,
   ExtractedDataDisplay,
   FilePreview,
+  getCloudClient,
   useItemData,
   type Highlight,
   type ExtractedData,
@@ -100,6 +102,75 @@ function resolveObjectSchema(fieldSchema: any): Record<string, any> | null {
   }
 
   return null;
+}
+
+class FilePreviewErrorBoundary extends Component<
+  { fileId: string; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <NativePdfFallback fileId={this.props.fileId} />;
+    }
+    return this.props.children;
+  }
+}
+
+function NativePdfFallback({ fileId }: { fileId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const content = await getCloudClient().files.get(fileId);
+        const url =
+          content && typeof content === "object" && "url" in content
+            ? String((content as { url?: string }).url ?? "")
+            : "";
+        if (!cancelled) {
+          if (!url) throw new Error("No PDF URL");
+          setUrl(url);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load PDF");
+        }
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId]);
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">
+        PDF preview failed to load. Extracted data is still available on the
+        right.
+      </div>
+    );
+  }
+
+  if (!url) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">
+        Loading PDF...
+      </div>
+    );
+  }
+
+  return (
+    <iframe title="PDF preview" src={url} className="h-full w-full border-0" />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,13 +327,20 @@ export default function ItemPage() {
     <div className="flex h-full bg-gray-50">
       <div className="w-1/2 border-r h-full border-gray-200 bg-white">
         {fileId && (
-          <FilePreview
-            fileId={fileId}
-            onBoundingBoxClick={(box, pageNumber) => {
-              console.log("Bounding box clicked:", box, "on page:", pageNumber);
-            }}
-            highlight={highlight}
-          />
+          <FilePreviewErrorBoundary key={fileId} fileId={fileId}>
+            <FilePreview
+              fileId={fileId}
+              onBoundingBoxClick={(box, pageNumber) => {
+                console.log(
+                  "Bounding box clicked:",
+                  box,
+                  "on page:",
+                  pageNumber,
+                );
+              }}
+              highlight={highlight}
+            />
+          </FilePreviewErrorBoundary>
         )}
       </div>
 

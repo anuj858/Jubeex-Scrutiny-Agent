@@ -14,6 +14,7 @@ import { WorkflowProgress } from "@/lib/WorkflowProgress";
 import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
 import { SplitUploadForm } from "@/lib/SplitUploadForm";
+import { useMetadataContext } from "@/lib/MetadataProvider";
 
 export default function HomePage() {
   return <TaskList />;
@@ -21,6 +22,7 @@ export default function HomePage() {
 
 function TaskList() {
   const navigate = useNavigate();
+  const { metadata } = useMetadataContext();
   const goToItem = (item: AgentDataItem) => {
     navigate(`/item/${item.id}`);
   };
@@ -123,10 +125,22 @@ function TaskList() {
                 name?: string;
                 filename?: string;
               };
+              const original = file.name ?? file.filename ?? "filing.pdf";
+              let filename = original;
+              if (metadata.upload_sliced_slot_pdfs !== false) {
+                const named = window.prompt(
+                  "Name this filing. Sliced PDFs are stored under this name so a later run of the same paper book does not replace the previous files.",
+                  original,
+                );
+                if (named == null) {
+                  throw new Error("Enter a filing name to start.");
+                }
+                filename = named.trim() || original;
+              }
               return {
                 file_id: file.fileId,
                 file_hash: file.contentHash ?? null,
-                filename: file.name ?? file.filename ?? null,
+                filename,
               };
             }}
             onSuccess={(handler) => {

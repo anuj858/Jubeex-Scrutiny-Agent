@@ -379,6 +379,22 @@ def test_upload_filename_strips_unsafe_characters() -> None:
     assert _upload_filename("Defect_SLP_Civil.pdf") == "Defect_SLP_Civil.pdf"
 
 
+def test_prefixed_slot_filename_uses_main_filing_name() -> None:
+    from extraction_review.process_file import prefixed_slot_filename
+
+    assert (
+        prefixed_slot_filename("Main Petition.pdf", "Defect_SLP_Civil.pdf")
+        == "Defect_SLP_Civil-Main_Petition.pdf"
+    )
+    assert prefixed_slot_filename("Cover Page.pdf", None) == "Cover_Page.pdf"
+    assert (
+        prefixed_slot_filename(
+            "Defect_SLP_Civil-Main_Petition.pdf", "Defect_SLP_Civil.pdf"
+        )
+        == "Defect_SLP_Civil-Main_Petition.pdf"
+    )
+
+
 class _EmptyFileList:
     def __aiter__(self):
         async def _gen():

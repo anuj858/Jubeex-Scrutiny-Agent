@@ -12,6 +12,7 @@ from .config import (
     ExtractConfig,
     config_identity,
 )
+from .process_file import upload_sliced_slot_pdfs
 from .split_upload import ui_catalog
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class MetadataResponse(StopEvent):
     extracted_data_collection: str
     split_upload_types: dict[str, Any]
     config: dict[str, Any]
+    upload_sliced_slot_pdfs: bool = True
 
 
 async def get_presentation_schema(
@@ -66,6 +68,7 @@ class MetadataWorkflow(Workflow):
             extracted_data_collection=EXTRACTED_DATA_COLLECTION,
             split_upload_types=ui_catalog(),
             config=config_identity(),
+            upload_sliced_slot_pdfs=upload_sliced_slot_pdfs(),
         )
 
 

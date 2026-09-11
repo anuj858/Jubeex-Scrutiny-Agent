@@ -19,6 +19,7 @@ export interface Metadata {
   schemas: Record<string, any>;
   extracted_data_collection: string;
   split_upload_types?: Record<string, SplitUploadType>;
+  upload_sliced_slot_pdfs?: boolean;
   config?: {
     config_id?: string;
     schema_version?: string;
@@ -35,7 +36,7 @@ export interface UseMetadataResult {
   error: string | undefined;
 }
 
-const METADATA_CACHE_KEY = "jubeex-metadata-v5";
+const METADATA_CACHE_KEY = "jubeex-metadata-v6";
 
 function readCachedMetadata(): Metadata | undefined {
   try {
