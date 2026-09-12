@@ -76,6 +76,22 @@
           "value": "6"
         },
         {
+          "name": "PARSE_CONCURRENCY",
+          "value": "8"
+        },
+        {
+          "name": "INGEST_CONCURRENCY",
+          "value": "8"
+        },
+        {
+          "name": "SLOT_UPLOAD_CONCURRENCY",
+          "value": "8"
+        },
+        {
+          "name": "SKIP_SLOT_PDF_UPLOAD",
+          "value": "true"
+        },
+        {
           "name": "SCRUTINY_TOP_K",
           "value": "8"
         },

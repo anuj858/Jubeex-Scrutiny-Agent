@@ -50,6 +50,22 @@ logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 _TRUTHY = frozenset({"1", "true", "yes"})
+DEFAULT_SLOT_UPLOAD_CONCURRENCY = 8
+
+
+def positive_int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def slot_upload_concurrency() -> int:
+    return positive_int_env("SLOT_UPLOAD_CONCURRENCY", DEFAULT_SLOT_UPLOAD_CONCURRENCY)
 
 
 def upload_sliced_slot_pdfs() -> bool:
@@ -926,6 +942,28 @@ async def _upload_slot_pdf(
     return str(file_id)
 
 
+async def _upload_sliced_slots(
+    client: AsyncLlamaCloud,
+    slices: list[Any],
+    *,
+    enabled: bool,
+) -> list[str | None]:
+    """Upload sliced slot PDFs in parallel. Skip when the backend re-slices."""
+    if not enabled or not slices:
+        return [None] * len(slices)
+    semaphore = asyncio.Semaphore(slot_upload_concurrency())
+
+    async def _one(item: Any) -> str:
+        async with semaphore:
+            return await _upload_slot_pdf(
+                client,
+                filename=item.filename,
+                pdf_bytes=item.pdf_bytes,
+            )
+
+    return list(await asyncio.gather(*[_one(item) for item in slices]))
+
+
 async def _extract_sliced_parts(
     ctx: Context[PrepareState],
     *,
@@ -1316,16 +1354,14 @@ class ProcessFileWorkflow(Workflow):
         )
 
         upload_slots = upload_sliced_slot_pdfs()
+        file_ids = await _upload_sliced_slots(
+            llama_cloud_client,
+            slices,
+            enabled=upload_slots,
+        )
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
-        for item in slices:
-            file_id = None
-            if upload_slots:
-                file_id = await _upload_slot_pdf(
-                    llama_cloud_client,
-                    filename=item.filename,
-                    pdf_bytes=item.pdf_bytes,
-                )
+        for item, file_id in zip(slices, file_ids, strict=True):
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,

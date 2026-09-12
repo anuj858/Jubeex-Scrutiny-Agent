@@ -53,6 +53,7 @@ from .process_file import (
     _wait_for_parse,
     ingest_remote_file,
     normalize_org_id,
+    positive_int_env,
 )
 from .s3_artifacts import STEP_EXTRACT, STEP_LAYOUT, upload_step_json
 from .split_upload import (
@@ -79,7 +80,17 @@ from .vector_store import (
 
 logger = logging.getLogger(__name__)
 
-PARSE_CONCURRENCY = 4
+DEFAULT_PARSE_CONCURRENCY = 8
+DEFAULT_INGEST_CONCURRENCY = 8
+PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
+
+
+def parse_concurrency() -> int:
+    return positive_int_env("PARSE_CONCURRENCY", DEFAULT_PARSE_CONCURRENCY)
+
+
+def ingest_concurrency() -> int:
+    return positive_int_env("INGEST_CONCURRENCY", DEFAULT_INGEST_CONCURRENCY)
 
 
 class SplitPartEvent(BaseModel):
@@ -165,35 +176,17 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message="Ingesting labeled file_url parts",
+                message=(
+                    f"Ingesting {len(event.parts)} labeled file_url part(s) "
+                    f"(concurrency {ingest_concurrency()})"
+                ),
             )
         )
-        ingested: list[SplitPartEvent] = []
-        for part in event.parts:
-            file_id = (part.file_id or "").strip() or None
-            filename = (part.filename or "").strip() or None
-            file_hash = part.file_hash
-            if not file_id:
-                if not (part.file_url or "").strip():
-                    raise SplitUploadError(
-                        f"Slot {part.slot_id!r} needs file_url or file_id"
-                    )
-                file_id, digest, filename = await ingest_remote_file(
-                    llama_cloud_client,
-                    part.file_url or "",
-                    filename=filename,
-                    external_file_id=part.document_id or file_hash,
-                )
-                file_hash = file_hash or digest
-            ingested.append(
-                part.model_copy(
-                    update={
-                        "file_id": file_id,
-                        "filename": filename,
-                        "file_hash": file_hash,
-                    }
-                )
-            )
+        ingested = await _ingest_labeled_parts(
+            llama_cloud_client,
+            event.parts,
+            concurrency=ingest_concurrency(),
+        )
 
         try:
             catalog, parts = validate_parts(
@@ -212,7 +205,8 @@ class ProcessSplitFilesWorkflow(Workflow):
             Status(
                 level="info",
                 message=(
-                    f"Parsing {len(parts)} labeled document(s) for {catalog.label}"
+                    f"Parsing {len(parts)} labeled document(s) for {catalog.label} "
+                    f"(concurrency {parse_concurrency()})"
                 ),
             )
         )
@@ -577,6 +571,49 @@ class ProcessSplitFilesWorkflow(Workflow):
         return StopEvent(result=item.id)
 
 
+async def _ingest_one_part(
+    client: AsyncLlamaCloud,
+    part: SplitPartEvent,
+) -> SplitPartEvent:
+    file_id = (part.file_id or "").strip() or None
+    filename = (part.filename or "").strip() or None
+    file_hash = part.file_hash
+    if not file_id:
+        if not (part.file_url or "").strip():
+            raise SplitUploadError(
+                f"Slot {part.slot_id!r} needs file_url or file_id"
+            )
+        file_id, digest, filename = await ingest_remote_file(
+            client,
+            part.file_url or "",
+            filename=filename,
+            external_file_id=part.document_id or file_hash,
+        )
+        file_hash = file_hash or digest
+    return part.model_copy(
+        update={
+            "file_id": file_id,
+            "filename": filename,
+            "file_hash": file_hash,
+        }
+    )
+
+
+async def _ingest_labeled_parts(
+    client: AsyncLlamaCloud,
+    parts: list[SplitPartEvent],
+    *,
+    concurrency: int,
+) -> list[SplitPartEvent]:
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(part: SplitPartEvent) -> SplitPartEvent:
+        async with semaphore:
+            return await _ingest_one_part(client, part)
+
+    return list(await asyncio.gather(*[_one(part) for part in parts]))
+
+
 async def _parse_one_file(
     client: AsyncLlamaCloud,
     *,
@@ -642,7 +679,7 @@ async def _parse_labeled_files(
 ) -> tuple[
     dict[str, dict[int, str]], dict[str, str], dict[str, dict[int, dict[str, Any]]]
 ]:
-    semaphore = asyncio.Semaphore(PARSE_CONCURRENCY)
+    semaphore = asyncio.Semaphore(parse_concurrency())
     results = await asyncio.gather(
         *[
             _parse_one_file(

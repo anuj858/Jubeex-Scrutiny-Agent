@@ -1,5 +1,6 @@
 """Backend file_url ingest for process-file (no FakeLlamaCloudServer)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,12 +12,15 @@ from extraction_review.process_file import (
     _extract_sliced_parts,
     _filename_from_url,
     _upload_filename,
+    _upload_sliced_slots,
     compiled_catalog_override,
     compiled_source,
     ingest_remote_file,
     intake_mode,
+    positive_int_env,
     resolve_compiled_filing_type,
     slot_id_from_name,
+    slot_upload_concurrency,
     upload_sliced_slot_pdfs,
 )
 
@@ -520,3 +524,58 @@ async def test_ingest_retries_upload_without_external_id(
     assert file_id == "dfl-retry-1"
     assert client.files.create.await_count == 2
     assert "external_file_id" not in client.files.create.await_args.kwargs
+
+
+def test_positive_int_env_and_slot_upload_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SLOT_UPLOAD_CONCURRENCY", raising=False)
+    assert positive_int_env("SLOT_UPLOAD_CONCURRENCY", 8) == 8
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "12")
+    assert slot_upload_concurrency() == 12
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "0")
+    assert slot_upload_concurrency() == 8
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "nope")
+    assert slot_upload_concurrency() == 8
+
+
+@pytest.mark.asyncio
+async def test_upload_sliced_slots_skips_when_disabled() -> None:
+    client = MagicMock()
+    client.files.create = AsyncMock()
+    ids = await _upload_sliced_slots(
+        client,
+        [SimpleNamespace(filename="a.pdf", pdf_bytes=b"%PDF-1")],
+        enabled=False,
+    )
+    assert ids == [None]
+    client.files.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_sliced_slots_runs_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "4")
+    in_flight = 0
+    peak = 0
+
+    async def _fake_upload(_client, *, filename: str, pdf_bytes: bytes) -> str:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return f"id-{filename}"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._upload_slot_pdf",
+        _fake_upload,
+    )
+    slices = [
+        SimpleNamespace(filename=f"{index}.pdf", pdf_bytes=b"%PDF-1")
+        for index in range(4)
+    ]
+    ids = await _upload_sliced_slots(MagicMock(), slices, enabled=True)
+    assert ids == [f"id-{index}.pdf" for index in range(4)]
+    assert peak > 1

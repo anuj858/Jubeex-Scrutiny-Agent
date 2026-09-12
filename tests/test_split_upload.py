@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from io import BytesIO
+from unittest.mock import MagicMock
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -45,7 +47,10 @@ from extraction_review.process_split_files import (
     ProcessSplitFilesWorkflow,
     SplitFilesState,
     SplitPartEvent,
+    _ingest_labeled_parts,
     extract_input_file_id,
+    ingest_concurrency,
+    parse_concurrency,
 )
 from extraction_review.split_upload import (
     FieldSources,
@@ -1143,7 +1148,7 @@ def test_process_file_prepare_does_not_extract() -> None:
     assert "_extract_sliced_parts" in module
     prepare_source = inspect.getsource(ProcessFileWorkflow.prepare_bundle)
     assert "_extract_sliced_parts" not in prepare_source
-    assert "_upload_slot_pdf" in prepare_source
+    assert "_upload_sliced_slots" in prepare_source
     assert "upload_sliced_slot_pdfs" in prepare_source
 
 
@@ -1489,3 +1494,53 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
         "petition",
         "vakalatnama_appearance",
     }
+
+
+def test_parse_and_ingest_concurrency_read_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PARSE_CONCURRENCY", raising=False)
+    monkeypatch.delenv("INGEST_CONCURRENCY", raising=False)
+    assert parse_concurrency() == 8
+    assert ingest_concurrency() == 8
+    monkeypatch.setenv("PARSE_CONCURRENCY", "12")
+    monkeypatch.setenv("INGEST_CONCURRENCY", "10")
+    assert parse_concurrency() == 12
+    assert ingest_concurrency() == 10
+
+
+@pytest.mark.asyncio
+async def test_ingest_labeled_parts_runs_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    in_flight = 0
+    peak = 0
+
+    async def _fake_ingest(_client, url, *, filename=None, external_file_id=None):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return f"file-{filename}", "hash", filename
+
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.ingest_remote_file",
+        _fake_ingest,
+    )
+    parts = [
+        SplitPartEvent(
+            slot_id=f"slot_{index}",
+            file_url=f"https://example.com/{index}.pdf",
+            filename=f"{index}.pdf",
+        )
+        for index in range(4)
+    ]
+    ingested = await _ingest_labeled_parts(MagicMock(), parts, concurrency=4)
+    assert [item.file_id for item in ingested] == [
+        "file-0.pdf",
+        "file-1.pdf",
+        "file-2.pdf",
+        "file-3.pdf",
+    ]
+    assert peak > 1
