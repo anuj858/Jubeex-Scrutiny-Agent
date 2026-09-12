@@ -1,4 +1,4 @@
-"""Registry defect scrutiny for an approved filing.
+"""Registry defect scrutiny for an extracted filing.
 
 Runs the enabled defects from the SCI catalogue against a document that has
 already been parsed, extracted and indexed. Evidence comes from the structured
@@ -8,10 +8,12 @@ record in Agent Data plus page chunks retrieved from Pinecone for that document.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import Annotated, Any, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
@@ -20,9 +22,24 @@ from workflows.resource import Resource
 
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
+from .document_parts import (
+    expand_parts_for_retrieval,
+    filing_type_label,
+    max_chunks_for_defect,
+    missing_required_parts,
+    parts_named_in_where_to_look,
+    preferred_parts_for_defect,
+    select_chunks_for_defect,
+    slice_record_for_defect,
+)
+from .layout_index import LAYOUT_ARTIFACT_URL_KEY, load_layout_index
+from .extract_record import stamp_review_status
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
+from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
     build_defect_prompt,
+    build_evidence_queries,
     build_system_prompt,
 )
 from .scrutiny.rules import (
@@ -31,32 +48,40 @@ from .scrutiny.rules import (
     defects_for_filing_type,
     enabled_defect_ids,
     get_catalogue,
+    serial_sort_key,
 )
 from .scrutiny.schema import (
     Coverage,
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_evidence_pages,
+    apply_retrieval_policy,
+    apply_status_policy,
+    apply_undetermined_policy,
     build_finding,
     failed_finding,
     summarize,
     summarize_usage,
 )
 from .vector_store import (
-    gather_filing_evidence_pool,
+    gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
 )
-from .document_parts import select_chunks_for_defect, slice_record_for_defect
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONCURRENCY = 3
+DEFAULT_CONCURRENCY = 8
+DEFAULT_PERSIST_EVERY = 10
 
 
 class ScrutinyEvent(StartEvent):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
 
 
 class Status(Event):
@@ -68,9 +93,19 @@ class ScrutinyResponse(StopEvent):
     report: ScrutinyReport
 
 
+class ScrutinyPartial(Event):
+    """Live snapshot so the UI can show findings as each check finishes."""
+
+    report: ScrutinyReport
+    completed: int
+    total: int
+    stopped_early: bool = False
+
+
 class ScrutinyState(BaseModel):
     agent_data_id: str | None = None
     file_hash: str | None = None
+    file_url: str | None = None
 
 
 def _int_env(name: str, default: int) -> int:
@@ -86,6 +121,22 @@ def scrutiny_enabled() -> bool:
         "0",
         "no",
     )
+
+
+def assert_filing_ready_for_scrutiny(
+    review_status: object, file_name: object = None
+) -> None:
+    """Allow extract-complete filings. Block only rejected records.
+
+    LlamaExtract stores job status on the same ``status`` field (``error``,
+    ``success``, …). That is not a user rejection and must not block scrutiny.
+    """
+    status = str(review_status or "").strip().lower()
+    label = str(file_name or "").strip() or "this document"
+    if status == "rejected":
+        raise ValueError(
+            f"Scrutiny cannot run on a rejected filing; {label} is 'rejected'."
+        )
 
 
 async def _load_item(
@@ -111,11 +162,31 @@ async def _load_item(
             return item
 
     raise ValueError(
-        "Could not load the filing record. Provide a valid agent_data_id or file_hash."
+        "Could not load the filing record. Provide a valid agent_data_id, "
+        "file_hash, or file_url."
     )
 
 
-def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectResponse:
+async def _sha256_from_url(file_url: str) -> str:
+    url = (file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+    _require_pdf_bytes(data, url)
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sanitize_response(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
         logger.warning(
@@ -123,7 +194,11 @@ def _sanitize_response(defect: Defect, response: DefectResponse) -> DefectRespon
             response.check_id,
             defect.check_id,
         )
-        response.check_id = defect.check_id
+    response.check_id = defect.check_id
+    response = apply_evidence_pages(response, chunks, defect)
+    response = apply_status_policy(response)
+    response = apply_undetermined_policy(defect, response, chunks)
+    response = apply_retrieval_policy(defect, response, chunks)
     if response.status != "defect_found":
         response.suggested_fix = None
         response.fix_rationale = None
@@ -138,13 +213,14 @@ async def _run_defect(
     chunks: list[dict[str, Any]],
     file_name: str | None,
     filing_type: str | None,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectFinding:
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=bool(chunks) and bool(record),
+        evidence_complete=bool(record) and not missing_required_parts(defect, chunks),
     )
 
     raw, usage = await call_structured(
@@ -158,7 +234,7 @@ async def _run_defect(
         ),
         response_model=DefectResponse,
     )
-    response = _sanitize_response(defect, raw)
+    response = _sanitize_response(defect, raw, chunks)
 
     return build_finding(
         defect,
@@ -166,11 +242,124 @@ async def _run_defect(
         evidence_ids=[c["record_id"] for c in chunks if c.get("record_id")],
         coverage=coverage,
         usage=usage,
+        chunks=chunks,
+        layout=layout,
     )
 
 
+async def _chunks_for_defect(
+    defect: Defect,
+    *,
+    file_hash: str | None,
+    max_chunks: int,
+    use_pinecone: bool,
+) -> list[dict[str, Any]]:
+    """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
+    if not use_pinecone or not file_hash:
+        return []
+
+    queries = build_evidence_queries(defect)
+    targets = expand_parts_for_retrieval(
+        parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    )
+    page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
+    gather_cap = max(
+        max_chunks,
+        len(queries) * 3,
+        len(targets) * 6,
+    )
+    try:
+        pool = await asyncio.to_thread(
+            gather_filing_evidence,
+            queries,
+            file_hash=file_hash,
+            max_chunks=gather_cap,
+            document_parts=targets,
+        )
+    except Exception as e:
+        logger.warning(
+            "[Scrutiny] Pinecone retrieve failed for %s: %s",
+            defect.check_id,
+            e,
+        )
+        return []
+
+    return select_chunks_for_defect(pool, defect, max_chunks=page_budget)
+
+
+async def collect_defect_findings(
+    defects: list[Defect],
+    runner: Any,
+    *,
+    concurrency: int,
+    stop_on_error: bool = True,
+    on_update: Any = None,
+) -> tuple[list[DefectFinding], bool]:
+    """Run defect checks with a concurrency cap.
+
+    Completed findings are published immediately via `on_update`. On the first
+    failed check, remaining queued calls are cancelled so they do not spend
+    more tokens. In-flight calls that already finished are still kept.
+    """
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    abort = asyncio.Event()
+    findings: list[DefectFinding] = []
+    seen: set[str] = set()
+    stopped_early = False
+
+    async def guarded(defect: Defect) -> DefectFinding:
+        if abort.is_set():
+            raise asyncio.CancelledError
+        async with semaphore:
+            if abort.is_set():
+                raise asyncio.CancelledError
+            finding = await runner(defect)
+            if stop_on_error and getattr(finding, "error", None):
+                abort.set()
+            return finding
+
+    tasks = [asyncio.create_task(guarded(defect)) for defect in defects]
+    added_after_cancel = False
+    try:
+        for finished in asyncio.as_completed(tasks):
+            try:
+                finding = await finished
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                stopped_early = True
+                abort.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                break
+            if finding.check_id in seen:
+                continue
+            seen.add(finding.check_id)
+            findings.append(finding)
+            if on_update is not None:
+                await on_update(list(findings), False)
+            if stop_on_error and finding.error:
+                stopped_early = True
+                abort.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                break
+    finally:
+        leftovers = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in leftovers:
+            if isinstance(result, DefectFinding) and result.check_id not in seen:
+                seen.add(result.check_id)
+                findings.append(result)
+                added_after_cancel = True
+        if on_update is not None and (stopped_early or added_after_cancel):
+            await on_update(list(findings), stopped_early)
+    return findings, stopped_early
+
+
 class ScrutinyWorkflow(Workflow):
-    """Check an approved filing against the SCI registry defect catalogue."""
+    """Check an extracted filing against the SCI registry defect catalogue."""
 
     @step()
     async def run_scrutiny(
@@ -191,6 +380,7 @@ class ScrutinyWorkflow(Workflow):
         async with ctx.store.edit_state() as state:
             state.agent_data_id = event.agent_data_id
             state.file_hash = event.file_hash
+            state.file_url = event.file_url
 
         item = await _load_item(
             llama_cloud_client,
@@ -199,18 +389,52 @@ class ScrutinyWorkflow(Workflow):
         )
 
         payload: dict[str, Any] = dict(getattr(item, "data", None) or {})
+        extract_status = payload.get("status")
+        payload = stamp_review_status(payload)
+        if payload.get("status") != extract_status:
+            item_id = str(getattr(item, "id", "") or event.agent_data_id or "")
+            if item_id:
+                try:
+                    await llama_cloud_client.beta.agent_data.update(
+                        item_id, data=payload
+                    )
+                    logger.info(
+                        "Normalized Agent Data %s status %r → pending_review",
+                        item_id,
+                        extract_status,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not persist pending_review on Agent Data %s",
+                        item_id,
+                        exc_info=True,
+                    )
         review_status = payload.get("status")
         file_name = payload.get("file_name")
         file_hash = payload.get("file_hash") or event.file_hash
+        if not file_hash and event.file_url:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Computing file_hash from file_url",
+                )
+            )
+            file_hash = await _sha256_from_url(event.file_url)
+            async with ctx.store.edit_state() as state:
+                state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
         filing_type = metadata.get("classification") or record.get("petition_type")
+        layout_url = (
+            metadata.get(LAYOUT_ARTIFACT_URL_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        layout = await load_layout_index(
+            layout_url if isinstance(layout_url, str) else None
+        )
 
-        if review_status != "approved":
-            raise ValueError(
-                f"Scrutiny only runs on approved filings; "
-                f"{file_name or 'this document'} is '{review_status}'."
-            )
+        assert_filing_ready_for_scrutiny(review_status, file_name)
 
         catalogue = get_catalogue()
         defects = defects_for_filing_type(filing_type)
@@ -223,31 +447,12 @@ class ScrutinyWorkflow(Workflow):
                 f"(enabled checks: {', '.join(enabled_defect_ids())})."
             )
 
-        evidence_pool: list[dict[str, Any]] = []
-        if pinecone_enabled() and file_hash:
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message="Retrieving filing excerpts once for all defect checks",
-                )
-            )
-            try:
-                evidence_pool = await asyncio.to_thread(
-                    gather_filing_evidence_pool,
-                    file_hash=file_hash,
-                )
-            except Exception as e:
-                logger.warning("[Scrutiny] Shared Pinecone pool failed: %s", e)
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=(
-                            "Could not retrieve document excerpts; checks will "
-                            f"run against the extracted record only. {e}"
-                        ),
-                    )
-                )
-        elif not pinecone_enabled():
+        concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
+        persist_every = max(1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY))
+        max_chunks = scrutiny_max_chunks()
+        use_pinecone = pinecone_enabled() and bool(file_hash)
+
+        if not pinecone_enabled():
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
@@ -257,109 +462,193 @@ class ScrutinyWorkflow(Workflow):
                     ),
                 )
             )
+        elif not file_hash:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        "No file hash is available, so checks will run against "
+                        "the extracted record only. Coverage will be incomplete."
+                    ),
+                )
+            )
+        else:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Each concurrent check will retrieve its own excerpts "
+                        f"from Pinecone ({concurrency} at a time)"
+                    ),
+                )
+            )
 
+        category_labels = ", ".join(
+            sorted({cat for d in defects for cat in d.main_categories})
+        )
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
-                    f"Checking {file_name or 'filing'} against "
-                    f"{len(defects)} defect(s): "
-                    f"{', '.join(d.check_id for d in defects)}"
+                    f"Checking {file_name or 'filing'} "
+                    f"({filing_type_label(filing_type)}) against "
+                    f"{len(defects)} defect(s) in {category_labels} "
+                    f"({concurrency} at a time)"
                 ),
             )
         )
 
-        semaphore = asyncio.Semaphore(
-            _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
-        )
-        max_chunks = scrutiny_max_chunks()
+        planned = len(defects)
 
-        async def guarded(defect: Defect) -> DefectFinding:
-            async with semaphore:
+        def build_report(
+            current: list[DefectFinding], *, stopped_early: bool
+        ) -> ScrutinyReport:
+            snapshot = sorted(current, key=lambda f: serial_sort_key(f.serial_no))
+            return ScrutinyReport(
+                catalogue_id=catalogue.catalogue_id,
+                catalogue_version=catalogue.catalogue_version,
+                agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
+                file_hash=file_hash,
+                file_name=file_name,
+                petition_type=filing_type,
+                model=openrouter_model(),
+                disclaimer=catalogue.disclaimer,
+                findings=snapshot,
+                summary=summarize(snapshot),
+                usage=summarize_usage(snapshot, model=openrouter_model()),
+                planned_checks=planned,
+                stopped_early=stopped_early,
+            )
+
+        persist_lock = asyncio.Lock()
+        persist_tasks: set[asyncio.Task[None]] = set()
+
+        async def persist_report(report: ScrutinyReport) -> None:
+            async with persist_lock:
+                await self._persist(llama_cloud_client, item, payload, report, ctx)
+
+        def schedule_persist(report: ScrutinyReport) -> None:
+            task = asyncio.create_task(persist_report(report))
+            persist_tasks.add(task)
+            task.add_done_callback(persist_tasks.discard)
+
+        async def publish(current: list[DefectFinding], stopped_early: bool) -> None:
+            report = build_report(current, stopped_early=stopped_early)
+            ctx.write_event_to_stream(
+                ScrutinyPartial(
+                    report=report,
+                    completed=len(current),
+                    total=planned,
+                    stopped_early=stopped_early,
+                )
+            )
+            done = stopped_early or len(current) >= planned
+            if done or len(current) % persist_every == 0:
+                schedule_persist(report)
+
+        async def run_one(defect: Defect) -> DefectFinding:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
+                )
+            )
+            try:
+                chunks = await _chunks_for_defect(
+                    defect,
+                    file_hash=file_hash,
+                    max_chunks=max_chunks,
+                    use_pinecone=use_pinecone,
+                )
+                finding = await _run_defect(
+                    defect,
+                    catalogue=catalogue,
+                    record=record,
+                    chunks=chunks,
+                    file_name=file_name,
+                    filing_type=filing_type,
+                    layout=layout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except LLMError as e:
+                logger.exception("[Scrutiny] %s failed", defect.check_id)
                 ctx.write_event_to_stream(
                     Status(
-                        level="info",
-                        message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
+                        level="error",
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
-                try:
-                    chunks = select_chunks_for_defect(
-                        evidence_pool,
-                        defect,
-                        max_chunks=max_chunks,
-                    )
-                    finding = await _run_defect(
-                        defect,
-                        catalogue=catalogue,
-                        record=record,
-                        chunks=chunks,
-                        file_name=file_name,
-                        filing_type=filing_type,
-                    )
-                except LLMError as e:
-                    logger.exception("[Scrutiny] %s failed", defect.check_id)
-                    ctx.write_event_to_stream(
-                        Status(
-                            level="error",
-                            message=f"{defect.check_id} could not be completed: {e}",
-                        )
-                    )
-                    return failed_finding(defect, str(e), usage=e.usage)
-                except Exception as e:
-                    logger.exception("[Scrutiny] %s failed", defect.check_id)
-                    ctx.write_event_to_stream(
-                        Status(
-                            level="error",
-                            message=f"{defect.check_id} could not be completed: {e}",
-                        )
-                    )
-                    return failed_finding(defect, str(e))
-
+                return failed_finding(defect, str(e), usage=e.usage)
+            except Exception as e:
+                logger.exception("[Scrutiny] %s failed", defect.check_id)
                 ctx.write_event_to_stream(
                     Status(
-                        level="info",
-                        message=(
-                            f"{defect.check_id} → {finding.status} "
-                            f"({finding.confidence:.0%} confidence)"
-                        ),
+                        level="error",
+                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
-                return finding
+                return failed_finding(defect, str(e))
 
-        findings = list(await asyncio.gather(*(guarded(d) for d in defects)))
-        findings.sort(key=lambda f: f.serial_no)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"{defect.check_id} → {finding.status} "
+                        f"({finding.confidence:.0%} confidence)"
+                    ),
+                )
+            )
+            return finding
 
-        report = ScrutinyReport(
-            catalogue_id=catalogue.catalogue_id,
-            catalogue_version=catalogue.catalogue_version,
-            agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
-            file_hash=file_hash,
-            file_name=file_name,
-            petition_type=filing_type,
-            model=openrouter_model(),
-            disclaimer=catalogue.disclaimer,
-            findings=findings,
-            summary=summarize(findings),
-            usage=summarize_usage(findings, model=openrouter_model()),
+        findings, stopped_early = await collect_defect_findings(
+            defects,
+            run_one,
+            concurrency=concurrency,
+            stop_on_error=False,
+            on_update=publish,
         )
-
-        await self._persist(llama_cloud_client, item, payload, report, ctx)
+        report = build_report(findings, stopped_early=stopped_early)
+        if persist_tasks:
+            await asyncio.gather(*persist_tasks, return_exceptions=True)
+        await persist_report(report)
+        defects_payload = report.model_dump(mode="json")
+        if isinstance(defects_payload, dict):
+            defects_payload.setdefault("organization_id", event.organization_id)
+            defects_payload.setdefault("workspace_id", event.workspace_id)
+        upload_step_json(
+            STEP_DEFECTS,
+            defects_payload,
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
+        )
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:
             cost_note = f", OpenRouter {report.usage.cost_usd:.6f} USD"
         elif report.usage and report.usage.total_tokens:
             cost_note = f", {report.usage.total_tokens} tokens"
-        ctx.write_event_to_stream(
-            Status(
-                level="info",
-                message=(
-                    f"Scrutiny complete: {report.summary.defects_found} defect(s), "
-                    f"{report.summary.needs_review} needing review, "
-                    f"{report.summary.not_determined} undetermined{cost_note}"
-                ),
+        if stopped_early:
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        f"Stopped early after {len(findings)} of {planned} "
+                        f"checks{cost_note}. Results below are what completed."
+                    ),
+                )
             )
-        )
+        else:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Scrutiny complete: {report.summary.defects_found} defect(s), "
+                        f"{report.summary.needs_review} needing review, "
+                        f"{report.summary.not_determined} undetermined{cost_note}"
+                    ),
+                )
+            )
         return ScrutinyResponse(report=report)
 
     async def _persist(
@@ -393,9 +682,11 @@ class ScrutinyWorkflow(Workflow):
         try:
             await client.beta.agent_data.update(item_id, data=updated)
             logger.info(
-                "[Scrutiny] Saved report on extraction item %s (%s)",
+                "[Scrutiny] Saved %s/%s finding(s) on extraction item %s%s",
+                len(report.findings),
+                report.planned_checks or len(report.findings),
                 item_id,
-                report.file_name,
+                " (stopped early)" if report.stopped_early else "",
             )
         except Exception as e:
             # A storage failure should not lose the results the user is waiting on.

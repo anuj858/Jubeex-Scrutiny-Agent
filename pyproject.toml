@@ -5,15 +5,21 @@ description = "Indian court legal-document parsing microservice using LlamaIndex
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "llama-cloud>=2.4.1,<3",
+    "llama-cloud>=2.8,<2.15",
     "json-schema-to-pydantic>=0.4.8",
     "llama-index-workflows>=2.16.0,<3.0.0",
     "python-dotenv>=1.1.0",
     "jsonref>=1.1.0",
     "click>=8.2.1,<8.3.0",
     "httpx>=0.28.1",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
     "llama-index-core>=0.14.0",
     "pinecone>=7.0.0,<8",
+    "pypdf>=5.0.0,<7",
+    "boto3>=1.35,<2.0",
+    "awscrt>=0.23,<1.0",
+    "botocore[crt]>=1.43.89",
 ]
 
 [dependency-groups]
@@ -32,6 +38,10 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+jubeex-api = "extraction_review.api:main"
+jubeex-sqs-worker = "extraction_review.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/extraction_review"]
@@ -69,21 +79,23 @@ PINECONE_REGION = "us-east-1"
 PINECONE_EMBED_MODEL = "llama-text-embed-v2"
 PINECONE_TEXT_FIELD = "normalized_text"
 PINECONE_NAMESPACE = "jubeex-filings"
-OPENROUTER_MODEL = "google/gemini-3.6-flash"
+OPENROUTER_MODEL = "google/gemini-3.8-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_TIMEOUT_S = "180"
 OPENROUTER_APP_TITLE = "JubeeX Scrutiny"
 SCRUTINY_ENABLED = "true"
-SCRUTINY_DEFECTS = "D003,D004,D005,D006"
+SCRUTINY_DEFECTS = "D025,D010,D077,D078"
 SCRUTINY_CONCURRENCY = "6"
 SCRUTINY_TOP_K = "8"
 SCRUTINY_MAX_CHUNKS = "12"
 
 [tool.llamadeploy.workflows]
 process-file = "extraction_review.process_file:workflow"
+process-split-files = "extraction_review.process_split_files:workflow"
 metadata = "extraction_review.metadata_workflow:workflow"
 scrutiny-check = "extraction_review.scrutiny_workflow:workflow"
 
 [tool.llamadeploy.ui]
 directory = "ui"
+package_manager = "npm"
 

@@ -139,6 +139,24 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               <p className="text-sm text-muted-foreground">{finding.reasoning}</p>
             )}
             <EvidenceList evidence={finding.evidence ?? []} />
+            {(finding.defect || finding.requirement) && (
+              <div className="mt-3 space-y-2 text-sm">
+                {finding.defect && (
+                  <div>
+                    <div className="text-xs font-semibold">Defect</div>
+                    <p className="mt-1 text-muted-foreground">{finding.defect}</p>
+                  </div>
+                )}
+                {finding.requirement && (
+                  <div>
+                    <div className="text-xs font-semibold">Requirement</div>
+                    <p className="mt-1 text-muted-foreground">
+                      {finding.requirement}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
             <SuggestedFix
               suggestedFix={finding.suggested_fix}
               rationale={finding.fix_rationale}
@@ -191,18 +209,32 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
             </div>
           )}
           {(finding.serial_no != null ||
+            finding.location ||
             finding.applicable_rule ||
             finding.location_source ||
             (finding.authority_refs ?? []).length > 0) && (
             <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              {[
-                finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
-                finding.applicable_rule,
-                finding.location_source,
-                ...(finding.authority_refs ?? []),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+              <div>
+                {[
+                  finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
+                  finding.location,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+              {(finding.applicable_rule ||
+                finding.location_source ||
+                (finding.authority_refs ?? []).length > 0) && (
+                <div className="mt-1">
+                  {[
+                    finding.applicable_rule,
+                    finding.location_source,
+                    ...(finding.authority_refs ?? []),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -287,7 +319,7 @@ function SummaryBar({ report }: { report: ScrutinyReport }) {
       status: "needs_review",
     },
     {
-      label: "Undetermined",
+      label: "Visual / undetermined",
       value: report.summary.not_determined,
       status: "not_determined",
     },
@@ -322,6 +354,7 @@ export function ScrutinyDialog({
   loading,
   report,
   error,
+  progress,
   onClose,
 }: {
   target?: ScrutinyTarget;
@@ -329,6 +362,7 @@ export function ScrutinyDialog({
   loading?: boolean;
   report?: ScrutinyReport;
   error?: string;
+  progress?: string;
   onClose: () => void;
 }) {
   const busy = running || loading;
@@ -344,15 +378,25 @@ export function ScrutinyDialog({
           </div>
 
           {busy && (
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-4 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              {running
-                ? "Checking this filing against the Supreme Court registry defect catalogue. This usually takes under a minute."
-                : "Loading the last saved defect check for this filing."}
+            <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-4 py-4 text-sm text-muted-foreground">
+              <Loader2
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin"
+                aria-hidden="true"
+              />
+              <div>
+                <div>
+                  {running
+                    ? "Checking this filing against the Supreme Court registry defect catalogue. Findings appear below as each check finishes."
+                    : "Loading the last saved defect check for this filing."}
+                </div>
+                {running && progress && (
+                  <div className="mt-1 text-xs">{progress}</div>
+                )}
+              </div>
             </div>
           )}
 
-          {error && !busy && (
+          {error && (
             <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-100">
               <AlertTriangle
                 className="mt-0.5 h-4 w-4 shrink-0"
@@ -362,15 +406,27 @@ export function ScrutinyDialog({
                 <div className="font-medium">
                   {target?.mode === "view"
                     ? "No saved check to show"
-                    : "The check could not be run"}
+                    : report
+                      ? "Check stopped early"
+                      : "The check could not be run"}
                 </div>
                 <div className="mt-0.5 break-words opacity-90">{error}</div>
               </div>
             </div>
           )}
 
-          {report && !busy && (
+          {report && (
             <>
+              {report.stopped_early && !error && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+                  Stopped after an error so remaining checks were not sent to
+                  the model. Showing {report.findings.length}
+                  {report.planned_checks
+                    ? ` of ${report.planned_checks}`
+                    : ""}{" "}
+                  completed results.
+                </div>
+              )}
               <SummaryBar report={report} />
               <UsagePanel report={report} />
 
@@ -385,24 +441,29 @@ export function ScrutinyDialog({
                   {report.catalogue_id} v{report.catalogue_version}
                   {report.model && ` · ${report.model}`} ·{" "}
                   {new Date(report.generated_at).toLocaleString()}
+                  {report.planned_checks
+                    ? ` · ${report.findings.length}/${report.planned_checks} checks`
+                    : ""}
                 </p>
                 {report.disclaimer && (
                   <p className="mt-1">{report.disclaimer}</p>
                 )}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    label="Download Word report"
-                    startIcon={<Download className="h-3.5 w-3.5" />}
-                    onClick={() => downloadScrutinyDoc(report)}
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    label="Download JSON"
-                    onClick={() => downloadScrutinyReport(report)}
-                  />
-                </div>
+                {!running && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      label="Download Word report"
+                      startIcon={<Download className="h-3.5 w-3.5" />}
+                      onClick={() => downloadScrutinyDoc(report)}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      label="Download JSON"
+                      onClick={() => downloadScrutinyReport(report)}
+                    />
+                  </div>
+                )}
               </div>
             </>
           )}

@@ -1,0 +1,777 @@
+"""Already-split filing upload: parse labeled PDFs, extract, index. No LlamaSplit."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import logging
+import os
+from typing import Annotated, Any, cast
+
+from llama_cloud import AsyncLlamaCloud
+from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
+from pydantic import BaseModel, Field, field_validator, model_validator
+from workflows import Context, Workflow, step
+from workflows.events import StartEvent, StopEvent
+from workflows.resource import Resource, ResourceConfig
+
+from .clients import agent_name, get_llama_cloud_client, project_id
+from .config import (
+    EXTRACTED_DATA_COLLECTION,
+    ExtractConfig,
+    LegalExtractRecord,
+    ParseConfig,
+)
+from .document_parts import overlay_split_documents
+from .extract_record import (
+    apply_extract_envelope,
+    field_confidence_from_job,
+    overall_confidence_from_job,
+    stamp_review_status,
+    stamp_source_pages,
+    unwrap_extracted_record,
+)
+from .layout_index import (
+    LAYOUT_ARTIFACT_KEY_KEY,
+    LAYOUT_ARTIFACT_URL_KEY,
+    coerce_page_layout,
+    compact_sidecar_pages,
+    download_sidecar_pages,
+    dump_layout_index,
+    grounded_items_url,
+    merge_granular_bboxes,
+    stitch_slot_layouts,
+)
+from .process_file import (
+    ExtractedEvent,
+    ExtractedInvalidEvent,
+    ExtractJobStartedEvent,
+    ParsedEvent,
+    Status,
+    _extract_page_markdown,
+    _wait_for_parse,
+    ingest_remote_file,
+    normalize_org_id,
+)
+from .s3_artifacts import STEP_EXTRACT, STEP_LAYOUT, upload_step_json
+from .split_upload import (
+    PETITION_SLOT_ID,
+    SplitPartInput,
+    SplitUploadError,
+    build_extract_pack_markdown,
+    bundle_file_hash,
+    coerce_page_markdown,
+    coerce_page_parts,
+    display_filename,
+    extract_configuration,
+    extract_source_parts,
+    find_part,
+    stitch_parsed_parts,
+    validate_parts,
+)
+from .vector_store import (
+    build_filing_chunk_text,
+    build_page_records,
+    pinecone_enabled,
+    upsert_records,
+)
+
+logger = logging.getLogger(__name__)
+
+PARSE_CONCURRENCY = 4
+
+
+class SplitPartEvent(BaseModel):
+    slot_id: str
+    document_parts: list[str] = Field(default_factory=list)
+    file_id: str | None = None
+    file_url: str | None = None
+    file_hash: str | None = None
+    filename: str | None = None
+    document_id: str | None = None
+
+
+class SplitFilesEvent(StartEvent):
+    filing_type: str
+    job_type: str | None = None
+    org_id: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    parts: list[SplitPartEvent]
+    require_all_slots: bool = True
+    fallback_file_id: str | None = None
+
+    @field_validator(
+        "org_id", "organization_id", "workspace_id", "user_id", mode="before"
+    )
+    @classmethod
+    def _blank_ids(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return normalize_org_id(str(value))
+
+    @model_validator(mode="after")
+    def _sync_organization_id(self) -> SplitFilesEvent:
+        org_id = self.organization_id or self.org_id
+        self.organization_id = org_id
+        self.org_id = org_id
+        return self
+
+
+class SplitFilesState(BaseModel):
+    filing_type: str | None = None
+    job_type: str | None = None
+    org_id: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    require_all_slots: bool = True
+    parts: list[SplitPartEvent] = Field(default_factory=list)
+    filename: str | None = None
+    file_hash: str | None = None
+    petition_file_id: str | None = None
+    fallback_file_id: str | None = None
+    extract_pack_file_id: str | None = None
+    extract_job_id: str | None = None
+    parse_job_ids: dict[str, str] = Field(default_factory=dict)
+    page_markdown: dict[int, str] = Field(default_factory=dict)
+    page_parts: dict[int, list[str]] = Field(default_factory=dict)
+    page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
+
+
+class ProcessSplitFilesWorkflow(Workflow):
+    """Parse labeled PDFs, extract a CoreFilingRecord, store Agent Data and vectors."""
+
+    @step()
+    async def parse_files(
+        self,
+        event: SplitFilesEvent,
+        ctx: Context[SplitFilesState],
+        llama_cloud_client: Annotated[
+            AsyncLlamaCloud, Resource(get_llama_cloud_client)
+        ],
+        parse_config: Annotated[
+            ParseConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="parse",
+                label="Parse Settings",
+                description="LlamaParse settings for JubeeX filings",
+            ),
+        ],
+    ) -> ParsedEvent:
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message="Ingesting labeled file_url parts",
+            )
+        )
+        ingested: list[SplitPartEvent] = []
+        for part in event.parts:
+            file_id = (part.file_id or "").strip() or None
+            filename = (part.filename or "").strip() or None
+            file_hash = part.file_hash
+            if not file_id:
+                if not (part.file_url or "").strip():
+                    raise SplitUploadError(
+                        f"Slot {part.slot_id!r} needs file_url or file_id"
+                    )
+                file_id, digest, filename = await ingest_remote_file(
+                    llama_cloud_client,
+                    part.file_url or "",
+                    filename=filename,
+                    external_file_id=part.document_id or file_hash,
+                )
+                file_hash = file_hash or digest
+            ingested.append(
+                part.model_copy(
+                    update={
+                        "file_id": file_id,
+                        "filename": filename,
+                        "file_hash": file_hash,
+                    }
+                )
+            )
+
+        try:
+            catalog, parts = validate_parts(
+                event.filing_type,
+                _as_part_inputs(ingested),
+                require_all_slots=event.require_all_slots,
+            )
+        except SplitUploadError as exc:
+            ctx.write_event_to_stream(Status(level="error", message=str(exc)))
+            raise
+
+        filename = display_filename(catalog.filing_type, parts)
+        file_hash = bundle_file_hash(parts)
+        petition = find_part(parts, PETITION_SLOT_ID)
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    f"Parsing {len(parts)} labeled document(s) for {catalog.label}"
+                ),
+            )
+        )
+
+        pages_by_slot, parse_job_ids, layouts_by_slot = await _parse_labeled_files(
+            llama_cloud_client,
+            parse_config=parse_config,
+            parts=parts,
+            ctx=ctx,
+        )
+        page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
+        page_layout = stitch_slot_layouts(
+            catalog, parts, pages_by_slot, layouts_by_slot
+        )
+
+        async with ctx.store.edit_state() as state:
+            state.filing_type = catalog.filing_type
+            state.job_type = event.job_type
+            state.require_all_slots = event.require_all_slots
+            state.organization_id = event.organization_id or event.org_id
+            state.org_id = state.organization_id
+            state.workspace_id = event.workspace_id
+            state.user_id = event.user_id
+            ingested_by_slot = {item.slot_id: item for item in ingested}
+            state.parts = [
+                SplitPartEvent(
+                    slot_id=item.slot_id,
+                    document_parts=list(item.document_parts),
+                    file_id=item.file_id,
+                    file_hash=item.file_hash,
+                    filename=item.filename,
+                    document_id=(
+                        item.document_id
+                        or getattr(
+                            ingested_by_slot.get(item.slot_id), "document_id", None
+                        )
+                    ),
+                    file_url=getattr(
+                        ingested_by_slot.get(item.slot_id), "file_url", None
+                    ),
+                )
+                for item in parts
+            ]
+            state.filename = filename
+            state.file_hash = file_hash
+            state.petition_file_id = petition.file_id if petition else None
+            state.fallback_file_id = event.fallback_file_id
+            state.parse_job_ids = parse_job_ids
+            state.page_markdown = page_markdown
+            state.page_parts = page_parts
+            state.page_layout = page_layout
+
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    f"Parsed {len(page_markdown)} page(s) across "
+                    f"{len(page_parts)} labeled part(s)"
+                ),
+            )
+        )
+        return ParsedEvent()
+
+    @step()
+    async def start_extraction(
+        self,
+        event: ParsedEvent,
+        ctx: Context[SplitFilesState],
+        llama_cloud_client: Annotated[
+            AsyncLlamaCloud, Resource(get_llama_cloud_client)
+        ],
+        extract_config: Annotated[
+            ExtractConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="extract-jubeex",
+                label="Default Extraction Settings",
+                description="Extraction config for JubeeX core filing record",
+            ),
+        ],
+    ) -> ExtractJobStartedEvent:
+        state = await ctx.store.get_state()
+        if not state.filing_type:
+            raise ValueError("Filing type is not set")
+        catalog, _parts = validate_parts(
+            state.filing_type,
+            _as_part_inputs(state.parts),
+            require_all_slots=state.require_all_slots,
+        )
+        page_markdown = coerce_page_markdown(state.page_markdown)
+        page_parts = coerce_page_parts(state.page_parts)
+
+        pack_text = build_extract_pack_markdown(
+            page_markdown,
+            page_parts,
+            extract_source_parts(catalog),
+            catalog=catalog,
+        )
+        extract_file_id = state.petition_file_id
+        pack_file_id: str | None = None
+        if pack_text:
+            pack_name = f"{state.filename or catalog.filing_type}-extract-pack.md"
+            uploaded = await llama_cloud_client.files.create(
+                file=(
+                    pack_name,
+                    io.BytesIO(pack_text.encode("utf-8")),
+                    "text/markdown",
+                ),
+                purpose="extract",
+                project_id=project_id,
+            )
+            pack_file_id = uploaded.id
+            extract_file_id = pack_file_id
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Extracting from labeled document parts (no LlamaSplit)",
+                )
+            )
+        else:
+            extract_file_id = extract_input_file_id(state)
+            if not extract_file_id:
+                raise RuntimeError(
+                    "No extract pack and no source PDF are available for extraction"
+                )
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        "Extract pack was empty; extracting from a source PDF "
+                        f"({extract_file_id})"
+                    ),
+                )
+            )
+
+        configuration = extract_configuration(extract_config, catalog)
+        if extract_config.configuration_id:
+            extract_job = await llama_cloud_client.extract.create(
+                file_input=extract_file_id,
+                configuration_id=extract_config.configuration_id,
+                project_id=project_id,
+            )
+        else:
+            extract_job = await llama_cloud_client.extract.create(
+                file_input=extract_file_id,
+                configuration=cast(Any, configuration),
+                project_id=project_id,
+            )
+
+        async with ctx.store.edit_state() as state:
+            state.extract_pack_file_id = pack_file_id
+            state.extract_job_id = extract_job.id
+
+        return ExtractJobStartedEvent()
+
+    @step()
+    async def complete_extraction(
+        self,
+        event: ExtractJobStartedEvent,
+        ctx: Context[SplitFilesState],
+        llama_cloud_client: Annotated[
+            AsyncLlamaCloud, Resource(get_llama_cloud_client)
+        ],
+        extract_jubeex: Annotated[
+            ExtractConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="extract-jubeex",
+                label="JubeeX Extraction",
+            ),
+        ],
+    ) -> StopEvent:
+        state = await ctx.store.get_state()
+        if state.extract_job_id is None:
+            raise ValueError("Job ID cannot be null when waiting for its completion")
+        filing_type = state.filing_type or "other"
+        del extract_jubeex
+        page_markdown = coerce_page_markdown(state.page_markdown)
+        page_parts = coerce_page_parts(state.page_parts)
+
+        await llama_cloud_client.extract.wait_for_completion(
+            state.extract_job_id,
+            project_id=project_id,
+        )
+        job = await llama_cloud_client.extract.get(
+            state.extract_job_id,
+            expand=["extract_metadata"],
+            project_id=project_id,
+        )
+
+        record_file_id = state.petition_file_id or state.extract_pack_file_id
+        extracted_event: ExtractedEvent | ExtractedInvalidEvent
+        try:
+            logger.info(
+                "Extracted split-upload data: %s",
+                json.dumps(job.model_dump(mode="json"), indent=2, default=str),
+            )
+            data = ExtractedData.from_extract_job(
+                job=job,
+                schema=LegalExtractRecord,
+                file_name=state.filename,
+                file_id=record_file_id,
+                file_hash=state.file_hash,
+            )
+            if data.metadata is None:
+                data.metadata = {}
+            overall = overall_confidence_from_job(job)
+            data.metadata["classification"] = filing_type
+            data.metadata["parse_job_ids"] = state.parse_job_ids
+            data.metadata["page_count"] = len(page_markdown)
+            data.metadata["split_upload"] = True
+            data.metadata["extract_pack_file_id"] = state.extract_pack_file_id
+            data.metadata["split_files"] = {
+                item.slot_id: item.file_id for item in state.parts
+            }
+            data.metadata["extract_confidence"] = {
+                "overall": overall,
+                "fields": field_confidence_from_job(job),
+            }
+            data.metadata["documents"] = [
+                {
+                    "slot_id": item.slot_id,
+                    "name": item.filename,
+                    "document_id": item.document_id,
+                    "file_id": item.file_id,
+                }
+                for item in state.parts
+            ]
+            if state.job_type:
+                data.metadata["job_type"] = state.job_type
+            if state.organization_id or state.org_id:
+                org_id = state.organization_id or state.org_id
+                data.metadata["organization_id"] = org_id
+                data.metadata["org_id"] = org_id
+            if state.workspace_id:
+                data.metadata["workspace_id"] = state.workspace_id
+            if state.user_id:
+                data.metadata["user_id"] = state.user_id
+            layout_record = upload_step_json(
+                STEP_LAYOUT,
+                dump_layout_index(coerce_page_layout(state.page_layout)),
+                organization_id=state.organization_id or state.org_id,
+                workspace_id=state.workspace_id,
+            )
+            if layout_record:
+                data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
+                data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+            extracted_event = ExtractedEvent(data=data)
+        except InvalidExtractionData as exc:
+            logger.exception("Error validating extracted data")
+            extracted_event = ExtractedInvalidEvent(data=exc.invalid_item)
+        except Exception as exc:
+            logger.exception(
+                "Error extracting split-upload data from %s",
+                state.filename,
+            )
+            ctx.write_event_to_stream(
+                Status(
+                    level="error",
+                    message=f"Error extracting data from {state.filename}: {exc}",
+                )
+            )
+            raise
+
+        ctx.write_event_to_stream(extracted_event)
+        extracted_data = extracted_event.data
+        data_dict = extracted_data.model_dump()
+        inner = unwrap_extracted_record(data_dict)
+        stamp_source_pages(inner)
+        meta = (
+            data_dict.get("metadata")
+            if isinstance(data_dict.get("metadata"), dict)
+            else {}
+        )
+        src_meta = (
+            extracted_data.metadata
+            if isinstance(getattr(extracted_data, "metadata", None), dict)
+            else {}
+        )
+        if src_meta:
+            if not isinstance(data_dict.get("metadata"), dict):
+                data_dict["metadata"] = dict(meta)
+                meta = data_dict["metadata"]
+            for key in (LAYOUT_ARTIFACT_URL_KEY, LAYOUT_ARTIFACT_KEY_KEY):
+                if src_meta.get(key):
+                    meta[key] = src_meta[key]
+        confidence = (meta.get("extract_confidence") or {}).get("overall")
+        inner = apply_extract_envelope(
+            inner,
+            page_parts=page_parts,
+            filing_type=filing_type,
+            overall_confidence=confidence,
+            field_confidence=(meta.get("extract_confidence") or {}).get("fields"),
+        )
+        data_dict["data"] = inner
+        if page_parts:
+            overlay_split_documents(data_dict, page_parts)
+        org_id = state.organization_id or state.org_id
+        if isinstance(data_dict, dict):
+            data_dict.setdefault("organization_id", org_id)
+            data_dict.setdefault("workspace_id", state.workspace_id)
+            data_dict = stamp_review_status(data_dict)
+        upload_step_json(
+            STEP_EXTRACT,
+            data_dict,
+            organization_id=org_id,
+            workspace_id=state.workspace_id,
+        )
+
+        if extracted_data.file_hash is not None:
+            delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
+                deployment_name=agent_name or "_public",
+                collection=EXTRACTED_DATA_COLLECTION,
+                filter={"file_hash": {"eq": extracted_data.file_hash}},
+            )
+            if delete_result.deleted_count > 0:
+                logger.info(
+                    "Removed %s existing record(s) for %s",
+                    delete_result.deleted_count,
+                    extracted_data.file_name,
+                )
+        item = await llama_cloud_client.beta.agent_data.create(
+            data=data_dict,
+            deployment_name=agent_name or "_public",
+            collection=EXTRACTED_DATA_COLLECTION,
+        )
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=f"Recorded extracted data for {extracted_data.file_name or ''}",
+            )
+        )
+
+        if pinecone_enabled():
+            try:
+                await _index_split_upload(
+                    extracted_data=extracted_data,
+                    item_id=str(item.id),
+                    state=state,
+                    filing_type=filing_type,
+                    page_markdown=page_markdown,
+                    page_parts=page_parts,
+                    ctx=ctx,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[Pinecone] Indexing failed for %s",
+                    state.filename,
+                )
+                ctx.write_event_to_stream(
+                    Status(level="warning", message=f"Pinecone indexing failed: {exc}")
+                )
+        else:
+            logger.info(
+                "[Pinecone] Skipped indexing for %s "
+                "(VECTOR_BACKEND=%s, PINECONE_API_KEY set=%s)",
+                state.filename,
+                os.getenv("VECTOR_BACKEND") or "pinecone",
+                bool(os.getenv("PINECONE_API_KEY")),
+            )
+
+        return StopEvent(result=item.id)
+
+
+async def _parse_one_file(
+    client: AsyncLlamaCloud,
+    *,
+    parse_config: ParseConfig,
+    part: SplitPartInput,
+    semaphore: asyncio.Semaphore,
+    ctx: Context[SplitFilesState],
+) -> tuple[str, dict[int, str], str | None, dict[int, dict[str, Any]]]:
+    async with semaphore:
+        label = part.filename or part.slot_id
+        try:
+            ctx.write_event_to_stream(Status(level="info", message=f"Parsing {label}"))
+            create_kwargs: dict[str, Any] = {
+                "file_id": part.file_id,
+                "project_id": project_id,
+            }
+            if parse_config.configuration_id:
+                create_kwargs["configuration_id"] = parse_config.configuration_id
+            else:
+                create_kwargs.update(
+                    parse_config.model_dump(
+                        exclude={"configuration_id", "product_type"},
+                        exclude_none=True,
+                    )
+                )
+            merge_granular_bboxes(create_kwargs)
+            parse_job = await client.parsing.create(**create_kwargs)
+            await _wait_for_parse(client, parse_job.id)
+            parse_result = await client.parsing.get(
+                parse_job.id,
+                expand=["markdown"],
+                project_id=project_id,
+            )
+            pages = _extract_page_markdown(parse_result)
+            sidecar_pages = await download_sidecar_pages(
+                grounded_items_url(parse_result)
+            )
+            layout = compact_sidecar_pages(sidecar_pages, slot_id=part.slot_id)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Parsed {len(pages)} page(s) from {label}",
+                )
+            )
+            return part.slot_id, pages, parse_job.id, layout
+        except Exception as exc:
+            logger.exception("Parse failed for %s", label)
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=f"Parse failed for {label}; continuing without page text: {exc}",
+                )
+            )
+            return part.slot_id, {}, None, {}
+
+
+async def _parse_labeled_files(
+    client: AsyncLlamaCloud,
+    *,
+    parse_config: ParseConfig,
+    parts: list[SplitPartInput],
+    ctx: Context[SplitFilesState],
+) -> tuple[
+    dict[str, dict[int, str]], dict[str, str], dict[str, dict[int, dict[str, Any]]]
+]:
+    semaphore = asyncio.Semaphore(PARSE_CONCURRENCY)
+    results = await asyncio.gather(
+        *[
+            _parse_one_file(
+                client,
+                parse_config=parse_config,
+                part=part,
+                semaphore=semaphore,
+                ctx=ctx,
+            )
+            for part in parts
+        ]
+    )
+    pages_by_slot: dict[str, dict[int, str]] = {}
+    parse_job_ids: dict[str, str] = {}
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    for slot_id, pages, job_id, layout in results:
+        pages_by_slot[slot_id] = pages
+        layouts_by_slot[slot_id] = layout
+        if job_id:
+            parse_job_ids[slot_id] = job_id
+    return pages_by_slot, parse_job_ids, layouts_by_slot
+
+
+async def _index_split_upload(
+    *,
+    extracted_data: ExtractedData,
+    item_id: str,
+    state: SplitFilesState,
+    filing_type: str,
+    page_markdown: dict[int, str],
+    page_parts: dict[int, list[str]],
+    ctx: Context[SplitFilesState],
+) -> None:
+    base_id = extracted_data.file_hash or state.petition_file_id or item_id
+    shared_meta = {
+        "agent_data_id": item_id,
+        "file_id": state.petition_file_id,
+        "file_name": state.filename,
+        "file_hash": extracted_data.file_hash,
+        "petition_type": filing_type,
+        "split_upload": True,
+    }
+    if state.organization_id or state.org_id:
+        org_id = state.organization_id or state.org_id
+        shared_meta["organization_id"] = org_id
+        shared_meta["org_id"] = org_id
+    if state.workspace_id:
+        shared_meta["workspace_id"] = state.workspace_id
+    if state.user_id:
+        shared_meta["user_id"] = state.user_id
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"Indexing vectors in Pinecone for {state.filename} "
+                "(integrated embeddings)"
+            ),
+        )
+    )
+    pinecone_items: list[dict[str, Any]] = []
+    filing_payload = getattr(extracted_data, "data", None)
+    summary_text = build_filing_chunk_text(
+        filing_payload,
+        filename=state.filename,
+        filing_type=filing_type,
+    )
+    if summary_text.strip():
+        pinecone_items.append(
+            {
+                "record_id": f"{base_id}:summary",
+                "chunk_text": summary_text,
+                "metadata": {**shared_meta, "chunk_kind": "summary"},
+            }
+        )
+    page_records = build_page_records(
+        base_id=base_id,
+        page_markdown=page_markdown,
+        metadata=shared_meta,
+        page_parts=page_parts,
+    )
+    pinecone_items.extend(page_records)
+    count = upsert_records(pinecone_items)
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"Indexed {count} vector(s) in Pinecone "
+                f"(summary + {len(page_records)} page chunks)"
+            ),
+        )
+    )
+
+
+def extract_input_file_id(state: SplitFilesState) -> str | None:
+    """Petition, compiled original, or any sliced PDF we can send to extract."""
+    if state.petition_file_id:
+        return state.petition_file_id
+    if state.fallback_file_id:
+        return state.fallback_file_id
+    preferred = (
+        PETITION_SLOT_ID,
+        "synopsis_lod",
+        "impugned_order",
+        "listing_proforma",
+        "cover_page",
+    )
+    by_slot = {item.slot_id: item.file_id for item in state.parts if item.file_id}
+    for slot in preferred:
+        file_id = by_slot.get(slot)
+        if file_id:
+            return file_id
+    for item in state.parts:
+        if item.file_id:
+            return item.file_id
+    return None
+
+
+def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:
+    return [
+        SplitPartInput(
+            slot_id=item.slot_id,
+            file_id=item.file_id or "",
+            document_parts=tuple(item.document_parts),
+            file_hash=item.file_hash,
+            filename=item.filename,
+            document_id=item.document_id,
+        )
+        for item in parts
+    ]
+
+
+workflow = ProcessSplitFilesWorkflow(timeout=None)

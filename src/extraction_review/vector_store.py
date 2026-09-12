@@ -4,8 +4,9 @@ Two jobs, kept separate:
 
 - Write (`process-file`): `build_page_records` / `upsert_records` store page text
   plus metadata (`file_hash`, `document_part`, `chunk_kind`, page numbers).
-- Read (`scrutiny-check`): `search_filing_chunks` / `gather_filing_evidence_pool`
-  return hits for one filing. They do not decide what the LLM sees.
+- Read (`scrutiny-check`): `search_filing_chunks` / `gather_filing_evidence`
+  return hits for one filing. Each concurrent defect queries Pinecone with
+  its own captions. They do not decide what the LLM sees.
 
 What to send the model (log-gap cutoff, per-defect page budget) lives in
 `document_parts.select_chunks_for_defect`, not here.
@@ -19,11 +20,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from pinecone import Pinecone
 
-from .document_parts import pool_search_queries
+from .document_parts import _part_match, parts_on_page, pool_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,11 @@ pinecone_embed_model = os.getenv("PINECONE_EMBED_MODEL", "llama-text-embed-v2")
 pinecone_namespace = os.getenv("PINECONE_NAMESPACE", "jubeex-filings")
 pinecone_text_field = os.getenv("PINECONE_TEXT_FIELD", DEFAULT_TEXT_FIELD)
 vector_backend = (os.getenv("VECTOR_BACKEND") or "pinecone").strip().lower()
+
+_cached_client: Pinecone | None = None
+_cached_index: Any = None
+_cached_text_field: str | None = None
+_cache_lock = threading.Lock()
 
 # Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
 DEFAULT_TOP_K = 8
@@ -72,13 +80,21 @@ def pinecone_enabled() -> bool:
 
 
 def get_pinecone_client() -> Pinecone:
+    global _cached_client
     if not pinecone_api_key:
         raise ValueError("PINECONE_API_KEY is not set")
-    return Pinecone(api_key=pinecone_api_key)
+    if _cached_client is None:
+        with _cache_lock:
+            if _cached_client is None:
+                _cached_client = Pinecone(api_key=pinecone_api_key)
+    return _cached_client
 
 
 def resolve_text_field(pc: Pinecone | None = None) -> str:
     """Read the index field_map when available; fall back to PINECONE_TEXT_FIELD."""
+    global _cached_text_field
+    if _cached_text_field:
+        return _cached_text_field
     client = pc or get_pinecone_client()
     try:
         desc = client.describe_index(pinecone_index_name)
@@ -90,38 +106,49 @@ def resolve_text_field(pc: Pinecone | None = None) -> str:
                 embed.get("field_map") if isinstance(embed, dict) else None
             )
             if isinstance(field_map, dict) and field_map.get("text"):
-                return str(field_map["text"])
+                _cached_text_field = str(field_map["text"])
+                return _cached_text_field
     except Exception as e:
         logger.debug("Could not resolve Pinecone text field from index: %s", e)
-    return pinecone_text_field
+    with _cache_lock:
+        if _cached_text_field is None:
+            _cached_text_field = pinecone_text_field
+    return _cached_text_field
 
 
 def ensure_index(pc: Pinecone | None = None) -> Any:
     """Create an integrated-embedding index if missing; return a data-plane Index."""
-    client = pc or get_pinecone_client()
-    name = pinecone_index_name
-    if not client.has_index(name):
-        logger.info(
-            "[Pinecone] Creating index %s with embed model %s (%s/%s, field=%s)",
-            name,
-            pinecone_embed_model,
-            pinecone_cloud,
-            pinecone_region,
-            pinecone_text_field,
-        )
-        client.create_index_for_model(
-            name=name,
-            cloud=pinecone_cloud,
-            region=pinecone_region,
-            embed={
-                "model": pinecone_embed_model,
-                "field_map": {"text": pinecone_text_field},
-            },
-        )
-        logger.info("[Pinecone] Index %s created", name)
-    else:
-        logger.info("[Pinecone] Using existing index %s", name)
-    return client.Index(name)
+    global _cached_index
+    if _cached_index is not None:
+        return _cached_index
+    with _cache_lock:
+        if _cached_index is not None:
+            return _cached_index
+        client = pc or get_pinecone_client()
+        name = pinecone_index_name
+        if not client.has_index(name):
+            logger.info(
+                "[Pinecone] Creating index %s with embed model %s (%s/%s, field=%s)",
+                name,
+                pinecone_embed_model,
+                pinecone_cloud,
+                pinecone_region,
+                pinecone_text_field,
+            )
+            client.create_index_for_model(
+                name=name,
+                cloud=pinecone_cloud,
+                region=pinecone_region,
+                embed={
+                    "model": pinecone_embed_model,
+                    "field_map": {"text": pinecone_text_field},
+                },
+            )
+            logger.info("[Pinecone] Index %s created", name)
+        else:
+            logger.info("[Pinecone] Using existing index %s", name)
+        _cached_index = client.Index(name)
+        return _cached_index
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -134,6 +161,29 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _named_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    data = _as_dict(value)
+    for key in ("name", "full_name"):
+        item = data.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return None
+
+
+def _first_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, list) and value:
+        return _as_dict(value[0])
+    return _as_dict(value)
+
+
+def _party_name(party: Any) -> str | None:
+    data = _as_dict(party)
+    return _named_value(data.get("name") or data.get("full_name") or data)
+
+
 def build_filing_chunk_text(
     filing: dict[str, Any] | Any,
     *,
@@ -143,41 +193,49 @@ def build_filing_chunk_text(
     """Turn a Core Filing Record into searchable plain text for embedding."""
     data = _as_dict(filing)
     cause = _as_dict(data.get("cause_title"))
-    matter = _as_dict(data.get("matter_classification"))
-    impugned = _as_dict(data.get("impugned_order"))
-    aor = _as_dict(data.get("advocate_on_record"))
-    summary = _as_dict(data.get("filing_summary"))
+    matter = _as_dict(data.get("classification") or data.get("matter_classification"))
+    impugned = _first_dict(data.get("impugned_orders") or data.get("impugned_order"))
+    aor = _first_dict(
+        data.get("advocates_on_record") or data.get("advocate_on_record")
+    )
 
     petitioners = data.get("petitioners") or []
     respondents = data.get("respondents") or []
 
     petitioner_names = [
-        p.get("full_name")
-        for p in petitioners
-        if isinstance(p, dict) and p.get("full_name")
+        name for name in (_party_name(p) for p in petitioners) if name
     ]
     respondent_names = [
-        r.get("full_name")
-        for r in respondents
-        if isinstance(r, dict) and r.get("full_name")
+        name for name in (_party_name(r) for r in respondents) if name
     ]
 
+    special = None
+    specials = matter.get("special_categories")
+    if isinstance(specials, list) and specials:
+        special = ", ".join(str(item) for item in specials if item)
+    if not special:
+        special = data.get("special_category") or matter.get("special_category")
+
+    petition_type = filing_type or _named_value(data.get("petition_type"))
+    court = _named_value(data.get("court"))
     parts = [
         f"Filename: {filename}" if filename else None,
-        f"Petition type: {filing_type or data.get('petition_type')}",
-        f"Court: {data.get('court')}",
-        f"Special category: {data.get('special_category')}",
-        f"Cause title: {cause.get('formatted_title') or cause.get('raw_text')}",
+        f"Petition type: {petition_type}" if petition_type else None,
+        f"Court: {court}" if court else None,
+        f"Special category: {special}" if special else None,
+        f"Cause title: {cause.get('title') or cause.get('formatted_title') or cause.get('raw_text')}",
         f"Petitioners: {', '.join(petitioner_names)}" if petitioner_names else None,
         f"Respondents: {', '.join(respondent_names)}" if respondent_names else None,
-        f"Matter: {matter.get('main_category')} / {matter.get('sub_category')}",
+        f"Matter: {matter.get('main_category_name') or matter.get('main_category')} / "
+        f"{matter.get('sub_category_name') or matter.get('sub_category')}",
         f"PIL: {matter.get('is_pil')}",
         f"Impugned order: {impugned.get('case_number')} "
-        f"({impugned.get('earlier_court')}) dated {impugned.get('date_of_impugned_order')}",
+        f"({impugned.get('Forum') or impugned.get('forum') or impugned.get('court_name') or impugned.get('earlier_court')}) "
+        f"dated {impugned.get('order_date') or impugned.get('date_of_impugned_order')}",
         f"AOR: {aor.get('name')} ({aor.get('registration_number')})",
-        f"Summary title: {summary.get('matter_title')}",
+        f"Summary title: {cause.get('formatted_title') or cause.get('title')}",
     ]
-    return "\n".join(p for p in parts if p and not p.endswith(": None"))
+    return "\n".join(p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None"))
 
 
 def split_text_windows(
@@ -204,18 +262,67 @@ def split_text_windows(
     return [w for w in windows if w]
 
 
+def _same_split_part(left: Any, right: Any) -> bool:
+    """True when Split labelled both pages with at least one shared filing part."""
+    left_names = set(parts_on_page(left))
+    right_names = set(parts_on_page(right))
+    return bool(left_names) and bool(left_names & right_names)
+
+
+def _page_margin(text: str, *, from_end: bool, size: int = CHUNK_OVERLAP) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    if from_end:
+        return cleaned[-size:]
+    return cleaned[:size]
+
+
+def _labelled_page_margin(page_num: int, snippet: str) -> str:
+    snippet = snippet.strip()
+    if not snippet:
+        return ""
+    return f"--- from page {page_num} ---\n{snippet}"
+
+
+def _neighbor_margin(
+    *,
+    page_num: int,
+    neighbor: int,
+    page_markdown: dict[int, str],
+    parts: dict[int, Any],
+    from_end: bool,
+) -> str:
+    """200 chars from an adjacent page, only when Split says it is the same part."""
+    if neighbor not in page_markdown:
+        return ""
+    neighbor_text = (page_markdown.get(neighbor) or "").strip()
+    if not neighbor_text:
+        return ""
+    if not _same_split_part(parts.get(page_num), parts.get(neighbor)):
+        return ""
+    return _labelled_page_margin(
+        neighbor,
+        _page_margin(page_markdown.get(neighbor) or "", from_end=from_end),
+    )
+
+
 def build_page_records(
     *,
     base_id: str,
     page_markdown: dict[int, str],
     metadata: dict[str, Any] | None = None,
-    page_parts: dict[int, str] | None = None,
+    page_parts: dict[int, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build Pinecone records from parse page markdown.
 
     Each page is window-chunked if longer than MAX_CHUNK_CHARS.
     `page_parts` is the Split map (page number → Listing Proforma, …).
+    The first/last window of a page also takes CHUNK_OVERLAP characters from
+    the previous/next page when Split labelled both as the same part. Cover
+    Page is never glued onto Main Petition. Borrowed text is marked so citations
+    still point at this page (`page_start`).
     """
     base_meta = metadata or {}
     parts = page_parts or {}
@@ -235,15 +342,41 @@ def build_page_records(
             len(page_text),
             len(windows),
         )
-        document_part = parts.get(page_num) or ""
+        names = parts_on_page(parts.get(page_num))
+        document_part: Any = names[0] if len(names) == 1 else names
+        prev_margin = _neighbor_margin(
+            page_num=page_num,
+            neighbor=page_num - 1,
+            page_markdown=page_markdown,
+            parts=parts,
+            from_end=True,
+        )
+        next_margin = _neighbor_margin(
+            page_num=page_num,
+            neighbor=page_num + 1,
+            page_markdown=page_markdown,
+            parts=parts,
+            from_end=False,
+        )
+        last_idx = len(windows) - 1
         for chunk_idx, window in enumerate(windows):
+            pieces = []
+            page_end = page_num
+            if chunk_idx == 0 and prev_margin:
+                pieces.append(prev_margin)
+            pieces.append(window)
+            if chunk_idx == last_idx and next_margin:
+                pieces.append(next_margin)
+                page_end = page_num + 1
             record_id = f"{base_id}:page:{page_num}:{chunk_idx}"
             meta = {
                 **base_meta,
                 "chunk_kind": "page",
                 "page_start": page_num,
-                "page_end": page_num,
-                "pages": str(page_num),
+                "page_end": page_end,
+                "pages": (
+                    str(page_num) if page_end == page_num else f"{page_num}-{page_end}"
+                ),
                 "chunk_index": chunk_idx,
             }
             if document_part:
@@ -251,7 +384,7 @@ def build_page_records(
             records.append(
                 {
                     "record_id": record_id,
-                    "chunk_text": window,
+                    "chunk_text": "\n\n".join(pieces),
                     "metadata": meta,
                 }
             )
@@ -444,16 +577,22 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         return None
 
     page = fields.get("page_start")
+    page_end = fields.get("page_end")
     try:
         page = int(page) if page is not None else None
     except (TypeError, ValueError):
         page = None
+    try:
+        page_end = int(page_end) if page_end is not None else page
+    except (TypeError, ValueError):
+        page_end = page
 
     return {
         "record_id": record_id,
         "score": score,
         "text": text,
         "page": page,
+        "page_end": page_end,
         "chunk_kind": fields.get("chunk_kind"),
         "file_name": fields.get("file_name"),
         "document_part": fields.get("document_part"),
@@ -466,6 +605,7 @@ def search_filing_chunks(
     file_hash: str,
     top_k: int | None = None,
     chunk_kind: str | None = None,
+    document_part: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return Pinecone hits for one filing. No LLM packing or score cutoff.
 
@@ -486,6 +626,8 @@ def search_filing_chunks(
     metadata_filter: dict[str, Any] = {"file_hash": {"$eq": file_hash}}
     if chunk_kind:
         metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
+    # Do not filter document_part in Pinecone: multi-label pages store an
+    # array and `$eq` misses them. Post-filter with parts_on_page instead.
 
     result = index.search(
         namespace=pinecone_namespace,
@@ -505,6 +647,9 @@ def search_filing_chunks(
     )
 
     chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
+    if document_part:
+        wanted = document_part.strip()
+        chunks = [c for c in chunks if _part_match(c, [wanted])]
     logger.info(
         "[Pinecone] Filing search returned %s chunk(s) for file_hash=%s (top_k=%s)",
         len(chunks),
@@ -520,12 +665,16 @@ def gather_filing_evidence(
     file_hash: str,
     top_k: int | None = None,
     max_chunks: int | None = None,
+    document_parts: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Union the results of several queries into one deduped evidence set.
 
     Absence-type criteria ("the declaration is missing") are sensitive to
     retrieval recall, so each where-to-look / trigger-word query contributes
     rather than relying on a single top-k over the whole defect.
+
+    `document_parts` runs an extra search per Split label filtered to that
+    metadata value so Cover Page hits cannot stand in for the Checklist.
     """
     if top_k is None:
         top_k = scrutiny_top_k()
@@ -533,21 +682,53 @@ def gather_filing_evidence(
         max_chunks = scrutiny_max_chunks()
 
     seen: dict[str, dict[str, Any]] = {}
+
+    def _absorb(chunk: dict[str, Any]) -> None:
+        record_id = chunk.get("record_id")
+        if not record_id:
+            return
+        existing = seen.get(record_id)
+        if existing is None or (chunk.get("score") or 0) > (
+            existing.get("score") or 0
+        ):
+            seen[record_id] = chunk
+
+    jobs: list[tuple[str, dict[str, Any]]] = []
     for query in queries:
-        if not query or not query.strip():
-            continue
+        if query and query.strip():
+            jobs.append((query.strip(), {"file_hash": file_hash, "top_k": top_k}))
+    for part in document_parts or []:
+        label = (part or "").strip()
+        if label:
+            jobs.append(
+                (
+                    label,
+                    {
+                        "file_hash": file_hash,
+                        "top_k": top_k,
+                        "chunk_kind": "page",
+                        "document_part": label,
+                    },
+                )
+            )
+
+    def _run_one(query: str, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            for chunk in search_filing_chunks(query, file_hash=file_hash, top_k=top_k):
-                record_id = chunk.get("record_id")
-                if not record_id:
-                    continue
-                existing = seen.get(record_id)
-                if existing is None or (chunk.get("score") or 0) > (
-                    existing.get("score") or 0
-                ):
-                    seen[record_id] = chunk
+            return search_filing_chunks(query, **kwargs)
         except Exception as e:
-            logger.warning("[Pinecone] Query failed (%s): %s", query[:60], e)
+            kind = "Part-filtered query" if kwargs.get("document_part") else "Query"
+            logger.warning("[Pinecone] %s failed (%s): %s", kind, query[:60], e)
+            return []
+
+    if len(jobs) <= 1:
+        hits = [_run_one(query, kwargs) for query, kwargs in jobs]
+    else:
+        workers = min(8, len(jobs))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            hits = list(pool.map(lambda job: _run_one(job[0], job[1]), jobs))
+    for chunks in hits:
+        for chunk in chunks:
+            _absorb(chunk)
 
     chunks = sorted(
         seen.values(),
@@ -559,7 +740,24 @@ def gather_filing_evidence(
             len(chunks),
             max_chunks,
         )
-        chunks = chunks[:max_chunks]
+        reserved: list[dict[str, Any]] = []
+        used: set[str] = set()
+        for part in document_parts or []:
+            want = (part or "").strip()
+            if not want:
+                continue
+            for chunk in chunks:
+                record_id = str(chunk.get("record_id") or "")
+                if not record_id or record_id in used:
+                    continue
+                if not _part_match(chunk, [want]):
+                    continue
+                reserved.append(chunk)
+                used.add(record_id)
+                break
+        leftover = max(0, max_chunks - len(reserved))
+        rest = [c for c in chunks if str(c.get("record_id") or "") not in used]
+        chunks = reserved + rest[:leftover]
 
     # Present page chunks in reading order; keep the summary chunk first.
     summary = [c for c in chunks if c.get("chunk_kind") == "summary"]
@@ -576,10 +774,10 @@ def gather_filing_evidence_pool(
     top_k: int | None = None,
     max_chunks: int | None = None,
 ) -> list[dict[str, Any]]:
-    """One Pinecone gather for the whole filing, reused by every defect.
+    """Caption-wide gather for a filing (tests and fallbacks).
 
-    Queries are form captions and split part names — not per-defect legal
-    sentences — so 78 checks do not repeat hundreds of searches.
+    Live scrutiny queries per defect via `gather_filing_evidence` instead of
+    this shared dump, so 74 checks do not share one generic excerpt set.
     """
     cap = max_chunks if max_chunks is not None else scrutiny_pool_max_chunks()
     queries = pool_search_queries()

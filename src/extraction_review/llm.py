@@ -23,9 +23,12 @@ from .scrutiny.schema import LlmUsage
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "google/gemini-3.7-flash"
-# DEFAULT_MODEL = "openai/gpt-5.5"
+#DEFAULT_MODEL = "openai/gpt-5.5"
+DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
+# Gemini thinking models spend this budget on hidden reasoning first.
+# 4096 often truncates the JSON mid-string (see D007 on gemini-3.8-flash).
+DEFAULT_MAX_TOKENS = 16384
 MAX_ATTEMPTS = 3
 
 
@@ -164,19 +167,80 @@ def _extract_content(payload: dict[str, Any]) -> str:
     return str(content)
 
 
+def _close_truncated_json(text: str) -> str | None:
+    """Close a cut-off JSON object so salvageable fields can still parse."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    fragment = text[start:]
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for char in fragment:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in ("}", "]") and stack:
+            stack.pop()
+    repaired = fragment
+    if in_string:
+        repaired += '"'
+    repaired = repaired.rstrip()
+    if repaired.endswith(","):
+        repaired = repaired[:-1].rstrip()
+    while stack:
+        repaired += stack.pop()
+    return repaired
+
+
+def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
+    completed = dict(data)
+    if not completed.get("reasoning"):
+        completed["reasoning"] = (
+            completed.get("summary") or "Model response was truncated."
+        )
+    completed.setdefault("evidence", [])
+    completed.setdefault("suggested_fix", None)
+    completed.setdefault("fix_rationale", None)
+    return completed
+
+
 def _parse_json(content: str) -> dict[str, Any]:
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`").strip()
         text = text.removeprefix("json").strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Fall back to the outermost JSON object in the response.
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end <= start:
-            raise LLMError(f"Response was not JSON: {content[:400]}")
-        return json.loads(text[start : end + 1])
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    repaired = _close_truncated_json(text)
+    if repaired:
+        candidates.append(repaired)
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        last_error = LLMError(f"Response JSON was not an object: {content[:400]}")
+    raise LLMError(
+        "Response was truncated or not JSON: " + content[:400]
+    ) from last_error
 
 
 async def call_structured[T: BaseModel](
@@ -198,6 +262,10 @@ async def call_structured[T: BaseModel](
     schema = strict_json_schema(response_model)
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    token_limit = max_tokens
+    if token_limit is None:
+        raw_limit = os.getenv("OPENROUTER_MAX_TOKENS", "").strip()
+        token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -210,8 +278,8 @@ async def call_structured[T: BaseModel](
             "messages": messages,
             "temperature": temperature,
         }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
+        if token_limit:
+            payload["max_tokens"] = token_limit
         if use_json_schema:
             payload["response_format"] = {
                 "type": "json_schema",
@@ -268,7 +336,18 @@ async def call_structured[T: BaseModel](
                         parse_openrouter_usage(payload, model=model_name)
                     )
                 content = _extract_content(payload)
-                value = response_model.model_validate(_parse_json(content))
+                parsed = _complete_structured_fields(_parse_json(content))
+                finish = ""
+                if isinstance(payload, dict):
+                    choices = payload.get("choices") or []
+                    if choices and isinstance(choices[0], dict):
+                        finish = str(choices[0].get("finish_reason") or "")
+                if finish == "length":
+                    logger.warning(
+                        "[LLM] %s hit max_tokens; salvaged truncated JSON",
+                        model_name,
+                    )
+                value = response_model.model_validate(parsed)
                 return value, usage
 
             except ValidationError as e:
@@ -298,6 +377,18 @@ async def call_structured[T: BaseModel](
                     MAX_ATTEMPTS,
                     str(e)[:300],
                 )
+                if isinstance(e, LLMError) and attempt < MAX_ATTEMPTS:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was not valid JSON "
+                                "(it may have been cut off). Return one complete "
+                                "JSON object matching the schema. No prose, "
+                                "no markdown."
+                            ),
+                        }
+                    )
 
             if attempt < MAX_ATTEMPTS:
                 await asyncio.sleep(min(2**attempt, 8) + random.uniform(0, 0.5))

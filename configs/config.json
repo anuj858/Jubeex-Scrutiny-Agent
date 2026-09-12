@@ -12,6 +12,14 @@
         "description": "Special Leave Petition (Criminal) is filed against any judgment, decree, determination, sentence or order in a criminal proceeding passed or made by any court or tribunal in the territory of India."
       },
       {
+        "type": "TRANSFER_PETITION_CIVIL",
+        "description": "Transfer Petition (Civil) is filed seeking transfer of a civil case from one High Court to another, or from one court to another, typically under Article 139A of the Constitution or Section 25 of the Code of Civil Procedure."
+      },
+      {
+        "type": "TRANSFER_PETITION_CRIMINAL",
+        "description": "Transfer Petition (Criminal) is filed seeking transfer of a criminal case from one court to another, typically under Section 406 of the Code of Criminal Procedure."
+      },
+      {
         "type": "ARBITRATION_PETITION",
         "description": "Arbitration Petition typically involves matters related to appointment of arbitrators or challenging arbitral awards."
       },
@@ -37,1034 +45,828 @@
     "product_type": "extract_v2",
     "configuration_id": null,
     "data_schema": {
-      "title": "CoreFilingRecord",
-      "description": "Core Filing Record for JubeeX parsing pipeline. Same shape for all petition types.",
-      "type": "object",
-      "properties": {
-        "court": {
-          "title": "Court",
-          "description": "The court where the petition is filed.",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "petition_type": {
-          "title": "Petition Type",
-          "description": "Type of the petition (e.g. SLP_CIVIL, WRIT_PETITION_CRIMINAL).",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "special_category": {
-          "title": "Special Category",
-          "description": "Special category of the petition (e.g. Appeal (Armed Forces) ,Civil Appeal with High Court Certificate , Indigent Person, Criminal Appeal with High Court Certificate, SLP (Civil) with respect to Motor Vehicles Act, Jail Petition, Matters Involving / Pertaining to Minors, Demolition Matters, Eviction Matters, Bail Applications / Bail Matters, Tax Matters, PIL).",
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "cause_title": {
-          "title": "CauseTitle",
-          "description": "Cause title representing petitioner vs respondent.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "raw_text": {
-                  "title": "Raw Text",
-                  "description": "The cause title verbatim",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+      "$defs": {
+        "AdvocateOnRecord": {
+          "description": "AOR identity. Fill from Vakalatnama, then the signature or DRAWN & FILED BY block on AOR's Certificate (cause title at the top, then CERTIFICATE or C E R T I F I C A T E, then confined-to-pleadings text). Code and mobile only if printed. Not the Advocate's Check List.",
+          "properties": {
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
-                "petitioner_summary": {
-                  "title": "Petitioner Summary",
-                  "description": "The petitioner side as printed",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "respondent_summary": {
-                  "title": "Respondent Summary",
-                  "description": "The respondent side as printed",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "formatted_title": {
-                  "title": "Formatted Title",
-                  "description": "A strictly formatted version of the cause title: '1st Petitioner Name [And ors.] VS 1st Respondent Name [And ors.]'. You MUST append 'And ors.' if there are multiple petitioners or multiple respondents.",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "description": "The document part where this was found",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "description": "Pages containing this data",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
+                {
+                  "type": "null"
                 }
-              },
-              "required": [
-                "raw_text",
-                "formatted_title"
-              ]
+              ],
+              "default": null,
+              "description": "AOR name",
+              "title": "Name"
             },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "petitioners": {
-          "title": "Petitioners",
-          "description": "Array of petitioners. One record per petitioner.",
-          "type": "array",
-          "items": {
-            "title": "Petitioner",
-            "type": "object",
-            "properties": {
-              "serial": {
-                "title": "Serial",
-                "description": "Position in the cause title, 1-based",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
+            "registration_number": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR code / registration number. Extract verbatim.",
+              "title": "Registration Number"
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR email ONLY if printed",
+              "title": "Email"
+            },
+            "mobile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AOR mobile ONLY if printed",
+              "title": "Mobile"
+            },
+            "firm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Firm name, if any",
+              "title": "Firm"
+            },
+            "office_address": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Office address as printed",
+              "title": "Office Address"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Vakalatnama or AOR's Certificate (the page headed CERTIFICATE)",
+              "title": "Source Part"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim AOR block as printed, including name, address, email, and contact.",
+              "title": "Raw Text"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
               },
-              "full_name": {
-                "title": "Full Name",
-                "description": "Full name as printed",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "entity_type": {
-                "title": "Entity Type",
-                "description": "INDIVIDUAL, COMPANY, PARTNERSHIP, etc.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "acting_through": {
-                "title": "Acting Through",
-                "description": "The authorised signatory",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "relation_details": {
-                "title": "Relation Details",
-                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_part": {
-                "title": "Source Part",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_pages": {
-                "title": "Source Pages",
-                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "address_full_text": {
-                "title": "Address Full Text",
-                "description": "Mandatory verbatim address text. Do not omit any details.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "city": {
-                "title": "City",
-                "description": "Extracted city",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "state": {
-                "title": "State",
-                "description": "Extracted state",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "pin_code": {
-                "title": "Pin Code",
-                "description": "Extracted pincode",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              }
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
           },
-          "default": []
-        },
-        "respondents": {
-          "title": "Respondents",
-          "description": "Array of respondents. One record per respondent.",
-          "type": "array",
-          "items": {
-            "title": "Respondent",
-            "type": "object",
-            "properties": {
-              "serial": {
-                "title": "Serial",
-                "description": "Position in the cause title, 1-based",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "full_name": {
-                "title": "Full Name",
-                "description": "Full name as printed. DO NOT concatenate relations.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "age": {
-                "title": "Age",
-                "description": "Age as an integer",
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "occupation": {
-                "title": "Occupation",
-                "description": "Occupation",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_part": {
-                "title": "Source Part",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "source_pages": {
-                "title": "Source Pages",
-                "description": "Pages containing this data (comma-separated string, e.g. '6, 50, 52')",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "relation_details": {
-                "title": "Relation Details",
-                "description": "Combined relation and name (e.g. 'W/O Shri Vivek Shah', 'S/O John Doe'). This may be indicated by prefixes like 'S/o', 'D/o', 'W/o', or it may simply be printed directly under the main person's name. Extract the full relationship context.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "address_full_text": {
-                "title": "Address Full Text",
-                "description": "Mandatory verbatim address text. Do not omit any details.",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "city": {
-                "title": "City",
-                "description": "Extracted city",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "state": {
-                "title": "State",
-                "description": "Extracted state",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "pin_code": {
-                "title": "Pin Code",
-                "description": "Extracted pincode",
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              }
-            }
-          },
-          "default": []
-        },
-        "matter_classification": {
-          "title": "MatterClassification",
-          "description": "Main category, sub category, special category, PIL flag.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "main_category": {
-                  "title": "Main Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "sub_category": {
-                  "title": "Sub Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "special_category": {
-                  "title": "Special Category",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "is_pil": {
-                  "title": "Is Pil",
-                  "anyOf": [
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              }
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "impugned_order": {
-          "title": "ImpugnedOrder",
-          "description": "The challenged order and the earlier court.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "applicable": {
-                  "title": "Applicable",
-                  "anyOf": [
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": true
-                },
-                "not_applicable_reason": {
-                  "title": "Not Applicable Reason",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "date_of_impugned_order": {
-                  "title": "Date Of Impugned Order",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "earlier_court": {
-                  "title": "Earlier Court",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "case_number": {
-                  "title": "Case Number",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "petition_type": {
-                  "title": "Petition Type",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "certified_copy_applied_on": {
-                  "title": "Certified Copy Applied On",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "certified_copy_obtained_on": {
-                  "title": "Certified Copy Obtained On",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              }
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "advocate_on_record": {
           "title": "AdvocateOnRecord",
-          "description": "AOR identity and contact details.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "title": "Name",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "registration_number": {
-                  "title": "Registration Number",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "email": {
-                  "title": "Email",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "mobile": {
-                  "title": "Mobile",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "firm_name": {
-                  "title": "Firm Name",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "office_address": {
-                  "title": "Office Address",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "type": {
-                          "title": "Type",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "full_text": {
-                          "title": "Full Text",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "city": {
-                          "title": "City",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "state": {
-                          "title": "State",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "pin_code": {
-                          "title": "Pin Code",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        },
-                        "country": {
-                          "title": "Country",
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": null
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_part": {
-                  "title": "Source Part",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "source_pages": {
-                  "title": "Source Pages",
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "default": []
-                }
-              },
-              "required": [
-                "name"
-              ]
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+          "type": "object"
         },
-        "filing_summary": {
-          "title": "FilingSummary",
-          "description": "Court, matter type and title, counts, review estimate.",
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "court": {
-                  "title": "Court",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+        "CauseTitle": {
+          "description": "The 'X versus Y' heading of the case. Extracted as printed.",
+          "properties": {
+            "title": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
-                "matter_type": {
-                  "title": "Matter Type",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "matter_title": {
-                  "title": "Matter Title",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "documents": {
-                  "title": "Documents",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "annexures": {
-                  "title": "Annexures",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "applications": {
-                  "title": "Applications",
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "count": {
-                          "title": "Count",
-                          "anyOf": [
-                            {
-                              "type": "integer"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "default": 0
-                        },
-                        "items": {
-                          "title": "Items",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "default": []
-                        }
-                      }
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "estimated_review_minutes": {
-                  "title": "Estimated Review Minutes",
-                  "anyOf": [
-                    {
-                      "type": "integer"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
-                "estimated_review_basis": {
-                  "title": "Estimated Review Basis",
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
+                {
+                  "type": "null"
                 }
-              }
+              ],
+              "default": null,
+              "description": "Short cause title as commonly cited, e.g. 'Meera Krishnan v. Union of India & Anr.'",
+              "title": "Title"
             },
-            {
-              "type": "null"
+            "formatted_title": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents \u2192 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
+              "title": "Formatted Title"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The cause title verbatim, including '...and others' / '...and another'",
+              "title": "Raw Text"
+            },
+            "main_petitioner": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Main petitioner name as printed on the Cover Page cause-title line.",
+              "title": "Main Petitioner"
+            },
+            "main_respondent": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Main respondent name as printed on the Cover Page cause-title line.",
+              "title": "Main Respondent"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Split label where the stored title was filled (Memo of Parties or Cover Page).",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
             }
-          ],
-          "default": null
+          },
+          "title": "CauseTitle",
+          "type": "object"
+        },
+        "ImpugnedOrder": {
+          "description": "The order under challenge. Primary Impugned Order slot only.",
+          "properties": {
+            "is_primary": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": true,
+              "description": "True for the Impugned Order slot. Do not invent extra annexure orders.",
+              "title": "Is Primary"
+            },
+            "case_number": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Case number before the earlier court",
+              "title": "Case Number"
+            },
+            "order_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date of the order under challenge",
+              "title": "Order Date"
+            },
+            "Forum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "The court/forum that passed the impugned order",
+              "title": "Forum"
+            },
+            "bench": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Bench or seat as printed",
+              "title": "Bench"
+            },
+            "certified_copy_applied_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date the certified copy was applied for",
+              "title": "Certified Copy Applied On"
+            },
+            "certified_copy_obtained_on": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Date it was obtained",
+              "title": "Certified Copy Obtained On"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim impugned-order identification as printed.",
+              "title": "Raw Text"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Impugned Order",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
+            }
+          },
+          "title": "ImpugnedOrder",
+          "type": "object"
+        },
+        "Inconsistencies": {
+          "properties": {
+            "items": {
+              "description": "Spelling or value mismatches between fill and verify sources. Also record an ORGANIZATION party with no acting_through.",
+              "items": {
+                "$ref": "#/$defs/InconsistencyItem"
+              },
+              "title": "Items",
+              "type": "array"
+            },
+            "source_part": {
+              "description": "Split labels involved in the mismatches.",
+              "items": {
+                "type": "string"
+              },
+              "title": "Source Part",
+              "type": "array"
+            },
+            "source_pages": {
+              "description": "Global page numbers involved in the mismatches.",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
+            }
+          },
+          "title": "Inconsistencies",
+          "type": "object"
+        },
+        "InconsistencyItem": {
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Sequential id as a string, starting at 1.",
+              "title": "Id"
+            },
+            "label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short mismatch label",
+              "title": "Label"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "What differed, quoting both sources.",
+              "title": "Raw Text"
+            }
+          },
+          "title": "InconsistencyItem",
+          "type": "object"
+        },
+        "Party": {
+          "description": "One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1.",
+          "properties": {
+            "serial": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Position in the cause title, 1-based",
+              "title": "Serial"
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition (and Memo of Parties). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of \u2026), not every word 'the'. Always uppercase. Leave null if unclear.",
+              "title": "Kind"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Full name as printed. Do not concatenate S/o or W/o into the name.",
+              "title": "Name"
+            },
+            "entity_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Short type label from the printed name, e.g. INDIVIDUAL, Union, Company. Not limited to a fixed enum. Leave null if not printed.",
+              "title": "Entity Type"
+            },
+            "acting_through": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Person named after 'acting through' / 'through' under the party block. May appear under an organization or an individual. ORGANIZATION almost always has this; if missing, leave null and add an inconsistencies item. INDIVIDUAL: fill only when those words appear.",
+              "title": "Acting Through"
+            },
+            "relation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Relation prefix only, e.g. S/o, D/o, W/o. Leave null if not printed.",
+              "title": "Relation"
+            },
+            "guardian": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Related person's name after S/o, D/o, W/o. Leave null if not printed.",
+              "title": "Guardian"
+            },
+            "occupation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Occupation ONLY if explicitly stated.",
+              "title": "Occupation"
+            },
+            "address": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim address. Leave null if not printed on a fill source. Never copy from Vakalatnama.",
+              "title": "Address"
+            },
+            "city": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted city",
+              "title": "City"
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted state",
+              "title": "State"
+            },
+            "pin_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extracted pincode",
+              "title": "Pin Code"
+            },
+            "email": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Email ONLY if explicitly printed. Do not invent.",
+              "title": "Email"
+            },
+            "mobile": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Mobile ONLY if explicitly printed. Do not invent.",
+              "title": "Mobile"
+            },
+            "is_primary": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "True for the party whose name matches the Cover Page main petitioner or main respondent. False for the others. Do not invent a party from Cover Page.",
+              "title": "Is Primary"
+            },
+            "raw_text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Verbatim party block as printed, including name, relation, and address lines.",
+              "title": "Raw Text"
+            },
+            "source_part": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.",
+              "title": "Source Part"
+            },
+            "source_pages": {
+              "description": "Global page numbers containing this data",
+              "items": {
+                "type": "integer"
+              },
+              "title": "Source Pages",
+              "type": "array"
+            },
+            "confidence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Extractor confidence as a percentage string such as 95% or 65%. Do not use a 0-1 decimal.",
+              "title": "Confidence"
+            }
+          },
+          "title": "Party",
+          "type": "object"
         }
       },
-      "required": [
-        "court",
-        "petition_type",
-        "cause_title",
-        "petitioners",
-        "respondents",
-        "advocate_on_record"
-      ]
+      "description": "Fields LlamaExtract fills from the extract pack.",
+      "properties": {
+        "court": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "title": "Court"
+        },
+        "petition_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "title": "Petition Type"
+        },
+        "cause_title": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CauseTitle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cause title representing petitioner vs respondent."
+        },
+        "petitioners": {
+          "description": "Petitioners. One record per petitioner.",
+          "items": {
+            "$ref": "#/$defs/Party"
+          },
+          "title": "Petitioners",
+          "type": "array"
+        },
+        "respondents": {
+          "description": "Respondents. One record per respondent.",
+          "items": {
+            "$ref": "#/$defs/Party"
+          },
+          "title": "Respondents",
+          "type": "array"
+        },
+        "advocates_on_record": {
+          "description": "Advocates-on-Record. Fill from Vakalatnama, then the signature or DRAWN & FILED BY block on AOR's Certificate. That page always has the cause title at the top, then the word CERTIFICATE or C E R T I F I C A T E, then the confined-to-pleadings text. Code and mobile only if printed. Not the Advocate's Check List.",
+          "items": {
+            "$ref": "#/$defs/AdvocateOnRecord"
+          },
+          "title": "Advocates On Record",
+          "type": "array"
+        },
+        "impugned_orders": {
+          "description": "Primary impugned order only.",
+          "items": {
+            "$ref": "#/$defs/ImpugnedOrder"
+          },
+          "title": "Impugned Orders",
+          "type": "array"
+        },
+        "relief_sort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Main prayer body only from the Main Petition last 2-3 pages. Copy the text under the heading Main Prayer or Prayer. Do not include the heading, clause number, markdown, or HTML (for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). Start at the prayer sentence, e.g. 'In the circumstances stated above\u2026'. Leave null if that heading is not printed.",
+          "title": "Relief Sort"
+        },
+        "inconsistencies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inconsistencies"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cover Page main petitioner or main respondent versus Memo of Parties or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". items[].id is '1', '2', \u2026."
+        }
+      },
+      "title": "LegalExtractRecord",
+      "type": "object"
     },
     "tier": "agentic",
     "extraction_target": "per_doc",
@@ -1076,72 +878,801 @@
     "product_type": "parse_v2",
     "configuration_id": null,
     "tier": "agentic",
-    "version": "latest"
+    "version": "latest",
+    "output_options": {
+      "granular_bboxes": [
+        "word",
+        "line"
+      ]
+    }
   },
   "split": {
     "product_type": "split_v1",
     "configuration_id": null,
     "categories": [
       {
-        "name": "Advocate's Checklist"
+        "name": "Advocate's Checklist",
+        "description": "Starts in the first 2-3 lines with ADVOCATE'S CHECK LIST or PROPOSED ADVOCATE'S CHECK LIST (CHECK LIST, CHECKLIST, CHECK-LIST). Looks like a numbered YES/NO/N.A. list, often a table, usually 2-4 pages. Almost always has YES, NO, or N.A., and the AOR declaration: I hereby declare that I have personally verified the petition and its contents and it is in conformity with the Supreme Court Rules, 2013. I certify that the above requirements of this Check List have been complied with. I further certify that all the documents necessary for the purpose of hearing of the matter have been filed. Ends on the last page with the AOR name, code, signature, and date; a stamp is optional. Not Cover Page, not Listing Proforma, and not AOR's Certificate."
       },
       {
-        "name": "Caveat Report"
+        "name": "Cover Page",
+        "description": "Starts at the top with IN THE SUPREME COURT OF INDIA; the second or third line has JURISDICTION. Usually 1 page, at most 1-3. Often includes For Index Please See Inside. Ends with ADVOCATE FOR THE PETITIONER or ADVOCATE FOR THE RESPONDENT (or similar). Outer title sheet of the paper book. Not Office Report on Limitation \u2014 if OFFICE REPORT ON LIMITATION is printed, use that category even when the Supreme Court caption appears at the top. Not Vakalatnama, not Memo of Appearance, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
-        "name": "Cover Page"
+        "name": "Record of Proceedings",
+        "description": "Starts with RECORD OF PROCEEDING or RECORD OF PROCEEDINGS. Usually 1 page, at most 1-2, in table format. Often includes Date of Record of Proceeding. Ends where the table ends. Court order sheets of this Court. Not Index, not Cover Page, and not Main Petition."
       },
       {
-        "name": "Record of Proceedings"
+        "name": "AOR's Certificate",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and the cause title at the top (petition type and number, IN THE MATTER OF, petitioner versus respondent). Usually 1-2 pages (mostly 1). Then the word CERTIFICATE, either as one word or letter-spaced C E R T I F I C A T E. CERTIFICATE is always printed. Directly under that heading the body starts Certified that or CERTIFIED that the Special Leave Petition (or petition) is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. It may or may not add an exception for additional facts or grounds with an application. It further certifies that the annexures are necessary for the question(s) of law, and that the certificate is given on the petitioner's instructions, with the supporting affidavit. Ends with FILED ON, Dated, and AOR details (name, signature or stamp, code, contact). Signature may be advocate name with CC No./code, mobile, date and place, or PLACE / Filed on / DRAWN & FILED BY with the advocate's name; code and mobile are often omitted. Cause title without the word CERTIFICATE is Cover Page or Main Petition, not this page. This is not Vakalatnama, Advocate's Check List, Affidavit, Application, or Main Petition \u2014 do not fold a page that has cause title then CERTIFICATE into the petition body even if it follows Main Prayer."
       },
       {
-        "name": "AOR's Declaration"
+        "name": "Index",
+        "description": "Starts with the heading INDEX. Table listing PARTICULARS OF DOCUMENT and PAGE NO or PAGE No. Usually 1-2 pages but may be longer. Ends where the table ends; AOR signature or details are sometimes present but often absent. This part appears once, near the front (usually after the Cover Page). Do not label a later similar contents list as Index. Not Listing Proforma, not Filing Memo, and not Office Report on Limitation."
       },
       {
-        "name": "Index"
+        "name": "Office Report on Limitation",
+        "description": "May start with IN THE SUPREME COURT OF INDIA and JURISDICTION on the second or third line, then the heading OFFICE REPORT ON LIMITATION (O/R on Limitation). Always one page. States whether the petition is within time and delay in filing or re-filing. Ends with Dated and Place, and may have a Branch Officer signature or stamp. Not Cover Page, even though the caption is similar. Not the Index line that merely names O/R on Limitation."
       },
       {
-        "name": "Office Report on Limitation"
+        "name": "Listing Proforma",
+        "description": "Starts with PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA (Proforma for First Listing). Usually 2-4 pages in table format. Includes Central Act and The case pertains to (please tick/check the correct box). Ends with Dated and AOR details (name, signature or stamp, code, contact). Not Index, not Cover Page, and not Advocate's Checklist."
       },
       {
-        "name": "Listing Proforma"
+        "name": "Synopsis",
+        "description": "Starts with SYNOPSIS. Narrative summary of the case, often immediately before List of Dates & Events. Not Main Petition (no Grounds, Prayer, or questions of law as the petition body). Not Cover Page, not Index, and not Impugned Order."
       },
       {
-        "name": "Synopsis"
+        "name": "List of Dates & Events",
+        "description": "Starts with LIST OF DATES or LIST OF DATES & EVENTS. Chronological list or table with a date in front of each event (DD/MM/YYYY or MM/YYYY such as 04/2026). Ends at the last dated entry. Not Index, not Record of Proceedings, not Synopsis alone (use Synopsis when the page is only the synopsis heading without dates), and not Impugned Order."
       },
       {
-        "name": "List of Dates & Events"
+        "name": "Main Petition",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION on the second or third line, and a cause title, then the petition body in numbered paragraphs (Form 28, Special Leave Petition, transfer petition, or writ/arbitration petition). Contains Grounds, Prayer, and questions of law. Ends with Drawn By, Filed on, AOR, Advocate for Petitioner/Respondent, signature or stamp. Not Cover Page, not Office Report on Limitation, not Affidavit, not Application, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
       },
       {
-        "name": "Petition"
+        "name": "Affidavit",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading AFFIDAVIT or letter-spaced A F F I D A V I T. Usually 1-3 pages (mostly 2). Has a notary stamp and a date stamp. Ends with Deponent and Verification. Not Main Petition, not AOR's Certificate, not Application, and not an annexure that merely repeats a verification block."
       },
       {
-        "name": "Affidavit"
+        "name": "Annexures",
+        "description": "Each annexed exhibit is its own document, marked Annexure P-1, P-1, P1, R-1 (or P-2, P-100, and so on). Starts with that mark or the annexed heading (for example FIRST INFORMATION REPORT) plus Annexure P-n. Pages stay in that annexure until the next P-n / R-n heading. Numbering is consecutive from P-1: if the last annexure is P-7, there MUST be a separate segment for every number P-1 through P-7 \u2014 never skip P-2 through P-6, never jump, never stop at P-1 when later marks exist. The same rule holds through P-100. Start a NEW segment at every new P-n mark even though the category name is Annexures. Not Main Petition, not Appendix, not Affidavit, not Index."
       },
       {
-        "name": "Annexures"
+        "name": "Appendix",
+        "description": "Starts with Appendix. Sets out sections of an Act or Rules with a short description of each. May end with a signature or stamp. Not Annexures, not Index, not Main Petition."
       },
       {
-        "name": "Appendix"
+        "name": "Application",
+        "description": "Each interlocutory or miscellaneous application is its own document. Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and its own cause title, then APPLICATION. Contains RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH, addressed to THE HON'BLE CHIEF JUSTICE OF INDIA AND HIS COMPANION JUDGES. Ends FILED ON, FILED BY, Dated, and AOR details. Numbering is consecutive from Application 1: if the last application is Application 7, there MUST be a separate segment for every Application 1 through 7 \u2014 never skip. A later application with a new cause title is the next number, not this page. Not Main Petition, not Affidavit, not AOR's Certificate."
       },
       {
-        "name": "Memo of Parties"
+        "name": "Memo of Parties",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading MEMO OF PARTIES and IN THE MATTER OF, listing petitioner and respondent names and addresses. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Vakalatnama, not Cover Page."
       },
       {
-        "name": "Memo of Appearance"
+        "name": "Memo of Appearance",
+        "description": "Letter titled MEMO OF APPEARANCE, often with IN THE SUPREME COURT OF INDIA and a cause title, addressed To the Registrar, asking to enter appearance. Usually 1-3 pages with Vakalatnama. Wording: Memo of Appearance, Identified, accepted and certified. Ends FILED ON, FILED BY, Dated, AOR details, Place. Distinct from Memo of Parties and from Vakalatnama."
       },
       {
-        "name": "Impugned Order"
+        "name": "Impugned Order",
+        "description": "Copy of the High Court or other court judgment or order under challenge. Starts with a court caption such as COURT or HIGH COURT. Not Main Petition, not List of Dates & Events, not Cover Page, not Annexures except where this order is itself marked as an annexure \u2014 prefer Impugned Order when the page is the challenged judgment."
       },
       {
-        "name": "Vakalatnama + PoA/BR"
+        "name": "Vakalatnama",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA and/or VAKALATNAMA (V/A), JURISDICTION, and a cause title. Appoints an advocate; wording Vakalatnama, Identified, accepted and certified. Usually 1-3 pages with Memo of Appearance. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Memo of Parties, and not a Power of Attorney or Board Resolution."
       },
       {
-        "name": "Court Fees"
+        "name": "PoA/BR",
+        "description": "Power of Attorney or Board Resolution authorising the signatory. Distinct from the Vakalatnama."
+      },
+      {
+        "name": "Filing Memo",
+        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading INDEX OF FILING, FILING INDEX, or FILING MEMO. Usually 1-2 pages listing papers filed. Ends FILED ON, FILED BY, Dated, AOR details. Not the paper-book Index (PARTICULARS OF DOCUMENT / PAGE NO near the front), not Memo of Parties, not Memo of Appearance."
+      },
+      {
+        "name": "Court Fees",
+        "description": "Court fee stamps or court fee endorsement pages."
       }
     ],
     "splitting_strategy": {
-      "allow_uncategorized": "include"
+      "allow_uncategorized": "include",
+      "custom_instructions": "Paper-book order is usually Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then annexures, Appendix, applications, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page with OFFICE REPORT ON LIMITATION is never Cover Page. A page with CERTIFICATE or C E R T I F I C A T E after the cause title is AOR's Certificate, not Main Petition. AFFIDAVIT / A F F I D A V I T with Deponent and Verification is Affidavit. Each Annexure P-n / P-n / P1 / R-n heading starts a NEW Annexures segment; keep those pages until the next P-n heading. Numbers are consecutive from P-1: if the last mark is P-7, emit P-1, P-2, P-3, P-4, P-5, P-6, and P-7 \u2014 never skip, never jump to P-10, and the same rule applies through P-100. Each application with a fresh cause title plus APPLICATION / RESPECTFULLY SHOWETH is the next Application 1, 2, 3\u2026 in appearance order with no gaps. INDEX OF FILING / FILING INDEX / FILING MEMO is Filing Memo, not Index. Blank backs continue the previous document."
+    }
+  },
+  "split_upload": {
+    "extract_field_sources": {
+      "court": {
+        "fill": [
+          "Cover Page"
+        ],
+        "verify": [
+          "Main Petition",
+          "Vakalatnama",
+          "Office Report on Limitation",
+          "Affidavit",
+          "Memo of Parties"
+        ]
+      },
+      "petition_type": {
+        "fill": [
+          "Cover Page"
+        ],
+        "verify": [
+          "Main Petition",
+          "Vakalatnama",
+          "Office Report on Limitation",
+          "Affidavit",
+          "Memo of Parties"
+        ]
+      },
+      "cause_title": {
+        "fill": [
+          "Cover Page"
+        ],
+        "verify": [
+          "Main Petition",
+          "Memo of Parties"
+        ]
+      },
+      "petitioners": {
+        "fill": [
+          "Memo of Parties",
+          "Main Petition"
+        ],
+        "verify": [
+          "Main Petition",
+          "Cover Page"
+        ]
+      },
+      "respondents": {
+        "fill": [
+          "Memo of Parties",
+          "Main Petition"
+        ],
+        "verify": [
+          "Main Petition",
+          "Cover Page"
+        ]
+      },
+      "advocates_on_record": {
+        "fill": [
+          "Vakalatnama",
+          "AOR's Certificate"
+        ]
+      },
+      "impugned_orders": {
+        "fill": [
+          "Impugned Order"
+        ]
+      },
+      "relief_sort": {
+        "fill": [
+          "Main Petition"
+        ]
+      }
+    },
+    "types": {
+      "SLP_CIVIL": {
+        "label": "SLP (Civil)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "applications",
+            "label": "Applications",
+            "parts": [
+              "Application"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "court_fees",
+            "label": "Court Fees",
+            "parts": [
+              "Court Fees"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      },
+      "SLP_CRIMINAL": {
+        "label": "SLP (Criminal)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "applications",
+            "label": "Applications",
+            "parts": [
+              "Application"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      },
+      "TRANSFER_PETITION_CIVIL": {
+        "label": "Transfer Petition (Civil)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "applications",
+            "label": "Applications",
+            "parts": [
+              "Application"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "filing_memo",
+            "label": "Filing Memo",
+            "parts": [
+              "Filing Memo"
+            ],
+            "required": true
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      },
+      "TRANSFER_PETITION_CRIMINAL": {
+        "label": "Transfer Petition (Criminal)",
+        "slots": [
+          {
+            "id": "advocates_checklist",
+            "label": "Advocate's Checklist",
+            "parts": [
+              "Advocate's Checklist"
+            ],
+            "required": true
+          },
+          {
+            "id": "cover_page",
+            "label": "Cover Page",
+            "parts": [
+              "Cover Page"
+            ],
+            "required": true
+          },
+          {
+            "id": "record_of_proceedings",
+            "label": "Record of Proceedings",
+            "parts": [
+              "Record of Proceedings"
+            ],
+            "required": true
+          },
+          {
+            "id": "index",
+            "label": "Index",
+            "parts": [
+              "Index"
+            ],
+            "required": true
+          },
+          {
+            "id": "office_report_on_limitation",
+            "label": "Office Report on Limitation",
+            "parts": [
+              "Office Report on Limitation"
+            ],
+            "required": true
+          },
+          {
+            "id": "listing_proforma",
+            "label": "Listing Proforma",
+            "parts": [
+              "Listing Proforma"
+            ],
+            "required": true
+          },
+          {
+            "id": "synopsis_lod",
+            "label": "Synopsis + List of Dates & Events",
+            "parts": [
+              "Synopsis",
+              "List of Dates & Events"
+            ],
+            "required": true
+          },
+          {
+            "id": "impugned_order",
+            "label": "Impugned Order",
+            "parts": [
+              "Impugned Order"
+            ],
+            "required": true
+          },
+          {
+            "id": "petition",
+            "label": "Main Petition",
+            "parts": [
+              "Main Petition"
+            ],
+            "required": true
+          },
+          {
+            "id": "aors_declaration",
+            "label": "AOR's Certificate",
+            "parts": [
+              "AOR's Certificate"
+            ],
+            "required": true
+          },
+          {
+            "id": "affidavit",
+            "label": "Affidavit",
+            "parts": [
+              "Affidavit"
+            ],
+            "required": true
+          },
+          {
+            "id": "annexures",
+            "label": "Annexures",
+            "parts": [
+              "Annexures"
+            ],
+            "required": false
+          },
+          {
+            "id": "appendix",
+            "label": "Appendix",
+            "parts": [
+              "Appendix"
+            ],
+            "required": false
+          },
+          {
+            "id": "applications",
+            "label": "Applications",
+            "parts": [
+              "Application"
+            ],
+            "required": false
+          },
+          {
+            "id": "memo_of_parties",
+            "label": "Memo of Parties",
+            "parts": [
+              "Memo of Parties"
+            ],
+            "required": false
+          },
+          {
+            "id": "vakalatnama_appearance",
+            "label": "Memo of Appearance + Vakalatnama",
+            "parts": [
+              "Memo of Appearance",
+              "Vakalatnama"
+            ],
+            "required": true
+          },
+          {
+            "id": "poa_br",
+            "label": "PoA/BR",
+            "parts": [
+              "PoA/BR"
+            ],
+            "required": false
+          },
+          {
+            "id": "undefined",
+            "label": "Undefined",
+            "parts": [
+              "Undefined"
+            ],
+            "required": false
+          }
+        ]
+      }
     }
   }
 }

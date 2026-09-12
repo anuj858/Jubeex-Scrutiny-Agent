@@ -32,18 +32,92 @@ def _drive_file_id(url: str | None) -> str | None:
     return url.split(_DRIVE_FILE_MARKER, 1)[1].split("/", 1)[0] or None
 
 
-# Pipeline classify labels (SLP_CIVIL) vs API Main Category ("SLP (Civil)").
+# Pipeline classify labels (SLP_CIVIL) vs catalogue Main Category ("SLP (Civil)").
+# Family keys (slp, transfer_petition) apply to both civil and criminal of that family.
 _CATEGORY_ALIASES = {
+    "slp": "slp",
+    "special leave petition": "slp",
     "slp (civil)": "slp_civil",
     "slp civil": "slp_civil",
     "slp_civil": "slp_civil",
+    "special leave petition (civil)": "slp_civil",
+    "special leave petition civil": "slp_civil",
     "slp (criminal)": "slp_criminal",
     "slp criminal": "slp_criminal",
     "slp_criminal": "slp_criminal",
+    "special leave petition (criminal)": "slp_criminal",
+    "special leave petition criminal": "slp_criminal",
+    "transfer petition": "transfer_petition",
+    "transfer_petition": "transfer_petition",
+    "transfer petition (civil)": "transfer_petition_civil",
+    "transfer petition civil": "transfer_petition_civil",
+    "transfer_petition_civil": "transfer_petition_civil",
+    "tp (civil)": "transfer_petition_civil",
+    "tp civil": "transfer_petition_civil",
+    "tp_civil": "transfer_petition_civil",
+    "transfer petition (criminal)": "transfer_petition_criminal",
+    "transfer petition criminal": "transfer_petition_criminal",
+    "transfer_petition_criminal": "transfer_petition_criminal",
+    "tp (criminal)": "transfer_petition_criminal",
+    "tp criminal": "transfer_petition_criminal",
+    "tp_criminal": "transfer_petition_criminal",
+    "writ petition": "writ_petition",
+    "writ_petition": "writ_petition",
+    "writ petition (civil)": "writ_petition_civil",
+    "writ petition civil": "writ_petition_civil",
+    "writ_petition_civil": "writ_petition_civil",
+    "writ petition (criminal)": "writ_petition_criminal",
+    "writ petition criminal": "writ_petition_criminal",
+    "writ_petition_criminal": "writ_petition_criminal",
+    "arbitration petition": "arbitration_petition",
+    "arbitration_petition": "arbitration_petition",
+    "civil appeal": "civil_appeal",
+    "civil_appeal": "civil_appeal",
+    "criminal appeal": "criminal_appeal",
+    "criminal_appeal": "criminal_appeal",
+    "review petition": "review_petition",
+    "review_petition": "review_petition",
+    "review petition (civil)": "review_petition_civil",
+    "review petition civil": "review_petition_civil",
+    "review_petition_civil": "review_petition_civil",
+    "review petition (criminal)": "review_petition_criminal",
+    "review petition criminal": "review_petition_criminal",
+    "review_petition_criminal": "review_petition_criminal",
+    "contempt petition": "contempt_petition",
+    "contempt_petition": "contempt_petition",
+    "contempt petition (civil)": "contempt_petition_civil",
+    "contempt petition civil": "contempt_petition_civil",
+    "contempt_petition_civil": "contempt_petition_civil",
+    "contempt petition (criminal)": "contempt_petition_criminal",
+    "contempt petition criminal": "contempt_petition_criminal",
+    "contempt_petition_criminal": "contempt_petition_criminal",
+    "election petition": "election_petition",
+    "election_petition": "election_petition",
+    "election petition (civil)": "election_petition_civil",
+    "election petition civil": "election_petition_civil",
+    "election_petition_civil": "election_petition_civil",
+    "curative petition": "curative_petition",
+    "curative_petition": "curative_petition",
+    "curative petition (civil)": "curative_petition_civil",
+    "curative petition civil": "curative_petition_civil",
+    "curative_petition_civil": "curative_petition_civil",
+    "curative petition (criminal)": "curative_petition_criminal",
+    "curative petition criminal": "curative_petition_criminal",
+    "curative_petition_criminal": "curative_petition_criminal",
+    "original suit": "original_suit",
+    "original_suit": "original_suit",
+    "original suit (civil)": "original_suit_civil",
+    "original suit civil": "original_suit_civil",
+    "original_suit_civil": "original_suit_civil",
     "general/global": "global",
+    "global/general": "global",
+    "global / general": "global",
+    "general / global": "global",
     "general": "global",
     "global": "global",
 }
+
+_SIDE_SUFFIXES = ("_civil", "_criminal")
 
 
 class _Strict(BaseModel):
@@ -77,7 +151,7 @@ class CatalogueSource(_Strict):
 
 class Defect(_Strict):
     check_id: str
-    serial_no: int
+    serial_no: int | str
     main_category: str
     special_category: str | None = None
     category_id: str | None = None
@@ -87,6 +161,9 @@ class Defect(_Strict):
     requirement: str
     trigger_words: str | None = None
     where_to_look: list[str]
+    inspect_parts: list[str] = Field(default_factory=list)
+    context_parts: list[str] = Field(default_factory=list)
+    exclude_parts: list[str] | None = None
     how_to_cure: list[str]
     applicable_rule: str | None = None
     location_source: str
@@ -106,16 +183,41 @@ class Defect(_Strict):
             return None
         return value
 
-    @field_validator("serial_no", mode="before")
+    @field_validator("main_category", mode="before")
     @classmethod
-    def _int_serial(cls, value: object) -> object:
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
+    def _main_category_as_string(cls, value: object) -> object:
+        if isinstance(value, (list, tuple)):
+            parts = [str(item).strip() for item in value if str(item).strip()]
+            return ", ".join(parts)
         return value
 
-    @field_validator("where_to_look", "how_to_cure", mode="before")
+    @property
+    def main_categories(self) -> tuple[str, ...]:
+        return split_main_categories(self.main_category)
+
+    @field_validator("serial_no", mode="before")
+    @classmethod
+    def _serial_no(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip().upper()
+            if text.isdigit():
+                return int(text)
+            if re.fullmatch(r"\d+[A-Z]", text):
+                return text
+        return value
+
+    @field_validator(
+        "where_to_look",
+        "how_to_cure",
+        "inspect_parts",
+        "context_parts",
+        "exclude_parts",
+        mode="before",
+    )
     @classmethod
     def _as_string_list(cls, value: object) -> object:
+        if value is None:
+            return value
         if isinstance(value, str):
             parts = [p.strip() for p in re.split(r"\n+", value) if p.strip()]
             return parts or [value.strip()]
@@ -124,6 +226,32 @@ class Defect(_Strict):
     @property
     def title(self) -> str:
         return self.defect
+
+
+def split_main_categories(main_category: str | list[str] | None) -> tuple[str, ...]:
+    """Split a catalogue Main Category into one or more petition-type labels.
+
+    Accepts a JSON list, or a string split on commas and on slashes that follow
+    a closing parenthesis (e.g. "SLP (Civil)/SLP (Criminal)"). Leaves
+    "General/Global" as a single label.
+    """
+    if main_category is None:
+        return ()
+    if isinstance(main_category, (list, tuple)):
+        parts = [str(item).strip() for item in main_category]
+    else:
+        cleaned = re.sub(
+            r"\s*-\s*leave it for the user to select\s*$",
+            "",
+            str(main_category).strip(),
+            flags=re.IGNORECASE,
+        )
+        parts = [
+            part.strip()
+            for part in re.split(r"\s*,\s*|(?<=\))\s*/\s*", cleaned)
+            if part.strip()
+        ]
+    return tuple(part for part in parts if part)
 
 
 class Catalogue(_Strict):
@@ -151,7 +279,9 @@ class Catalogue(_Strict):
 
     def category_for(self, defect: Defect) -> DefectCategory | None:
         if defect.category_id:
-            found = next((c for c in self.categories if c.id == defect.category_id), None)
+            found = next(
+                (c for c in self.categories if c.id == defect.category_id), None
+            )
             if found:
                 return found
         if defect.special_category:
@@ -239,7 +369,51 @@ def normalize_filing_type(filing_type: str | None) -> str:
     """Map classify labels and API Main Category onto one key."""
     raw = (filing_type or "").strip().lower()
     raw = re.sub(r"\s+", " ", raw)
-    return _CATEGORY_ALIASES.get(raw, raw.replace(" ", "_").replace("(", "").replace(")", ""))
+    if not raw:
+        return ""
+    if raw in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[raw]
+    # "SLP(Civil)" → "slp (civil)" so the spaced aliases hit.
+    spaced = re.sub(r"\s*\(\s*", " (", raw)
+    spaced = re.sub(r"\s*\)\s*", ")", spaced).strip()
+    if spaced in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[spaced]
+    collapsed = (
+        spaced.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+    )
+    collapsed = re.sub(r"_+", "_", collapsed).strip("_")
+    return _CATEGORY_ALIASES.get(collapsed, collapsed)
+
+
+def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
+    """Normalized main_category keys that run for this petition type.
+
+    SLP_CIVIL → global + slp + slp_civil
+    SLP_CRIMINAL → global + slp + slp_criminal
+
+    Later types follow the same family pattern: Transfer Petition (Civil)
+    runs Global/General + Transfer Petition + Transfer Petition (Civil).
+    """
+    normalized = normalize_filing_type(filing_type)
+    if not normalized:
+        return frozenset()
+    keys = {"global", normalized}
+    for suffix in _SIDE_SUFFIXES:
+        if normalized.endswith(suffix):
+            parent = normalized[: -len(suffix)]
+            if parent:
+                keys.add(parent)
+            break
+    return frozenset(keys)
+
+
+def serial_sort_key(serial_no: int | str | None) -> tuple[int, str]:
+    """Sort 92 before 96A before 96B; letter suffixes follow the number."""
+    text = str(serial_no or "").strip().upper()
+    match = re.fullmatch(r"(\d+)([A-Z]*)", text)
+    if not match:
+        return (10**9, text)
+    return (int(match.group(1)), match.group(2))
 
 
 def enabled_defect_ids() -> tuple[str, ...]:
@@ -255,8 +429,12 @@ def enabled_defect_ids() -> tuple[str, ...]:
 def _applies_to_filing(defect: Defect, normalized_filing_type: str) -> bool:
     if not normalized_filing_type:
         return False
-    category = normalize_filing_type(defect.main_category)
-    return category == "global" or category == normalized_filing_type
+    applicable = categories_for_filing_type(normalized_filing_type)
+    for category in defect.main_categories:
+        key = normalize_filing_type(category)
+        if key and key in applicable:
+            return True
+    return False
 
 
 def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
@@ -273,14 +451,12 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
         if parent_id and parent_id in by_id:
             children.setdefault(parent_id, []).append(defect)
     for kids in children.values():
-        kids.sort(key=lambda d: (d.serial_no, d.check_id))
+        kids.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
 
     roots = [
-        d
-        for d in defects
-        if not d.parent_check_id or d.parent_check_id not in by_id
+        d for d in defects if not d.parent_check_id or d.parent_check_id not in by_id
     ]
-    roots.sort(key=lambda d: (d.serial_no, d.check_id))
+    roots.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
 
     ordered: list[Defect] = []
     seen: set[str] = set()
@@ -318,6 +494,12 @@ def defects_for_filing_type(filing_type: str | None) -> list[Defect]:
             "[Scrutiny] SCRUTINY_DEFECTS lists unknown check ids: %s",
             ", ".join(sorted(unknown)),
         )
+    logger.info(
+        "[Scrutiny] Petition type %s selected %s defect(s) from main_category {%s}",
+        filing_type or "(missing)",
+        len(selected),
+        ", ".join(sorted(categories_for_filing_type(filing_type))),
+    )
     return selected
 
 

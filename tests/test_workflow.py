@@ -4,7 +4,7 @@ import pytest
 from extraction_review.config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES
 from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataResponse
 from extraction_review.metadata_workflow import workflow as metadata_workflow
-from extraction_review.process_file import FileEvent, Status
+from extraction_review.process_file import BundlePrepared, FileEvent, Status
 from extraction_review.process_file import workflow as process_file_workflow
 from llama_cloud_fake import FakeLlamaCloudServer
 from workflows.events import StartEvent
@@ -19,14 +19,27 @@ async def test_process_file_workflow(
     fake: FakeLlamaCloudServer,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
+
+    called = {"extract": 0}
+
+    async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        called["extract"] += 1
+        return "agd-compiled-1"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
     file_id = fake.files.preload(path="tests/files/test.pdf")
     try:
         result = await process_file_workflow.run(start_event=FileEvent(file_id=file_id))
     except Exception:
         result = None
     assert result is not None
-    assert isinstance(result, str)
-    assert len(result) == 7
+    assert isinstance(result, BundlePrepared)
+    assert result.filing_type
+    assert result.agent_data_id is None
+    assert called["extract"] == 0
 
 
 @pytest.mark.asyncio
@@ -41,6 +54,14 @@ async def test_classify_v2_assigns_filing_type(
     """process_file reports a concrete SEC filing type from classify v2."""
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
     file_id = fake.files.preload(path="tests/files/test.pdf")
+
+    async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        return "agd-compiled-1"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
 
     handler = process_file_workflow.run(start_event=FileEvent(file_id=file_id))
     classified_statuses: list[Status] = []
@@ -70,3 +91,13 @@ async def test_metadata_workflow() -> None:
     assert result.discriminator_field == DISCRIMINATOR_FIELD
     assert set(result.schemas.keys()) == FILING_TYPES
     assert DISCRIMINATOR_FIELD in result.json_schema.get("properties", {})
+    assert set(result.split_upload_types.keys()) == {
+        "SLP_CIVIL",
+        "SLP_CRIMINAL",
+        "TRANSFER_PETITION_CIVIL",
+        "TRANSFER_PETITION_CRIMINAL",
+    }
+    criminal_ids = [
+        slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
+    ]
+    assert "court_fees" not in criminal_ids

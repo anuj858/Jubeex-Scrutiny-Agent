@@ -1,0 +1,794 @@
+"""Catalog, validation, and extract-pack helpers for already-split uploads.
+
+LlamaSplit is not used. `document_part` comes from labeled upload slots in
+`configs/config.json` `split_upload.types`.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+from .document_parts import MAIN_PETITION_PART, parts_on_page
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
+
+EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
+    {"Annexures", "Appendix", "Application"}
+)
+
+
+def _excluded_from_extract_pack(name: str) -> bool:
+    folded = (name or "").strip().lower()
+    if (name or "").strip() in EXTRACT_PACK_EXCLUDED_PARTS:
+        return True
+    return folded.startswith("annexure") or folded.startswith("application")
+
+
+# Main Petition grounds stay out of Extract. Keep page 1 (parties) and the last
+# pages (prayer / relief).
+PETITION_PACK_FIRST_PAGES = 1
+PETITION_PACK_LAST_PAGES = 3
+LOOK_ONLY_SUFFIX = " Ignore other document parts."
+PETITION_SLOT_ID = "petition"
+UNDEFINED_SLOT_ID = "undefined"
+_ANNEXURE_SLOT_RE = re.compile(r"^annexure_p(\d{1,3})$")
+_APPLICATION_SLOT_RE = re.compile(r"^application_(\d{1,3})$")
+_PARSE_STUB_PREFIX = "(No parse text for"
+PARTY_FIELDS = frozenset({"petitioners", "respondents"})
+
+
+class SplitUploadError(ValueError):
+    """Invalid filing type or slot mapping for a split upload."""
+
+
+@dataclass(frozen=True)
+class UploadSlot:
+    id: str
+    label: str
+    parts: tuple[str, ...]
+    required: bool = True
+
+
+def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
+    """Annexure P-n / Application n slots are created when those files appear."""
+    key = (slot_id or "").strip()
+    match = _ANNEXURE_SLOT_RE.fullmatch(key)
+    if match:
+        number = int(match.group(1))
+        return UploadSlot(
+            id=key,
+            label=f"Annexure P-{number}",
+            parts=(f"Annexure P-{number}",),
+            required=False,
+        )
+    match = _APPLICATION_SLOT_RE.fullmatch(key)
+    if match:
+        number = int(match.group(1))
+        return UploadSlot(
+            id=key,
+            label=f"Application {number}",
+            parts=(f"Application {number}",),
+            required=False,
+        )
+    return None
+
+
+def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot | None:
+    return catalog.slot_by_id().get(slot_id) or dynamic_upload_slot(slot_id)
+
+
+def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int]:
+    match = _ANNEXURE_SLOT_RE.fullmatch(slot_id)
+    if match:
+        return (0, int(match.group(1)))
+    match = _APPLICATION_SLOT_RE.fullmatch(slot_id)
+    if match:
+        return (1, int(match.group(1)))
+    return (2, 0)
+
+
+@dataclass(frozen=True)
+class FieldSources:
+    """Where one extract field is filled from, and where spelling is checked."""
+
+    fill: tuple[str, ...] = ()
+    verify: tuple[str, ...] = ()
+
+    def all_parts(self) -> tuple[str, ...]:
+        names: list[str] = list(self.fill)
+        for name in self.verify:
+            if name not in names:
+                names.append(name)
+        return tuple(names)
+
+
+@dataclass(frozen=True)
+class UploadTypeCatalog:
+    filing_type: str
+    label: str
+    slots: tuple[UploadSlot, ...]
+    extract_field_sources: dict[str, FieldSources] = field(default_factory=dict)
+
+    def slot_by_id(self) -> dict[str, UploadSlot]:
+        return {slot.id: slot for slot in self.slots}
+
+
+@dataclass(frozen=True)
+class SplitPartInput:
+    slot_id: str
+    file_id: str
+    document_parts: tuple[str, ...] = ()
+    file_hash: str | None = None
+    filename: str | None = None
+    document_id: str | None = None
+
+
+@lru_cache(maxsize=1)
+def _read_config() -> dict[str, Any]:
+    with _CONFIG_PATH.open(encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def load_split_upload_config(
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = payload if payload is not None else _read_config()
+    block = data.get("split_upload") if isinstance(data, Mapping) else None
+    return dict(block) if isinstance(block, Mapping) else {}
+
+
+def _as_part_names(value: Any) -> tuple[str, ...]:
+    names = parts_on_page(value)
+    return tuple(names)
+
+
+def _parse_slot(raw: Mapping[str, Any]) -> UploadSlot | None:
+    slot_id = str(raw.get("id") or "").strip()
+    label = str(raw.get("label") or slot_id).strip()
+    parts = _as_part_names(raw.get("parts") or label)
+    if not slot_id or not parts:
+        return None
+    return UploadSlot(
+        id=slot_id,
+        label=label or slot_id,
+        parts=parts,
+        required=bool(raw.get("required", True)),
+    )
+
+
+def _parse_field_sources(raw: Any) -> FieldSources | None:
+    if isinstance(raw, Mapping):
+        fill = _as_part_names(raw.get("fill") or raw.get("parts") or [])
+        verify = _as_part_names(raw.get("verify") or [])
+        if fill or verify:
+            return FieldSources(fill=fill, verify=verify)
+        return None
+    names = _as_part_names(raw)
+    if not names:
+        return None
+    return FieldSources(fill=names)
+
+
+def _parse_sources(raw: Any) -> dict[str, FieldSources]:
+    if not isinstance(raw, Mapping):
+        return {}
+    sources: dict[str, FieldSources] = {}
+    for field_name, spec in raw.items():
+        key = str(field_name).strip()
+        parsed = _parse_field_sources(spec)
+        if key and parsed is not None:
+            sources[key] = parsed
+    return sources
+
+
+def type_catalog(
+    filing_type: str,
+    payload: Mapping[str, Any] | None = None,
+) -> UploadTypeCatalog:
+    block = load_split_upload_config(payload)
+    types = block.get("types") if isinstance(block.get("types"), Mapping) else {}
+    key = str(filing_type or "").strip()
+    raw = types.get(key) if isinstance(types, Mapping) else None
+    if not isinstance(raw, Mapping):
+        raise SplitUploadError(f"Unknown filing type: {key or '(empty)'}")
+    slots: list[UploadSlot] = []
+    seen: set[str] = set()
+    for item in raw.get("slots") or []:
+        if not isinstance(item, Mapping):
+            continue
+        slot = _parse_slot(item)
+        if slot is None or slot.id in seen:
+            continue
+        seen.add(slot.id)
+        slots.append(slot)
+    if not slots:
+        raise SplitUploadError(f"No upload slots configured for {key}")
+    shared = _parse_sources(block.get("extract_field_sources"))
+    override = _parse_sources(raw.get("extract_field_sources"))
+    sources = {**shared, **override}
+    label = str(raw.get("label") or key).strip() or key
+    return UploadTypeCatalog(
+        filing_type=key,
+        label=label,
+        slots=tuple(slots),
+        extract_field_sources=sources,
+    )
+
+
+def _ui_slot_dict(slot: UploadSlot) -> dict[str, Any]:
+    return {
+        "id": slot.id,
+        "label": slot.label,
+        "parts": list(slot.parts),
+        "required": slot.required,
+    }
+
+
+def _repeatable_ui_slot(group: str, number: int = 1) -> dict[str, Any]:
+    if group == "annexures":
+        return {
+            "id": f"annexure_p{number}",
+            "label": f"Annexure P-{number}",
+            "parts": [f"Annexure P-{number}"],
+            "required": False,
+            "repeatable": True,
+            "repeat_group": "annexures",
+        }
+    return {
+        "id": f"application_{number}",
+        "label": f"Application {number}",
+        "parts": [f"Application {number}"],
+        "required": False,
+        "repeatable": True,
+        "repeat_group": "applications",
+    }
+
+
+def ui_catalog(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Filing-type labels and slots for the UI. No extract internals.
+
+    Catch-all Annexures / Applications slots become the first numbered upload
+    (P-1 / Application 1) with ``repeatable`` so the form can Add P-2, P-3, …
+    """
+    block = load_split_upload_config(payload)
+    types = block.get("types") if isinstance(block.get("types"), Mapping) else {}
+    catalog: dict[str, Any] = {}
+    if not isinstance(types, Mapping):
+        return catalog
+    for filing_type, raw in types.items():
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            entry = type_catalog(str(filing_type), payload)
+        except SplitUploadError:
+            continue
+        ui_slots: list[dict[str, Any]] = []
+        for slot in entry.slots:
+            if slot.id == "annexures":
+                ui_slots.append(_repeatable_ui_slot("annexures", 1))
+                continue
+            if slot.id == "applications":
+                ui_slots.append(_repeatable_ui_slot("applications", 1))
+                continue
+            ui_slots.append(_ui_slot_dict(slot))
+        catalog[entry.filing_type] = {
+            "label": entry.label,
+            "slots": ui_slots,
+        }
+    return catalog
+
+
+def _part_from_mapping(raw: Mapping[str, Any] | SplitPartInput) -> SplitPartInput:
+    if isinstance(raw, SplitPartInput):
+        return raw
+    slot_id = str(raw.get("slot_id") or "").strip()
+    file_id = str(raw.get("file_id") or "").strip()
+    parts = _as_part_names(raw.get("document_parts"))
+    file_hash = raw.get("file_hash")
+    filename = raw.get("filename")
+    document_id = raw.get("document_id")
+    return SplitPartInput(
+        slot_id=slot_id,
+        file_id=file_id,
+        document_parts=parts,
+        file_hash=str(file_hash) if file_hash else None,
+        filename=str(filename) if filename else None,
+        document_id=str(document_id) if document_id else None,
+    )
+
+
+def validate_parts(
+    filing_type: str,
+    parts: Sequence[Mapping[str, Any] | SplitPartInput],
+    payload: Mapping[str, Any] | None = None,
+    *,
+    require_all_slots: bool = True,
+) -> tuple[UploadTypeCatalog, list[SplitPartInput]]:
+    catalog = type_catalog(filing_type, payload)
+    allowed = catalog.slot_by_id()
+    parsed: list[SplitPartInput] = []
+    seen: set[str] = set()
+    for raw in parts:
+        item = _part_from_mapping(raw)
+        if not item.slot_id:
+            raise SplitUploadError("Each uploaded file must include slot_id")
+        seen.add(item.slot_id)
+        slot = allowed.get(item.slot_id) or dynamic_upload_slot(item.slot_id)
+        if slot is None:
+            raise SplitUploadError(
+                f"Unknown slot {item.slot_id!r} for {catalog.filing_type}"
+            )
+        if not item.file_id:
+            raise SplitUploadError(f"No file uploaded for {slot.label}")
+        parsed.append(
+            SplitPartInput(
+                slot_id=slot.id,
+                file_id=item.file_id,
+                document_parts=slot.parts,
+                file_hash=item.file_hash,
+                filename=item.filename,
+                document_id=item.document_id,
+            )
+        )
+
+    missing = [
+        slot.label for slot in catalog.slots if slot.required and slot.id not in seen
+    ]
+    if require_all_slots and missing:
+        raise SplitUploadError("Missing required documents: " + ", ".join(missing))
+    if not parsed:
+        raise SplitUploadError(
+            "No labeled documents were sliced from the compiled PDF"
+        )
+    return catalog, parsed
+
+
+def ordered_parts(
+    catalog: UploadTypeCatalog, parts: Sequence[SplitPartInput]
+) -> list[SplitPartInput]:
+    grouped: dict[str, list[SplitPartInput]] = {}
+    for item in parts:
+        grouped.setdefault(item.slot_id, []).append(item)
+    ordered: list[SplitPartInput] = []
+    consumed: set[str] = set()
+    annexure_ids = sorted(
+        (slot_id for slot_id in grouped if _ANNEXURE_SLOT_RE.fullmatch(slot_id)),
+        key=_numbered_slot_sort_key,
+    )
+    application_ids = sorted(
+        (slot_id for slot_id in grouped if _APPLICATION_SLOT_RE.fullmatch(slot_id)),
+        key=_numbered_slot_sort_key,
+    )
+    for slot in catalog.slots:
+        if slot.id == "annexures":
+            for slot_id in annexure_ids:
+                ordered.extend(grouped[slot_id])
+                consumed.add(slot_id)
+            ordered.extend(grouped.get("annexures", []))
+            consumed.add("annexures")
+            continue
+        if slot.id == "applications":
+            for slot_id in application_ids:
+                ordered.extend(grouped[slot_id])
+                consumed.add(slot_id)
+            ordered.extend(grouped.get("applications", []))
+            consumed.add("applications")
+            continue
+        ordered.extend(grouped.get(slot.id, []))
+        consumed.add(slot.id)
+    for slot_id, items in grouped.items():
+        if slot_id not in consumed:
+            ordered.extend(items)
+    return ordered
+
+
+def bundle_file_hash(parts: Sequence[SplitPartInput]) -> str:
+    payload = [
+        [item.slot_id, item.file_hash or item.file_id]
+        for item in sorted(parts, key=lambda item: item.slot_id)
+    ]
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def stitch_parsed_parts(
+    catalog: UploadTypeCatalog,
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+) -> tuple[dict[int, str], dict[int, list[str]]]:
+    """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
+    page_markdown: dict[int, str] = {}
+    page_parts: dict[int, list[str]] = {}
+    next_page = 1
+    for item in ordered_parts(catalog, parts):
+        local = pages_by_slot.get(item.slot_id) or {}
+        local_numbers = sorted(int(page) for page in local)
+        if not local_numbers:
+            page_markdown[next_page] = (
+                f"{_PARSE_STUB_PREFIX} {item.filename or item.slot_id})"
+            )
+            page_parts[next_page] = list(item.document_parts)
+            next_page += 1
+            continue
+        for local_page in local_numbers:
+            text = str(local.get(local_page) or local.get(str(local_page)) or "")
+            page_markdown[next_page] = text
+            page_parts[next_page] = list(item.document_parts)
+            next_page += 1
+    return page_markdown, page_parts
+
+
+def coerce_page_markdown(raw: Mapping[Any, Any] | None) -> dict[int, str]:
+    """JSON round-trips can turn page numbers into strings."""
+    pages: dict[int, str] = {}
+    for key, value in (raw or {}).items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        pages[number] = str(value or "")
+    return pages
+
+
+def coerce_page_parts(raw: Mapping[Any, Any] | None) -> dict[int, list[str]]:
+    pages: dict[int, list[str]] = {}
+    for key, value in (raw or {}).items():
+        try:
+            number = int(key)
+        except (TypeError, ValueError):
+            continue
+        names = parts_on_page(value)
+        if names:
+            pages[number] = names
+    return pages
+
+
+def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
+    names = {
+        part
+        for spec in catalog.extract_field_sources.values()
+        for part in spec.all_parts()
+    }
+    return names - {part for part in names if _excluded_from_extract_pack(part)}
+
+
+def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool:
+    labels = [name for name in names if name]
+    if not labels:
+        return False
+    if all(_excluded_from_extract_pack(name) for name in labels):
+        return False
+    if not source_parts:
+        return not any(_excluded_from_extract_pack(name) for name in labels)
+    return any(name in source_parts for name in labels)
+
+
+def _petition_pages_to_keep(
+    page_markdown: Mapping[int, str],
+    page_parts: Mapping[int, Any],
+) -> set[int]:
+    petition_pages = [
+        page
+        for page in sorted(page_markdown)
+        if MAIN_PETITION_PART in parts_on_page(page_parts.get(page))
+        and not (page_markdown.get(page) or "").strip().startswith(_PARSE_STUB_PREFIX)
+    ]
+    if not petition_pages:
+        return set()
+    keep = set(petition_pages[:PETITION_PACK_FIRST_PAGES])
+    keep.update(petition_pages[-PETITION_PACK_LAST_PAGES:])
+    return keep
+
+
+def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
+    fill_of: dict[str, list[str]] = {}
+    verify_of: dict[str, list[str]] = {}
+    if catalog is not None:
+        for field_name, spec in catalog.extract_field_sources.items():
+            for part in spec.fill:
+                fill_of.setdefault(part, []).append(field_name)
+            for part in spec.verify:
+                verify_of.setdefault(part, []).append(field_name)
+    notes: dict[str, str] = {}
+    for part, fields in fill_of.items():
+        notes[part] = (
+            f"Fill {', '.join(fields)} from this section when listed as a fill source."
+        )
+    for part, fields in verify_of.items():
+        extra = (
+            f" Check spelling for {', '.join(fields)}; "
+            "do not overwrite fill values with text from this section."
+        )
+        notes[part] = (notes.get(part) or "").rstrip() + extra
+    notes.setdefault(
+        "Memo of Appearance",
+        "Use only for advocates_on_record.",
+    )
+    notes.setdefault(
+        "Vakalatnama",
+        "Use only for advocates_on_record.",
+    )
+    notes.setdefault(
+        "AOR's Certificate",
+        "Cause title at the top, then the word CERTIFICATE (or C E R T I F I C A T E). "
+        "Both are required. Body starts Certified that / CERTIFIED that the petition "
+        "is confined only to the pleadings. Use the signature or DRAWN & FILED BY "
+        "block only for advocates_on_record.",
+    )
+    for part in ("Memo of Appearance", "Vakalatnama", "AOR's Certificate"):
+        if "Do not copy petitioner or respondent names" not in notes[part]:
+            notes[part] = (
+                notes[part].rstrip()
+                + " Do not copy petitioner or respondent names."
+            )
+    cert_note = notes.get("AOR's Certificate") or ""
+    if "cause title" not in cert_note.lower():
+        notes["AOR's Certificate"] = (
+            cert_note.rstrip()
+            + " This page always has the cause title at the top, then the word "
+            "CERTIFICATE (or C E R T I F I C A T E), then Certified that the "
+            "petition is confined only to the pleadings. Use the signature or "
+            "DRAWN & FILED BY block for advocates_on_record only. "
+            "Cause title without CERTIFICATE is Cover Page or Main Petition."
+        )
+    return notes
+
+
+def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
+    lines = [
+        "# Extraction rules",
+        "Copy printed text only. Do not invent names, addresses, dates, or "
+        "categories. If a value is not printed in the allowed fill section, leave it null.",
+        "",
+    ]
+    sources = catalog.extract_field_sources if catalog is not None else {}
+    for field_name, spec in sources.items():
+        fill = ", ".join(f"[{p}]" for p in spec.fill) or "(none)"
+        bit = f"- {field_name}: fill from {fill}"
+        if spec.verify:
+            verify = ", ".join(f"[{p}]" for p in spec.verify)
+            bit += f". Check spelling against {verify}; never overwrite fill text"
+        if field_name in PARTY_FIELDS:
+            bit += (
+                ". Prefer Memo of Parties; if it is missing, use the first page of "
+                "the Main Petition. Merge blank particulars between those two only. "
+                "Never copy party names or addresses from Vakalatnama or Cover Page. "
+                "Use Cover Page only to mark is_primary from the cover cause-title names. "
+                "And Anr/Ors on Cover Page means extra parties exist; list those names "
+                "from Memo of Parties or the Main Petition"
+            )
+        lines.append(bit + ".")
+    lines.extend(
+        [
+            "- formatted_title: Cover Page names are main_petitioner and main_respondent. "
+            "Store those names without And Anr, And Ors, Petitioner, or Respondent. "
+            "Each side is 'MainName' (1 party), 'MainName and Anr.' (exactly 2), "
+            "'MainName and Ors.' (3 or more). Join with ' VS '. Never use square "
+            "brackets: write 'and Anr.' and 'and Ors.', not '[And ors.]' or '[and Anr.]'. "
+            "Do not append and Anr. or and Ors. if that suffix is already on the name.",
+            "- kind: INDIVIDUAL or ORGANIZATION from the printed name. Organization "
+            "prefixes: M/s, M/s., Messrs, The, Union, Government of, Ministry of, "
+            "Department of. Suffixes: Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, "
+            "LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, "
+            "Society, Association. 'The' is a name prefix (The State of …), not every 'the'.",
+            "- acting_through: look under the party for 'acting through' / 'through'. "
+            "ORGANIZATION almost always has it; if missing, add an inconsistencies item. "
+            "INDIVIDUAL: optional.",
+            "- relief_sort: copy only the prayer body under Main Prayer / Prayer on the "
+            "last 2-3 pages of the Main Petition. Do not include the heading, number, "
+            "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
+            "- confidence: percentage string such as 95% or 65% on each object.",
+            "- inconsistencies: record spelling or value mismatches between fill and "
+            "verify sources. Always record a letter-level mismatch of the Cover Page "
+            "main petitioner or main respondent versus that same person's name on "
+            "Memo of Parties or the Main Petition (example: Shalija vs Shailja). "
+            "Do not skip the main-name spelling because Cover Page also says And Anr/Ors. "
+            "Do not invent extra parties to resolve a mismatch. "
+            "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
+            "Respondent, or Respondent(s), with or without leading dots (... or …). "
+            "Those marks are not part of the party name. "
+            "Do not flag ALL CAPS vs title case as a spelling mismatch "
+            "(Impugned Order names are often printed in capitals). "
+            "Do not compare party names against the Impugned Order. "
+            "One item per distinct name spelling; do not repeat the same two names. "
+            "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
+            "Cover Page And Anr/Ors; those extra people are listed on Memo of Parties "
+            "or the Main Petition, not on the cover shorthand. "
+            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition / "
+            "Memo of Parties: \"Name\". Quote the person's name only: no And Anr/Ors, "
+            "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
+            "AOR's Certificate as party-name sources. "
+            "items[].id is '1', '2', …; use raw_text, not detail.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def build_extract_pack_markdown(
+    page_markdown: Mapping[int, str],
+    page_parts: Mapping[int, Any],
+    source_parts: set[str],
+    catalog: UploadTypeCatalog | None = None,
+) -> str:
+    sections: list[str] = []
+    petition_keep = _petition_pages_to_keep(page_markdown, page_parts)
+    notes = _section_use_notes(catalog)
+    for page in sorted(page_markdown):
+        names = parts_on_page(page_parts.get(page))
+        if not page_is_extract_source(names, source_parts):
+            continue
+        label = " / ".join(names) or "Unknown"
+        body = (page_markdown.get(page) or "").strip()
+        if body.startswith(_PARSE_STUB_PREFIX):
+            continue
+        if MAIN_PETITION_PART in names:
+            others = [n for n in names if n in source_parts and n != MAIN_PETITION_PART]
+            if page not in petition_keep and not others:
+                continue
+        note = next((notes[n] for n in names if n in notes), None)
+        if note:
+            sections.append(f"## [{label}] (p. {page})\n\n> {note}\n\n{body}".rstrip())
+        else:
+            sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
+    packed = "\n\n".join(sections).strip()
+    if not packed:
+        return ""
+    return f"{extract_pack_preamble(catalog)}\n\n{packed}"
+
+
+def _look_only_text(field_name: str, spec: FieldSources) -> str:
+    fill = ", ".join(spec.fill) or "no fill source"
+    extra = f"Fill only from {fill}."
+    if spec.verify:
+        extra += (
+            f" Check spelling against {', '.join(spec.verify)}. "
+            "If spellings differ, keep the fill value and add an inconsistencies item."
+        )
+    if field_name in PARTY_FIELDS:
+        extra += (
+            " Prefer Memo of Parties; if it is missing, use the first page of the "
+            "Main Petition. If a field is blank in one of those parts, fill it from the "
+            "other. Never copy party names or addresses from Vakalatnama, PoA/BR, "
+            "Memo of Appearance, AOR's Certificate, or Cover Page. Use Cover Page "
+            "only to decide which already-listed party is primary. Extra petitioners "
+            "and respondents are listed on Memo of Parties or the Main Petition; "
+            "Cover Page And Anr/Ors is not the second party's name. Do not invent "
+            "parties. Leave a field null if it is not printed on a fill source. "
+            "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
+            "ORGANIZATION without acting_through is an inconsistencies item."
+        )
+    if field_name == "cause_title":
+        extra += (
+            " main_petitioner and main_respondent are the names on the Cover Page "
+            "cause-title line without And Anr / And Ors / Petitioner / Respondent. "
+            "formatted_title uses Cover Page main names plus and Anr. for exactly "
+            "one extra party on that side and and Ors. for two or more extras. "
+            "Never wrap and Anr. or and Ors. in square brackets. "
+            "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
+            "Respondent(s), with or without dots, as a spelling mismatch. "
+            "Do not write 'and Anr. and Anr.' "
+            "If the Cover Page main name differs in letters from Memo of Parties "
+            "or the Main Petition (Shalija vs Shailja), that is an inconsistencies item. "
+            "Extra parties are not a spelling mismatch against And Anr/Ors."
+        )
+    if field_name == "advocates_on_record":
+        extra += (
+            " AOR's Certificate always has the cause title at the top, then the word "
+            "CERTIFICATE (one word or letter-spaced C E R T I F I C A T E). Both are "
+            "required. Under CERTIFICATE the body starts Certified that or CERTIFIED "
+            "that the Special Leave Petition is confined only to the pleadings before "
+            "the High Court, Court, or Tribunal whose order is challenged. Extra facts "
+            "or grounds with an application may or may not be mentioned. Take AOR name "
+            "from the signature block or DRAWN & FILED BY; take code (CC No.) and mobile "
+            "only if printed. Do not copy petitioner or respondent names from the cause "
+            "title on this page. Cause title without CERTIFICATE is not this page. This "
+            "is not Cover Page, Vakalatnama, or the Advocate's Check List."
+        )
+    if field_name == "relief_sort":
+        extra += (
+            " Copy only the prayer body under Main Prayer or Prayer on the last 2-3 pages "
+            "of the Main Petition. Omit the heading, clause number, HTML, and markdown."
+        )
+    return f"{extra}{LOOK_ONLY_SUFFIX}"
+
+
+def inject_where_to_look(
+    schema: Mapping[str, Any],
+    sources: Mapping[str, FieldSources | Sequence[str]],
+) -> dict[str, Any]:
+    """Copy extract JSON schema and append look-only guidance to field descriptions."""
+    updated = copy.deepcopy(dict(schema))
+    props = updated.get("properties")
+    if not isinstance(props, dict):
+        return updated
+    for field_name, spec in sources.items():
+        node = props.get(field_name)
+        if not isinstance(node, dict):
+            continue
+        parsed = spec if isinstance(spec, FieldSources) else _parse_field_sources(spec)
+        if parsed is None or not parsed.all_parts():
+            continue
+        extra = _look_only_text(field_name, parsed)
+        existing = str(node.get("description") or "").rstrip()
+        if extra in existing:
+            continue
+        node["description"] = f"{existing} {extra}".strip() if existing else extra
+    return updated
+
+
+def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
+    lines = [
+        "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
+        "Each section is labelled with its document part, for example ## [Cover Page] (p. 1).",
+        "Copy printed text only. Do not invent or complete a field from a document "
+        "part that is not a fill source for that field. If it is not printed there, leave it null.",
+        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
+        "source_pages must be the integer page numbers in the headings, for example (p. 6).",
+        "Ignore Annexures and Appendix.",
+        "",
+    ]
+    for field_name, spec in catalog.extract_field_sources.items():
+        line = f"- {field_name}: fill {', '.join(spec.fill) or '(none)'}"
+        if spec.verify:
+            line += f"; verify {', '.join(spec.verify)}"
+        lines.append(line)
+    lines.extend(
+        [
+            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page without And Anr / And Ors. Never use [And ors.] or other square brackets.",
+            "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
+            "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
+            "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
+            "- confidence: percentage strings such as 95% or 65%.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def extract_configuration(
+    extract_config: Any,
+    catalog: UploadTypeCatalog,
+) -> dict[str, Any]:
+    from .config import LegalExtractRecord
+
+    dumped = extract_config.model_dump(
+        exclude={"configuration_id", "product_type"},
+        exclude_none=True,
+    )
+    dumped["data_schema"] = inject_where_to_look(
+        LegalExtractRecord.model_json_schema(),
+        catalog.extract_field_sources,
+    )
+    dumped["system_prompt"] = build_extract_system_prompt(catalog)
+    return dumped
+
+
+def find_part(parts: Sequence[SplitPartInput], slot_id: str) -> SplitPartInput | None:
+    for item in parts:
+        if item.slot_id == slot_id:
+            return item
+    return None
+
+
+def display_filename(filing_type: str, parts: Sequence[SplitPartInput]) -> str:
+    cover = find_part(parts, "cover_page")
+    if cover and cover.filename:
+        return cover.filename
+    petition = find_part(parts, PETITION_SLOT_ID)
+    if petition and petition.filename:
+        return petition.filename
+    for item in parts:
+        if item.filename:
+            return item.filename
+    return f"{filing_type} split upload"

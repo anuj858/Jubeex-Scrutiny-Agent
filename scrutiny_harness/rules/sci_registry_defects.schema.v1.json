@@ -139,14 +139,34 @@
           "description": "Internal check id, e.g. D001. API serial_no is the registry S.No."
         },
         "serial_no": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "S.No. from the defect API / registry list"
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+[A-Z]$"
+            }
+          ],
+          "description": "S.No. from the defect API / registry list. Letter suffixes (96A) are slices of one sheet row."
         },
         "main_category": {
-          "type": "string",
-          "minLength": 2,
-          "description": "Main Category, e.g. SLP (Civil)"
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 2
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 2
+              }
+            }
+          ],
+          "description": "Petition-type scope. One label, a comma-separated list, or a JSON array. General/Global runs on every filing. A family label (SLP) runs on every civil and criminal filing of that family. A side label (SLP (Civil)) runs only on that petition type. Multiple labels (e.g. 'SLP (Civil), SLP (Criminal), Civil Appeal') run when any listed type matches the filing."
         },
         "special_category": {
           "type": ["string", "null"]
@@ -185,7 +205,31 @@
             "type": "string",
             "minLength": 5
           },
-          "description": "Where to Look steps"
+          "description": "Where to Look steps (human/LLM instructions). Not the retrieval source of truth."
+        },
+        "inspect_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "LlamaSplit document_part labels that must be retrieved before defect_found is allowed. Use configs/config.json split.categories names."
+        },
+        "context_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "Extra Split labels to retrieve for comparison/context. Missing these does not force needs_review."
+        },
+        "exclude_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "Split labels that must not be used as evidence (e.g. Index listing lines). Defaults to Index when omitted on non-index checks."
         },
         "how_to_cure": {
           "type": "array",

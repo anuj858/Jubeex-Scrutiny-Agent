@@ -1,13 +1,17 @@
-from typing import Annotated, Any
 import logging
+from typing import Annotated, Any
 
-from llama_cloud.types.configuration_response import ExtractV2Parameters
 from workflows import Workflow, step
 from workflows.events import StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .clients import get_llama_cloud_client, project_id
-from .config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES, ExtractConfig, create_union_schema
+from .config import (
+    EXTRACTED_DATA_COLLECTION,
+    JUBEEX_FILING_TYPES,
+    CoreFilingRecord,
+    ExtractConfig,
+)
+from .split_upload import ui_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -19,23 +23,7 @@ class MetadataResponse(StopEvent):
     schemas: dict[str, dict[str, Any]]
     discriminator_field: str
     extracted_data_collection: str
-
-
-async def _resolve_schema(extract_config: ExtractConfig) -> dict[str, Any]:
-    """Return the data schema for an extract config, pulling from the platform if saved."""
-    if extract_config.configuration_id:
-        client = get_llama_cloud_client()
-        config_resp = await client.configurations.retrieve(
-            extract_config.configuration_id,
-            project_id=project_id,
-        )
-        params = config_resp.parameters
-        if not isinstance(params, ExtractV2Parameters):
-            raise ValueError(
-                f"Configuration {extract_config.configuration_id} is not extract_v2"
-            )
-        return dict(params.data_schema)
-    return dict(extract_config.data_schema)
+    split_upload_types: dict[str, Any]
 
 
 async def get_presentation_schema(
@@ -48,11 +36,11 @@ async def get_presentation_schema(
         ),
     ],
 ) -> dict[str, Any]:
-    schema = await _resolve_schema(extract_jubeex)
+    del extract_jubeex
+    schema = CoreFilingRecord.model_json_schema()
     schemas = {ftype: schema for ftype in JUBEEX_FILING_TYPES}
-    union = create_union_schema(schemas, discriminator_field=DISCRIMINATOR_FIELD)
     return {
-        "json_schema": union,
+        "json_schema": schema,
         "schemas": schemas,
         "discriminator_field": DISCRIMINATOR_FIELD,
     }
@@ -74,6 +62,7 @@ class MetadataWorkflow(Workflow):
             schemas=presentation["schemas"],
             discriminator_field=presentation["discriminator_field"],
             extracted_data_collection=EXTRACTED_DATA_COLLECTION,
+            split_upload_types=ui_catalog(),
         )
 
 
