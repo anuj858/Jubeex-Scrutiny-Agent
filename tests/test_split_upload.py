@@ -12,6 +12,7 @@ from pypdf import PdfReader, PdfWriter
 from workflows.events import StartEvent
 
 from extraction_review.bundle_slicer import (
+    _pages_needing_family_text,
     extract_pdf_pages,
     leftover_pages,
     map_slot_pages,
@@ -49,8 +50,10 @@ from extraction_review.process_split_files import (
     SplitPartEvent,
     _ingest_labeled_parts,
     extract_input_file_id,
+    fast_parse_tier,
     ingest_concurrency,
     parse_concurrency,
+    parse_create_kwargs,
 )
 from extraction_review.split_upload import (
     FieldSources,
@@ -64,6 +67,7 @@ from extraction_review.split_upload import (
     extract_source_parts,
     inject_where_to_look,
     ordered_parts,
+    slot_needs_precise_parse,
     stitch_parsed_parts,
     type_catalog,
     ui_catalog,
@@ -1501,12 +1505,105 @@ def test_parse_and_ingest_concurrency_read_env(
 ) -> None:
     monkeypatch.delenv("PARSE_CONCURRENCY", raising=False)
     monkeypatch.delenv("INGEST_CONCURRENCY", raising=False)
+    monkeypatch.delenv("FAST_PARSE_TIER", raising=False)
     assert parse_concurrency() == 8
     assert ingest_concurrency() == 8
+    assert fast_parse_tier() == "fast"
     monkeypatch.setenv("PARSE_CONCURRENCY", "12")
     monkeypatch.setenv("INGEST_CONCURRENCY", "10")
+    monkeypatch.setenv("FAST_PARSE_TIER", "balanced")
     assert parse_concurrency() == 12
     assert ingest_concurrency() == 10
+    assert fast_parse_tier() == "balanced"
+
+
+def test_pages_needing_family_text_skips_extract_sources() -> None:
+    assert _pages_needing_family_text(
+        {
+            1: ["Cover Page"],
+            2: ["Annexures"],
+            3: ["Application"],
+            4: ["Main Petition"],
+            5: ["Annexure P-2"],
+        }
+    ) == [2, 3, 5]
+
+
+def test_slot_needs_precise_parse_for_extract_sources() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    sources = extract_source_parts(catalog)
+    assert slot_needs_precise_parse(
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="f1",
+            document_parts=("Cover Page",),
+        ),
+        sources,
+    )
+    assert slot_needs_precise_parse(
+        SplitPartInput(
+            slot_id="petition",
+            file_id="f1",
+            document_parts=("Main Petition",),
+        ),
+        sources,
+    )
+    assert not slot_needs_precise_parse(
+        SplitPartInput(
+            slot_id="annexure_p2",
+            file_id="f1",
+            document_parts=("Annexure P-2",),
+        ),
+        sources,
+    )
+    assert not slot_needs_precise_parse(
+        SplitPartInput(
+            slot_id="advocates_checklist",
+            file_id="f1",
+            document_parts=("Advocate's Checklist",),
+        ),
+        sources,
+    )
+    assert not slot_needs_precise_parse(
+        SplitPartInput(slot_id="undefined", file_id="f1", document_parts=("Undefined",)),
+        sources,
+    )
+    assert slot_needs_precise_parse(
+        SplitPartInput(slot_id="aors_declaration", file_id="f1"),
+        sources,
+    )
+
+
+def test_parse_create_kwargs_overrides_tier_for_fast_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.config import ParseConfig
+
+    monkeypatch.delenv("FAST_PARSE_TIER", raising=False)
+    config = ParseConfig.model_validate(
+        {"product_type": "parse_v2", "tier": "agentic", "version": "latest"}
+    )
+    precise = parse_create_kwargs(config, file_id="file-cover", precise=True)
+    assert precise["tier"] == "agentic"
+    assert precise["file_id"] == "file-cover"
+    assert precise["output_options"]["granular_bboxes"] == ["word", "line"]
+    fast = parse_create_kwargs(config, file_id="file-annexure", precise=False)
+    assert fast["tier"] == "fast"
+    assert fast["output_options"]["granular_bboxes"] == ["word", "line"]
+    hosted = parse_create_kwargs(
+        ParseConfig.model_validate(
+            {
+                "product_type": "parse_v2",
+                "configuration_id": "cfg-1",
+                "tier": "agentic",
+                "version": "latest",
+            }
+        ),
+        file_id="file-hosted",
+        precise=False,
+    )
+    assert hosted["configuration_id"] == "cfg-1"
+    assert "tier" not in hosted
 
 
 @pytest.mark.asyncio

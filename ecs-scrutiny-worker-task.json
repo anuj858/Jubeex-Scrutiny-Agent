@@ -11,9 +11,9 @@
   "containerDefinitions": [
     {
       "name": "jubeex-scrutiny-worker",
-      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:fastapi-v1",
+      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-452c864-amd64",
       "essential": true,
-      "command": [
+      "entryPoint": [
         "uv",
         "run",
         "jubeex-sqs-worker"
@@ -73,7 +73,7 @@
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "6"
+          "value": "8"
         },
         {
           "name": "PARSE_CONCURRENCY",
@@ -90,6 +90,10 @@
         {
           "name": "SKIP_SLOT_PDF_UPLOAD",
           "value": "true"
+        },
+        {
+          "name": "FAST_PARSE_TIER",
+          "value": "fast"
         },
         {
           "name": "SCRUTINY_TOP_K",
@@ -126,6 +130,10 @@
       ],
       "secrets": [
         {
+          "name": "JUBEEX_CALLBACK_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:JUBEEX_CALLBACK_SECRET::"
+        },
+        {
           "name": "LLAMA_CLOUD_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/llamaindex/api-key-jhcG3b:LLAMA_CLOUD_API_KEY::"
         },
@@ -136,10 +144,6 @@
         {
           "name": "PINECONE_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:PINECONE_API_KEY::"
-        },
-        {
-          "name": "JUBEEX_CALLBACK_SECRET",
-          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:JUBEEX_CALLBACK_SECRET::"
         }
       ],
       "logConfiguration": {
