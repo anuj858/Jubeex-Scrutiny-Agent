@@ -764,9 +764,46 @@ def test_overlay_uses_stitched_document_parts() -> None:
     assert "filing_summary" not in payload
     names = [span["name"] for span in payload["documents"]]
     assert "Main Petition" in names
-    assert "Synopsis" in names
-    assert "List of Dates & Events" in names
+    assert "Synopsis + List of Dates & Events" in names
+    assert "Memo of Appearance + Vakalatnama" in names
+    assert "Synopsis" not in names
+    assert "List of Dates & Events" not in names
+    assert "Memo of Appearance" not in names
+    assert "Vakalatnama" not in names
     assert payload["document_counts"]["processed"] == len(payload["documents"])
+
+
+def test_overlay_merges_combined_slots_into_one_document_row() -> None:
+    payload: dict = {}
+    overlay_split_documents(
+        payload,
+        {
+            11: ["Synopsis"],
+            12: ["List of Dates & Events"],
+            13: ["Synopsis", "List of Dates & Events"],
+            48: ["Memo of Appearance", "Vakalatnama"],
+            15: ["Main Petition"],
+        },
+    )
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Synopsis + List of Dates & Events"] == {
+        "name": "Synopsis + List of Dates & Events",
+        "start_page": 11,
+        "end_page": 13,
+    }
+    assert spans["Memo of Appearance + Vakalatnama"] == {
+        "name": "Memo of Appearance + Vakalatnama",
+        "start_page": 48,
+        "end_page": 48,
+    }
+    assert "Synopsis" not in spans
+    assert "List of Dates & Events" not in spans
+    assert "Memo of Appearance" not in spans
+    assert "Vakalatnama" not in spans
+    names = [item["name"] for item in payload["documents"]]
+    assert names.index("Synopsis + List of Dates & Events") < names.index(
+        "Main Petition"
+    )
 
 
 def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:

@@ -384,8 +384,23 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     return collapsed
 
 
-def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
-    """Build a count/items list of Split parts with page spans."""
+# Upload slots that are one paper-book file with two LlamaSplit names.
+# documents[] uses the slot label, not two rows with the same page span.
+COMBINED_DOCUMENT_GROUPS: tuple[tuple[frozenset[str], str], ...] = (
+    (
+        frozenset({"Synopsis", "List of Dates & Events"}),
+        "Synopsis + List of Dates & Events",
+    ),
+    (
+        frozenset({"Memo of Appearance", "Vakalatnama"}),
+        "Memo of Appearance + Vakalatnama",
+    ),
+)
+
+
+def _pages_by_part(
+    page_parts: PagePartMap | dict[int, str],
+) -> tuple[list[str], dict[str, list[int]]]:
     order: list[str] = []
     pages_by_part: dict[str, list[int]] = {}
     for page in sorted(page_parts):
@@ -394,6 +409,42 @@ def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[
                 pages_by_part[name] = []
                 order.append(name)
             pages_by_part[name].append(page)
+    return order, pages_by_part
+
+
+def _collapse_combined_document_parts(
+    order: list[str],
+    pages_by_part: dict[str, list[int]],
+) -> tuple[list[str], dict[str, list[int]]]:
+    """Merge slot pairs (Synopsis+LOD, Memo+Vakalatnama) into one documents[] row."""
+    merged_pages = {name: list(pages) for name, pages in pages_by_part.items()}
+    merged_order = list(order)
+    for members, label in COMBINED_DOCUMENT_GROUPS:
+        present = [name for name in merged_order if name in members]
+        if not present:
+            continue
+        pages: list[int] = []
+        for name in present:
+            pages.extend(merged_pages.pop(name, []))
+        collapsed: list[str] = []
+        inserted = False
+        for name in merged_order:
+            if name in members:
+                if not inserted:
+                    collapsed.append(label)
+                    inserted = True
+            else:
+                collapsed.append(name)
+        merged_order = collapsed
+        merged_pages[label] = sorted(set(pages))
+    return merged_order, merged_pages
+
+
+def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
+    """Build a count/items list of Split parts with page spans."""
+    order, pages_by_part = _collapse_combined_document_parts(
+        *_pages_by_part(page_parts)
+    )
     items = [
         f"{name} ({_format_page_span(pages_by_part[name])})" for name in order
     ]
@@ -404,14 +455,9 @@ def document_spans_from_page_parts(
     page_parts: PagePartMap | dict[int, str],
 ) -> list[dict[str, Any]]:
     """Build documents[] spans from Split labels and global page numbers."""
-    order: list[str] = []
-    pages_by_part: dict[str, list[int]] = {}
-    for page in sorted(page_parts):
-        for name in parts_on_page(page_parts.get(page)):
-            if name not in pages_by_part:
-                pages_by_part[name] = []
-                order.append(name)
-            pages_by_part[name].append(page)
+    order, pages_by_part = _collapse_combined_document_parts(
+        *_pages_by_part(page_parts)
+    )
     return [
         {
             "name": name,
