@@ -539,10 +539,10 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "[Cover Page]" in pack
     assert "[Main Petition]" in pack
     assert "[Memo of Parties]" in pack
-    assert "[Affidavit]" in pack
-    assert "[Office Report on Limitation]" in pack
-    assert "affidavit deponent" in pack
-    assert "office report limitation" in pack
+    assert "[Affidavit]" not in pack
+    assert "[Office Report on Limitation]" not in pack
+    assert "affidavit deponent" not in pack
+    assert "office report limitation" not in pack
     assert "petition first page parties" in pack
     assert "petition prayer page one" in pack
     assert "petition prayer page three" in pack
@@ -565,13 +565,73 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "[Application 1]" not in pack
 
 
+def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_markdown = {
+        1: "cover caption",
+        2: "impugned caption page one",
+        3: "impugned caption page two",
+        4: "impugned judgment body page three",
+        5: "impugned judgment body page four",
+        6: "impugned closing page five",
+        7: "impugned signature page six",
+        8: "vakalatnama first page",
+        9: "vakalatnama middle page",
+        10: "vakalatnama last page one",
+        11: "vakalatnama last page two",
+        12: "checklist yes no",
+        13: "synopsis of the case",
+        14: "list of dates events",
+        15: "filing memo index",
+        16: "memo of appearance advocates",
+    }
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Impugned Order"],
+        3: ["Impugned Order"],
+        4: ["Impugned Order"],
+        5: ["Impugned Order"],
+        6: ["Impugned Order"],
+        7: ["Impugned Order"],
+        8: ["Vakalatnama"],
+        9: ["Vakalatnama"],
+        10: ["Vakalatnama"],
+        11: ["Vakalatnama"],
+        12: ["Advocate's Checklist"],
+        13: ["Synopsis"],
+        14: ["List of Dates & Events"],
+        15: ["Filing Memo"],
+        16: ["Memo of Appearance"],
+    }
+    pack = build_extract_pack_markdown(
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
+    )
+    assert "cover caption" in pack
+    assert "impugned caption page one" in pack
+    assert "impugned caption page two" in pack
+    assert "impugned closing page five" in pack
+    assert "impugned signature page six" in pack
+    assert "impugned judgment body page three" not in pack
+    assert "impugned judgment body page four" not in pack
+    assert "vakalatnama first page" in pack
+    assert "vakalatnama last page one" in pack
+    assert "vakalatnama last page two" in pack
+    assert "vakalatnama middle page" not in pack
+    assert "checklist yes no" not in pack
+    assert "synopsis of the case" not in pack
+    assert "list of dates events" not in pack
+    assert "filing memo index" not in pack
+    assert "memo of appearance advocates" not in pack
+
+
 def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
-        "Office Report on Limitation",
-        "Affidavit",
         "Memo of Parties",
     )
     assert catalog.extract_field_sources["petitioners"] == FieldSources(
@@ -606,9 +666,9 @@ def test_extract_source_parts_include_petition_and_index() -> None:
         "Impugned Order",
         "Vakalatnama",
         "AOR's Certificate",
-        "Affidavit",
-        "Office Report on Limitation",
     }
+    assert "Affidavit" not in parts
+    assert "Office Report on Limitation" not in parts
     assert "Undefined" not in parts
     assert "Index" not in parts
     assert "Listing Proforma" not in parts

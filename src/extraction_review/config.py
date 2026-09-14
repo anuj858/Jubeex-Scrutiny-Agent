@@ -310,7 +310,7 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Court where the petition is filed, as a string. "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "Office Report on Limitation, Affidavit, and Memo of Parties."
+            "and Memo of Parties."
         ),
     )
     petition_type: str | None = Field(
@@ -318,7 +318,7 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "Office Report on Limitation, Affidavit, and Memo of Parties."
+            "and Memo of Parties."
         ),
     )
     cause_title: CauseTitle | None = Field(default=None, description="Cause title representing petitioner vs respondent.")

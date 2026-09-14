@@ -796,7 +796,7 @@
             }
           ],
           "default": null,
-          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition, Vakalatnama, and Memo of Parties.",
           "title": "Court"
         },
         "petition_type": {
@@ -809,7 +809,7 @@
             }
           ],
           "default": null,
-          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, Office Report on Limitation, Affidavit, and Memo of Parties.",
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, and Memo of Parties.",
           "title": "Petition Type"
         },
         "cause_title": {
@@ -1003,26 +1003,22 @@
         "fill": [
           "Cover Page"
         ],
-        "verify": [
-          "Main Petition",
-          "Vakalatnama",
-          "Office Report on Limitation",
-          "Affidavit",
-          "Memo of Parties"
-        ]
-      },
-      "petition_type": {
-        "fill": [
-          "Cover Page"
-        ],
-        "verify": [
-          "Main Petition",
-          "Vakalatnama",
-          "Office Report on Limitation",
-          "Affidavit",
-          "Memo of Parties"
-        ]
-      },
+          "verify": [
+            "Main Petition",
+            "Vakalatnama",
+            "Memo of Parties"
+          ]
+        },
+        "petition_type": {
+          "fill": [
+            "Cover Page"
+          ],
+          "verify": [
+            "Main Petition",
+            "Vakalatnama",
+            "Memo of Parties"
+          ]
+        },
       "cause_title": {
         "fill": [
           "Cover Page"

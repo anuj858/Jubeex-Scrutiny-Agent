@@ -20,8 +20,24 @@ from .document_parts import MAIN_PETITION_PART, parts_on_page
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
+# Never sent to LlamaExtract. Scrutiny still parses these slots.
 EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
-    {"Annexures", "Appendix", "Application"}
+    {
+        "Annexures",
+        "Appendix",
+        "Application",
+        "Index",
+        "Listing Proforma",
+        "Synopsis",
+        "List of Dates & Events",
+        "Advocate's Checklist",
+        "Filing Memo",
+        "Record of Proceedings",
+        "Court Fees",
+        "Affidavit",
+        "Office Report on Limitation",
+        "Memo of Appearance",
+    }
 )
 
 
@@ -32,10 +48,18 @@ def _excluded_from_extract_pack(name: str) -> bool:
     return folded.startswith("annexure") or folded.startswith("application")
 
 
-# Main Petition grounds stay out of Extract. Keep page 1 (parties) and the last
-# pages (prayer / relief).
+# Long bodies stay out of Extract. Keep caption/party pages and closing pages.
 PETITION_PACK_FIRST_PAGES = 1
 PETITION_PACK_LAST_PAGES = 3
+IMPUGNED_PACK_FIRST_PAGES = 2
+IMPUGNED_PACK_LAST_PAGES = 2
+VAKALATNAMA_PACK_FIRST_PAGES = 1
+VAKALATNAMA_PACK_LAST_PAGES = 2
+EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
+    MAIN_PETITION_PART: (PETITION_PACK_FIRST_PAGES, PETITION_PACK_LAST_PAGES),
+    "Impugned Order": (IMPUGNED_PACK_FIRST_PAGES, IMPUGNED_PACK_LAST_PAGES),
+    "Vakalatnama": (VAKALATNAMA_PACK_FIRST_PAGES, VAKALATNAMA_PACK_LAST_PAGES),
+}
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
@@ -455,10 +479,15 @@ def coerce_page_parts(raw: Mapping[Any, Any] | None) -> dict[int, list[str]]:
 
 
 def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
+    """Document parts LlamaExtract needs to fill the record.
+
+    Verify-only parts (Affidavit, Office Report, Index, …) stay out of the
+    pack. They are still parsed for scrutiny.
+    """
     names = {
         part
         for spec in catalog.extract_field_sources.values()
-        for part in spec.all_parts()
+        for part in spec.fill
     }
     return names - {part for part in names if _excluded_from_extract_pack(part)}
 
@@ -474,21 +503,51 @@ def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool
     return any(name in source_parts for name in labels)
 
 
-def _petition_pages_to_keep(
+def _part_pages_to_keep(
+    part: str,
     page_markdown: Mapping[int, str],
     page_parts: Mapping[int, Any],
+    first: int,
+    last: int,
 ) -> set[int]:
-    petition_pages = [
+    pages = [
         page
         for page in sorted(page_markdown)
-        if MAIN_PETITION_PART in parts_on_page(page_parts.get(page))
+        if part in parts_on_page(page_parts.get(page))
         and not (page_markdown.get(page) or "").strip().startswith(_PARSE_STUB_PREFIX)
     ]
-    if not petition_pages:
+    if not pages:
         return set()
-    keep = set(petition_pages[:PETITION_PACK_FIRST_PAGES])
-    keep.update(petition_pages[-PETITION_PACK_LAST_PAGES:])
+    if len(pages) <= first + last:
+        return set(pages)
+    keep = set(pages[:first])
+    keep.update(pages[-last:])
     return keep
+
+
+def _windowed_pages_to_keep(
+    page_markdown: Mapping[int, str],
+    page_parts: Mapping[int, Any],
+) -> dict[str, set[int]]:
+    return {
+        part: _part_pages_to_keep(part, page_markdown, page_parts, first, last)
+        for part, (first, last) in EXTRACT_PACK_PAGE_WINDOWS.items()
+    }
+
+
+def _keep_extract_page(
+    page: int,
+    names: Sequence[str],
+    source_parts: set[str],
+    window_keep: Mapping[str, set[int]],
+) -> bool:
+    sources = [name for name in names if name in source_parts]
+    if not sources:
+        return False
+    unwindowed = [name for name in sources if name not in EXTRACT_PACK_PAGE_WINDOWS]
+    if unwindowed:
+        return True
+    return any(page in window_keep.get(name, set()) for name in sources)
 
 
 def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
@@ -623,20 +682,18 @@ def build_extract_pack_markdown(
     catalog: UploadTypeCatalog | None = None,
 ) -> str:
     sections: list[str] = []
-    petition_keep = _petition_pages_to_keep(page_markdown, page_parts)
+    window_keep = _windowed_pages_to_keep(page_markdown, page_parts)
     notes = _section_use_notes(catalog)
     for page in sorted(page_markdown):
         names = parts_on_page(page_parts.get(page))
         if not page_is_extract_source(names, source_parts):
             continue
+        if not _keep_extract_page(page, names, source_parts, window_keep):
+            continue
         label = " / ".join(names) or "Unknown"
         body = (page_markdown.get(page) or "").strip()
         if body.startswith(_PARSE_STUB_PREFIX):
             continue
-        if MAIN_PETITION_PART in names:
-            others = [n for n in names if n in source_parts and n != MAIN_PETITION_PART]
-            if page not in petition_keep and not others:
-                continue
         note = next((notes[n] for n in names if n in notes), None)
         if note:
             sections.append(f"## [{label}] (p. {page})\n\n> {note}\n\n{body}".rstrip())
@@ -738,7 +795,9 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         "not in this pack, or the value is not printed there, write N/A.",
         "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
         "source_pages must be the integer page numbers in the headings, for example (p. 6).",
-        "Ignore Annexures and Appendix.",
+        "Ignore Annexures, Appendix, applications, Index, Listing Proforma, "
+        "Synopsis, List of Dates, Checklist, Filing Memo, Affidavit, and "
+        "Office Report on Limitation. Those pages are not in this pack.",
         "",
     ]
     for field_name, spec in catalog.extract_field_sources.items():
