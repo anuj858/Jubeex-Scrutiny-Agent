@@ -15,6 +15,7 @@ from pypdf import PdfReader, PdfWriter
 
 from .document_parts import (
     ANNEXURE_FAMILY,
+    APPLICATION_FAMILY,
     explode_repeating_split_parts,
     family_split_name,
     format_page_span,
@@ -145,19 +146,24 @@ def _promote_repeatable_catchall(
     return promoted
 
 
-def extract_pdf_pages(pdf_bytes: bytes, pages: Sequence[int]) -> bytes:
+def extract_pdf_pages(
+    pdf_bytes: bytes,
+    pages: Sequence[int],
+    *,
+    reader: PdfReader | None = None,
+) -> bytes:
     """Copy 1-indexed pages into a new PDF. pypdf indexes pages from 0."""
     if not pages or not pdf_bytes:
         return b""
-    reader = PdfReader(io.BytesIO(pdf_bytes))
+    local = reader or PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
-    total = len(reader.pages)
+    total = len(local.pages)
     added = 0
     for page in pages:
         index = int(page) - 1
         if index < 0 or index >= total:
             continue
-        writer.add_page(reader.pages[index])
+        writer.add_page(local.pages[index])
         added += 1
     if added == 0:
         return b""
@@ -166,18 +172,35 @@ def extract_pdf_pages(pdf_bytes: bytes, pages: Sequence[int]) -> bytes:
     return buffer.getvalue()
 
 
-def _pdf_page_texts(pdf_bytes: bytes, pages: Sequence[int]) -> dict[int, str]:
+def _pages_needing_family_text(
+    normalized: Mapping[int, Sequence[str]],
+) -> list[int]:
+    """Only annexure/application pages need OCR text to explode P-n / Application n."""
+    families = {ANNEXURE_FAMILY, APPLICATION_FAMILY}
+    return [
+        page
+        for page, names in normalized.items()
+        if any(family_split_name(name) in families for name in names)
+    ]
+
+
+def _pdf_page_texts(
+    pdf_bytes: bytes,
+    pages: Sequence[int],
+    *,
+    reader: PdfReader | None = None,
+) -> dict[int, str]:
     if not pdf_bytes or not pages:
         return {}
-    reader = PdfReader(io.BytesIO(pdf_bytes))
+    local = reader or PdfReader(io.BytesIO(pdf_bytes))
     texts: dict[int, str] = {}
-    total = len(reader.pages)
+    total = len(local.pages)
     for page in pages:
         index = int(page) - 1
         if index < 0 or index >= total:
             continue
         try:
-            texts[int(page)] = reader.pages[index].extract_text() or ""
+            texts[int(page)] = local.pages[index].extract_text() or ""
         except Exception:
             texts[int(page)] = ""
     return texts
@@ -241,21 +264,26 @@ def slice_bundle_pdf(
         labels = parts_on_page(raw)
         if labels:
             normalized[number] = labels
+    reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
     annexure_pages = [
         number
         for number, labels in normalized.items()
         if any(family_split_name(name) == ANNEXURE_FAMILY for name in labels)
     ]
-    text_pages = set(normalized)
+    text_pages = set(_pages_needing_family_text(normalized))
     if annexure_pages:
         text_pages.update(range(min(annexure_pages), max(annexure_pages) + 1))
-    page_texts = _pdf_page_texts(pdf_bytes, sorted(text_pages))
+    page_texts = _pdf_page_texts(
+        pdf_bytes,
+        sorted(text_pages),
+        reader=reader,
+    )
     exploded = explode_repeating_split_parts(normalized, page_texts)
     pages_by_slot = dict(map_slot_pages(catalog, exploded))
-    if pdf_bytes and any(slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots):
-        leftover = leftover_pages(
-            len(PdfReader(io.BytesIO(pdf_bytes)).pages), pages_by_slot
-        )
+    if reader is not None and any(
+        slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots
+    ):
+        leftover = leftover_pages(len(reader.pages), pages_by_slot)
         if leftover:
             pages_by_slot[UNDEFINED_SLOT_ID] = leftover
     slices: list[SlotSlice] = []
@@ -266,7 +294,7 @@ def slice_bundle_pdf(
         slot = resolve_upload_slot(catalog, slot_id)
         if slot is None:
             continue
-        chunk = extract_pdf_pages(pdf_bytes, pages)
+        chunk = extract_pdf_pages(pdf_bytes, pages, reader=reader)
         if not chunk:
             continue
         filename = f"{slot.label}.pdf"

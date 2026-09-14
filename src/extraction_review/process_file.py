@@ -41,6 +41,11 @@ from .config import (
     dump_api_configuration,
     with_config_identity,
 )
+from .llama_usage import (
+    collect_optional_usage,
+    summarize_llamacloud_usage,
+    usage_status_message,
+)
 from .document_parts import page_parts_from_split, parts_on_page
 from .job_timing import (
     attach_timing,
@@ -63,6 +68,41 @@ logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 _TRUTHY = frozenset({"1", "true", "yes"})
+DEFAULT_SLOT_UPLOAD_CONCURRENCY = 8
+_FILE_BYTES: dict[str, bytes] = {}
+
+
+def positive_int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def slot_upload_concurrency() -> int:
+    return positive_int_env("SLOT_UPLOAD_CONCURRENCY", DEFAULT_SLOT_UPLOAD_CONCURRENCY)
+
+
+def remember_file_bytes(file_id: str | None, data: bytes | None) -> None:
+    key = (file_id or "").strip()
+    if not key or not data:
+        return
+    _FILE_BYTES[key] = data
+
+
+def take_file_bytes(file_id: str | None) -> bytes | None:
+    key = (file_id or "").strip()
+    if not key:
+        return None
+    return _FILE_BYTES.pop(key, None)
+
+
+def clear_file_bytes_cache() -> None:
+    _FILE_BYTES.clear()
 
 
 def upload_sliced_slot_pdfs() -> bool:
@@ -657,6 +697,7 @@ class BundlePrepared(StopEvent):
     filename: str | None = None
     classify_split_seconds: float | None = None
     timing: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
 
 
 class PrepareState(BaseModel):
@@ -673,6 +714,7 @@ class PrepareState(BaseModel):
     classification_confidence: float | None = None
     classification_reasoning: str | None = None
     started_at: float | None = None
+    llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # Kept for callers that still type the old bundled-extract store.
@@ -767,8 +809,8 @@ async def _split_page_parts(
     file_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
-) -> dict[int, list[str]]:
-    """Label pages with Split categories."""
+) -> tuple[dict[int, list[str]], str]:
+    """Label pages with Split categories. Returns (page_parts, split_job_id)."""
     label = filename or "filing"
     if split_config is None:
         raise RuntimeError(
@@ -804,7 +846,7 @@ async def _split_page_parts(
             f"Split finished for {label} but labelled no pages. "
             "Scrutiny cannot filter Listing Proforma / Main Petition / checklist parts."
         )
-    return mapping
+    return mapping, str(getattr(completed, "id", None) or job.id)
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
@@ -883,6 +925,7 @@ async def ingest_remote_file(
     *,
     filename: str | None = None,
     external_file_id: str | None = None,
+    cache_bytes: bool = False,
 ) -> tuple[str, str, str]:
     """Download a remote PDF and upload it to LlamaCloud.
 
@@ -910,6 +953,8 @@ async def ingest_remote_file(
         pdf_bytes=data,
         external_file_id=external_file_id,
     )
+    if cache_bytes:
+        remember_file_bytes(file_id, data)
     logger.info(
         "[process-file] Ingested remote file url=%s → file_id=%s name=%s bytes=%s",
         url[:120],
@@ -931,6 +976,50 @@ async def _download_file_bytes(client: AsyncLlamaCloud, file_id: str) -> bytes:
         response = await http.get(str(url))
         response.raise_for_status()
         return response.content
+
+
+async def _load_bundle_pdf(
+    client: AsyncLlamaCloud,
+    *,
+    file_id: str,
+    source_documents: list[SourceDocument] | None = None,
+) -> bytes:
+    """Prefer in-process ingest bytes, then the original S3 URL, then LlamaCloud."""
+    cached = take_file_bytes(file_id)
+    if cached:
+        logger.info(
+            "[process-file] Using cached compiled PDF file_id=%s bytes=%s",
+            file_id,
+            len(cached),
+        )
+        return cached
+    for doc in source_documents or []:
+        url = (doc.download_url or "").strip()
+        if not url:
+            continue
+        try:
+            timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as http:
+                response = await http.get(url)
+                response.raise_for_status()
+                data = response.content
+            if data.startswith(b"%PDF"):
+                logger.info(
+                    "[process-file] Reloaded compiled PDF from source URL "
+                    "file_id=%s bytes=%s",
+                    file_id,
+                    len(data),
+                )
+                return data
+        except Exception as exc:
+            logger.warning(
+                "[process-file] Source URL reload failed for %s: %s",
+                file_id,
+                exc,
+            )
+    return await _download_file_bytes(client, file_id)
 
 
 async def _upload_slot_pdf(
@@ -968,6 +1057,30 @@ async def _upload_slot_pdf(
     if not file_id:
         raise RuntimeError(f"Upload of {name} did not return a file id")
     return str(file_id)
+
+
+async def _upload_sliced_slots(
+    client: AsyncLlamaCloud,
+    slices: list[Any],
+    *,
+    enabled: bool,
+    original_filename: str | None = None,
+) -> list[str | None]:
+    """Upload sliced slot PDFs in parallel. Skip when the backend re-slices."""
+    if not enabled or not slices:
+        return [None] * len(slices)
+    semaphore = asyncio.Semaphore(slot_upload_concurrency())
+
+    async def _one(item: Any) -> str:
+        async with semaphore:
+            filename = prefixed_slot_filename(item.filename, original_filename)
+            return await _upload_slot_pdf(
+                client,
+                filename=filename,
+                pdf_bytes=item.pdf_bytes,
+            )
+
+    return list(await asyncio.gather(*[_one(item) for item in slices]))
 
 
 async def _extract_sliced_parts(
@@ -1146,6 +1259,7 @@ class ProcessFileWorkflow(Workflow):
                     file_url,
                     filename=filename,
                     external_file_id=compiled_external or file_hash_hint,
+                    cache_bytes=True,
                 )
             except Exception as exc:
                 logger.exception("Failed to ingest file_url %s", file_url)
@@ -1243,6 +1357,17 @@ class ProcessFileWorkflow(Workflow):
             )
 
         completed = await _wait_for_classify(llama_cloud_client, classify_job.id)
+        classify_usage = await collect_optional_usage(
+            llama_cloud_client,
+            product="classify",
+            job_id=str(classify_job.id),
+            payload=completed,
+        )
+        async with ctx.store.edit_state() as state:
+            state.llamacloud_jobs = [
+                *(state.llamacloud_jobs or []),
+                classify_usage,
+            ]
         if completed.status == "FAILED" or completed.result is None:
             message = f"Classification did not resolve for {filename}"
             ctx.write_event_to_stream(Status(level="error", message=message))
@@ -1330,11 +1455,22 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        page_parts = await _split_page_parts(
+        page_parts, split_job_id = await _split_page_parts(
             llama_cloud_client,
             file_id=state.file_id,
             split_config=split_config,
             filename=state.filename,
+        )
+        split_usage = await collect_optional_usage(
+            llama_cloud_client,
+            product="split",
+            job_id=split_job_id,
+        )
+        usage_jobs = [*(state.llamacloud_jobs or []), split_usage]
+        usage_summary = summarize_llamacloud_usage(usage_jobs)
+        logger.info("[Usage] %s", usage_status_message(usage_summary))
+        ctx.write_event_to_stream(
+            Status(level="info", message=usage_status_message(usage_summary))
         )
         parts_found = sorted(
             {name for names in page_parts.values() for name in parts_on_page(names)}
@@ -1351,10 +1487,14 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=f"Downloading {state.filename} to slice labeled pages",
+                message=f"Loading {state.filename} to slice labeled pages",
             )
         )
-        pdf_bytes = await _download_file_bytes(llama_cloud_client, state.file_id)
+        pdf_bytes = await _load_bundle_pdf(
+            llama_cloud_client,
+            file_id=state.file_id,
+            source_documents=state.source_documents,
+        )
         slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
         ctx.write_event_to_stream(
             Status(
@@ -1366,21 +1506,20 @@ class ProcessFileWorkflow(Workflow):
         )
 
         upload_slots = upload_sliced_slot_pdfs()
+        file_ids = await _upload_sliced_slots(
+            llama_cloud_client,
+            slices,
+            enabled=upload_slots,
+            original_filename=state.filename,
+        )
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
-        for item in slices:
-            file_id = None
+        for item, file_id in zip(slices, file_ids, strict=True):
             filename = (
                 prefixed_slot_filename(item.filename, state.filename)
                 if upload_slots
                 else item.filename
             )
-            if upload_slots:
-                file_id = await _upload_slot_pdf(
-                    llama_cloud_client,
-                    filename=filename,
-                    pdf_bytes=item.pdf_bytes,
-                )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
@@ -1417,6 +1556,7 @@ class ProcessFileWorkflow(Workflow):
                         "file_id": state.file_id,
                         "organization_id": state.organization_id,
                         "workspace_id": state.workspace_id,
+                        "usage": {"llamacloud": usage_summary},
                         "parts": [
                             {
                                 "slot_id": part.slot_id,
@@ -1474,6 +1614,7 @@ class ProcessFileWorkflow(Workflow):
             filename=file_name,
             classify_split_seconds=classify_split_seconds,
             timing=timing,
+            usage={"llamacloud": usage_summary},
         )
 
 

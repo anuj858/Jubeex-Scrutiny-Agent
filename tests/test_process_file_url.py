@@ -1,5 +1,6 @@
 """Backend file_url ingest for process-file (no FakeLlamaCloudServer)."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,16 +9,24 @@ import pytest
 
 from extraction_review.process_file import (
     FileEvent,
+    SourceDocument,
     _extract_sliced_parts,
     _filename_from_url,
+    _load_bundle_pdf,
     _upload_filename,
+    _upload_sliced_slots,
+    clear_file_bytes_cache,
     compiled_catalog_override,
     compiled_source,
     ingest_remote_file,
     intake_echo,
     intake_mode,
+    positive_int_env,
+    remember_file_bytes,
     resolve_compiled_filing_type,
     slot_id_from_name,
+    slot_upload_concurrency,
+    take_file_bytes,
     upload_sliced_slot_pdfs,
 )
 
@@ -502,6 +511,7 @@ async def test_ingest_remote_file_uploads_to_llamacloud(
     assert kwargs["purpose"] == "extract"
     assert kwargs["external_file_id"] == "backend-doc-99"
     assert kwargs["file"][0] == "My_Filing.pdf"
+    assert take_file_bytes(file_id) is None
 
 
 @pytest.mark.asyncio
@@ -549,3 +559,155 @@ async def test_ingest_retries_upload_without_external_id(
     assert file_id == "dfl-retry-1"
     assert client.files.create.await_count == 2
     assert "external_file_id" not in client.files.create.await_args.kwargs
+
+
+def test_positive_int_env_and_slot_upload_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SLOT_UPLOAD_CONCURRENCY", raising=False)
+    assert positive_int_env("SLOT_UPLOAD_CONCURRENCY", 8) == 8
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "12")
+    assert slot_upload_concurrency() == 12
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "0")
+    assert slot_upload_concurrency() == 8
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "nope")
+    assert slot_upload_concurrency() == 8
+
+
+@pytest.mark.asyncio
+async def test_upload_sliced_slots_skips_when_disabled() -> None:
+    client = MagicMock()
+    client.files.create = AsyncMock()
+    ids = await _upload_sliced_slots(
+        client,
+        [SimpleNamespace(filename="a.pdf", pdf_bytes=b"%PDF-1")],
+        enabled=False,
+    )
+    assert ids == [None]
+    client.files.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_sliced_slots_runs_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLOT_UPLOAD_CONCURRENCY", "4")
+    in_flight = 0
+    peak = 0
+
+    async def _fake_upload(_client, *, filename: str, pdf_bytes: bytes) -> str:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return f"id-{filename}"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._upload_slot_pdf",
+        _fake_upload,
+    )
+    slices = [
+        SimpleNamespace(filename=f"{index}.pdf", pdf_bytes=b"%PDF-1")
+        for index in range(4)
+    ]
+    ids = await _upload_sliced_slots(MagicMock(), slices, enabled=True)
+    assert ids == [f"id-{index}.pdf" for index in range(4)]
+    assert peak > 1
+
+
+def test_remember_and_take_file_bytes() -> None:
+    clear_file_bytes_cache()
+    remember_file_bytes("dfl-cache-1", b"%PDF-cached")
+    assert take_file_bytes("dfl-cache-1") == b"%PDF-cached"
+    assert take_file_bytes("dfl-cache-1") is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_remote_file_can_cache_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_file_bytes_cache()
+    pdf_bytes = b"%PDF-1.4 cached-ingest"
+
+    class FakeResponse:
+        content = pdf_bytes
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client = MagicMock()
+    client.files.create = AsyncMock(return_value=SimpleNamespace(id="dfl-cached-1"))
+    file_id, _digest, _name = await ingest_remote_file(
+        client,
+        "https://example.com/path/compiled.pdf",
+        cache_bytes=True,
+    )
+    assert file_id == "dfl-cached-1"
+    assert take_file_bytes(file_id) == pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_load_bundle_pdf_uses_cached_bytes() -> None:
+    clear_file_bytes_cache()
+    remember_file_bytes("dfl-cached-2", b"%PDF-from-cache")
+    client = MagicMock()
+    client.files.content = AsyncMock()
+    data = await _load_bundle_pdf(client, file_id="dfl-cached-2")
+    assert data == b"%PDF-from-cache"
+    client.files.content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_bundle_pdf_falls_back_to_source_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_file_bytes_cache()
+    pdf_bytes = b"%PDF-from-s3"
+
+    class FakeResponse:
+        content = pdf_bytes
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            assert url == "https://s3.example.com/compiled.pdf"
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    client = MagicMock()
+    client.files.content = AsyncMock()
+    data = await _load_bundle_pdf(
+        client,
+        file_id="dfl-miss-1",
+        source_documents=[
+            SourceDocument(download_url="https://s3.example.com/compiled.pdf")
+        ],
+    )
+    assert data == pdf_bytes
+    client.files.content.assert_not_called()

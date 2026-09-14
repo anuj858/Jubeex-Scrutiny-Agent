@@ -42,6 +42,12 @@ from .job_timing import (
     timing_status_message,
     uploaded_filename,
 )
+from .llama_usage import (
+    collect_extract_usage,
+    collect_parse_usage,
+    summarize_llamacloud_usage,
+    usage_status_message,
+)
 from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
@@ -63,6 +69,7 @@ from .process_file import (
     _wait_for_parse,
     ingest_remote_file,
     normalize_org_id,
+    positive_int_env,
 )
 from .s3_artifacts import (
     STEP_EXTRACT,
@@ -83,6 +90,7 @@ from .split_upload import (
     extract_configuration,
     extract_source_parts,
     find_part,
+    slot_needs_precise_parse,
     stitch_parsed_parts,
     validate_parts,
 )
@@ -95,7 +103,47 @@ from .vector_store import (
 
 logger = logging.getLogger(__name__)
 
-PARSE_CONCURRENCY = 4
+DEFAULT_PARSE_CONCURRENCY = 8
+DEFAULT_INGEST_CONCURRENCY = 8
+DEFAULT_FAST_PARSE_TIER = "fast"
+PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
+
+
+def parse_concurrency() -> int:
+    return positive_int_env("PARSE_CONCURRENCY", DEFAULT_PARSE_CONCURRENCY)
+
+
+def ingest_concurrency() -> int:
+    return positive_int_env("INGEST_CONCURRENCY", DEFAULT_INGEST_CONCURRENCY)
+
+
+def fast_parse_tier() -> str:
+    raw = (os.getenv("FAST_PARSE_TIER") or "").strip()
+    return raw or DEFAULT_FAST_PARSE_TIER
+
+
+def parse_create_kwargs(
+    parse_config: ParseConfig,
+    *,
+    file_id: str,
+    precise: bool,
+) -> dict[str, Any]:
+    create_kwargs: dict[str, Any] = {
+        "file_id": file_id,
+        "project_id": project_id,
+    }
+    if parse_config.configuration_id:
+        create_kwargs["configuration_id"] = parse_config.configuration_id
+        return merge_granular_bboxes(create_kwargs)
+    create_kwargs.update(
+        parse_config.model_dump(
+            exclude={"configuration_id", "product_type"},
+            exclude_none=True,
+        )
+    )
+    if not precise:
+        create_kwargs["tier"] = fast_parse_tier()
+    return merge_granular_bboxes(create_kwargs)
 
 
 class SplitPartEvent(BaseModel):
@@ -159,6 +207,7 @@ class SplitFilesState(BaseModel):
     page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
     started_at: float | None = None
     classify_split_seconds: float | None = None
+    llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProcessSplitFilesWorkflow(Workflow):
@@ -186,35 +235,17 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message="Ingesting labeled file_url parts",
+                message=(
+                    f"Ingesting {len(event.parts)} labeled file_url part(s) "
+                    f"(concurrency {ingest_concurrency()})"
+                ),
             )
         )
-        ingested: list[SplitPartEvent] = []
-        for part in event.parts:
-            file_id = (part.file_id or "").strip() or None
-            filename = (part.filename or "").strip() or None
-            file_hash = part.file_hash
-            if not file_id:
-                if not (part.file_url or "").strip():
-                    raise SplitUploadError(
-                        f"Slot {part.slot_id!r} needs file_url or file_id"
-                    )
-                file_id, digest, filename = await ingest_remote_file(
-                    llama_cloud_client,
-                    part.file_url or "",
-                    filename=filename,
-                    external_file_id=part.document_id or file_hash,
-                )
-                file_hash = file_hash or digest
-            ingested.append(
-                part.model_copy(
-                    update={
-                        "file_id": file_id,
-                        "filename": filename,
-                        "file_hash": file_hash,
-                    }
-                )
-            )
+        ingested = await _ingest_labeled_parts(
+            llama_cloud_client,
+            event.parts,
+            concurrency=ingest_concurrency(),
+        )
 
         try:
             catalog, parts = validate_parts(
@@ -231,20 +262,27 @@ class ProcessSplitFilesWorkflow(Workflow):
         )
         file_hash = bundle_file_hash(parts)
         petition = find_part(parts, PETITION_SLOT_ID)
+        source_parts = extract_source_parts(catalog)
         ctx.write_event_to_stream(
             Status(
                 level="info",
                 message=(
-                    f"Parsing {len(parts)} labeled document(s) for {catalog.label}"
+                    f"Parsing {len(parts)} labeled document(s) for {catalog.label} "
+                    f"(concurrency {parse_concurrency()}; "
+                    f"extract sources {parse_config.tier or 'agentic'}, "
+                    f"others {fast_parse_tier()})"
                 ),
             )
         )
 
-        pages_by_slot, parse_job_ids, layouts_by_slot = await _parse_labeled_files(
-            llama_cloud_client,
-            parse_config=parse_config,
-            parts=parts,
-            ctx=ctx,
+        pages_by_slot, parse_job_ids, layouts_by_slot, parse_usage = (
+            await _parse_labeled_files(
+                llama_cloud_client,
+                parse_config=parse_config,
+                parts=parts,
+                source_parts=source_parts,
+                ctx=ctx,
+            )
         )
         page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
         page_layout = stitch_slot_layouts(
@@ -289,6 +327,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.page_layout = page_layout
             state.started_at = started_at
             state.classify_split_seconds = event.classify_split_seconds
+            state.llamacloud_jobs = list(parse_usage)
 
         set_job_context(
             file_hash or filename,
@@ -450,8 +489,20 @@ class ProcessSplitFilesWorkflow(Workflow):
         )
         job = await llama_cloud_client.extract.get(
             state.extract_job_id,
-            expand=["extract_metadata"],
+            expand=["extract_metadata", "usage"],
             project_id=project_id,
+        )
+        extract_usage = await collect_extract_usage(
+            llama_cloud_client,
+            state.extract_job_id,
+            payload=job,
+        )
+        usage_summary = summarize_llamacloud_usage(
+            [*(state.llamacloud_jobs or []), extract_usage]
+        )
+        logger.info("[Usage] %s", usage_status_message(usage_summary))
+        ctx.write_event_to_stream(
+            Status(level="info", message=usage_status_message(usage_summary))
         )
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
@@ -475,6 +526,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["parse_job_ids"] = state.parse_job_ids
             data.metadata["page_count"] = len(page_markdown)
             data.metadata["split_upload"] = True
+            data.metadata["usage"] = {"llamacloud": usage_summary}
             data.metadata["extract_pack_file_id"] = state.extract_pack_file_id
             data.metadata["split_files"] = {
                 item.slot_id: item.file_id for item in state.parts
@@ -562,6 +614,15 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(extracted_event)
         extracted_data = extracted_event.data
         data_dict = extracted_data.model_dump()
+        meta = (
+            data_dict.get("metadata")
+            if isinstance(data_dict.get("metadata"), dict)
+            else {}
+        )
+        if not isinstance(data_dict.get("metadata"), dict):
+            data_dict["metadata"] = dict(meta)
+            meta = data_dict["metadata"]
+        meta.setdefault("usage", {"llamacloud": usage_summary})
         inner = unwrap_extracted_record(data_dict)
         stamp_source_pages(inner)
         meta = (
@@ -667,40 +728,98 @@ class ProcessSplitFilesWorkflow(Workflow):
         return StopEvent(result=item.id)
 
 
+async def _ingest_one_part(
+    client: AsyncLlamaCloud,
+    part: SplitPartEvent,
+) -> SplitPartEvent:
+    file_id = (part.file_id or "").strip() or None
+    filename = (part.filename or "").strip() or None
+    file_hash = part.file_hash
+    if not file_id:
+        if not (part.file_url or "").strip():
+            raise SplitUploadError(
+                f"Slot {part.slot_id!r} needs file_url or file_id"
+            )
+        file_id, digest, filename = await ingest_remote_file(
+            client,
+            part.file_url or "",
+            filename=filename,
+            external_file_id=part.document_id or file_hash,
+        )
+        file_hash = file_hash or digest
+    return part.model_copy(
+        update={
+            "file_id": file_id,
+            "filename": filename,
+            "file_hash": file_hash,
+        }
+    )
+
+
+async def _ingest_labeled_parts(
+    client: AsyncLlamaCloud,
+    parts: list[SplitPartEvent],
+    *,
+    concurrency: int,
+) -> list[SplitPartEvent]:
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(part: SplitPartEvent) -> SplitPartEvent:
+        async with semaphore:
+            return await _ingest_one_part(client, part)
+
+    return list(await asyncio.gather(*[_one(part) for part in parts]))
+
+
 async def _parse_one_file(
     client: AsyncLlamaCloud,
     *,
     parse_config: ParseConfig,
     part: SplitPartInput,
+    source_parts: set[str],
     semaphore: asyncio.Semaphore,
     ctx: Context[SplitFilesState],
-) -> tuple[str, dict[int, str], str | None, dict[int, dict[str, Any]]]:
+) -> tuple[
+    str,
+    dict[int, str],
+    str | None,
+    dict[int, dict[str, Any]],
+    dict[str, Any] | None,
+]:
     async with semaphore:
         label = part.filename or part.slot_id
         try:
-            ctx.write_event_to_stream(Status(level="info", message=f"Parsing {label}"))
-            create_kwargs: dict[str, Any] = {
-                "file_id": part.file_id,
-                "project_id": project_id,
-            }
-            if parse_config.configuration_id:
-                create_kwargs["configuration_id"] = parse_config.configuration_id
-            else:
-                create_kwargs.update(
-                    parse_config.model_dump(
-                        exclude={"configuration_id", "product_type"},
-                        exclude_none=True,
-                    )
-                )
-            merge_granular_bboxes(create_kwargs)
+            precise = slot_needs_precise_parse(part, source_parts)
+            create_kwargs = parse_create_kwargs(
+                parse_config,
+                file_id=part.file_id or "",
+                precise=precise,
+            )
+            tier = create_kwargs.get("tier") or "hosted"
+            ctx.write_event_to_stream(
+                Status(level="info", message=f"Parsing {label} ({tier})")
+            )
+            logger.info(
+                "[Parse] %s slot=%s tier=%s",
+                label,
+                part.slot_id,
+                tier,
+            )
             parse_job = await client.parsing.create(**create_kwargs)
             await _wait_for_parse(client, parse_job.id)
             parse_result = await client.parsing.get(
                 parse_job.id,
-                expand=["markdown"],
+                expand=["markdown", "usage"],
                 project_id=project_id,
             )
             pages = _extract_page_markdown(parse_result)
+            usage_row = await collect_parse_usage(
+                client,
+                parse_job.id,
+                payload=parse_result,
+                slot_id=part.slot_id,
+                pages=len(pages),
+            )
             sidecar_pages = await download_sidecar_pages(
                 grounded_items_url(parse_result)
             )
@@ -711,7 +830,7 @@ async def _parse_one_file(
                     message=f"Parsed {len(pages)} page(s) from {label}",
                 )
             )
-            return part.slot_id, pages, parse_job.id, layout
+            return part.slot_id, pages, parse_job.id, layout, usage_row
         except Exception as exc:
             logger.exception("Parse failed for %s", label)
             ctx.write_event_to_stream(
@@ -720,7 +839,7 @@ async def _parse_one_file(
                     message=f"Parse failed for {label}; continuing without page text: {exc}",
                 )
             )
-            return part.slot_id, {}, None, {}
+            return part.slot_id, {}, None, {}, None
 
 
 async def _parse_labeled_files(
@@ -728,17 +847,22 @@ async def _parse_labeled_files(
     *,
     parse_config: ParseConfig,
     parts: list[SplitPartInput],
+    source_parts: set[str],
     ctx: Context[SplitFilesState],
 ) -> tuple[
-    dict[str, dict[int, str]], dict[str, str], dict[str, dict[int, dict[str, Any]]]
+    dict[str, dict[int, str]],
+    dict[str, str],
+    dict[str, dict[int, dict[str, Any]]],
+    list[dict[str, Any]],
 ]:
-    semaphore = asyncio.Semaphore(PARSE_CONCURRENCY)
+    semaphore = asyncio.Semaphore(parse_concurrency())
     results = await asyncio.gather(
         *[
             _parse_one_file(
                 client,
                 parse_config=parse_config,
                 part=part,
+                source_parts=source_parts,
                 semaphore=semaphore,
                 ctx=ctx,
             )
@@ -748,12 +872,15 @@ async def _parse_labeled_files(
     pages_by_slot: dict[str, dict[int, str]] = {}
     parse_job_ids: dict[str, str] = {}
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
-    for slot_id, pages, job_id, layout in results:
+    usage_jobs: list[dict[str, Any]] = []
+    for slot_id, pages, job_id, layout, usage_row in results:
         pages_by_slot[slot_id] = pages
         layouts_by_slot[slot_id] = layout
         if job_id:
             parse_job_ids[slot_id] = job_id
-    return pages_by_slot, parse_job_ids, layouts_by_slot
+        if usage_row:
+            usage_jobs.append(usage_row)
+    return pages_by_slot, parse_job_ids, layouts_by_slot, usage_jobs
 
 
 async def _index_split_upload(
