@@ -216,11 +216,22 @@ MAX_SCORE_LOG_GAP = 0.36
 FILING_TYPE_LABELS: dict[str, str] = {
     "slp_civil": "Special Leave Petition (Civil)",
     "slp_criminal": "Special Leave Petition (Criminal)",
-    "transfer_petition_civil": "Transfer Petition (Civil)",
-    "transfer_petition_criminal": "Transfer Petition (Criminal)",
-    "arbitration_petition": "Arbitration Petition",
+    "civil_appeal": "Civil Appeal",
+    "criminal_appeal": "Criminal Appeal",
     "writ_petition_civil": "Writ Petition (Civil)",
     "writ_petition_criminal": "Writ Petition (Criminal)",
+    "transfer_petition_civil": "Transfer Petition (Civil)",
+    "transfer_petition_criminal": "Transfer Petition (Criminal)",
+    "review_petition_civil": "Review Petition (Civil)",
+    "review_petition_criminal": "Review Petition (Criminal)",
+    "original_suit_civil": "Original Suit (Civil)",
+    "contempt_petition_civil": "Contempt Petition (Civil)",
+    "contempt_petition_criminal": "Contempt Petition (Criminal)",
+    "election_petition_civil": "Election Petition (Civil)",
+    "arbitration_petition": "Arbitration Petition",
+    "curative_petition_civil": "Curative Petition (Civil)",
+    "curative_petition_criminal": "Curative Petition (Criminal)",
+    "miscellaneous_application": "Miscellaneous Application",
 }
 
 

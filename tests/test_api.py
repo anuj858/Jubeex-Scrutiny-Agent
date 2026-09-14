@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from extraction_review.api import JOBS, app
+from extraction_review.config import JUBEEX_FILING_TYPES, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.process_file import BundlePrepared
 
 
@@ -50,9 +51,12 @@ def test_catalog(client: TestClient) -> None:
     response = client.get("/v1/catalog")
     assert response.status_code == 200
     body = response.json()
-    assert "SLP_CIVIL" in body["filing_types"]
-    assert "TRANSFER_PETITION_CIVIL" in body["filing_types"]
-    assert "TRANSFER_PETITION_CRIMINAL" in body["filing_types"]
+    assert body["filing_types"] == list(JUBEEX_FILING_TYPES)
+    assert "CIVIL_APPEAL" in body["filing_types"]
+    assert "MISCELLANEOUS_APPLICATION" in body["filing_types"]
+    assert set(body["split_upload_types"]) == set(JUBEEX_UPLOAD_FILING_TYPES)
+    assert "CIVIL_APPEAL" in body["split_upload_types"]
+    assert "MISCELLANEOUS_APPLICATION" in body["split_upload_types"]
     assert "upload_separate" in body["job_types"]
     assert "SLP_CIVIL" in body["split_upload_types"]
     assert "TRANSFER_PETITION_CIVIL" in body["split_upload_types"]

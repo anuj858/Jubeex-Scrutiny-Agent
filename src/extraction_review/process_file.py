@@ -395,7 +395,7 @@ def resolve_compiled_filing_type(
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
     raise SplitUploadError(
-        f"Classified as {classified_key or 'other'}, which cannot be sliced. "
+        f"Classified as {classified_key or '(unknown)'}, which cannot be sliced. "
         f"Send filing_type as one of: {allowed}"
     )
 
@@ -1374,7 +1374,7 @@ class ProcessFileWorkflow(Workflow):
             raise RuntimeError(message)
 
         result = completed.result
-        classified = result.type or "other"
+        classified = (result.type or "").strip()
         confidence = result.confidence
         reasoning = result.reasoning
         try:

@@ -478,7 +478,9 @@ class ProcessSplitFilesWorkflow(Workflow):
         )
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
-        filing_type = state.filing_type or "other"
+        if not state.filing_type:
+            raise ValueError("Filing type is not set")
+        filing_type = state.filing_type
         del extract_jubeex
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)

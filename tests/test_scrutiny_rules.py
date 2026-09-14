@@ -241,8 +241,45 @@ def test_review_contempt_and_original_suit_aliases() -> None:
         normalize_filing_type("Curative Petition (Civil)") == "curative_petition_civil"
     )
     assert normalize_filing_type("Original Suit (Civil)") == "original_suit_civil"
+    assert normalize_filing_type("Civil Appeal") == "civil_appeal"
+    assert normalize_filing_type("Criminal Appeal") == "criminal_appeal"
+    assert (
+        normalize_filing_type("Miscellaneous Application")
+        == "miscellaneous_application"
+    )
+    assert (
+        normalize_filing_type("Interlocutory Application")
+        == "miscellaneous_application"
+    )
     assert categories_for_filing_type("REVIEW_PETITION_CIVIL") == frozenset(
         {"global", "review_petition", "review_petition_civil"}
+    )
+    assert categories_for_filing_type("CIVIL_APPEAL") == frozenset(
+        {"global", "civil_appeal"}
+    )
+    assert categories_for_filing_type("CRIMINAL_APPEAL") == frozenset(
+        {"global", "criminal_appeal"}
+    )
+    assert categories_for_filing_type("ORIGINAL_SUIT_CIVIL") == frozenset(
+        {"global", "original_suit", "original_suit_civil"}
+    )
+    assert categories_for_filing_type("MISCELLANEOUS_APPLICATION") == frozenset(
+        {"global", "miscellaneous_application"}
+    )
+    assert categories_for_filing_type("CURATIVE_PETITION_CRIMINAL") == frozenset(
+        {"global", "curative_petition", "curative_petition_criminal"}
+    )
+    assert _applies_to_filing(
+        _defect("D400", "Civil Appeal"), "civil_appeal"
+    )
+    assert _applies_to_filing(
+        _defect("D401", "Miscellaneous Application"), "miscellaneous_application"
+    )
+    assert _applies_to_filing(
+        _defect("D402", "Interlocutory Application"), "miscellaneous_application"
+    )
+    assert not _applies_to_filing(
+        _defect("D403", "Civil Appeal"), "miscellaneous_application"
     )
 
 

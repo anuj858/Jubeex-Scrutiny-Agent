@@ -40,13 +40,24 @@ EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
 JUBEEX_FILING_TYPES = [
     "SLP_CIVIL",
     "SLP_CRIMINAL",
-    "TRANSFER_PETITION_CIVIL",
-    "TRANSFER_PETITION_CRIMINAL",
-    "ARBITRATION_PETITION",
+    "CIVIL_APPEAL",
+    "CRIMINAL_APPEAL",
     "WRIT_PETITION_CIVIL",
     "WRIT_PETITION_CRIMINAL",
-    "other"
+    "TRANSFER_PETITION_CIVIL",
+    "TRANSFER_PETITION_CRIMINAL",
+    "REVIEW_PETITION_CIVIL",
+    "REVIEW_PETITION_CRIMINAL",
+    "ORIGINAL_SUIT_CIVIL",
+    "CONTEMPT_PETITION_CIVIL",
+    "CONTEMPT_PETITION_CRIMINAL",
+    "ELECTION_PETITION_CIVIL",
+    "ARBITRATION_PETITION",
+    "CURATIVE_PETITION_CIVIL",
+    "CURATIVE_PETITION_CRIMINAL",
+    "MISCELLANEOUS_APPLICATION",
 ]
+JUBEEX_UPLOAD_FILING_TYPES = tuple(JUBEEX_FILING_TYPES)
 
 CONFIDENCE_DESCRIPTION = (
     "Extractor confidence as a percentage string such as 95% or 65%. "
@@ -316,7 +327,8 @@ class LegalExtractRecord(BaseModel):
     petition_type: str | None = Field(
         default=None,
         description=(
-            "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). "
+            "Petition type as printed, e.g. Special Leave Petition (Civil), Civil Appeal, "
+            "Writ Petition (Criminal), or Miscellaneous Application. "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
             "and Memo of Parties."
         ),
@@ -411,16 +423,7 @@ class ExtractionSchema(CoreFilingRecord):
     """Default extraction schema"""
     pass
 
-FILING_SCHEMAS = {
-    "SLP_CIVIL": CoreFilingRecord,
-    "SLP_CRIMINAL": CoreFilingRecord,
-    "TRANSFER_PETITION_CIVIL": CoreFilingRecord,
-    "TRANSFER_PETITION_CRIMINAL": CoreFilingRecord,
-    "ARBITRATION_PETITION": CoreFilingRecord,
-    "WRIT_PETITION_CIVIL": CoreFilingRecord,
-    "WRIT_PETITION_CRIMINAL": CoreFilingRecord,
-    "other": CoreFilingRecord,
-}
+FILING_SCHEMAS = {filing_type: CoreFilingRecord for filing_type in JUBEEX_FILING_TYPES}
 
 class ExtractConfig(ExtractV2Parameters):
     configuration_id: str | None = None

@@ -288,8 +288,8 @@ def test_upload_separate_documents_payload() -> None:
     assert petition.filename == "01_Petition.pdf"
 
 
-def test_compiled_uses_requested_type_when_classified_other() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("other", "SLP_CIVIL")
+def test_compiled_uses_requested_type_when_classified_unknown() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -300,8 +300,8 @@ def test_compiled_keeps_classified_slp_civil() -> None:
     assert catalog.filing_type == "SLP_CIVIL"
 
 
-def test_compiled_other_without_filing_type_defaults_to_slp_civil() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("other", None)
+def test_compiled_unknown_without_filing_type_defaults_to_slp_civil() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", None)
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -328,7 +328,7 @@ def test_compiled_accepts_transfer_petition_types() -> None:
     assert civil_catalog.filing_type == "TRANSFER_PETITION_CIVIL"
     assert "filing_memo" in {slot.id for slot in civil_catalog.slots}
     criminal_type, criminal_catalog = resolve_compiled_filing_type(
-        "other", "TRANSFER_PETITION_CRIMINAL"
+        "NOT_A_FILING_TYPE", "TRANSFER_PETITION_CRIMINAL"
     )
     assert criminal_type == "TRANSFER_PETITION_CRIMINAL"
     assert criminal_catalog.filing_type == "TRANSFER_PETITION_CRIMINAL"
@@ -350,7 +350,7 @@ def test_compiled_catalog_override_skips_classify() -> None:
     catalog = compiled_catalog_override("SLP_CIVIL")
     assert catalog is not None
     assert catalog.filing_type == "SLP_CIVIL"
-    assert compiled_catalog_override("other") is None
+    assert compiled_catalog_override("NOT_A_FILING_TYPE") is None
     assert compiled_catalog_override(None) is None
 
 

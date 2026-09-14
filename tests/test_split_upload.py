@@ -20,7 +20,7 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
-from extraction_review.config import Config
+from extraction_review.config import Config, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.document_parts import (
     _split_categories,
     explode_repeating_split_parts,
@@ -107,6 +107,8 @@ def _required_parts(
 
 def test_config_json_has_versioning() -> None:
     from extraction_review.config import (
+        JUBEEX_FILING_TYPES,
+        JUBEEX_UPLOAD_FILING_TYPES,
         config_identity,
         dump_api_configuration,
         load_config_payload,
@@ -122,6 +124,10 @@ def test_config_json_has_versioning() -> None:
     assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
     assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.0"
     assert data["pipeline_versions"]["split"]["config_version"] == "1.0.0"
+    assert [rule["type"] for rule in data["classify"]["rules"]] == list(
+        JUBEEX_FILING_TYPES
+    )
+    assert list(data["split_upload"]["types"]) == list(JUBEEX_UPLOAD_FILING_TYPES)
     assert "schema_version" not in data["classify"]
     assert "config_version" not in data["classify"]
     assert "schema_version" not in data["extract-jubeex"]
@@ -163,7 +169,7 @@ def test_classify_dump_strips_unsupported_version_keys() -> None:
         ClassifyConfig.model_validate(
             {
                 "product_type": "classify_v2",
-                "rules": [{"type": "other", "description": "x"}],
+                "rules": [{"type": "SLP_CIVIL", "description": "x"}],
                 "mode": "FAST",
                 "schema_version": "1.0",
                 "config_version": "1.0.0",
@@ -177,12 +183,7 @@ def test_classify_dump_strips_unsupported_version_keys() -> None:
 
 def test_ui_catalog_is_driven_by_config_types() -> None:
     catalog = ui_catalog()
-    assert set(catalog) == {
-        "SLP_CIVIL",
-        "SLP_CRIMINAL",
-        "TRANSFER_PETITION_CIVIL",
-        "TRANSFER_PETITION_CRIMINAL",
-    }
+    assert set(catalog) == set(JUBEEX_UPLOAD_FILING_TYPES)
     assert catalog["SLP_CIVIL"]["label"] == "SLP (Civil)"
     assert catalog["TRANSFER_PETITION_CIVIL"]["label"] == "Transfer Petition (Civil)"
     assert catalog["TRANSFER_PETITION_CRIMINAL"]["label"] == (
@@ -264,6 +265,21 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert filing_type_label("TRANSFER_PETITION_CRIMINAL") == (
         "Transfer Petition (Criminal)"
     )
+    assert filing_type_label("CIVIL_APPEAL") == "Civil Appeal"
+    assert filing_type_label("MISCELLANEOUS_APPLICATION") == (
+        "Miscellaneous Application"
+    )
+    assert catalog["CIVIL_APPEAL"]["label"] == "Civil Appeal"
+    assert catalog["MISCELLANEOUS_APPLICATION"]["label"] == (
+        "Miscellaneous Application"
+    )
+    assert catalog["REVIEW_PETITION_CIVIL"]["label"] == "Review Petition (Civil)"
+    civil_appeal_ids = [slot["id"] for slot in catalog["CIVIL_APPEAL"]["slots"]]
+    criminal_appeal_ids = [
+        slot["id"] for slot in catalog["CRIMINAL_APPEAL"]["slots"]
+    ]
+    assert "court_fees" in civil_appeal_ids
+    assert "court_fees" not in criminal_appeal_ids
     tp_civil_required = {
         slot["id"]: slot["required"]
         for slot in catalog["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -425,7 +441,7 @@ def test_compiled_slices_skip_missing_required_slots() -> None:
 
 def test_unknown_filing_type_fails() -> None:
     with pytest.raises(SplitUploadError, match="Unknown filing type"):
-        validate_parts("WRIT_PETITION_CIVIL", [])
+        validate_parts("NOT_A_FILING_TYPE", [])
 
 
 def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
@@ -1276,12 +1292,7 @@ def test_page_maps_survive_string_keys() -> None:
 @pytest.mark.asyncio
 async def test_metadata_exposes_split_upload_types() -> None:
     result = await metadata_workflow.run(start_event=StartEvent())
-    assert set(result.split_upload_types.keys()) == {
-        "SLP_CIVIL",
-        "SLP_CRIMINAL",
-        "TRANSFER_PETITION_CIVIL",
-        "TRANSFER_PETITION_CRIMINAL",
-    }
+    assert set(result.split_upload_types.keys()) == set(JUBEEX_UPLOAD_FILING_TYPES)
     criminal_ids = [
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]

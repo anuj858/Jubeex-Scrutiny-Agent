@@ -113,7 +113,13 @@ class CreateFilingRequest(BaseModel):
     job_type: str = Field(examples=["upload_separate", "upload_compiled"])
     filing_type: str | None = Field(
         default=None,
-        examples=["SLP_CIVIL", "SLP_CRIMINAL", "TRANSFER_PETITION_CIVIL", "TRANSFER_PETITION_CRIMINAL"],
+        examples=[
+            "SLP_CIVIL",
+            "CIVIL_APPEAL",
+            "WRIT_PETITION_CRIMINAL",
+            "REVIEW_PETITION_CIVIL",
+            "MISCELLANEOUS_APPLICATION",
+        ],
     )
     organization_id: str | None = None
     workspace_id: str | None = None
