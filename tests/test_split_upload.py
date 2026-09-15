@@ -20,7 +20,7 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
-from extraction_review.config import Config, JUBEEX_UPLOAD_FILING_TYPES
+from extraction_review.config import JUBEEX_UPLOAD_FILING_TYPES, Config
 from extraction_review.document_parts import (
     _split_categories,
     explode_repeating_split_parts,
@@ -69,11 +69,16 @@ from extraction_review.split_upload import (
     coerce_page_markdown,
     coerce_page_parts,
     display_filename,
+    dump_parse_artifact,
     extract_source_parts,
     inject_where_to_look,
+    load_parse_artifact,
     ordered_parts,
+    parse_action_for_slot,
+    slot_is_extract_source,
     slot_needs_precise_parse,
     stitch_parsed_parts,
+    stitch_parsed_parts_in_order,
     type_catalog,
     ui_catalog,
     validate_parts,
@@ -2072,3 +2077,161 @@ async def test_ingest_labeled_parts_runs_in_parallel(
         "file-3.pdf",
     ]
     assert peak > 1
+
+
+def test_stitch_in_request_order_not_catalog_order() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    parts = [
+        SplitPartInput(
+            slot_id="petition",
+            file_id="file-petition",
+            document_parts=("Main Petition",),
+        ),
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="file-cover",
+            document_parts=("Cover Page",),
+        ),
+    ]
+    pages_by_slot = {
+        "petition": {1: "petition page 1", 2: "petition page 2"},
+        "cover_page": {1: "cover page"},
+    }
+    catalog_markdown, _catalog_parts = stitch_parsed_parts(
+        catalog, parts, pages_by_slot
+    )
+    request_markdown, request_parts = stitch_parsed_parts_in_order(
+        parts, pages_by_slot
+    )
+    assert request_markdown[1] == "petition page 1"
+    assert request_markdown[2] == "petition page 2"
+    assert request_markdown[3] == "cover page"
+    assert request_parts[1] == ["Main Petition"]
+    assert request_parts[3] == ["Cover Page"]
+    cover_first = min(
+        page for page, names in _catalog_parts.items() if "Cover Page" in names
+    )
+    petition_first = min(
+        page for page, names in _catalog_parts.items() if "Main Petition" in names
+    )
+    assert cover_first < petition_first
+    assert catalog_markdown[cover_first] == "cover page"
+
+
+def test_slot_is_extract_source_for_fill_slots_only() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    petition = SplitPartInput(
+        slot_id="petition",
+        file_id="f1",
+        document_parts=("Main Petition",),
+    )
+    annexure = SplitPartInput(
+        slot_id="annexure_p1",
+        file_id="f2",
+        document_parts=("Annexure P-1",),
+    )
+    affidavit = SplitPartInput(
+        slot_id="affidavit",
+        file_id="f3",
+        document_parts=("Affidavit",),
+    )
+    assert slot_is_extract_source(petition, catalog) is True
+    assert slot_is_extract_source(annexure, catalog) is False
+    assert slot_is_extract_source(affidavit, catalog) is False
+    assert parse_action_for_slot(
+        petition, catalog=catalog, parse_scope="extract_sources"
+    ) == "parse"
+    assert parse_action_for_slot(
+        annexure, catalog=catalog, parse_scope="extract_sources"
+    ) == "skip"
+    assert parse_action_for_slot(
+        petition,
+        catalog=catalog,
+        parse_scope="unparsed",
+        reuse_slots={"petition"},
+    ) == "reuse"
+    assert parse_action_for_slot(
+        annexure,
+        catalog=catalog,
+        parse_scope="unparsed",
+        reuse_slots={"petition"},
+    ) == "parse"
+
+
+def test_parse_artifact_round_trip_merges_new_slots() -> None:
+    dumped = dump_parse_artifact(
+        parsed_slots=["petition", "cover_page"],
+        document_order=["petition", "cover_page"],
+        pages_by_slot={
+            "petition": {1: "p1"},
+            "cover_page": {1: "c1"},
+        },
+        parse_job_ids={"petition": "job-p", "cover_page": "job-c"},
+        layouts_by_slot={"cover_page": {1: {"words": [{"t": "IN"}]}}},
+    )
+    parsed, order, pages, jobs, layouts = load_parse_artifact(dumped)
+    assert parsed == ["petition", "cover_page"]
+    assert order == ["petition", "cover_page"]
+    assert pages["petition"][1] == "p1"
+    assert jobs["cover_page"] == "job-c"
+    assert layouts["cover_page"][1]["words"][0]["t"] == "IN"
+    merged = dump_parse_artifact(
+        parsed_slots=["petition", "cover_page", "index"],
+        document_order=["petition", "index", "cover_page"],
+        pages_by_slot={
+            **pages,
+            "index": {1: "index page"},
+        },
+        parse_job_ids={**jobs, "index": "job-i"},
+        layouts_by_slot=layouts,
+    )
+    _parsed, new_order, merged_pages, _jobs, _layouts = load_parse_artifact(merged)
+    assert new_order == ["petition", "index", "cover_page"]
+    assert merged_pages["index"][1] == "index page"
+    markdown, parts = stitch_parsed_parts_in_order(
+        [
+            SplitPartInput(slot_id="petition", file_id="a", document_parts=("Main Petition",)),
+            SplitPartInput(slot_id="index", file_id="b", document_parts=("Index",)),
+            SplitPartInput(slot_id="cover_page", file_id="c", document_parts=("Cover Page",)),
+        ],
+        merged_pages,
+    )
+    assert markdown[1] == "p1"
+    assert markdown[2] == "index page"
+    assert markdown[3] == "c1"
+    assert parts[2] == ["Index"]
+
+
+def test_extract_source_stitch_omits_unparsed_slots() -> None:
+    parts = [
+        SplitPartInput(
+            slot_id="petition",
+            file_id="a",
+            document_parts=("Main Petition",),
+            filename="petition.pdf",
+        ),
+        SplitPartInput(
+            slot_id="annexure_p1",
+            file_id="b",
+            document_parts=("Annexure P-1",),
+            filename="annexure_p1.pdf",
+        ),
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="c",
+            document_parts=("Cover Page",),
+            filename="cover_page.pdf",
+        ),
+    ]
+    pages_by_slot = {
+        "petition": {1: "p1", 2: "p2"},
+        "cover_page": {1: "c1"},
+    }
+    markdown, labels = stitch_parsed_parts_in_order(
+        parts, pages_by_slot, omit_empty=True
+    )
+    assert list(markdown) == [1, 2, 3]
+    assert markdown[1] == "p1"
+    assert markdown[3] == "c1"
+    assert labels[3] == ["Cover Page"]
+    assert all("Annexure" not in names for names in labels.values())

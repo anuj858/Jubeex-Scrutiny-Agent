@@ -31,17 +31,19 @@ from pydantic import (
 
 from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
-from .s3_artifacts import recorded_artifacts, set_job_context
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
+from .extract_record import stamp_review_status
 from .process_file import (
+    CATALOG_JOB_TYPES,
     FileEvent,
     blank_or_placeholder,
     normalize_job_type,
+    parse_edited_flag,
 )
 from .process_file import workflow as process_file_workflow
-from .extract_record import stamp_review_status
 from .queue import enqueue_job, sqs_enabled
+from .s3_artifacts import recorded_artifacts, set_job_context
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
@@ -175,6 +177,80 @@ class CreateFilingRequest(BaseModel):
         return self
 
 
+class FilingDocumentsRequest(BaseModel):
+    """Shared body for split-petition / verify / extract / index."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filing_type: str | None = Field(
+        default=None,
+        examples=["SLP_CIVIL"],
+    )
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    callback_url: str | None = Field(
+        default=None,
+        examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
+    )
+    documents: list[DocumentIn] = Field(default_factory=list)
+
+    @field_validator(
+        "filing_type",
+        "organization_id",
+        "workspace_id",
+        "user_id",
+        "callback_url",
+        mode="before",
+    )
+    @classmethod
+    def _drop_swagger_placeholders(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
+
+    @model_validator(mode="after")
+    def _require_filing_type_and_documents(self) -> FilingDocumentsRequest:
+        if not self.filing_type:
+            raise ValueError(
+                "filing_type is required. Use a real type such as SLP_CIVIL."
+            )
+        catalog_types = set(ui_catalog())
+        if catalog_types and self.filing_type not in catalog_types:
+            allowed = ", ".join(sorted(catalog_types))
+            raise ValueError(
+                f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+            )
+        if not self.documents:
+            raise ValueError("documents[] is required")
+        return self
+
+
+class IndexFilingRequest(FilingDocumentsRequest):
+    edited: bool = False
+    parsed_slots: list[str] = Field(default_factory=list)
+
+    @field_validator("edited", mode="before")
+    @classmethod
+    def _coerce_edited(cls, value: object) -> bool:
+        return parse_edited_flag(value)
+
+    @field_validator("parsed_slots", mode="before")
+    @classmethod
+    def _clean_parsed_slots(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = blank_or_placeholder(value)
+            return [text] if text else []
+        if isinstance(value, list):
+            slots: list[str] = []
+            for item in value:
+                cleaned = blank_or_placeholder(item)
+                if cleaned:
+                    slots.append(cleaned)
+            return slots
+        return []
+
+
 class UpdateFilingRequest(BaseModel):
     """Set Agent Data review status. The Llama UI is not required."""
 
@@ -284,6 +360,25 @@ def _serialize_result(result: Any) -> dict[str, Any]:
     if hasattr(result, "model_dump"):
         payload = result.model_dump(mode="json")
         payload["type"] = type(result).__name__
+        verified = payload.pop("verified_documents", None) or []
+        if payload.get("match") is not None:
+            docs = verified or [
+                item
+                for item in (payload.get("documents") or [])
+                if isinstance(item, dict) and "match" in item
+            ]
+            payload = {
+                "type": "DocumentsVerified",
+                "match": bool(payload.get("match")),
+                "documents": [
+                    {
+                        "name": item.get("name"),
+                        "match": bool(item.get("match")),
+                    }
+                    for item in docs
+                    if isinstance(item, dict)
+                ],
+            }
         return payload
     if isinstance(result, dict):
         return result
@@ -346,6 +441,54 @@ async def _start_process_file(job: JobState, event: FileEvent) -> None:
     await _run_workflow(job, handler)
 
 
+def _file_event_http(payload: dict[str, Any]) -> FileEvent:
+    try:
+        return FileEvent(**payload)
+    except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValidationError):
+            detail = [
+                {"loc": list(err.get("loc") or ()), "msg": err.get("msg")}
+                for err in exc.errors()
+            ]
+        else:
+            detail = str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        ) from exc
+
+
+def _accept_process_file(
+    event: FileEvent,
+    *,
+    callback_url: str | None,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    job_id = str(uuid.uuid4())
+    job = JobState(
+        job_id=job_id,
+        kind="process_file",
+        organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
+        user_id=event.user_id,
+    )
+    job.callback_url = callback_url
+    JOBS[job_id] = job
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "process_file",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_process_file, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
 async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     handler = scrutiny_workflow.run(start_event=event)
@@ -404,7 +547,7 @@ async def catalog() -> dict[str, Any]:
         "filing_types": list(JUBEEX_FILING_TYPES),
         "split_upload_types": ui_catalog(),
         "collection": FILING_COLLECTION,
-        "job_types": ["upload_compiled", "upload_separate"],
+        "job_types": list(CATALOG_JOB_TYPES),
         "config": config_identity(),
     }
 
@@ -422,44 +565,78 @@ async def create_filing(
 ) -> JobAccepted:
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
-    try:
-        event = FileEvent(**payload)
-    except (ValidationError, ValueError) as exc:
-        if isinstance(exc, ValidationError):
-            detail = [
-                {"loc": list(err.get("loc") or ()), "msg": err.get("msg")}
-                for err in exc.errors()
-            ]
-        else:
-            detail = str(exc)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
-        ) from exc
-
-    job_id = str(uuid.uuid4())
-    job = JobState(
-        job_id=job_id,
-        kind="process_file",
-        organization_id=event.organization_id,
-        workspace_id=event.workspace_id,
-        user_id=event.user_id,
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
     )
-    job.callback_url = body.callback_url
-    JOBS[job_id] = job
-    if sqs_enabled():
-        enqueue_job(
-            {
-                "job_id": job_id,
-                "kind": "process_file",
-                "event_id": job.event_id,
-                "callback_url": job.callback_url,
-                "event": event.model_dump(exclude_none=True),
-            }
-        )
-    else:
-        background_tasks.add_task(_start_process_file, job, event)
-    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
+@app.post(
+    "/v1/filings/split-petition",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def split_petition(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "split_petition"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/verify-document",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def verify_document(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "verify_document"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/extract",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_only(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "extract_only"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
 
 
 @app.get(
@@ -576,6 +753,31 @@ async def update_filing(
         agent_data_id,
         updated,
         _as_data_dict(getattr(updated, "data", None) or data),
+    )
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/index",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def index_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "index_parsed"
+    payload["agent_data_id"] = agent_data_id
+    payload["edited"] = parse_edited_flag(body.edited)
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
     )
 
 

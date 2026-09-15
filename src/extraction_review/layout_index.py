@@ -282,15 +282,21 @@ def stitch_slot_layouts(
     parts: Sequence[SplitPartInput],
     pages_by_slot: Mapping[str, Mapping[int, Any]],
     layouts_by_slot: Mapping[str, LayoutIndex],
+    *,
+    part_order: Sequence[SplitPartInput] | None = None,
+    omit_empty: bool = False,
 ) -> LayoutIndex:
     """Remap slot-local layout pages onto the same global pages as markdown."""
     stitched: LayoutIndex = {}
     next_page = 1
-    for item in ordered_parts(catalog, parts):
+    sequence = list(part_order) if part_order is not None else ordered_parts(catalog, parts)
+    for item in sequence:
         local = pages_by_slot.get(item.slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
         slot_layout = layouts_by_slot.get(item.slot_id) or {}
         if not local_numbers:
+            if omit_empty:
+                continue
             next_page += 1
             continue
         for local_page in local_numbers:

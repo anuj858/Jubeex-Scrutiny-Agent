@@ -4,6 +4,7 @@ from extraction_review.s3_artifacts import (
     STEP_DEFECTS,
     STEP_EXTRACT,
     STEP_LAYOUT,
+    STEP_PARSE,
     STEP_SPLIT,
     artifact_key,
     recorded_artifacts,
@@ -43,6 +44,10 @@ def test_split_defect_and_layout_use_their_own_folders() -> None:
     assert artifact_key(STEP_LAYOUT, object_id=object_id, job_id=job_id) == (
         f"org/{org}/filing-workspace/{workspace}/layoutfiles/"
         f"{object_id}-v001-agent-layout-{job_id}.json"
+    )
+    assert artifact_key(STEP_PARSE, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/parsefiles/"
+        f"{object_id}-v001-agent-parse-{job_id}.json"
     )
 
 

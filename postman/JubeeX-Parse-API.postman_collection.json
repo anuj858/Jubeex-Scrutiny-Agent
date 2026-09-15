@@ -1,0 +1,378 @@
+{
+  "info": {
+    "_postman_id": "c8e4f2a1-9d70-4b31-8e15-jubeex-parse-api",
+    "name": "JubeeX Parse API",
+    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited`), parse the rest, Pinecone. Echo `parsed_slots`. `documents[]` order sets global page numbers.\n5. Optional: `POST /v1/filings/{{agent_data_id}}/scrutiny`.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "apiKey", "value": "" },
+    { "key": "job_id", "value": "" },
+    { "key": "agent_data_id", "value": "" },
+    { "key": "parsed_slots", "value": "[\"petition\", \"cover_page\", \"vakalatnama_appearance\"]" },
+    { "key": "filing_type", "value": "SLP_CIVIL" },
+    { "key": "organization_id", "value": "3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11" },
+    { "key": "workspace_id", "value": "b20c7d91-4e55-48aa-a013-9d6e2f88c104" },
+    { "key": "user_id", "value": "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447" }
+  ],
+  "item": [
+    {
+      "name": "00 Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/health",
+            "description": "Liveness. No auth."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 Catalog",
+      "item": [
+        {
+          "name": "List filing types, slots, job types",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/catalog",
+            "description": "Returns `filing_types`, `split_upload_types` (slot catalogs), `job_types` (`upload_compiled`, `upload_separate`, `split_petition`, `verify_document`, `extract_only`, `index_parsed`), and config identity."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Recommended frontend flow",
+      "description": "Application-layer path. Poll after each 202. Persist `agent_data_id` + `parsed_slots` from extract before calling index.",
+      "item": [
+        {
+          "name": "1 Split Main Petition",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"Main_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/split-petition",
+            "description": "`job_type=split_petition`. Ingests the compiled Main Petition PDF, **skips LlamaClassify**, runs LlamaSplit + slice.\n\n`filing_type` is required.\nPoll result: `BundlePrepared` with `parts[]` (`slot_id`, `label`, `page_span`, sliced `file_id`) plus leftover `undefined` pages.\nDoes not parse, extract, or index."
+          }
+        },
+        {
+          "name": "2 Verify named documents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"document_id\": \"aa111111-1111-1111-1111-111111111111\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"vakalatnama.pdf\",\n      \"document_id\": \"aa222222-2222-2222-2222-222222222222\",\n      \"download_url\": \"https://storage.example/filings/vakalatnama.pdf\"\n    },\n    {\n      \"name\": \"impugned_order.pdf\",\n      \"document_id\": \"aa333333-3333-3333-3333-333333333333\",\n      \"download_url\": \"https://storage.example/filings/impugned_order.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/verify-document",
+            "description": "`job_type=verify_document`. Each PDF is LlamaSplit independently against its filename (`cover_page.pdf` → `cover_page`). Optional explicit `slot_id` wins.\n\nPoll `result` is **only**:\n```json\n{ \"type\": \"DocumentsVerified\", \"match\": false, \"documents\": [{ \"name\": \"cover_page.pdf\", \"match\": true }] }\n```\nOverall `match` is true only if every file matches."
+          }
+        },
+        {
+          "name": "3 Extract only (parse extract sources, no Pinecone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"memo_of_parties.pdf\",\n      \"download_url\": \"https://storage.example/filings/memo_of_parties.pdf\"\n    },\n    {\n      \"name\": \"vakalatnama.pdf\",\n      \"download_url\": \"https://storage.example/filings/vakalatnama.pdf\"\n    },\n    {\n      \"name\": \"aors_certificate.pdf\",\n      \"download_url\": \"https://storage.example/filings/aors_certificate.pdf\"\n    },\n    {\n      \"name\": \"impugned_order.pdf\",\n      \"download_url\": \"https://storage.example/filings/impugned_order.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/extract",
+            "description": "`job_type=extract_only`. Parses **extract-source slots only** (Cover Page, Main Petition, Memo of Parties, Vakalatnama, AOR’s Certificate, Impugned Order) in `documents[]` send order. Runs LlamaExtract. **Skips Pinecone.** Writes per-slot markdown to S3.\n\n**Persist from the completed poll (your DB):**\n- top-level `agent_data_id`\n- `result.parsed_slots`\n- `result.filing_type`\nDo not store markdown; it is already on S3 on the Agent Data record.\nThen poll **Get job status** — it copies `agent_data_id` and `parsed_slots` into collection variables."
+          }
+        },
+        {
+          "name": "4 Index after extract",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"edited\": false,\n  \"parsed_slots\": {{parsed_slots}},\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"index.pdf\",\n      \"download_url\": \"https://storage.example/filings/index.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"annexure_p1.pdf\",\n      \"download_url\": \"https://storage.example/filings/annexure_p1.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/index",
+            "description": "`job_type=index_parsed`. Always after extract. Path `agent_data_id` is required.\n\n- `edited: false` — reuse S3 markdown for `parsed_slots`, LlamaParse the rest.\n- `edited: true` / `\"yes\"` — re-download and re-parse **every** PDF in this request. Does **not** re-extract.\n- Echo `parsed_slots` from extract (or omit to fall back to Agent Data metadata).\n- `documents[]` **send order** sets global page numbers. Newly inserted files (index, annexures) shift later pages.\nDoes not change existing `POST /v1/filings` `upload_separate` / `upload_compiled`."
+          }
+        },
+        {
+          "name": "Poll job (after any 202)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.agent_data_id) {",
+                  "    pm.collectionVariables.set('agent_data_id', json.agent_data_id);",
+                  "  }",
+                  "  const result = json.result || {};",
+                  "  if (result.agent_data_id) {",
+                  "    pm.collectionVariables.set('agent_data_id', result.agent_data_id);",
+                  "  }",
+                  "  if (Array.isArray(result.parsed_slots) && result.parsed_slots.length) {",
+                  "    pm.collectionVariables.set('parsed_slots', JSON.stringify(result.parsed_slots));",
+                  "  }",
+                  "  if (result.filing_type) {",
+                  "    pm.collectionVariables.set('filing_type', result.filing_type);",
+                  "  }",
+                  "  pm.test('status is running, completed, or failed', function () {",
+                  "    pm.expect(['running', 'completed', 'failed']).to.include(json.status);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
+            "description": "Poll until `status` is `completed` or `failed`.\n\nOn completed extract: copies `agent_data_id` and `result.parsed_slots` into collection variables for index.\nVerify poll `result`: `{ type, match, documents:[{name, match}] }` only."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Legacy process filing",
+      "description": "Existing `POST /v1/filings`. Unchanged. Prefer folder 02 for the new frontend flow.",
+      "item": [
+        {
+          "name": "Upload compiled PDF",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_compiled\",\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"Defect_SLP_Civil.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "`job_type=upload_compiled`. Classify (unless filing_type is already a slice catalog), LlamaSplit, slice slot PDFs, then stop. Parse/extract wait for submit or use upload_separate / extract."
+          }
+        },
+        {
+          "name": "Upload separate files (parse + extract + Pinecone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_separate\",\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"02_List_of_Dates.pdf\",\n      \"document_id\": \"22bb33cc-44dd-55ee-96ff-778899001122\",\n      \"download_url\": \"https://storage.example/filings/02_List_of_Dates.pdf\"\n    },\n    {\n      \"name\": \"03_Annexure_P1_Impugned_Order.pdf\",\n      \"document_id\": \"33cc44dd-55ee-66ff-a700-889900112233\",\n      \"download_url\": \"https://storage.example/filings/03_Annexure_P1_Impugned_Order.pdf\"\n    },\n    {\n      \"name\": \"04_Vakalatnama.pdf\",\n      \"document_id\": \"44dd55ee-66ff-77aa-b811-990011223344\",\n      \"download_url\": \"https://storage.example/filings/04_Vakalatnama.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "`job_type=upload_separate`. Already-split files. Parses all slots, extracts, stores Agent Data, **indexes Pinecone**. Stitches pages in **catalog order** (not send order). Prefer `/v1/filings/extract` + `/index` for the new frontend flow."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Jobs",
+      "item": [
+        {
+          "name": "Get job status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.agent_data_id) pm.collectionVariables.set('agent_data_id', json.agent_data_id);",
+                  "  const result = json.result || {};",
+                  "  if (result.agent_data_id) pm.collectionVariables.set('agent_data_id', result.agent_data_id);",
+                  "  if (Array.isArray(result.parsed_slots) && result.parsed_slots.length) {",
+                  "    pm.collectionVariables.set('parsed_slots', JSON.stringify(result.parsed_slots));",
+                  "  }",
+                  "  pm.test('status is running, completed, or failed', function () {",
+                  "    pm.expect(['running', 'completed', 'failed']).to.include(json.status);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
+            "description": "Same poll endpoint for every `kind: process_file` and `kind: scrutiny` job."
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Filing record",
+      "item": [
+        {
+          "name": "Get filing by agent_data_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Fetches Agent Data. Extracted JSON is in `data`. Org/workspace/user, `parsed_slots`, `document_order`, and parse/layout S3 keys are in `data.metadata`."
+          }
+        },
+        {
+          "name": "Set review status",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Sets Agent Data review status. Allowed: `approved`, `rejected`, `pending_review`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Scrutiny",
+      "description": "Defect check against an extracted filing.",
+      "item": [
+        {
+          "name": "Start scrutiny",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny",
+            "description": "Runs scrutiny on the extracted Agent Data record. Body is optional (`file_hash`, `file_url`/`download_url`, org/workspace).\nPoll Get job status. Report is `result.report`.\nRejected filings return 409."
+          }
+        }
+      ]
+    }
+  ]
+}

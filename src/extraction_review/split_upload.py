@@ -426,19 +426,22 @@ def bundle_file_hash(parts: Sequence[SplitPartInput]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def stitch_parsed_parts(
-    catalog: UploadTypeCatalog,
+def stitch_parsed_parts_in_order(
     parts: Sequence[SplitPartInput],
     pages_by_slot: Mapping[str, Mapping[int, str]],
+    *,
+    omit_empty: bool = False,
 ) -> tuple[dict[int, str], dict[int, list[str]]]:
-    """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
+    """Concatenate per-file pages in the given list order. Global pages are 1-indexed."""
     page_markdown: dict[int, str] = {}
     page_parts: dict[int, list[str]] = {}
     next_page = 1
-    for item in ordered_parts(catalog, parts):
+    for item in parts:
         local = pages_by_slot.get(item.slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
         if not local_numbers:
+            if omit_empty:
+                continue
             page_markdown[next_page] = (
                 f"{_PARSE_STUB_PREFIX} {item.filename or item.slot_id})"
             )
@@ -451,6 +454,17 @@ def stitch_parsed_parts(
             page_parts[next_page] = list(item.document_parts)
             next_page += 1
     return page_markdown, page_parts
+
+
+def stitch_parsed_parts(
+    catalog: UploadTypeCatalog,
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+) -> tuple[dict[int, str], dict[int, list[str]]]:
+    """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
+    return stitch_parsed_parts_in_order(
+        ordered_parts(catalog, parts), pages_by_slot
+    )
 
 
 def coerce_page_markdown(raw: Mapping[Any, Any] | None) -> dict[int, str]:
@@ -520,6 +534,149 @@ PRECISE_PARSE_SLOT_IDS = frozenset(
 FAST_PARSE_SLOT_IDS = frozenset(
     {"undefined", "annexures", "applications", "appendix"}
 )
+
+
+def slot_is_extract_source(
+    part: SplitPartInput, catalog: UploadTypeCatalog
+) -> bool:
+    """True when this upload slot is needed to fill LlamaExtract fields."""
+    sources = extract_source_parts(catalog)
+    names = [name for name in part.document_parts if name]
+    if not names:
+        slot = resolve_upload_slot(catalog, part.slot_id)
+        names = list(slot.parts) if slot else []
+    return page_is_extract_source(names, sources)
+
+
+def parse_action_for_slot(
+    part: SplitPartInput,
+    *,
+    catalog: UploadTypeCatalog,
+    parse_scope: str,
+    reuse_slots: set[str] | None = None,
+) -> str:
+    """Return ``parse``, ``reuse``, or ``skip`` for one labeled PDF."""
+    slot = (part.slot_id or "").strip()
+    scope = (parse_scope or "all").strip().lower()
+    reused = reuse_slots or set()
+    if scope == "extract_sources":
+        if not slot_is_extract_source(part, catalog):
+            return "skip"
+        return "parse"
+    if scope == "unparsed":
+        if slot in reused:
+            return "reuse"
+        return "parse"
+    return "parse"
+
+
+PARSE_ARTIFACT_URL_KEY = "parse_artifact_url"
+PARSE_ARTIFACT_KEY_KEY = "parse_artifact_key"
+
+
+def _int_keyed_mapping(raw: Mapping[Any, Any] | None) -> dict[int, Any]:
+    pages: dict[int, Any] = {}
+    for key, value in (raw or {}).items():
+        try:
+            pages[int(key)] = value
+        except (TypeError, ValueError):
+            continue
+    return pages
+
+
+def dump_parse_artifact(
+    *,
+    parsed_slots: Sequence[str],
+    document_order: Sequence[str],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    parse_job_ids: Mapping[str, str] | None = None,
+    layouts_by_slot: Mapping[str, Mapping[int, Any]] | None = None,
+) -> dict[str, Any]:
+    """Per-slot markdown JSON so a later job can re-stitch in a new send order."""
+    job_ids = dict(parse_job_ids or {})
+    layouts = layouts_by_slot or {}
+    slot_ids = list(document_order)
+    for slot_id in pages_by_slot:
+        if slot_id not in slot_ids:
+            slot_ids.append(slot_id)
+    slots: dict[str, Any] = {}
+    for slot_id in slot_ids:
+        pages = pages_by_slot.get(slot_id) or {}
+        layout = layouts.get(slot_id) or {}
+        slots[slot_id] = {
+            "pages": {
+                str(page): str(text or "")
+                for page, text in sorted(
+                    (
+                        (int(number), value)
+                        for number, value in pages.items()
+                    ),
+                    key=lambda item: item[0],
+                )
+            },
+            "parse_job_id": job_ids.get(slot_id),
+            "layout": {
+                str(page): payload
+                for page, payload in sorted(
+                    _int_keyed_mapping(layout).items(),
+                    key=lambda item: item[0],
+                )
+                if isinstance(payload, Mapping)
+            },
+        }
+    return {
+        "parsed_slots": [slot for slot in parsed_slots if slot],
+        "document_order": [slot for slot in document_order if slot],
+        "slots": slots,
+    }
+
+
+def load_parse_artifact(
+    payload: Mapping[str, Any] | None,
+) -> tuple[
+    list[str],
+    list[str],
+    dict[str, dict[int, str]],
+    dict[str, str],
+    dict[str, dict[int, dict[str, Any]]],
+]:
+    """Restore per-slot markdown, parse job ids, and layouts from S3 JSON."""
+    data = payload if isinstance(payload, Mapping) else {}
+    parsed_slots = [
+        str(slot).strip()
+        for slot in (data.get("parsed_slots") or [])
+        if str(slot).strip()
+    ]
+    document_order = [
+        str(slot).strip()
+        for slot in (data.get("document_order") or [])
+        if str(slot).strip()
+    ]
+    raw_slots = data.get("slots") if isinstance(data.get("slots"), Mapping) else {}
+    pages_by_slot: dict[str, dict[int, str]] = {}
+    parse_job_ids: dict[str, str] = {}
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    for slot_id, raw in raw_slots.items():
+        key = str(slot_id).strip()
+        if not key or not isinstance(raw, Mapping):
+            continue
+        pages_by_slot[key] = coerce_page_markdown(
+            raw.get("pages") if isinstance(raw.get("pages"), Mapping) else {}
+        )
+        job_id = str(raw.get("parse_job_id") or "").strip()
+        if job_id:
+            parse_job_ids[key] = job_id
+        layout_raw = raw.get("layout")
+        layout_pages: dict[int, dict[str, Any]] = {}
+        for page, payload_page in _int_keyed_mapping(
+            layout_raw if isinstance(layout_raw, Mapping) else {}
+        ).items():
+            if isinstance(payload_page, Mapping):
+                layout_pages[page] = dict(payload_page)
+        layouts_by_slot[key] = layout_pages
+    if not parsed_slots:
+        parsed_slots = [slot for slot, pages in pages_by_slot.items() if pages]
+    return parsed_slots, document_order, pages_by_slot, parse_job_ids, layouts_by_slot
 
 
 def slot_needs_precise_parse(
