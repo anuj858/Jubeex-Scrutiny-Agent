@@ -474,6 +474,39 @@ def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool
     return any(name in source_parts for name in labels)
 
 
+PRECISE_PARSE_SLOT_IDS = frozenset(
+    {
+        "petition",
+        "cover_page",
+        "memo_of_parties",
+        "vakalatnama_appearance",
+        "aor_certificate",
+        "aors_declaration",
+        "impugned_order",
+        "affidavit",
+        "office_report_limitation",
+        "office_report_on_limitation",
+    }
+)
+FAST_PARSE_SLOT_IDS = frozenset(
+    {"undefined", "annexures", "applications", "appendix"}
+)
+
+
+def slot_needs_precise_parse(
+    part: SplitPartInput, source_parts: set[str]
+) -> bool:
+    """True when LlamaParse should keep the extract-quality (agentic) tier."""
+    slot = (part.slot_id or "").strip().lower()
+    if slot in FAST_PARSE_SLOT_IDS or slot.startswith("annexure_p"):
+        return False
+    if slot.startswith("application_") and slot != "applications":
+        return False
+    if part.document_parts:
+        return page_is_extract_source(part.document_parts, source_parts)
+    return slot in PRECISE_PARSE_SLOT_IDS
+
+
 def _petition_pages_to_keep(
     page_markdown: Mapping[int, str],
     page_parts: Mapping[int, Any],
