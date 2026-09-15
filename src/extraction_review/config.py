@@ -131,7 +131,9 @@ class CauseTitle(BaseModel):
         description=(
             "Main petitioner name from the Cover Page cause-title line. "
             "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Petitioner, Petitioner(s), or leading dots."
+            "Petitioner, Petitioner(s), or leading dots. Cover Page has only this "
+            "one petitioner. This person must be the same as petitioner 1 on the "
+            "Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
     main_respondent: str | None = Field(
@@ -139,22 +141,24 @@ class CauseTitle(BaseModel):
         description=(
             "Main respondent name from the Cover Page cause-title line. "
             "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Respondent, Respondent(s), or leading dots."
+            "Respondent, Respondent(s), or leading dots. Cover Page has only this "
+            "one respondent. This person must be the same as respondent 1 on the "
+            "Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
-    source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Memo of Parties or Cover Page).")
+    source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Cover Page or Main Petition).")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1."""
+    """One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
         description=(
             "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition "
-            "(and Memo of Parties). ORGANIZATION if the name has a prefix "
+            "starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix "
             "M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, "
             "or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, "
             "Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. "
@@ -196,7 +200,7 @@ class Party(BaseModel):
         ),
     )
     raw_text: str | None = Field(default=None, description="Verbatim party block as printed, including name, relation, and address lines.")
-    source_part: str | None = Field(default=None, description="Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.")
+    source_part: str | None = Field(default=None, description="Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -320,8 +324,7 @@ class LegalExtractRecord(BaseModel):
         default=None,
         description=(
             "Court where the petition is filed, as a string. "
-            "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "and Memo of Parties."
+            "Fill from Cover Page; check spelling on Main Petition and Vakalatnama."
         ),
     )
     petition_type: str | None = Field(
@@ -329,8 +332,7 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Petition type as printed, e.g. Special Leave Petition (Civil), Civil Appeal, "
             "Writ Petition (Criminal), or Miscellaneous Application. "
-            "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "and Memo of Parties."
+            "Fill from Cover Page; check spelling on Main Petition and Vakalatnama."
         ),
     )
     cause_title: CauseTitle | None = Field(default=None, description="Cause title representing petitioner vs respondent.")
@@ -363,10 +365,14 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Spelling mismatches between fill and verify sources, plus an ORGANIZATION "
             "party with no acting_through. Always include a letter-level mismatch of "
-            "the Cover Page main petitioner or main respondent versus Memo of Parties "
-            "or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a "
-            "mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is "
-            'Cover Page: "Name"; Main Petition / Memo of Parties: "Name". '
+            "the Cause Title main petitioner or main respondent versus petitioner 1 / "
+            "respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). "
+            "Cover Page has only one name per side; extra parties continue on later "
+            "starting pages. Also flag when that Cause Title person is missing on those "
+            "pages, is a different person than petitioner 1 / respondent 1, or is listed "
+            "on the other side. Extra parties are not a mismatch against Cover Page "
+            "And Anr/Ors. Party-name items[].raw_text "
+            'is Cause Title: "Name"; Main Petition: "Name". '
             "items[].id is '1', '2', …."
         ),
     )

@@ -78,6 +78,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONCURRENCY = 8
 DEFAULT_PERSIST_EVERY = 10
+SCRUTINY_AFTER_INDEX_ERROR = "Unable to run scrutiny defects. Try after some time."
+
+
+class ScrutinyAfterIndexError(Exception):
+    """Pinecone index finished; nested defect checks could not run."""
+
+    def __init__(self, agent_data_id: str) -> None:
+        super().__init__(SCRUTINY_AFTER_INDEX_ERROR)
+        self.agent_data_id = agent_data_id
 
 
 class ScrutinyEvent(StartEvent):

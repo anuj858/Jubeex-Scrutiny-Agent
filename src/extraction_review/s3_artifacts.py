@@ -24,17 +24,20 @@ logger = logging.getLogger(__name__)
 STEP_SPLIT = "split"
 STEP_EXTRACT = "extract"
 STEP_LAYOUT = "layout"
+STEP_PARSE = "parse"
 STEP_DEFECTS = "defects"
 STEP_FOLDERS = {
     STEP_SPLIT: "splitfiles",
     STEP_EXTRACT: "extractedfiles",
     STEP_LAYOUT: "layoutfiles",
+    STEP_PARSE: "parsefiles",
     STEP_DEFECTS: "defectfiles",
 }
 STEP_LABELS = {
     STEP_SPLIT: "agent-split",
     STEP_EXTRACT: "agent-extract",
     STEP_LAYOUT: "agent-layout",
+    STEP_PARSE: "agent-parse",
     STEP_DEFECTS: "agent-defects",
 }
 
