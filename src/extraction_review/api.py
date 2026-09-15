@@ -540,16 +540,6 @@ async def _load_filing_item(agent_data_id: str) -> Any:
         ) from exc
 
 
-@app.get(
-    "/v1/filings/{agent_data_id}",
-    tags=["filings"],
-    dependencies=[Depends(require_api_key)],
-)
-async def get_filing(agent_data_id: str) -> dict[str, Any]:
-    item = await _load_filing_item(agent_data_id)
-    return _filing_out(agent_data_id, item, _as_data_dict(getattr(item, "data", None)))
-
-
 @app.patch(
     "/v1/filings/{agent_data_id}",
     tags=["filings"],

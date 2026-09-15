@@ -133,7 +133,6 @@ Your backend should call this FastAPI, not LlamaDeploy `/workflows/.../run-nowai
 | `GET` | `/v1/catalog` | Filing types and document slots |
 | `POST` | `/v1/filings` | Start compiled or separate-file processing |
 | `GET` | `/v1/jobs/{job_id}` | Poll until `completed` or `failed` |
-| `GET` | `/v1/filings/{agent_data_id}` | Extracted Core Filing Record |
 | `PATCH` | `/v1/filings/{agent_data_id}` | Set review status (`approved` / `rejected` / `pending_review`) |
 | `POST` | `/v1/filings/{agent_data_id}/scrutiny` | Start defect check |
 | `GET` | `/v1/jobs/{job_id}` | Poll scrutiny (same jobs resource) |
@@ -166,17 +165,15 @@ POST /v1/filings
 
 Use `job_type: "upload_compiled"` with one compiled PDF in `documents` for the full-petition path (classify, slice, then extract). Send `filing_type` (`SLP_CIVIL`, `SLP_CRIMINAL`, `TRANSFER_PETITION_CIVIL`, or `TRANSFER_PETITION_CRIMINAL`) when you know the type so slicing still runs if classify returns `other`.
 
-**2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`.
+**2. Poll** `GET /v1/jobs/{job_id}` until `status` is `completed`. Then read `agent_data_id` (`agd-…`). `organization_id`, `workspace_id`, `user_id`, and `documents` are on `result`. Extracted JSON is on the webhook / S3 artifacts — there is no `GET /v1/filings/{id}`.
 
-**3. Fetch the record** `GET /v1/filings/{agent_data_id}` — filing JSON is in `data` (ids also in `data.metadata`).
-
-**4. Approve (optional)** `PATCH /v1/filings/{agent_data_id}` — no Llama UI:
+**3. Approve (optional)** `PATCH /v1/filings/{agent_data_id}` — no Llama UI:
 
 ```json
 { "status": "approved" }
 ```
 
-**5. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` with an optional body:
+**4. Run scrutiny** `POST /v1/filings/{agent_data_id}/scrutiny` with an optional body:
 
 ```json
 {

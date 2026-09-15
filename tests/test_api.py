@@ -277,22 +277,9 @@ def test_approve_filing_rejects_unknown_status(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_get_filing_not_found(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class FakeClient:
-        class beta:
-            class agent_data:
-                @staticmethod
-                async def get(_item_id: str):
-                    raise RuntimeError("missing")
-
-    monkeypatch.setattr(
-        "extraction_review.api.get_llama_cloud_client",
-        lambda: FakeClient(),
-    )
+def test_get_filing_is_removed(client: TestClient) -> None:
     response = client.get("/v1/filings/agd-missing")
-    assert response.status_code == 404
+    assert response.status_code == 405
 
 
 def test_create_scrutiny(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
