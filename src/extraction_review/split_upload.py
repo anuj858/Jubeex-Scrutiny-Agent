@@ -48,8 +48,10 @@ def _excluded_from_extract_pack(name: str) -> bool:
     return folded.startswith("annexure") or folded.startswith("application")
 
 
-# Long bodies stay out of Extract. Keep caption/party pages and closing pages.
-PETITION_PACK_FIRST_PAGES = 1
+# Long bodies stay out of Extract. Cover Page has one name per side.
+# The Main Petition party list can run 3-4 pages or more; keep those
+# opening pages plus the closing prayer pages.
+PETITION_PACK_FIRST_PAGES = 8
 PETITION_PACK_LAST_PAGES = 3
 IMPUGNED_PACK_FIRST_PAGES = 2
 IMPUGNED_PACK_LAST_PAGES = 2
@@ -811,13 +813,20 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             bit += f". Check spelling against {verify}; never overwrite fill text"
         if field_name in PARTY_FIELDS:
             bit += (
-                ". Prefer the first page of the Main Petition; if a field is blank "
-                "there or Main Petition is missing, use the Cover Page if it is in "
-                "this pack. Merge blank particulars between those two only. "
+                ". List every petitioner and respondent from the starting pages of "
+                "the Main Petition; that party list can run 3-4 pages or more. "
+                "Cover Page prints only one petitioner and one respondent (the main "
+                "names, plus And Anr/Ors if extras exist). If a field is blank on "
+                "those starting pages or Main Petition is missing, use the Cover Page "
+                "if it is in this pack. Merge blank particulars between those two only. "
                 "Never copy party names or addresses from Vakalatnama or Memo of Parties. "
                 "Use Cover Page to mark is_primary from the cover cause-title names. "
-                "And Anr/Ors on Cover Page means extra parties exist; list those names "
-                "from the Main Petition first page"
+                "Petitioner 1 on the Main Petition starting pages must be the same "
+                "person as cause_title.main_petitioner; respondent 1 must be the same "
+                "person as cause_title.main_respondent. Flag a different name, a "
+                "missing name, or a side swap (Cause Title petitioner listed as a "
+                "respondent, or the reverse). And Anr/Ors on Cover Page means extra "
+                "parties exist; list those names from the Main Petition starting pages"
             )
         lines.append(bit + ".")
     lines.extend(
@@ -841,10 +850,14 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
             "- confidence: percentage string such as 95% or 65% on each object.",
             "- inconsistencies: record spelling or value mismatches between fill and "
-            "verify sources. Always record a letter-level mismatch of the Cover Page "
+            "verify sources. Always record a letter-level mismatch of the Cause Title "
             "main petitioner or main respondent versus that same person's name on "
-            "the Main Petition first page (example: Shalija vs Shailja). "
-            "Do not skip the main-name spelling because Cover Page also says And Anr/Ors. "
+            "the Main Petition starting pages (example: Shalija vs Shailja). "
+            "The Cause Title petitioner must be petitioner 1 on those starting pages; "
+            "the Cause Title respondent must be respondent 1. Flag when they are a "
+            "different person, missing, or listed on the other side. Cover Page has "
+            "only one name per side. Do not skip the main-name spelling because Cover "
+            "Page also says And Anr/Ors. "
             "Do not invent extra parties to resolve a mismatch. "
             "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
             "Respondent, or Respondent(s), with or without leading dots (... or …). "
@@ -854,9 +867,9 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "Do not compare party names against the Impugned Order. "
             "One item per distinct name spelling; do not repeat the same two names. "
             "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
-            "Cover Page And Anr/Ors; those extra people are listed on "
-            "the Main Petition first page, not on the cover shorthand. "
-            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition: "
+            "Cover Page And Anr/Ors; those extra people are listed on the Main "
+            "Petition starting pages, not on the cover shorthand. "
+            "Party-name raw_text must be: Cause Title: \"Name\"; Main Petition: "
             "\"Name\". Quote the person's name only: no And Anr/Ors, "
             "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
             "AOR's Certificate as party-name sources. "
@@ -906,17 +919,22 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         )
     if field_name in PARTY_FIELDS:
         extra += (
-            " Prefer the first page of the Main Petition; if a field is blank there "
-            "or Main Petition is missing, use the Cover Page if it is in this pack. "
-            "If a field is blank in one of those parts, fill it from the "
-            "other. If neither Main Petition nor Cover Page is in this pack, "
+            " List every petitioner and respondent from the starting pages of the "
+            "Main Petition; that party list can run 3-4 pages or more. Cover Page "
+            "prints only one petitioner and one respondent. If a field is blank on "
+            "those starting pages or Main Petition is missing, use the Cover Page if "
+            "it is in this pack. If a field is blank in one of those parts, fill it "
+            "from the other. If neither Main Petition nor Cover Page is in this pack, "
             "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
             "Memo of Appearance, AOR's Certificate, or Memo of Parties. "
             "Use Cover Page to decide which already-listed party is primary and to "
-            "fill blanks. Extra petitioners "
-            "and respondents are listed on the Main Petition first page; "
-            "Cover Page And Anr/Ors is not the second party's name. Do not invent "
-            "parties. Write N/A if a field is not printed on a fill source that is present. "
+            "fill blanks. Petitioner 1 must be the same person as "
+            "cause_title.main_petitioner; respondent 1 must be the same person as "
+            "cause_title.main_respondent. Flag a different name, a missing name, or "
+            "a side swap. Extra petitioners and respondents continue on later starting "
+            "pages of the Main Petition; Cover Page And Anr/Ors is not the second "
+            "party's name. Do not invent parties. Write N/A if a field is not printed "
+            "on a fill source that is present. "
             "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
             "ORGANIZATION without acting_through is an inconsistencies item."
         )
@@ -930,9 +948,17 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
             "Respondent(s), with or without dots, as a spelling mismatch. "
             "Do not write 'and Anr. and Anr.' "
-            "If the Cover Page main name differs in letters from the Main Petition "
-            "first page (Shalija vs Shailja), that is an inconsistencies item. "
-            "Extra parties are not a spelling mismatch against And Anr/Ors."
+            "Cover Page has only one petitioner and one respondent. "
+            "Cross-check Cause Title with the starting pages of the Main Petition "
+            "(the party list can run 3-4 pages or more). "
+            "The Cause Title petitioner must be the same person as petitioner 1; "
+            "the Cause Title respondent must be respondent 1. "
+            "If the Cover Page / Cause Title main name differs in letters from "
+            "petitioner 1 or respondent 1 on those starting pages (Shalija vs "
+            "Shailja), that is an inconsistencies item. Also flag a different "
+            "person, a missing name, or a side swap (Cause Title petitioner listed "
+            "as a respondent, or the reverse). Extra parties on later starting "
+            "pages are not a spelling mismatch against And Anr/Ors."
         )
     if field_name == "advocates_on_record":
         extra += (
@@ -1005,7 +1031,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus the Main Petition first page (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition first page are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cause Title main petitioner/respondent letter mismatch versus petitioner 1 / respondent 1 on the Main Petition starting pages (Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Flag a different person, a missing name, or a side swap. id is '1', '2', …; use raw_text as Cause Title: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition starting pages are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

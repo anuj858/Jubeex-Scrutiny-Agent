@@ -93,8 +93,8 @@ _EXTRA_PARTY_LABEL = re.compile(
     re.IGNORECASE,
 )
 _CAPTION_SOURCE = re.compile(
-    r"cover page|vakalatnama|affidavit|aor's declaration|aors declaration|"
-    r"aor's certificate|aors certificate",
+    r"cover page|cause title|vakalatnama|affidavit|aor's declaration|"
+    r"aors declaration|aor's certificate|aors certificate",
     re.IGNORECASE,
 )
 _PRAYER_HEADING_LINE = re.compile(
@@ -483,9 +483,7 @@ def _clean_quoted_party_name(text: str | None) -> str:
 
 
 def format_party_spelling_raw_text(cover: str, listed: str) -> str:
-    return (
-        f'Cover Page: "{cover}"; Main Petition: "{listed}"'
-    )
+    return f'Cause Title: "{cover}"; Main Petition: "{listed}"'
 
 
 def _looks_like_person_name(text: str | None) -> bool:
@@ -537,6 +535,32 @@ def _party_spelling_label(
     return current or "Name spelling"
 
 
+def _cause_title_mismatch_label(
+    cover: str,
+    listed: str,
+    payload: dict[str, Any],
+    current: str | None,
+) -> str:
+    cause = payload.get("cause_title")
+    cause_data = cause if isinstance(cause, dict) else {}
+    main_respondent = cause_data.get("main_respondent")
+    main_petitioner = cause_data.get("main_petitioner")
+    if isinstance(main_respondent, str) and (
+        _names_match(cover, main_respondent) or _names_match(listed, main_respondent)
+    ):
+        return "Cause title respondent mismatch"
+    if isinstance(main_petitioner, str) and (
+        _names_match(cover, main_petitioner) or _names_match(listed, main_petitioner)
+    ):
+        return "Cause title petitioner mismatch"
+    label_l = (current or "").lower()
+    if "respondent" in label_l:
+        return "Cause title respondent mismatch"
+    if "petitioner" in label_l:
+        return "Cause title petitioner mismatch"
+    return current or "Cause title party mismatch"
+
+
 def _rewrite_party_spelling_item(item: dict[str, Any], payload: dict[str, Any]) -> None:
     raw = item.get("raw_text") or item.get("detail")
     raw_text = raw if isinstance(raw, str) else None
@@ -549,17 +573,31 @@ def _rewrite_party_spelling_item(item: dict[str, Any], payload: dict[str, Any]) 
     if not cover or not listed:
         return
     item["raw_text"] = format_party_spelling_raw_text(cover, listed)
-    item["label"] = _party_spelling_label(cover, listed, payload, label)
+    label_l = (label or "").lower()
+    if "listed as" in label_l or "missing" in label_l:
+        return
+    if names_are_spelling_variants(cover, listed):
+        item["label"] = _party_spelling_label(cover, listed, payload, label)
+        return
+    item["label"] = _cause_title_mismatch_label(cover, listed, payload, label)
 
 
-def _primary_listed_party(parties: Any) -> dict[str, Any] | None:
+def _first_listed_party(parties: Any) -> dict[str, Any] | None:
     if not isinstance(parties, list):
         return None
     for party in parties:
-        if isinstance(party, dict) and party.get("is_primary"):
+        if isinstance(party, dict) and _party_name(party):
             return party
-    first = parties[0] if parties else None
-    return first if isinstance(first, dict) else None
+    return None
+
+
+def _find_party_by_name(parties: Any, name: str) -> dict[str, Any] | None:
+    if not isinstance(parties, list):
+        return None
+    for party in parties:
+        if isinstance(party, dict) and _names_match(_party_name(party), name):
+            return party
+    return None
 
 
 def _ensure_inconsistencies_blob(payload: dict[str, Any]) -> dict[str, Any]:
@@ -572,11 +610,37 @@ def _ensure_inconsistencies_blob(payload: dict[str, Any]) -> dict[str, Any]:
     return blob
 
 
+_CAUSE_TITLE_CHECKS = (
+    {
+        "parties": "petitioners",
+        "opposite": "respondents",
+        "main": "main_petitioner",
+        "spelling": "Main petitioner spelling",
+        "mismatch": "Cause title petitioner mismatch",
+        "swap": "Cause title petitioner listed as respondent",
+        "missing": "Cause title petitioner missing on Main Petition",
+        "side": "petitioner",
+        "other": "respondent",
+    },
+    {
+        "parties": "respondents",
+        "opposite": "petitioners",
+        "main": "main_respondent",
+        "spelling": "Main respondent spelling",
+        "mismatch": "Cause title respondent mismatch",
+        "swap": "Cause title respondent listed as petitioner",
+        "missing": "Cause title respondent missing on Main Petition",
+        "side": "respondent",
+        "other": "petitioner",
+    },
+)
+
+
 def _append_main_party_spelling(payload: dict[str, Any]) -> None:
     cause = payload.get("cause_title")
     if not isinstance(cause, dict):
         return
-    pending: list[tuple[str, str, str]] = []
+    pending: list[dict[str, str]] = []
     blob = payload.get("inconsistencies")
     items = blob.get("items") if isinstance(blob, dict) else []
     if not isinstance(items, list):
@@ -593,44 +657,77 @@ def _append_main_party_spelling(payload: dict[str, Any]) -> None:
         )
         if key is not None
     }
-    for parties_key, main_key, label in (
-        ("petitioners", "main_petitioner", "Main petitioner spelling"),
-        ("respondents", "main_respondent", "Main respondent spelling"),
-    ):
-        cover = cause.get(main_key)
+    existing_labels: set[tuple[str, str]] = set()
+    for spec in _CAUSE_TITLE_CHECKS:
+        cover = cause.get(spec["main"])
         if not isinstance(cover, str) or not cover.strip():
             continue
         cover_clean = _clean_quoted_party_name(cover)
-        listed = _party_name(_primary_listed_party(payload.get(parties_key)))
+        if not cover_clean:
+            continue
+        listed = _party_name(_first_listed_party(payload.get(spec["parties"])))
+        side = spec["side"]
         if not listed:
+            marker = (spec["missing"], cover_clean)
+            if marker not in existing_labels:
+                pending.append(
+                    {
+                        "label": spec["missing"],
+                        "raw_text": (
+                            f'Cause Title {side}: "{cover_clean}"; '
+                            f"not found as {side} on Main Petition starting pages."
+                        ),
+                    }
+                )
+                existing_labels.add(marker)
             continue
         listed_clean = _clean_quoted_party_name(listed)
-        if not cover_clean or not listed_clean:
+        if not listed_clean:
             continue
-        if normalize_compared_name(cover_clean) == normalize_compared_name(listed_clean):
+        cover_n = normalize_compared_name(cover_clean)
+        listed_n = normalize_compared_name(listed_clean)
+        if cover_n == listed_n:
             continue
-        if not names_are_spelling_variants(cover_clean, listed_clean):
-            continue
-        key = frozenset(
-            {
-                normalize_compared_name(cover_clean),
-                normalize_compared_name(listed_clean),
-            }
-        )
+        key = frozenset({cover_n, listed_n})
         if key in existing:
             continue
-        pending.append((label, cover_clean, listed_clean))
+        compare = format_party_spelling_raw_text(
+            cover_clean, listed_clean
+        )
+        if names_are_spelling_variants(cover_clean, listed_clean):
+            pending.append({"label": spec["spelling"], "raw_text": compare})
+            existing.add(key)
+            continue
+        swapped = _find_party_by_name(
+            payload.get(spec["opposite"]), cover_clean
+        )
+        if swapped is not None:
+            marker = (spec["swap"], cover_clean)
+            other = spec["other"]
+            if marker not in existing_labels:
+                pending.append(
+                    {
+                        "label": spec["swap"],
+                        "raw_text": (
+                            f'Cause Title {side}: "{cover_clean}"; '
+                            f"Main Petition starting pages list this "
+                            f"person as {other}."
+                        ),
+                    }
+                )
+                existing_labels.add(marker)
+            continue
+        pending.append({"label": spec["mismatch"], "raw_text": compare})
         existing.add(key)
     if not pending:
         return
     blob = _ensure_inconsistencies_blob(payload)
     items = blob["items"]
-    for label, cover_clean, listed_clean in pending:
+    for item in pending:
         items.append(
             {
                 "id": _next_inconsistency_id(items),
-                "label": label,
-                "raw_text": format_party_spelling_raw_text(cover_clean, listed_clean),
+                **item,
             }
         )
     part_list = blob.get("source_part")

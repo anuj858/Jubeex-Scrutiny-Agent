@@ -131,7 +131,9 @@ class CauseTitle(BaseModel):
         description=(
             "Main petitioner name from the Cover Page cause-title line. "
             "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Petitioner, Petitioner(s), or leading dots."
+            "Petitioner, Petitioner(s), or leading dots. Cover Page has only this "
+            "one petitioner. This person must be the same as petitioner 1 on the "
+            "Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
     main_respondent: str | None = Field(
@@ -139,7 +141,9 @@ class CauseTitle(BaseModel):
         description=(
             "Main respondent name from the Cover Page cause-title line. "
             "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Respondent, Respondent(s), or leading dots."
+            "Respondent, Respondent(s), or leading dots. Cover Page has only this "
+            "one respondent. This person must be the same as respondent 1 on the "
+            "Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
     source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Cover Page or Main Petition).")
@@ -148,13 +152,13 @@ class CauseTitle(BaseModel):
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Main Petition page 1, then Cover Page if present."""
+    """One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
         description=(
             "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition "
-            "first page (and Cover Page if present). ORGANIZATION if the name has a prefix "
+            "starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix "
             "M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, "
             "or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, "
             "Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. "
@@ -361,10 +365,14 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Spelling mismatches between fill and verify sources, plus an ORGANIZATION "
             "party with no acting_through. Always include a letter-level mismatch of "
-            "the Cover Page main petitioner or main respondent versus the Main Petition "
-            "first page (e.g. Shalija vs Shailja). Extra parties are not a "
-            "mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is "
-            'Cover Page: "Name"; Main Petition: "Name". '
+            "the Cause Title main petitioner or main respondent versus petitioner 1 / "
+            "respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). "
+            "Cover Page has only one name per side; extra parties continue on later "
+            "starting pages. Also flag when that Cause Title person is missing on those "
+            "pages, is a different person than petitioner 1 / respondent 1, or is listed "
+            "on the other side. Extra parties are not a mismatch against Cover Page "
+            "And Anr/Ors. Party-name items[].raw_text "
+            'is Cause Title: "Name"; Main Petition: "Name". '
             "items[].id is '1', '2', …."
         ),
     )
