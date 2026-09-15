@@ -811,12 +811,13 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             bit += f". Check spelling against {verify}; never overwrite fill text"
         if field_name in PARTY_FIELDS:
             bit += (
-                ". Prefer Memo of Parties; if it is missing, use the first page of "
-                "the Main Petition. Merge blank particulars between those two only. "
-                "Never copy party names or addresses from Vakalatnama or Cover Page. "
-                "Use Cover Page only to mark is_primary from the cover cause-title names. "
+                ". Prefer the first page of the Main Petition; if a field is blank "
+                "there or Main Petition is missing, use the Cover Page if it is in "
+                "this pack. Merge blank particulars between those two only. "
+                "Never copy party names or addresses from Vakalatnama or Memo of Parties. "
+                "Use Cover Page to mark is_primary from the cover cause-title names. "
                 "And Anr/Ors on Cover Page means extra parties exist; list those names "
-                "from Memo of Parties or the Main Petition"
+                "from the Main Petition first page"
             )
         lines.append(bit + ".")
     lines.extend(
@@ -842,7 +843,7 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "- inconsistencies: record spelling or value mismatches between fill and "
             "verify sources. Always record a letter-level mismatch of the Cover Page "
             "main petitioner or main respondent versus that same person's name on "
-            "Memo of Parties or the Main Petition (example: Shalija vs Shailja). "
+            "the Main Petition first page (example: Shalija vs Shailja). "
             "Do not skip the main-name spelling because Cover Page also says And Anr/Ors. "
             "Do not invent extra parties to resolve a mismatch. "
             "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
@@ -853,10 +854,10 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "Do not compare party names against the Impugned Order. "
             "One item per distinct name spelling; do not repeat the same two names. "
             "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
-            "Cover Page And Anr/Ors; those extra people are listed on Memo of Parties "
-            "or the Main Petition, not on the cover shorthand. "
-            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition / "
-            "Memo of Parties: \"Name\". Quote the person's name only: no And Anr/Ors, "
+            "Cover Page And Anr/Ors; those extra people are listed on "
+            "the Main Petition first page, not on the cover shorthand. "
+            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition: "
+            "\"Name\". Quote the person's name only: no And Anr/Ors, "
             "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
             "AOR's Certificate as party-name sources. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
@@ -905,13 +906,15 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         )
     if field_name in PARTY_FIELDS:
         extra += (
-            " Prefer Memo of Parties; if it is missing, use the first page of the "
-            "Main Petition. If a field is blank in one of those parts, fill it from the "
-            "other. If neither Memo of Parties nor Main Petition is in this pack, "
+            " Prefer the first page of the Main Petition; if a field is blank there "
+            "or Main Petition is missing, use the Cover Page if it is in this pack. "
+            "If a field is blank in one of those parts, fill it from the "
+            "other. If neither Main Petition nor Cover Page is in this pack, "
             "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
-            "Memo of Appearance, AOR's Certificate, or Cover Page. Use Cover Page "
-            "only to decide which already-listed party is primary. Extra petitioners "
-            "and respondents are listed on Memo of Parties or the Main Petition; "
+            "Memo of Appearance, AOR's Certificate, or Memo of Parties. "
+            "Use Cover Page to decide which already-listed party is primary and to "
+            "fill blanks. Extra petitioners "
+            "and respondents are listed on the Main Petition first page; "
             "Cover Page And Anr/Ors is not the second party's name. Do not invent "
             "parties. Write N/A if a field is not printed on a fill source that is present. "
             "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
@@ -927,8 +930,8 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
             "Respondent(s), with or without dots, as a spelling mismatch. "
             "Do not write 'and Anr. and Anr.' "
-            "If the Cover Page main name differs in letters from Memo of Parties "
-            "or the Main Petition (Shalija vs Shailja), that is an inconsistencies item. "
+            "If the Cover Page main name differs in letters from the Main Petition "
+            "first page (Shalija vs Shailja), that is an inconsistencies item. "
             "Extra parties are not a spelling mismatch against And Anr/Ors."
         )
     if field_name == "advocates_on_record":
@@ -983,7 +986,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         "Copy printed text only. Do not invent or complete a field from a document "
         "part that is not a fill source for that field. If that fill-source document is "
         "not in this pack, or the value is not printed there, write N/A.",
-        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
+        "source_part must be the labelled Split name (Cover Page, Main Petition, …). "
         "source_pages must be the integer page numbers in the headings, for example (p. 6).",
         "Ignore Annexures, Appendix, applications, Index, Listing Proforma, "
         "Synopsis, List of Dates, Checklist, Filing Memo, Affidavit, and "
@@ -1002,7 +1005,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus the Main Petition first page (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition first page are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

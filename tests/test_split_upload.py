@@ -568,7 +568,7 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     )
     assert "[Cover Page]" in pack
     assert "[Main Petition]" in pack
-    assert "[Memo of Parties]" in pack
+    assert "[Memo of Parties]" not in pack
     assert "[Affidavit]" not in pack
     assert "[Office Report on Limitation]" not in pack
     assert "affidavit deponent" not in pack
@@ -576,10 +576,10 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "petition first page parties" in pack
     assert "petition prayer page one" in pack
     assert "petition prayer page three" in pack
-    assert "memo of parties ram lal address" in pack
+    assert "memo of parties ram lal address" not in pack
     assert "Fill advocates_on_record" in pack
     assert "Do not copy petitioner or respondent names" in pack
-    assert "Never copy party names or addresses from Vakalatnama or Cover Page" in pack
+    assert "Never copy party names or addresses from Vakalatnama or Memo of Parties" in pack
     assert "and Anr." in pack
     assert "petition grounds later page" not in pack
     assert "index listing" not in pack
@@ -657,21 +657,18 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "memo of appearance advocates" not in pack
 
 
-def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
+def test_party_fields_prefer_petition_then_cover_page() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
-        "Memo of Parties",
     )
-    assert catalog.extract_field_sources["petitioners"] == FieldSources(
-        fill=("Memo of Parties", "Main Petition"),
+    party_sources = FieldSources(
+        fill=("Main Petition", "Cover Page"),
         verify=("Main Petition", "Cover Page"),
     )
-    assert catalog.extract_field_sources["respondents"] == FieldSources(
-        fill=("Memo of Parties", "Main Petition"),
-        verify=("Main Petition", "Cover Page"),
-    )
+    assert catalog.extract_field_sources["petitioners"] == party_sources
+    assert catalog.extract_field_sources["respondents"] == party_sources
     assert catalog.extract_field_sources["court"] == FieldSources(
         fill=("Cover Page",),
         verify=court_verify,
@@ -679,6 +676,10 @@ def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
     assert catalog.extract_field_sources["petition_type"] == FieldSources(
         fill=("Cover Page",),
         verify=court_verify,
+    )
+    assert catalog.extract_field_sources["cause_title"] == FieldSources(
+        fill=("Cover Page",),
+        verify=("Main Petition",),
     )
     assert catalog.extract_field_sources["relief_sort"] == FieldSources(
         fill=("Main Petition",),
@@ -691,12 +692,12 @@ def test_extract_source_parts_include_petition_and_index() -> None:
     parts = extract_source_parts(type_catalog("SLP_CIVIL"))
     assert parts == {
         "Cover Page",
-        "Memo of Parties",
         "Main Petition",
         "Impugned Order",
         "Vakalatnama",
         "AOR's Certificate",
     }
+    assert "Memo of Parties" not in parts
     assert "Affidavit" not in parts
     assert "Office Report on Limitation" not in parts
     assert "Undefined" not in parts
@@ -743,17 +744,17 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     updated = inject_where_to_look(
         schema,
         {
-            "cause_title": ["Memo of Parties", "Cover Page"],
-            "petitioners": ["Memo of Parties", "Main Petition"],
+            "cause_title": ["Cover Page", "Main Petition"],
+            "petitioners": ["Main Petition", "Cover Page"],
         },
     )
     assert (
-        "Fill only from Memo of Parties, Cover Page"
+        "Fill only from Cover Page, Main Petition"
         in updated["properties"]["cause_title"]["description"]
     )
     petitioners = updated["properties"]["petitioners"]["description"]
-    assert "Prefer Memo of Parties" in petitioners
-    assert "first page of the Main Petition" in petitioners
+    assert "Prefer the first page of the Main Petition" in petitioners
+    assert "use the Cover Page" in petitioners
     assert "fill it from the other" in petitioners
     assert "set party names to N/A" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
@@ -763,14 +764,14 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
 
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
-    assert "petitioners: fill Memo of Parties, Main Petition; verify Main Petition, Cover Page" in prompt
-    assert "cause_title: fill Cover Page; verify Main Petition, Memo of Parties" in prompt
+    assert "petitioners: fill Main Petition, Cover Page; verify Main Petition, Cover Page" in prompt
+    assert "cause_title: fill Cover Page; verify Main Petition" in prompt
     assert "Never use [And ors.] or other square brackets" in prompt
     assert "Copy printed text only" in prompt
     assert "write N/A" in prompt
     assert "inconsistencies: one item per spelling" in prompt
     assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
-    assert "Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources" in prompt
+    assert "Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -1099,7 +1100,7 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     assert items[0]["id"] == "1"
     assert items[0]["raw_text"] == (
         'Cover Page: "Smt. Shalija Shah"; '
-        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+        'Main Petition: "Smt. Shailja Shah"'
     )
     assert "AOR" not in items[0]["raw_text"]
     assert "And Anr" not in items[0]["raw_text"]
@@ -1135,7 +1136,7 @@ def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
     assert items[0]["id"] == "1"
     assert items[0]["raw_text"] == (
         'Cover Page: "Smt. Shalija Shah"; '
-        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+        'Main Petition: "Smt. Shailja Shah"'
     )
 
 
@@ -1175,7 +1176,7 @@ def test_extra_respondent_is_not_cover_page_anr_spelling_error() -> None:
     assert items[0]["label"] == "Main respondent spelling"
     assert items[0]["raw_text"] == (
         'Cover Page: "Smt. Shalija Shah"; '
-        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+        'Main Petition: "Smt. Shailja Shah"'
     )
     assert "Bandana" not in items[0]["raw_text"]
     assert "AOR" not in items[0]["raw_text"]
@@ -1213,7 +1214,7 @@ def test_main_respondent_spelling_is_kept_even_if_extract_omits_it() -> None:
     assert items[0]["label"] == "Main respondent spelling"
     assert items[0]["raw_text"] == (
         'Cover Page: "Smt. Shalija Shah"; '
-        'Main Petition / Memo of Parties: "Smt. Shailja Shah"'
+        'Main Petition: "Smt. Shailja Shah"'
     )
     assert "Bandana" not in items[0]["raw_text"]
     assert wrapped["respondents"][0]["is_primary"] is True

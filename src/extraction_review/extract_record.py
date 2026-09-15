@@ -484,7 +484,7 @@ def _clean_quoted_party_name(text: str | None) -> str:
 
 def format_party_spelling_raw_text(cover: str, listed: str) -> str:
     return (
-        f'Cover Page: "{cover}"; Main Petition / Memo of Parties: "{listed}"'
+        f'Cover Page: "{cover}"; Main Petition: "{listed}"'
     )
 
 
@@ -637,7 +637,7 @@ def _append_main_party_spelling(payload: dict[str, Any]) -> None:
     if not isinstance(part_list, list):
         part_list = []
         blob["source_part"] = part_list
-    for part in ("Cover Page", "Main Petition", "Memo of Parties"):
+    for part in ("Cover Page", "Main Petition"):
         if part not in part_list:
             part_list.append(part)
 
