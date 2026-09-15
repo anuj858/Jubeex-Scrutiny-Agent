@@ -449,7 +449,7 @@ async def test_compiled_extract_skips_required_slot_check(
     )
     ctx = MagicMock()
     ctx.write_event_to_stream = MagicMock()
-    agent_data_id = await _extract_sliced_parts(
+    payload = await _extract_sliced_parts(
         ctx,
         filing_type="SLP_CIVIL",
         parts=[],
@@ -462,7 +462,7 @@ async def test_compiled_extract_skips_required_slot_check(
         },
         require_all_slots=False,
     )
-    assert agent_data_id == "agd-compiled-2"
+    assert payload["agent_data_id"] == "agd-compiled-2"
     event = captured["event"]
     assert getattr(event, "require_all_slots") is False
     assert getattr(event, "filing_type") == "SLP_CIVIL"

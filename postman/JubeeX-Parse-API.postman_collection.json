@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "c8e4f2a1-9d70-4b31-8e15-jubeex-parse-api",
     "name": "JubeeX Parse API",
-    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited`), parse the rest, Pinecone. Echo `parsed_slots`. `documents[]` order sets global page numbers.\n5. Optional: `POST /v1/filings/{{agent_data_id}}/scrutiny`.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.",
+    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited`), parse the rest, Pinecone, then scrutiny defects. Poll `completed` → `result.report`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -68,7 +68,7 @@
     },
     {
       "name": "02 Recommended frontend flow",
-      "description": "Application-layer path. Poll after each 202. Persist `agent_data_id` + `parsed_slots` from extract before calling index.",
+      "description": "Application-layer path. Poll after each 202. Persist `agent_data_id` + `parsed_slots` from extract before calling index. If index poll fails with `Unable to run scrutiny defects. Try after some time.`, retry only Start scrutiny — do not re-run index.",
       "item": [
         {
           "name": "1 Split Main Petition",
@@ -175,7 +175,7 @@
               "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"edited\": false,\n  \"parsed_slots\": {{parsed_slots}},\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"index.pdf\",\n      \"download_url\": \"https://storage.example/filings/index.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"annexure_p1.pdf\",\n      \"download_url\": \"https://storage.example/filings/annexure_p1.pdf\"\n    }\n  ]\n}"
             },
             "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/index",
-            "description": "`job_type=index_parsed`. Always after extract. Path `agent_data_id` is required.\n\n- `edited: false` — reuse S3 markdown for `parsed_slots`, LlamaParse the rest.\n- `edited: true` / `\"yes\"` — re-download and re-parse **every** PDF in this request. Does **not** re-extract.\n- Echo `parsed_slots` from extract (or omit to fall back to Agent Data metadata).\n- `documents[]` **send order** sets global page numbers. Newly inserted files (index, annexures) shift later pages.\nDoes not change existing `POST /v1/filings` `upload_separate` / `upload_compiled`."
+            "description": "`job_type=index_parsed`. Always after extract. Path `agent_data_id` is required.\n\n- `edited: false` — reuse S3 markdown for `parsed_slots`, LlamaParse the rest.\n- `edited: true` / `\"yes\"` — re-download and re-parse **every** PDF in this request. Does **not** re-extract.\n- Echo `parsed_slots` from extract (or omit to fall back to Agent Data metadata).\n- `documents[]` **send order** sets global page numbers. Newly inserted files (index, annexures) shift later pages.\nAfter Pinecone upsert, this job runs the same defect checks as `POST /v1/filings/{agent_data_id}/scrutiny`. Poll until `completed` (`result.report`) or `failed`.\nIf poll `status` is `failed` and `error` is `Unable to run scrutiny defects. Try after some time.`, Pinecone already ran — the application layer must retry **only** the old `POST /v1/filings/{agent_data_id}/scrutiny` API. Do not call `/index` again.\nDoes not change existing `POST /v1/filings` `upload_separate` / `upload_compiled`."
           }
         },
         {
@@ -213,7 +213,7 @@
             "method": "GET",
             "header": [],
             "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
-            "description": "Poll until `status` is `completed` or `failed`.\n\nOn completed extract: copies `agent_data_id` and `result.parsed_slots` into collection variables for index.\nVerify poll `result`: `{ type, match, documents:[{name, match}] }` only."
+            "description": "Poll until `status` is `completed` or `failed`.\n\nOn completed extract: copies `agent_data_id` and `result.parsed_slots` into collection variables for index.\nOn completed index: `result.report` is the defect report.\nOn failed index with `error` `Unable to run scrutiny defects. Try after some time.`: retry **only** `POST /v1/filings/{agent_data_id}/scrutiny`. Do not re-run index.\nVerify poll `result`: `{ type, match, documents:[{name, match}] }` only."
           }
         }
       ]
@@ -369,7 +369,7 @@
               "raw": "{\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\"\n}"
             },
             "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny",
-            "description": "Runs scrutiny on the extracted Agent Data record. Body is optional (`file_hash`, `file_url`/`download_url`, org/workspace).\nPoll Get job status. Report is `result.report`.\nRejected filings return 409."
+            "description": "Runs scrutiny on the extracted Agent Data record. Body is optional (`file_hash`, `file_url`/`download_url`, org/workspace).\nPoll Get job status. Report is `result.report`.\nRejected filings return 409.\nUse this old API after a failed index job whose `error` is `Unable to run scrutiny defects. Try after some time.` Do not re-run `/index`."
           }
         }
       ]

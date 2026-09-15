@@ -441,7 +441,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
         if event.skip_extract:
-            agent_data_id = await _complete_index_only(
+            payload = await _complete_index_only(
                 llama_cloud_client,
                 ctx=ctx,
                 catalog=catalog,
@@ -453,7 +453,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 page_parts=page_parts,
                 page_layout=page_layout,
             )
-            return StopEvent(result=agent_data_id)
+            return StopEvent(result=payload)
         return ParsedEvent()
 
     @step()
@@ -1221,7 +1221,7 @@ async def _complete_index_only(
     page_markdown: dict[int, str],
     page_parts: dict[int, list[str]],
     page_layout: dict[int, dict[str, Any]],
-) -> str:
+) -> dict[str, Any]:
     del catalog, pages_by_slot, layouts_by_slot
     state = await ctx.store.get_state()
     agent_data_id = (state.agent_data_id or "").strip()
@@ -1285,7 +1285,57 @@ async def _complete_index_only(
             message=f"Indexed filing {agent_data_id} without re-extracting",
         )
     )
-    return agent_data_id
+    report = await _run_nested_scrutiny(ctx, agent_data_id=agent_data_id)
+    return {"agent_data_id": agent_data_id, "report": report}
+
+
+async def _run_nested_scrutiny(
+    ctx: Context[SplitFilesState],
+    *,
+    agent_data_id: str,
+) -> dict[str, Any]:
+    from .scrutiny_workflow import (
+        ScrutinyAfterIndexError,
+        ScrutinyEvent,
+        ScrutinyWorkflow,
+    )
+
+    state = await ctx.store.get_state()
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=f"Running scrutiny defects for {agent_data_id}",
+        )
+    )
+    nested = ScrutinyWorkflow(timeout=None)
+    handler = nested.run(
+        start_event=ScrutinyEvent(
+            agent_data_id=agent_data_id,
+            file_hash=state.file_hash,
+            organization_id=state.organization_id or state.org_id,
+            workspace_id=state.workspace_id,
+        )
+    )
+    try:
+        async for ev in handler.stream_events():
+            ctx.write_event_to_stream(ev)
+        result = await handler
+    except ScrutinyAfterIndexError:
+        raise
+    except Exception as exc:
+        logger.exception("Scrutiny after index failed for %s", agent_data_id)
+        raise ScrutinyAfterIndexError(agent_data_id) from exc
+    report = getattr(result, "report", None)
+    if report is None and isinstance(result, dict):
+        report = result.get("report")
+    if hasattr(report, "model_dump"):
+        dumped = report.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    if isinstance(report, dict):
+        return report
+    logger.error("Scrutiny after index returned no report for %s", agent_data_id)
+    raise ScrutinyAfterIndexError(agent_data_id)
 
 
 def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:

@@ -766,6 +766,7 @@ class BundlePrepared(StopEvent):
     parsed_slots: list[str] = Field(default_factory=list)
     match: bool | None = None
     verified_documents: list[VerifiedDocument] = Field(default_factory=list)
+    report: dict[str, Any] | None = None
 
 
 class PrepareState(BaseModel):
@@ -1242,6 +1243,33 @@ async def _run_verify_from_file_event(
     )
 
 
+def _nested_split_payload(result: Any) -> dict[str, Any]:
+    item = getattr(result, "result", result)
+    if isinstance(item, dict):
+        agent_data_id = item.get("agent_data_id") or item.get("result")
+        report = item.get("report")
+        if hasattr(report, "model_dump"):
+            report = report.model_dump(mode="json")
+        return {
+            "agent_data_id": str(agent_data_id) if agent_data_id else None,
+            "report": report if isinstance(report, dict) else None,
+        }
+    return {"agent_data_id": str(item) if item else None, "report": None}
+
+
+def _split_result_fields(nested: Any) -> tuple[str | None, dict[str, Any] | None]:
+    if isinstance(nested, dict):
+        agent_data_id = nested.get("agent_data_id") or nested.get("result")
+        report = nested.get("report")
+        if hasattr(report, "model_dump") and not isinstance(report, dict):
+            report = report.model_dump(mode="json")
+        return (
+            str(agent_data_id) if agent_data_id else None,
+            report if isinstance(report, dict) else None,
+        )
+    return (str(nested) if nested else None, None)
+
+
 async def _extract_sliced_parts(
     ctx: Context[PrepareState],
     *,
@@ -1261,7 +1289,7 @@ async def _extract_sliced_parts(
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
-) -> str | None:
+) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
 
@@ -1294,10 +1322,7 @@ async def _extract_sliced_parts(
     async for ev in handler.stream_events():
         ctx.write_event_to_stream(ev)
     result = await handler
-    item_id = getattr(result, "result", result)
-    if isinstance(item_id, dict):
-        item_id = item_id.get("agent_data_id") or item_id.get("result")
-    return str(item_id) if item_id else None
+    return _nested_split_payload(result)
 
 
 async def _run_split_from_file_event(
@@ -1446,7 +1471,7 @@ async def _run_split_from_file_event(
         parse_scope = "extract_sources"
     elif index_only:
         parse_scope = "all" if edited else "unparsed"
-    agent_data_id = await _extract_sliced_parts(
+    nested_payload = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
         parts=split_parts,
@@ -1463,6 +1488,7 @@ async def _run_split_from_file_event(
         reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
         reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},
     )
+    agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [
         PreparedPart(
             slot_id=part.slot_id,
@@ -1483,6 +1509,7 @@ async def _run_split_from_file_event(
         documents=source_docs,
         agent_data_id=agent_data_id,
         parsed_slots=parsed_slots,
+        report=report,
         **echo,
     )
 

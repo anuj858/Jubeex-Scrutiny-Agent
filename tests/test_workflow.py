@@ -184,6 +184,7 @@ async def test_extract_only_skips_index_and_limits_parse_scope(
     assert captured["stitch_in_request_order"] is True
     assert "petition" in captured["parsed_slots"]
     assert "annexure_p1" not in captured["parsed_slots"]
+    assert result.report is None
 
 
 @pytest.mark.asyncio
@@ -261,6 +262,81 @@ async def test_index_parsed_reuses_slots_when_not_edited(
     assert captured["parsed_slots"] == ["petition"]
     assert captured["stitch_in_request_order"] is True
     assert "petition" in captured["reuse_pages_by_slot"]
+    assert result.report is None
+
+
+@pytest.mark.asyncio
+async def test_index_parsed_includes_nested_scrutiny_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_extract(_ctx: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "agent_data_id": "agd-index",
+            "report": {
+                "schema_name": "scrutiny_finding_v1",
+                "agent_data_id": "agd-index",
+            },
+        }
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "document_order": ["petition"],
+            "slots": {
+                "petition": {
+                    "pages": {"1": "kept"},
+                    "parse_job_id": "old-parse",
+                    "layout": {},
+                }
+            },
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition"],
+                        "split_files": {"petition": "dfl-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        parsed_slots=["petition"],
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition",
+                "name": "01_Petition.pdf",
+            }
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+    assert isinstance(result, BundlePrepared)
+    assert result.agent_data_id == "agd-index"
+    assert result.report == {
+        "schema_name": "scrutiny_finding_v1",
+        "agent_data_id": "agd-index",
+    }
 
 
 @pytest.mark.asyncio

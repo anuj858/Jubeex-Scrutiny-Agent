@@ -44,7 +44,7 @@ from .process_file import (
 from .process_file import workflow as process_file_workflow
 from .queue import enqueue_job, sqs_enabled
 from .s3_artifacts import recorded_artifacts, set_job_context
-from .scrutiny_workflow import ScrutinyEvent
+from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
 
@@ -398,6 +398,17 @@ def _agent_data_id_from(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _scrutiny_after_index_error(exc: BaseException) -> ScrutinyAfterIndexError | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ScrutinyAfterIndexError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
 async def _run_workflow(job: JobState, handler: Any) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     try:
@@ -410,9 +421,20 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.agent_data_id = _agent_data_id_from(payload)
         job.status = "completed"
     except Exception as exc:
-        logger.exception("Job %s failed", job.job_id)
-        job.status = "failed"
-        job.error = str(exc)
+        nested = _scrutiny_after_index_error(exc)
+        if nested is not None:
+            logger.exception(
+                "Job %s failed after index: scrutiny defects did not run",
+                job.job_id,
+            )
+            job.status = "failed"
+            job.error = str(nested)
+            job.agent_data_id = nested.agent_data_id
+            job.result = {"agent_data_id": nested.agent_data_id}
+        else:
+            logger.exception("Job %s failed", job.job_id)
+            job.status = "failed"
+            job.error = str(exc)
     finally:
         job.completed_at = datetime.now(UTC).isoformat()
         artifacts = recorded_artifacts(job.job_id)
