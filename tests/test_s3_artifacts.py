@@ -131,6 +131,32 @@ def test_upload_step_json_uses_explicit_ids_without_context(monkeypatch) -> None
     assert recorded_artifacts("job-9")[STEP_EXTRACT]["url"] == record["url"]
 
 
+def test_nested_extract_stays_on_original_job(monkeypatch) -> None:
+    class FakeS3:
+        def put_object(self, **kwargs):
+            return None
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return f"https://s3.example/{Params['Key']}"
+
+    monkeypatch.setenv("AWS_S3_BUCKET", "jubeex-893338224943-ap-south-1-an")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    set_job_context("sqs-job-1", "org-1", "ws-1", reset=True)
+    split = upload_step_json(STEP_SPLIT, {"parts": [{"slot_id": "petition"}]})
+    set_job_context("ext-llamacloud-job", "org-1", "ws-1", reset=False)
+    extract = upload_step_json(STEP_EXTRACT, {"petitioners": [{"name": "A"}]})
+    layout = upload_step_json(STEP_LAYOUT, {"pages": {}})
+    recorded = recorded_artifacts("sqs-job-1")
+    assert split is not None and extract is not None and layout is not None
+    assert STEP_SPLIT in recorded
+    assert STEP_EXTRACT in recorded
+    assert STEP_LAYOUT in recorded
+    assert recorded[STEP_EXTRACT]["url"] == extract["url"]
+
+
 def test_upload_step_json_without_org_workspace_still_uploads(monkeypatch) -> None:
     calls: dict[str, object] = {}
 

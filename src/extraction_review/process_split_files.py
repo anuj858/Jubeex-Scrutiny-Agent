@@ -333,6 +333,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             file_hash or filename,
             event.organization_id or event.org_id,
             event.workspace_id,
+            reset=False,
         )
         if not page_layout:
             logger.error(
@@ -475,6 +476,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.extract_job_id or state.file_hash or state.filename,
             state.organization_id or state.org_id,
             state.workspace_id,
+            reset=False,
         )
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
@@ -579,7 +581,6 @@ class ProcessSplitFilesWorkflow(Workflow):
                 dump_layout_index(coerce_page_layout(state.page_layout)),
                 organization_id=state.organization_id or state.org_id,
                 workspace_id=state.workspace_id,
-                job_id=state.extract_job_id or state.file_hash,
             )
             if layout_record:
                 data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
