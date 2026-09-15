@@ -19,6 +19,7 @@ from extraction_review.process_file import (
     compiled_catalog_override,
     compiled_source,
     ingest_remote_file,
+    intake_echo,
     intake_mode,
     positive_int_env,
     remember_file_bytes,
@@ -34,6 +35,16 @@ def test_file_event_accepts_file_url_without_file_id() -> None:
     event = FileEvent(file_url="https://example.com/a/b/filing.pdf")
     assert event.file_id is None
     assert event.file_url.endswith("filing.pdf")
+
+
+def test_intake_echo_uses_uploaded_basename() -> None:
+    event = FileEvent(
+        file_id="file-1",
+        filename="folder/Defect_SLP_Civil.pdf",
+        organization_id="org-1",
+    )
+    echo = intake_echo(event)
+    assert echo["filename"] == "Defect_SLP_Civil.pdf"
 
 
 def test_file_event_requires_file_id_or_url() -> None:
@@ -200,6 +211,8 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("Filing_Memo.pdf", "TRANSFER_PETITION_CIVIL") == (
         "filing_memo"
     )
+    assert slot_id_from_name("Filing_Memo.pdf", "SLP_CIVIL") == "filing_memo"
+    assert slot_id_from_name("Filing Memo.pdf", "SLP_CRIMINAL") == "filing_memo"
     assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "application_3"
 
 
@@ -275,8 +288,8 @@ def test_upload_separate_documents_payload() -> None:
     assert petition.filename == "01_Petition.pdf"
 
 
-def test_compiled_uses_requested_type_when_classified_other() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("other", "SLP_CIVIL")
+def test_compiled_uses_requested_type_when_classified_unknown() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -287,8 +300,8 @@ def test_compiled_keeps_classified_slp_civil() -> None:
     assert catalog.filing_type == "SLP_CIVIL"
 
 
-def test_compiled_other_without_filing_type_defaults_to_slp_civil() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("other", None)
+def test_compiled_unknown_without_filing_type_defaults_to_slp_civil() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", None)
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -315,7 +328,7 @@ def test_compiled_accepts_transfer_petition_types() -> None:
     assert civil_catalog.filing_type == "TRANSFER_PETITION_CIVIL"
     assert "filing_memo" in {slot.id for slot in civil_catalog.slots}
     criminal_type, criminal_catalog = resolve_compiled_filing_type(
-        "other", "TRANSFER_PETITION_CRIMINAL"
+        "NOT_A_FILING_TYPE", "TRANSFER_PETITION_CRIMINAL"
     )
     assert criminal_type == "TRANSFER_PETITION_CRIMINAL"
     assert criminal_catalog.filing_type == "TRANSFER_PETITION_CRIMINAL"
@@ -337,7 +350,7 @@ def test_compiled_catalog_override_skips_classify() -> None:
     catalog = compiled_catalog_override("SLP_CIVIL")
     assert catalog is not None
     assert catalog.filing_type == "SLP_CIVIL"
-    assert compiled_catalog_override("other") is None
+    assert compiled_catalog_override("NOT_A_FILING_TYPE") is None
     assert compiled_catalog_override(None) is None
 
 
@@ -375,6 +388,22 @@ def test_upload_filename_strips_unsafe_characters() -> None:
     assert _upload_filename("Cover Page.pdf") == "Cover_Page.pdf"
     assert _upload_filename("AOR's Declaration.pdf") == "AOR_s_Declaration.pdf"
     assert _upload_filename("Defect_SLP_Civil.pdf") == "Defect_SLP_Civil.pdf"
+
+
+def test_prefixed_slot_filename_uses_main_filing_name() -> None:
+    from extraction_review.process_file import prefixed_slot_filename
+
+    assert (
+        prefixed_slot_filename("Main Petition.pdf", "Defect_SLP_Civil.pdf")
+        == "Defect_SLP_Civil-Main_Petition.pdf"
+    )
+    assert prefixed_slot_filename("Cover Page.pdf", None) == "Cover_Page.pdf"
+    assert (
+        prefixed_slot_filename(
+            "Defect_SLP_Civil-Main_Petition.pdf", "Defect_SLP_Civil.pdf"
+        )
+        == "Defect_SLP_Civil-Main_Petition.pdf"
+    )
 
 
 class _EmptyFileList:

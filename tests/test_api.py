@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from extraction_review.api import JOBS, app
+from extraction_review.config import JUBEEX_FILING_TYPES, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.process_file import BundlePrepared
 
 
@@ -50,12 +51,19 @@ def test_catalog(client: TestClient) -> None:
     response = client.get("/v1/catalog")
     assert response.status_code == 200
     body = response.json()
-    assert "SLP_CIVIL" in body["filing_types"]
-    assert "TRANSFER_PETITION_CIVIL" in body["filing_types"]
-    assert "TRANSFER_PETITION_CRIMINAL" in body["filing_types"]
+    assert body["filing_types"] == list(JUBEEX_FILING_TYPES)
+    assert "CIVIL_APPEAL" in body["filing_types"]
+    assert "MISCELLANEOUS_APPLICATION" in body["filing_types"]
+    assert set(body["split_upload_types"]) == set(JUBEEX_UPLOAD_FILING_TYPES)
+    assert "CIVIL_APPEAL" in body["split_upload_types"]
+    assert "MISCELLANEOUS_APPLICATION" in body["split_upload_types"]
     assert "upload_separate" in body["job_types"]
     assert "SLP_CIVIL" in body["split_upload_types"]
     assert "TRANSFER_PETITION_CIVIL" in body["split_upload_types"]
+    assert body["config"]["config_id"] == "jubeex_parse"
+    assert body["config"]["classify"]["config_version"] == "1.0.0"
+    assert body["config"]["extract"]["config_version"] == "1.0.0"
+    assert body["config"]["split"]["config_version"] == "1.0.0"
 
 
 def test_create_filing_rejects_empty_body(client: TestClient) -> None:
@@ -129,7 +137,19 @@ def test_create_filing_maps_unlabeled_application_to_undefined(
     assert response.status_code == 202
 
 
-def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> None:
+def test_create_filing_split_accepts_whatever_documents_backend_sends(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-test-cover",
+        result="agd-test-cover",
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(prepared),
+    )
     response = client.post(
         "/v1/filings",
         json={
@@ -145,9 +165,7 @@ def test_create_filing_split_one_pdf_requires_compiled(client: TestClient) -> No
             ],
         },
     )
-    assert response.status_code == 422
-    assert "upload_compiled" in response.text
-    assert "Missing required documents" in response.text
+    assert response.status_code == 202
 
 
 def test_create_filing_and_poll(

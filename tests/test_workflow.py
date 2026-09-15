@@ -1,7 +1,11 @@
 from importlib.metadata import version
 
 import pytest
-from extraction_review.config import EXTRACTED_DATA_COLLECTION, JUBEEX_FILING_TYPES
+from extraction_review.config import (
+    EXTRACTED_DATA_COLLECTION,
+    JUBEEX_FILING_TYPES,
+    JUBEEX_UPLOAD_FILING_TYPES,
+)
 from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataResponse
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import BundlePrepared, FileEvent, Status
@@ -74,7 +78,6 @@ async def test_classify_v2_assigns_filing_type(
     await handler
 
     # A real classify v2 result produces a "Classified as <type>" info status.
-    # The fallback path (classification error -> "other") does *not* emit this.
     assert classified_statuses, (
         "expected a 'Classified as ...' status from a completed classify v2 job"
     )
@@ -91,13 +94,14 @@ async def test_metadata_workflow() -> None:
     assert result.discriminator_field == DISCRIMINATOR_FIELD
     assert set(result.schemas.keys()) == FILING_TYPES
     assert DISCRIMINATOR_FIELD in result.json_schema.get("properties", {})
-    assert set(result.split_upload_types.keys()) == {
-        "SLP_CIVIL",
-        "SLP_CRIMINAL",
-        "TRANSFER_PETITION_CIVIL",
-        "TRANSFER_PETITION_CRIMINAL",
-    }
+    assert set(result.split_upload_types.keys()) == set(JUBEEX_UPLOAD_FILING_TYPES)
     criminal_ids = [
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]
     assert "court_fees" not in criminal_ids
+    assert result.config["config_id"] == "jubeex_parse"
+    assert result.config["config_version"] == "1.0.0"
+    assert result.config["classify"]["config_version"] == "1.0.0"
+    assert result.config["extract"]["config_version"] == "1.0.0"
+    assert result.config["split"]["config_version"] == "1.0.0"
+    assert result.upload_sliced_slot_pdfs is True

@@ -28,6 +28,13 @@
   max-width: 42rem;
 }
 
+.timing {
+  margin: 0.45rem 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
 .typeLabel {
   display: flex;
   flex-direction: column;
@@ -58,6 +65,25 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.groupHeading {
+  list-style: none;
+  padding: 0.85rem 0 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border);
+}
+
+.nestedRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
 }
 

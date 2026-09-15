@@ -35,13 +35,26 @@ from workflows.resource import Resource, ResourceConfig
 
 from .bundle_slicer import slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
+from .config import (
+    ClassifyConfig,
+    SplitConfig,
+    dump_api_configuration,
+    with_config_identity,
+)
 from .llama_usage import (
     collect_optional_usage,
     summarize_llamacloud_usage,
     usage_status_message,
 )
-from .config import ClassifyConfig, SplitConfig
 from .document_parts import page_parts_from_split, parts_on_page
+from .job_timing import (
+    attach_timing,
+    elapsed_seconds,
+    start_timer,
+    timing_payload,
+    timing_status_message,
+    uploaded_filename,
+)
 from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import (
     UNDEFINED_SLOT_ID,
@@ -382,7 +395,7 @@ def resolve_compiled_filing_type(
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
     raise SplitUploadError(
-        f"Classified as {classified_key or 'other'}, which cannot be sliced. "
+        f"Classified as {classified_key or '(unknown)'}, which cannot be sliced. "
         f"Send filing_type as one of: {allowed}"
     )
 
@@ -466,12 +479,23 @@ def source_document_from_part(
 
 def intake_echo(event: FileEvent) -> dict[str, str | None]:
     org_id = event.organization_id
+    _file_id, _url, filename, _hash = compiled_source(event)
+    if not filename and event.documents:
+        filename = next(
+            (
+                (item.filename or "").strip()
+                for item in event.documents
+                if (item.filename or "").strip()
+            ),
+            None,
+        )
     return {
         "job_type": event.job_type,
         "organization_id": org_id,
         "workspace_id": event.workspace_id,
         "user_id": event.user_id,
         "org_id": org_id,
+        "filename": uploaded_filename(filename),
     }
 
 
@@ -670,6 +694,9 @@ class BundlePrepared(StopEvent):
     workspace_id: str | None = None
     user_id: str | None = None
     org_id: str | None = None
+    filename: str | None = None
+    classify_split_seconds: float | None = None
+    timing: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
 
 
@@ -686,6 +713,7 @@ class PrepareState(BaseModel):
     source_documents: list[SourceDocument] = Field(default_factory=list)
     classification_confidence: float | None = None
     classification_reasoning: str | None = None
+    started_at: float | None = None
     llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -763,10 +791,7 @@ async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
 
 def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
     """LlamaSplit accepts only category name + description."""
-    dumped = split_config.model_dump(
-        exclude={"configuration_id", "product_type"},
-        exclude_none=True,
-    )
+    dumped = dump_api_configuration(split_config)
     dumped["categories"] = [
         {
             "name": item["name"],
@@ -863,6 +888,25 @@ def _upload_filename(name: str) -> str:
         stem = raw
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "filing"
     return f"{cleaned[:80]}.pdf"
+
+
+def prefixed_slot_filename(slot_filename: str, bundle_name: str | None) -> str:
+    """Keep LlamaCloud slot PDFs unique across runs of the same paper book."""
+    slot = _upload_filename(slot_filename)
+    from .job_timing import uploaded_filename
+
+    bundle = uploaded_filename(bundle_name)
+    if not bundle:
+        return slot
+    stem = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem
+    ).strip("._") or "filing"
+    slot_stem = PurePosixPath(slot).stem
+    lowered = slot_stem.lower()
+    prefix = stem.lower()
+    if lowered == prefix or lowered.startswith(f"{prefix}-"):
+        return slot
+    return _upload_filename(f"{stem}-{slot_stem}.pdf")
 
 
 def _require_pdf_bytes(data: bytes, url: str) -> None:
@@ -1020,6 +1064,7 @@ async def _upload_sliced_slots(
     slices: list[Any],
     *,
     enabled: bool,
+    original_filename: str | None = None,
 ) -> list[str | None]:
     """Upload sliced slot PDFs in parallel. Skip when the backend re-slices."""
     if not enabled or not slices:
@@ -1028,9 +1073,10 @@ async def _upload_sliced_slots(
 
     async def _one(item: Any) -> str:
         async with semaphore:
+            filename = prefixed_slot_filename(item.filename, original_filename)
             return await _upload_slot_pdf(
                 client,
-                filename=item.filename,
+                filename=filename,
                 pdf_bytes=item.pdf_bytes,
             )
 
@@ -1045,6 +1091,7 @@ async def _extract_sliced_parts(
     echo: dict[str, str | None],
     require_all_slots: bool,
     fallback_file_id: str | None = None,
+    classify_split_seconds: float | None = None,
 ) -> str | None:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -1061,6 +1108,8 @@ async def _extract_sliced_parts(
             parts=parts,
             require_all_slots=require_all_slots,
             fallback_file_id=fallback_file_id,
+            filename=echo.get("filename") if isinstance(echo, dict) else None,
+            classify_split_seconds=classify_split_seconds,
         )
     )
     async for ev in handler.stream_events():
@@ -1123,14 +1172,16 @@ async def _run_split_from_file_event(
     echo = intake_echo(event)
     upload_step_json(
         STEP_SPLIT,
-        {
-            "job_type": echo["job_type"],
-            "filing_type": filing_type,
-            "organization_id": echo["organization_id"],
-            "workspace_id": echo["workspace_id"],
-            "parts": [item.model_dump(mode="json") for item in split_parts],
-            "slot_pages": {},
-        },
+        with_config_identity(
+            {
+                "job_type": echo["job_type"],
+                "filing_type": filing_type,
+                "organization_id": echo["organization_id"],
+                "workspace_id": echo["workspace_id"],
+                "parts": [item.model_dump(mode="json") for item in split_parts],
+                "slot_pages": {},
+            }
+        ),
         organization_id=echo["organization_id"],
         workspace_id=echo["workspace_id"],
     )
@@ -1190,6 +1241,7 @@ class ProcessFileWorkflow(Workflow):
 
         file_id, file_url, filename, file_hash_hint = compiled_source(event)
         content_hash: str | None = None
+        started_at = start_timer()
 
         if not file_id and file_url:
             ctx.write_event_to_stream(
@@ -1228,7 +1280,9 @@ class ProcessFileWorkflow(Workflow):
             file_metadata = await llama_cloud_client.files.retrieve(
                 file_id, project_id=project_id
             )
-            filename = filename or file_metadata.name
+            filename = uploaded_filename(filename) or uploaded_filename(
+                getattr(file_metadata, "name", None)
+            )
         except Exception as exc:
             logger.exception("Error fetching file metadata %s", file_id)
             ctx.write_event_to_stream(
@@ -1269,6 +1323,7 @@ class ProcessFileWorkflow(Workflow):
             state.user_id = echo["user_id"]
             state.org_id = echo["org_id"]
             state.source_documents = source_docs
+            state.started_at = started_at
 
         override = compiled_catalog_override(event.filing_type)
         if override is not None:
@@ -1297,10 +1352,7 @@ class ProcessFileWorkflow(Workflow):
         else:
             classify_job = await llama_cloud_client.classify.create(
                 file_input=file_id,
-                configuration=classify_config.model_dump(
-                    exclude={"configuration_id", "product_type"},
-                    exclude_none=True,
-                ),
+                configuration=dump_api_configuration(classify_config),
                 project_id=project_id,
             )
 
@@ -1322,7 +1374,7 @@ class ProcessFileWorkflow(Workflow):
             raise RuntimeError(message)
 
         result = completed.result
-        classified = result.type or "other"
+        classified = (result.type or "").strip()
         confidence = result.confidence
         reasoning = result.reasoning
         try:
@@ -1458,16 +1510,22 @@ class ProcessFileWorkflow(Workflow):
             llama_cloud_client,
             slices,
             enabled=upload_slots,
+            original_filename=state.filename,
         )
         prepared: list[PreparedPart] = []
         slot_pages: dict[str, str] = {}
         for item, file_id in zip(slices, file_ids, strict=True):
+            filename = (
+                prefixed_slot_filename(item.filename, state.filename)
+                if upload_slots
+                else item.filename
+            )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
                     file_id=file_id,
                     file_hash=item.file_hash,
-                    filename=item.filename,
+                    filename=filename,
                     label=item.label,
                     page_span=item.page_span,
                 )
@@ -1481,29 +1539,40 @@ class ProcessFileWorkflow(Workflow):
                 )
             )
 
+        classify_split_seconds = elapsed_seconds(state.started_at)
+        file_name = uploaded_filename(state.filename)
+        timing = timing_payload(
+            file_name=file_name,
+            classify_split_seconds=classify_split_seconds,
+        )
         upload_step_json(
             STEP_SPLIT,
-            {
-                "job_type": state.job_type,
-                "filing_type": catalog.filing_type,
-                "filename": state.filename,
-                "file_id": state.file_id,
-                "organization_id": state.organization_id,
-                "workspace_id": state.workspace_id,
-                "usage": {"llamacloud": usage_summary},
-                "parts": [
+            attach_timing(
+                with_config_identity(
                     {
-                        "slot_id": part.slot_id,
-                        "label": part.label,
-                        "filename": part.filename,
-                        "page_span": part.page_span,
-                        "file_hash": part.file_hash,
-                        "file_id": part.file_id,
+                        "job_type": state.job_type,
+                        "filing_type": catalog.filing_type,
+                        "filename": state.filename,
+                        "file_id": state.file_id,
+                        "organization_id": state.organization_id,
+                        "workspace_id": state.workspace_id,
+                        "usage": {"llamacloud": usage_summary},
+                        "parts": [
+                            {
+                                "slot_id": part.slot_id,
+                                "label": part.label,
+                                "filename": part.filename,
+                                "page_span": part.page_span,
+                                "file_hash": part.file_hash,
+                                "file_id": part.file_id,
+                            }
+                            for part in prepared
+                        ],
+                        "slot_pages": slot_pages,
                     }
-                    for part in prepared
-                ],
-                "slot_pages": slot_pages,
-            },
+                ),
+                timing,
+            ),
             organization_id=state.organization_id,
             workspace_id=state.workspace_id,
         )
@@ -1522,6 +1591,15 @@ class ProcessFileWorkflow(Workflow):
                 message=ready_message,
             )
         )
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=timing_status_message(
+                    file_name=file_name,
+                    classify_split_seconds=classify_split_seconds,
+                ),
+            )
+        )
         return BundlePrepared(
             filing_type=catalog.filing_type,
             parts=prepared,
@@ -1533,6 +1611,9 @@ class ProcessFileWorkflow(Workflow):
             workspace_id=state.workspace_id,
             user_id=state.user_id,
             org_id=state.org_id,
+            filename=file_name,
+            classify_split_seconds=classify_split_seconds,
+            timing=timing,
             usage={"llamacloud": usage_summary},
         )
 

@@ -33,11 +33,10 @@ from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
 from .s3_artifacts import recorded_artifacts, set_job_context
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
-from .config import JUBEEX_FILING_TYPES
+from .config import JUBEEX_FILING_TYPES, config_identity
 from .process_file import (
     FileEvent,
     blank_or_placeholder,
-    intake_mode,
     normalize_job_type,
 )
 from .process_file import workflow as process_file_workflow
@@ -45,7 +44,7 @@ from .extract_record import stamp_review_status
 from .queue import enqueue_job, sqs_enabled
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
-from .split_upload import type_catalog, ui_catalog
+from .split_upload import ui_catalog
 
 load_dotenv()
 
@@ -114,7 +113,13 @@ class CreateFilingRequest(BaseModel):
     job_type: str = Field(examples=["upload_separate", "upload_compiled"])
     filing_type: str | None = Field(
         default=None,
-        examples=["SLP_CIVIL", "SLP_CRIMINAL", "TRANSFER_PETITION_CIVIL", "TRANSFER_PETITION_CRIMINAL"],
+        examples=[
+            "SLP_CIVIL",
+            "CIVIL_APPEAL",
+            "WRIT_PETITION_CRIMINAL",
+            "REVIEW_PETITION_CIVIL",
+            "MISCELLANEOUS_APPLICATION",
+        ],
     )
     organization_id: str | None = None
     workspace_id: str | None = None
@@ -400,6 +405,7 @@ async def catalog() -> dict[str, Any]:
         "split_upload_types": ui_catalog(),
         "collection": FILING_COLLECTION,
         "job_types": ["upload_compiled", "upload_separate"],
+        "config": config_identity(),
     }
 
 
@@ -430,29 +436,6 @@ async def create_filing(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=detail,
         ) from exc
-
-    if intake_mode(event) == "split" and event.filing_type:
-        catalog = type_catalog(event.filing_type)
-        seen = {(item.slot_id or "").strip() for item in event.documents}
-        missing = [
-            slot.label
-            for slot in catalog.slots
-            if slot.required and slot.id not in seen
-        ]
-        if missing and len(event.documents) <= 1:
-            hint = ""
-            if len(event.documents) == 1:
-                hint = (
-                    " You sent one file. If it is a compiled petition PDF, "
-                    "use job_type upload_compiled, not upload_separate."
-                )
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Missing required documents: "
-                + ", ".join(missing)
-                + "."
-                + hint,
-            )
 
     job_id = str(uuid.uuid4())
     job = JobState(

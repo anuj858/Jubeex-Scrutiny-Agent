@@ -8,9 +8,16 @@ import os
 import uuid
 from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from .queue import _client_kwargs
+
+# llamactl workflows do not import api.py, so they never saw `.env` unless
+# the var was also listed in pyproject / deployment secrets.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,8 @@ _workspace_id: ContextVar[str | None] = ContextVar(
     "artifact_workspace_id", default=None
 )
 _ARTIFACTS_BY_JOB: dict[str, dict[str, dict[str, str]]] = {}
+FALLBACK_ORGANIZATION_ID = "llamacloud"
+FALLBACK_WORKSPACE_ID = "default"
 
 
 def _clean_id(value: str | None) -> str | None:
@@ -219,16 +228,28 @@ def upload_step_json(
         or _first_document_id(payload)
         or job
         or workspace
+        or FALLBACK_WORKSPACE_ID
     )
     if not bucket:
-        logger.warning("Skipping %s artifact upload: AWS_S3_BUCKET is not set", step)
-        return None
-    if not org or not workspace:
         logger.warning(
-            "Skipping %s artifact upload: organization_id/workspace_id missing",
+            "Skipping %s artifact upload: AWS_S3_BUCKET/JUBEEX_ARTIFACT_BUCKET is not set",
             step,
         )
         return None
+    if not org:
+        org = FALLBACK_ORGANIZATION_ID
+        logger.info(
+            "Uploading %s artifact with fallback organization_id=%s",
+            step,
+            org,
+        )
+    if not workspace:
+        workspace = FALLBACK_WORKSPACE_ID
+        logger.info(
+            "Uploading %s artifact with fallback workspace_id=%s",
+            step,
+            workspace,
+        )
     filename = artifact_filename(step, object_id=object_id, job_id=job)
     key = artifact_key(
         step,
@@ -272,3 +293,25 @@ def upload_step_json(
     _ARTIFACTS_BY_JOB[registry_key] = current
     logger.info("Uploaded %s artifact s3://%s/%s", step, bucket, key)
     return record
+
+
+def download_json_object(key: str | None) -> dict[str, Any] | None:
+    """GET a previously uploaded JSON artifact by key. None on any failure."""
+    cleaned = (key or "").strip()
+    bucket = artifact_bucket()
+    if not cleaned or not bucket:
+        return None
+    try:
+        client = _s3_client()
+        response = client.get_object(Bucket=bucket, Key=cleaned)
+        body = response["Body"].read()
+        payload = json.loads(body)
+    except Exception:
+        logger.warning(
+            "Failed to download artifact s3://%s/%s",
+            bucket,
+            cleaned,
+            exc_info=True,
+        )
+        return None
+    return payload if isinstance(payload, dict) else None

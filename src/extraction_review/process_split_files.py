@@ -22,6 +22,8 @@ from .config import (
     ExtractConfig,
     LegalExtractRecord,
     ParseConfig,
+    config_identity,
+    with_config_identity,
 )
 from .document_parts import overlay_split_documents
 from .extract_record import (
@@ -31,6 +33,14 @@ from .extract_record import (
     stamp_review_status,
     stamp_source_pages,
     unwrap_extracted_record,
+)
+from .job_timing import (
+    attach_timing,
+    elapsed_seconds,
+    start_timer,
+    timing_payload,
+    timing_status_message,
+    uploaded_filename,
 )
 from .llama_usage import (
     collect_extract_usage,
@@ -61,7 +71,13 @@ from .process_file import (
     normalize_org_id,
     positive_int_env,
 )
-from .s3_artifacts import STEP_EXTRACT, STEP_LAYOUT, upload_step_json
+from .s3_artifacts import (
+    STEP_EXTRACT,
+    STEP_LAYOUT,
+    artifact_bucket,
+    set_job_context,
+    upload_step_json,
+)
 from .split_upload import (
     PETITION_SLOT_ID,
     SplitPartInput,
@@ -148,8 +164,10 @@ class SplitFilesEvent(StartEvent):
     workspace_id: str | None = None
     user_id: str | None = None
     parts: list[SplitPartEvent]
-    require_all_slots: bool = True
+    require_all_slots: bool = False
     fallback_file_id: str | None = None
+    filename: str | None = None
+    classify_split_seconds: float | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -175,7 +193,7 @@ class SplitFilesState(BaseModel):
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
-    require_all_slots: bool = True
+    require_all_slots: bool = False
     parts: list[SplitPartEvent] = Field(default_factory=list)
     filename: str | None = None
     file_hash: str | None = None
@@ -187,6 +205,8 @@ class SplitFilesState(BaseModel):
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
     page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
+    started_at: float | None = None
+    classify_split_seconds: float | None = None
     llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -211,6 +231,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             ),
         ],
     ) -> ParsedEvent:
+        started_at = start_timer()
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -236,7 +257,9 @@ class ProcessSplitFilesWorkflow(Workflow):
             ctx.write_event_to_stream(Status(level="error", message=str(exc)))
             raise
 
-        filename = display_filename(catalog.filing_type, parts)
+        filename = uploaded_filename(event.filename) or display_filename(
+            catalog.filing_type, parts, original=event.filename
+        )
         file_hash = bundle_file_hash(parts)
         petition = find_part(parts, PETITION_SLOT_ID)
         source_parts = extract_source_parts(catalog)
@@ -302,7 +325,30 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.page_markdown = page_markdown
             state.page_parts = page_parts
             state.page_layout = page_layout
+            state.started_at = started_at
+            state.classify_split_seconds = event.classify_split_seconds
             state.llamacloud_jobs = list(parse_usage)
+
+        set_job_context(
+            file_hash or filename,
+            event.organization_id or event.org_id,
+            event.workspace_id,
+        )
+        if not page_layout:
+            logger.error(
+                "Layout index is empty after parse for %s (%s slot(s))",
+                filename,
+                len(parts),
+            )
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message=(
+                        "No page layout was built from parse; scrutiny "
+                        "will not have highlight coordinates"
+                    ),
+                )
+            )
 
         ctx.write_event_to_stream(
             Status(
@@ -425,9 +471,16 @@ class ProcessSplitFilesWorkflow(Workflow):
         ],
     ) -> StopEvent:
         state = await ctx.store.get_state()
+        set_job_context(
+            state.extract_job_id or state.file_hash or state.filename,
+            state.organization_id or state.org_id,
+            state.workspace_id,
+        )
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
-        filing_type = state.filing_type or "other"
+        if not state.filing_type:
+            raise ValueError("Filing type is not set")
+        filing_type = state.filing_type
         del extract_jubeex
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
@@ -503,15 +556,46 @@ class ProcessSplitFilesWorkflow(Workflow):
                 data.metadata["workspace_id"] = state.workspace_id
             if state.user_id:
                 data.metadata["user_id"] = state.user_id
+            parse_extract_seconds = elapsed_seconds(state.started_at)
+            timing = timing_payload(
+                file_name=state.filename,
+                classify_split_seconds=state.classify_split_seconds,
+                parse_extract_seconds=parse_extract_seconds,
+            )
+            data.metadata["timing"] = timing
+            data.metadata["config"] = config_identity()
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=timing_status_message(
+                        file_name=state.filename,
+                        classify_split_seconds=state.classify_split_seconds,
+                        parse_extract_seconds=parse_extract_seconds,
+                    ),
+                )
+            )
             layout_record = upload_step_json(
                 STEP_LAYOUT,
                 dump_layout_index(coerce_page_layout(state.page_layout)),
                 organization_id=state.organization_id or state.org_id,
                 workspace_id=state.workspace_id,
+                job_id=state.extract_job_id or state.file_hash,
             )
             if layout_record:
                 data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
                 data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+            elif artifact_bucket():
+                logger.error(
+                    "Layout artifact upload failed for %s; scrutiny will "
+                    "not have highlight coordinates",
+                    state.filename,
+                )
+            elif state.page_layout:
+                logger.error(
+                    "Layout index built for %s but AWS_S3_BUCKET is unset; "
+                    "scrutiny will not have highlight coordinates",
+                    state.filename,
+                )
             extracted_event = ExtractedEvent(data=data)
         except InvalidExtractionData as exc:
             logger.exception("Error validating extracted data")
@@ -576,9 +660,17 @@ class ProcessSplitFilesWorkflow(Workflow):
             data_dict.setdefault("organization_id", org_id)
             data_dict.setdefault("workspace_id", state.workspace_id)
             data_dict = stamp_review_status(data_dict)
+            data_dict = attach_timing(
+                data_dict,
+                timing_payload(
+                    file_name=state.filename,
+                    classify_split_seconds=state.classify_split_seconds,
+                    parse_extract_seconds=elapsed_seconds(state.started_at),
+                ),
+            )
         upload_step_json(
             STEP_EXTRACT,
-            data_dict,
+            with_config_identity(data_dict),
             organization_id=org_id,
             workspace_id=state.workspace_id,
         )

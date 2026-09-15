@@ -126,7 +126,14 @@ def _filing_phrase(main_category: str) -> str:
     key = normalize_filing_type(label)
     if key == "global":
         return "this filing (the check applies to every petition type)"
-    if key in {"slp", "transfer_petition", "writ_petition"}:
+    if key in {
+        "slp",
+        "transfer_petition",
+        "writ_petition",
+        "review_petition",
+        "contempt_petition",
+        "curative_petition",
+    }:
         return f"this {label} filing (shared across civil and criminal)"
     return f"this {label} filing"
 
