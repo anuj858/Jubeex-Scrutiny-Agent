@@ -596,6 +596,7 @@ class FileEvent(StartEvent):
     edited: bool | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
+    special_category: str | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -1324,6 +1325,7 @@ async def _extract_sliced_parts(
     edited: bool = False,
     parsed_slots: list[str] | None = None,
     agent_data_id: str | None = None,
+    special_category: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
@@ -1352,6 +1354,7 @@ async def _extract_sliced_parts(
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
+            special_category=special_category,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
@@ -1522,6 +1525,7 @@ async def _run_split_from_file_event(
         edited=edited,
         parsed_slots=parsed_slots,
         agent_data_id=agent_data_id,
+        special_category=event.special_category,
         reuse_pages_by_slot=reuse_pages if index_only and not edited else {},
         reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
         reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},

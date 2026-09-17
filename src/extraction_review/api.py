@@ -228,6 +228,14 @@ class FilingDocumentsRequest(BaseModel):
 class IndexFilingRequest(FilingDocumentsRequest):
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
+    special_category: str | None = Field(
+        default=None,
+        examples=["Eviction Matters", "N/A"],
+        description=(
+            "Optional matter subtype for the nested defect run. Null, omitted, "
+            "or N/A skips every catalogue defect that has a special_category."
+        ),
+    )
 
     @field_validator("edited", mode="before")
     @classmethod
@@ -250,6 +258,11 @@ class IndexFilingRequest(FilingDocumentsRequest):
                     slots.append(cleaned)
             return slots
         return []
+
+    @field_validator("special_category", mode="before")
+    @classmethod
+    def _clean_special_category(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
 
 
 class UpdateFilingRequest(BaseModel):
