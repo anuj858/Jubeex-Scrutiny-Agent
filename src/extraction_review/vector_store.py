@@ -49,11 +49,15 @@ _cached_client: Pinecone | None = None
 _cached_index: Any = None
 _cached_text_field: str | None = None
 _cache_lock = threading.Lock()
+_query_semaphore: threading.Semaphore | None = None
 
 # Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
 DEFAULT_TOP_K = 8
 DEFAULT_MAX_CHUNKS = 12
 DEFAULT_POOL_MAX_CHUNKS = 60
+# urllib3 default pool is 10; scrutiny fans out many queries (defects × captions).
+DEFAULT_POOL_THREADS = 32
+DEFAULT_QUERY_CONCURRENCY = 10
 
 
 def _int_env(name: str, default: int) -> int:
@@ -75,8 +79,26 @@ def scrutiny_pool_max_chunks() -> int:
     return _int_env("SCRUTINY_POOL_MAX_CHUNKS", DEFAULT_POOL_MAX_CHUNKS)
 
 
+def pinecone_pool_threads() -> int:
+    return max(1, _int_env("PINECONE_POOL_THREADS", DEFAULT_POOL_THREADS))
+
+
+def pinecone_query_concurrency() -> int:
+    return max(1, _int_env("PINECONE_QUERY_CONCURRENCY", DEFAULT_QUERY_CONCURRENCY))
+
+
 def pinecone_enabled() -> bool:
     return vector_backend == "pinecone" and bool(pinecone_api_key)
+
+
+def _pinecone_query_gate() -> threading.Semaphore:
+    """Cap concurrent Pinecone HTTP calls across all scrutiny threads."""
+    global _query_semaphore
+    if _query_semaphore is None:
+        with _cache_lock:
+            if _query_semaphore is None:
+                _query_semaphore = threading.Semaphore(pinecone_query_concurrency())
+    return _query_semaphore
 
 
 def get_pinecone_client() -> Pinecone:
@@ -86,7 +108,10 @@ def get_pinecone_client() -> Pinecone:
     if _cached_client is None:
         with _cache_lock:
             if _cached_client is None:
-                _cached_client = Pinecone(api_key=pinecone_api_key)
+                _cached_client = Pinecone(
+                    api_key=pinecone_api_key,
+                    pool_threads=pinecone_pool_threads(),
+                )
     return _cached_client
 
 
@@ -533,10 +558,11 @@ def _raw_hits(result: Any) -> list[Any]:
 def search_filings(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
     """Semantic search over indexed filings (uses the same integrated embed model)."""
     index = ensure_index()
-    result = index.search(
-        namespace=pinecone_namespace,
-        query={"top_k": top_k, "inputs": {"text": query}},
-    )
+    with _pinecone_query_gate():
+        result = index.search(
+            namespace=pinecone_namespace,
+            query={"top_k": top_k, "inputs": {"text": query}},
+        )
     out: list[dict[str, Any]] = []
     for hit in _raw_hits(result):
         if isinstance(hit, dict):
@@ -629,22 +655,23 @@ def search_filing_chunks(
     # Do not filter document_part in Pinecone: multi-label pages store an
     # array and `$eq` misses them. Post-filter with parts_on_page instead.
 
-    result = index.search(
-        namespace=pinecone_namespace,
-        query={
-            "top_k": top_k,
-            "inputs": {"text": query},
-            "filter": metadata_filter,
-        },
-        fields=[
-            text_field,
-            "chunk_kind",
-            "page_start",
-            "page_end",
-            "file_name",
-            "document_part",
-        ],
-    )
+    with _pinecone_query_gate():
+        result = index.search(
+            namespace=pinecone_namespace,
+            query={
+                "top_k": top_k,
+                "inputs": {"text": query},
+                "filter": metadata_filter,
+            },
+            fields=[
+                text_field,
+                "chunk_kind",
+                "page_start",
+                "page_end",
+                "file_name",
+                "document_part",
+            ],
+        )
 
     chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
     if document_part:
@@ -723,7 +750,9 @@ def gather_filing_evidence(
     if len(jobs) <= 1:
         hits = [_run_one(query, kwargs) for query, kwargs in jobs]
     else:
-        workers = min(8, len(jobs))
+        # Outer scrutiny already fans out defects; keep inner fan-out small so
+        # urllib3 does not blow past the Pinecone connection pool.
+        workers = min(4, len(jobs), pinecone_query_concurrency())
         with ThreadPoolExecutor(max_workers=workers) as pool:
             hits = list(pool.map(lambda job: _run_one(job[0], job[1]), jobs))
     for chunks in hits:
