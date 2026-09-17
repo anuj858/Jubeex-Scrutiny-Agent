@@ -12,14 +12,17 @@ from .schema import VisualIndex, VisualMark
 from .store import (
     VISUAL_ARTIFACT_KEY_KEY,
     VISUAL_ARTIFACT_URL_KEY,
+    VISUAL_SUMMARY_KEY,
     coerce_visual_index,
     dump_visual_index,
     load_visual_index,
+    visual_summary,
 )
 
 __all__ = [
     "VISUAL_ARTIFACT_KEY_KEY",
     "VISUAL_ARTIFACT_URL_KEY",
+    "VISUAL_SUMMARY_KEY",
     "VisualIndex",
     "VisualMark",
     "attach_visual_localizations",
@@ -30,4 +33,5 @@ __all__ = [
     "select_formality_pages",
     "visual_detection_enabled",
     "visual_needs_for_defect",
+    "visual_summary",
 ]

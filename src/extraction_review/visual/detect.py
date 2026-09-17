@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -424,7 +425,7 @@ async def _analyze_with_fallback(
     target: VisualPageTarget,
     references: Sequence[Any],
     http: httpx.AsyncClient,
-) -> list[VisualMark]:
+) -> tuple[list[VisualMark], Exception | None]:
     models = [vision_model()]
     fallback = vision_fallback_model()
     if fallback and fallback not in models:
@@ -432,13 +433,14 @@ async def _analyze_with_fallback(
     last_error: Exception | None = None
     for model in models:
         try:
-            return await analyze_page_image(
+            found = await analyze_page_image(
                 page_image=page_image,
                 target=target,
                 references=_references_for_target(references, target.document_types),
                 model=model,
                 http=http,
             )
+            return found, None
         except (
             LLMError,
             httpx.HTTPError,
@@ -459,13 +461,61 @@ async def _analyze_with_fallback(
             "Skipping visual marks for page %s after vision failures",
             target.page,
         )
-    return []
+    return [], last_error
 
 
 @dataclass(frozen=True)
 class _PageVisionResult:
     marks: list[VisualMark]
-    failed: bool
+    reason: str | None = None
+    detail: str | None = None
+
+
+def _failure_row(
+    target: VisualPageTarget, reason: str, detail: str | None = None
+) -> dict[str, Any]:
+    return {
+        "page": target.page,
+        "slot_id": target.slot_id,
+        "document_types": list(target.document_types),
+        "reason": reason,
+        "detail": (detail or "")[:300] or None,
+    }
+
+
+def _dominant_error(failures: Sequence[Mapping[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for item in failures:
+        reason = str(item.get("reason") or "vision_failed")
+        counts[reason] = counts.get(reason, 0) + 1
+    if not counts:
+        return "vision_failed"
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def _target_label(target: VisualPageTarget) -> str:
+    types = ", ".join(target.document_types) or "unknown"
+    return (
+        f"page {target.page} {types} slot={target.slot_id or '-'} "
+        f"local={target.local_page} file_id={target.file_id or 'no'} "
+        f"url={'yes' if (target.file_url or '').strip() else 'no'}"
+    )
+
+
+async def _emit_log(on_log: Any, message: str) -> None:
+    logger.info("%s", message)
+    if on_log is None:
+        return
+    result = on_log(message)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _default_download_file_id(file_id: str) -> bytes:
+    from ..clients import get_llama_cloud_client
+    from ..process_file import _download_file_bytes
+
+    return await _download_file_bytes(get_llama_cloud_client(), file_id)
 
 
 async def detect_visual_marks(
@@ -475,15 +525,26 @@ async def detect_visual_marks(
     page_parts: Mapping[int, Sequence[str]],
     page_markdown: Mapping[int, str] | None = None,
     omit_empty: bool = False,
+    on_log: Any = None,
+    download_file_id: Any = None,
 ) -> dict[str, Any]:
     """Render selected formality pages and return a visual_index_v1 payload."""
     del page_parts
-    if not visual_detection_enabled():
+    enabled = visual_detection_enabled()
+    await _emit_log(
+        on_log,
+        (
+            f"Visual detection enabled={enabled} model={vision_model() or '-'} "
+            f"api_key={'yes' if openrouter_api_key() else 'no'}"
+        ),
+    )
+    if not enabled:
         return empty_visual_index(status="skipped", error="vision_disabled")
     slot_pages = coerce_pages_by_slot(pages_by_slot)
     sources = global_page_sources(parts, slot_pages, omit_empty=omit_empty)
     targets = select_formality_pages(sources, page_markdown=page_markdown)
     if not targets:
+        await _emit_log(on_log, "Visual: no formality last pages present; skipping")
         return {
             "schema": VISUAL_SCHEMA,
             "prompt_version": PROMPT_VERSION,
@@ -491,70 +552,118 @@ async def detect_visual_marks(
             "error": None,
             "pages": [],
             "targets": [],
+            "failures": [],
             "marks": [],
         }
+
+    await _emit_log(
+        on_log,
+        f"Visual: {len(targets)} formality page(s) selected",
+    )
+    for target in targets:
+        await _emit_log(on_log, f"Visual target {_target_label(target)}")
 
     dpi = preview_dpi(os.getenv("VISION_PREVIEW_DPI"))
     concurrency = max(1, _int_env("VISION_CONCURRENCY", DEFAULT_VISION_CONCURRENCY))
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
     references = load_reference_assets()
-    pdf_cache: dict[str, bytes] = {}
+    pdf_by_slot: dict[str, bytes] = {}
+    pdf_errors: dict[str, tuple[str, str]] = {}
+    fetch_file = download_file_id or _default_download_file_id
     marks: list[VisualMark] = []
     analyzed_pages: list[int] = []
+    failures: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(max(timeout, FILE_DOWNLOAD_TIMEOUT_S)),
         follow_redirects=True,
     ) as http:
         for target in targets:
+            slot = target.slot_id
+            if slot in pdf_by_slot or slot in pdf_errors:
+                continue
             url = (target.file_url or "").strip()
-            if not url or url in pdf_cache:
+            file_id = (target.file_id or "").strip()
+            if not url and not file_id:
+                pdf_errors[slot] = ("missing_pdf", "slot has no file_url or file_id")
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: missing file_url and file_id",
+                )
                 continue
             try:
-                pdf_cache[url] = await _download_pdf(url, http)
-            except (httpx.HTTPError, ValueError, OSError):
-                logger.warning(
-                    "Could not download slot PDF for visual detection url=%s",
-                    url,
-                    exc_info=True,
+                if url:
+                    pdf_by_slot[slot] = await _download_pdf(url, http)
+                else:
+                    data = await fetch_file(file_id)
+                    if not data:
+                        raise ValueError(f"Empty PDF for file_id={file_id}")
+                    _require_pdf_bytes(data, file_id)
+                    pdf_by_slot[slot] = data
+                await _emit_log(
+                    on_log,
+                    (f"Visual downloaded slot={slot} {len(pdf_by_slot[slot])} bytes"),
+                )
+            except ValueError as exc:
+                reason = "not_pdf" if "is not a PDF" in str(exc) else "download_failed"
+                pdf_errors[slot] = (reason, str(exc)[:300])
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: {exc}",
+                )
+            except (httpx.HTTPError, OSError, RuntimeError, TypeError, KeyError) as exc:
+                pdf_errors[slot] = ("download_failed", str(exc)[:300])
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: {exc}",
                 )
 
         semaphore = asyncio.Semaphore(concurrency)
 
         async def run_one(target: VisualPageTarget) -> _PageVisionResult:
-            url = (target.file_url or "").strip()
-            pdf_bytes = pdf_cache.get(url)
+            pdf_bytes = pdf_by_slot.get(target.slot_id)
             if not pdf_bytes:
-                return _PageVisionResult(marks=[], failed=True)
+                reason, detail = pdf_errors.get(
+                    target.slot_id, ("missing_pdf", "PDF not loaded")
+                )
+                return _PageVisionResult(marks=[], reason=reason, detail=detail)
             try:
                 image = await asyncio.to_thread(
                     render_page_jpeg, pdf_bytes, target.local_page, dpi=dpi
                 )
-            except (ValueError, OSError, RuntimeError):
+            except (ValueError, OSError, RuntimeError) as exc:
                 logger.warning(
                     "Could not render page %s (local %s) for vision",
                     target.page,
                     target.local_page,
                     exc_info=True,
                 )
-                return _PageVisionResult(marks=[], failed=True)
+                return _PageVisionResult(
+                    marks=[],
+                    reason="render_failed",
+                    detail=str(exc)[:300],
+                )
             async with semaphore:
-                found = await _analyze_with_fallback(
+                found, vision_error = await _analyze_with_fallback(
                     page_image=image,
                     target=target,
                     references=references,
                     http=http,
                 )
-            return _PageVisionResult(
-                marks=_expand_marks_for_parts(found, target), failed=False
-            )
+            if vision_error is not None:
+                return _PageVisionResult(
+                    marks=[],
+                    reason="vision_failed",
+                    detail=str(vision_error)[:300],
+                )
+            return _PageVisionResult(marks=_expand_marks_for_parts(found, target))
 
         results = await asyncio.gather(
             *(run_one(target) for target in targets),
             return_exceptions=True,
         )
 
-    failed_all = True
+    succeeded = 0
     for target, result in zip(targets, results, strict=True):
         analyzed_pages.append(target.page)
         if isinstance(result, Exception):
@@ -563,21 +672,48 @@ async def detect_visual_marks(
                 target.page,
                 result,
             )
+            failures.append(_failure_row(target, "vision_failed", str(result)))
+            await _emit_log(
+                on_log,
+                f"Visual page {target.page} failed: {result}",
+            )
             continue
-        if not result.failed:
-            failed_all = False
+        if result.reason:
+            failures.append(_failure_row(target, result.reason, result.detail))
+            await _emit_log(
+                on_log,
+                (
+                    f"Visual page {target.page} {result.reason}"
+                    + (f": {result.detail}" if result.detail else "")
+                ),
+            )
+            continue
+        succeeded += 1
         marks.extend(result.marks)
+        await _emit_log(
+            on_log,
+            f"Visual page {target.page}: {len(result.marks)} mark(s)",
+        )
 
-    status = "error" if failed_all else "ok"
+    status = "error" if succeeded == 0 else "ok"
+    error = _dominant_error(failures) if status == "error" else None
+    await _emit_log(
+        on_log,
+        (
+            f"Visual summary: {len(targets)} targets, {succeeded} ok, "
+            f"{len(failures)} failed, {len(marks)} marks"
+        ),
+    )
     return {
         "schema": VISUAL_SCHEMA,
         "prompt_version": PROMPT_VERSION,
         "status": status,
-        "error": "vision_failed" if status == "error" else None,
+        "error": error,
         "pages": analyzed_pages,
         "targets": [
             {"page": target.page, "document_types": list(target.document_types)}
             for target in targets
         ],
+        "failures": failures,
         "marks": [mark.model_dump() for mark in marks],
     }

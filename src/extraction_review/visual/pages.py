@@ -33,6 +33,7 @@ class PageSource:
     local_page: int
     document_parts: tuple[str, ...]
     file_url: str | None = None
+    file_id: str | None = None
 
 
 def policy_selector(name: str, policy: Mapping[str, str] | None = None) -> str | None:
@@ -81,6 +82,7 @@ def global_page_sources(
             if str(name).strip()
         )
         file_url = str(getattr(item, "file_url", None) or "").strip() or None
+        file_id = str(getattr(item, "file_id", None) or "").strip() or None
         local = pages_by_slot.get(slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
         if not local_numbers:
@@ -96,6 +98,7 @@ def global_page_sources(
                     local_page=local_page,
                     document_parts=document_parts,
                     file_url=file_url,
+                    file_id=file_id,
                 )
             )
             next_page += 1
@@ -161,6 +164,7 @@ def select_formality_pages(
                 local_page=source.local_page,
                 document_types=types_by_page.get(page, list(source.document_parts)),
                 file_url=source.file_url,
+                file_id=source.file_id,
                 markdown=str(markdown.get(page) or ""),
             )
         )

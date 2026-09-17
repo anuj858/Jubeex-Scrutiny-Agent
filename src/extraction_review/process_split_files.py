@@ -112,7 +112,9 @@ from .visual.schema import empty_visual_index
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
     VISUAL_ARTIFACT_URL_KEY,
+    VISUAL_SUMMARY_KEY,
     upload_visual_index,
+    visual_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -697,9 +699,8 @@ class ProcessSplitFilesWorkflow(Workflow):
                 workspace_id=state.workspace_id,
                 job_id=state.extract_job_id or state.file_hash,
             )
+            _persist_visual_metadata(data.metadata, visual_index, visual_record)
             if visual_record:
-                data.metadata[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
-                data.metadata[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
@@ -1203,10 +1204,25 @@ def _reuse_parse_maps(
     return pages, layouts, dict(event.reuse_parse_job_ids or {})
 
 
+def _persist_visual_metadata(
+    meta: dict[str, Any],
+    visual_index: Mapping[str, Any],
+    visual_record: dict[str, str] | None,
+) -> None:
+    meta[VISUAL_SUMMARY_KEY] = visual_summary(visual_index)
+    if not visual_record:
+        return
+    meta[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
+    meta[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
+
+
 async def _detect_visual_for_state(
     state: SplitFilesState,
     ctx: Context[SplitFilesState],
 ) -> dict[str, Any]:
+    async def on_log(message: str) -> None:
+        ctx.write_event_to_stream(Status(level="info", message=message))
+
     ctx.write_event_to_stream(
         Status(
             level="info",
@@ -1220,6 +1236,7 @@ async def _detect_visual_for_state(
             page_parts=coerce_page_parts(state.page_parts),
             page_markdown=coerce_page_markdown(state.page_markdown),
             omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
+            on_log=on_log,
         )
     except Exception:
         logger.exception("Visual ink detection failed for %s", state.filename)
@@ -1232,11 +1249,14 @@ async def _detect_visual_for_state(
         return empty_visual_index(status="error", error="visual_detection_failed")
     mark_count = len((index or {}).get("marks") or [])
     page_count = len((index or {}).get("pages") or [])
+    failed_count = len((index or {}).get("failures") or [])
     ctx.write_event_to_stream(
         Status(
             level="info",
             message=(
-                f"Stored {mark_count} visual mark(s) from {page_count} formality page(s)"
+                f"Stored {mark_count} visual mark(s) from {page_count} "
+                f"formality page(s)"
+                + (f", {failed_count} failed" if failed_count else "")
             ),
         )
     )
@@ -1334,9 +1354,8 @@ async def _complete_index_only(
         workspace_id=state.workspace_id,
         job_id=state.file_hash,
     )
+    _persist_visual_metadata(meta, visual_index, visual_record)
     if visual_record:
-        meta[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
-        meta[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
         ctx.write_event_to_stream(
             Status(
                 level="info",

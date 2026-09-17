@@ -71,6 +71,7 @@ _VISUAL_INDEX_EXAMPLE = {
     "error": None,
     "pages": [20],
     "targets": [{"page": 20, "document_types": ["Main Petition"]}],
+    "failures": [],
     "marks": [
         {
             "page": 20,
@@ -125,6 +126,7 @@ class VisualPageTarget(BaseModel):
         ),
     )
     file_url: str | None = None
+    file_id: str | None = None
     markdown: str = ""
 
 
@@ -142,6 +144,12 @@ class VisualIndex(BaseModel):
         description=(
             "Inventory of pages sent. Missing D093 types are omitted, "
             "never listed as null."
+        ),
+    )
+    failures: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-page load/render/vision errors. Absent when every page succeeded."
         ),
     )
     marks: list[VisualMark] = Field(default_factory=list)
@@ -173,5 +181,6 @@ def empty_visual_index(
         "error": error,
         "pages": [],
         "targets": [],
+        "failures": [],
         "marks": [],
     }

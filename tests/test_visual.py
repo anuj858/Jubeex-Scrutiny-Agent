@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from extraction_review.document_parts import MAIN_PETITION_PART
+from extraction_review.llm import LLMError
 from extraction_review.scrutiny.rules import Defect
 from extraction_review.scrutiny.schema import (
     Coverage,
@@ -16,7 +19,11 @@ from extraction_review.visual.attach import (
     attach_visual_localizations,
     visual_needs_for_defect,
 )
-from extraction_review.visual.detect import parse_vision_elements, safe_normalized_bbox
+from extraction_review.visual.detect import (
+    detect_visual_marks,
+    parse_vision_elements,
+    safe_normalized_bbox,
+)
 from extraction_review.visual.pages import (
     global_page_sources,
     select_formality_pages,
@@ -24,16 +31,25 @@ from extraction_review.visual.pages import (
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
 from extraction_review.visual.schema import empty_visual_index
-from extraction_review.visual.store import coerce_visual_index, dump_visual_index
+from extraction_review.visual.store import (
+    coerce_visual_index,
+    dump_visual_index,
+    visual_summary,
+)
 
 
 def _part(
-    slot_id: str, names: list[str], *, file_url: str | None = None
+    slot_id: str,
+    names: list[str],
+    *,
+    file_url: str | None = None,
+    file_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         slot_id=slot_id,
         document_parts=tuple(names),
         file_url=file_url,
+        file_id=file_id,
     )
 
 
@@ -737,13 +753,31 @@ def test_visual_index_error_is_structured() -> None:
     assert skipped["schema"] == "visual_index_v1"
     assert skipped["status"] == "skipped"
     assert skipped["marks"] == []
+    assert skipped["failures"] == []
     dumped = dump_visual_index(
-        {"status": "error", "error": "vision_failed", "marks": []}
+        {
+            "status": "error",
+            "error": "missing_pdf",
+            "marks": [],
+            "failures": [
+                {
+                    "page": 1,
+                    "slot_id": "petition",
+                    "document_types": [MAIN_PETITION_PART],
+                    "reason": "missing_pdf",
+                    "detail": "slot has no file_url or file_id",
+                }
+            ],
+        }
     )
     coerced = coerce_visual_index(dumped)
     assert coerced["status"] == "error"
-    assert coerced["error"] == "vision_failed"
+    assert coerced["error"] == "missing_pdf"
     assert coerced["marks"] == []
+    assert coerced["failures"][0]["reason"] == "missing_pdf"
+    summary = visual_summary(coerced)
+    assert summary["target_count"] == 0
+    assert summary["failures"][0]["reason"] == "missing_pdf"
     missing = empty_visual_index(status="missing")
     assert missing["status"] == "skipped"
 
@@ -754,3 +788,160 @@ def test_missing_listing_proforma_omitted_from_targets() -> None:
     names = [name for target in targets for name in target.document_types]
     assert "Listing Proforma" not in names
     assert MAIN_PETITION_PART in names
+
+
+def test_formality_targets_carry_file_id() -> None:
+    parts = [_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")]
+    targets = select_formality_pages(global_page_sources(parts, {"petition": {1: "p"}}))
+    assert targets[0].file_id == "dfl-petition-1"
+    assert targets[0].file_url is None
+
+
+def _one_page_pdf() -> bytes:
+    import pymupdf
+
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Formality page")
+    pdf_bytes = document.tobytes()
+    document.close()
+    return pdf_bytes
+
+
+def _enable_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+
+    async def fake_analyze(**_kwargs):
+        return [], None
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._analyze_with_fallback",
+        fake_analyze,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detect_missing_pdf_records_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    logs: list[str] = []
+    parts = [_part("petition", [MAIN_PETITION_PART])]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        on_log=logs.append,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "missing_pdf"
+    assert index["marks"] == []
+    assert index["failures"][0]["reason"] == "missing_pdf"
+    assert index["targets"][0]["page"] == 1
+    assert any("file_id=no" in line for line in logs)
+    assert any("missing_pdf" in line for line in logs)
+
+
+@pytest.mark.asyncio
+async def test_detect_uses_file_id_when_url_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    pdf_bytes = _one_page_pdf()
+    calls: list[str] = []
+
+    async def fake_download(file_id: str) -> bytes:
+        calls.append(file_id)
+        return pdf_bytes
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._default_download_file_id",
+        fake_download,
+    )
+    parts = [_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+    )
+    assert calls == ["dfl-petition-1"]
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    assert index["failures"] == []
+    assert index["targets"][0]["document_types"] == [MAIN_PETITION_PART]
+
+
+@pytest.mark.asyncio
+async def test_detect_mixed_success_keeps_status_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    pdf_bytes = _one_page_pdf()
+    calls: list[str] = []
+
+    async def fake_download(file_id: str) -> bytes:
+        calls.append(file_id)
+        return pdf_bytes
+
+    parts = [
+        _part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1"),
+        _part("affidavit", ["Affidavit"]),
+    ]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+    assert calls == ["dfl-petition-1"]
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    reasons = {item["reason"] for item in index["failures"]}
+    assert reasons == {"missing_pdf"}
+    assert len(index["failures"]) == 1
+    assert index["failures"][0]["slot_id"] == "affidavit"
+    assert len(index["targets"]) == 2
+    summary = visual_summary(index)
+    assert summary["status"] == "ok"
+    assert summary["target_count"] == 2
+    assert summary["failures"][0]["reason"] == "missing_pdf"
+
+
+@pytest.mark.asyncio
+async def test_detect_api_error_is_vision_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_fallback_model",
+        lambda: None,
+    )
+
+    async def boom(**_kwargs):
+        raise LLMError("401 unauthorized")
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.analyze_page_image",
+        boom,
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "vision_failed"
+    assert index["marks"] == []
+    assert index["failures"][0]["reason"] == "vision_failed"
+    assert "401" in (index["failures"][0]["detail"] or "")

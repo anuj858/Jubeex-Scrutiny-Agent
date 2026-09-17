@@ -27,6 +27,36 @@ logger = logging.getLogger(__name__)
 
 VISUAL_ARTIFACT_URL_KEY = "visual_artifact_url"
 VISUAL_ARTIFACT_KEY_KEY = "visual_artifact_key"
+VISUAL_SUMMARY_KEY = "visual_summary"
+
+
+def _coerce_failures(raw: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in raw or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            continue
+        types = [
+            str(name).strip()
+            for name in (item.get("document_types") or [])
+            if str(name).strip()
+        ]
+        reason = str(item.get("reason") or "").strip() or "vision_failed"
+        detail = item.get("detail")
+        slot_id = str(item.get("slot_id") or "").strip() or None
+        rows.append(
+            {
+                "page": page,
+                "slot_id": slot_id,
+                "document_types": types,
+                "reason": reason,
+                "detail": (str(detail).strip()[:300] if detail else None) or None,
+            }
+        )
+    return rows
 
 
 def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -36,6 +66,7 @@ def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     blob.setdefault("error", None)
     blob.setdefault("pages", [])
     blob.setdefault("targets", [])
+    blob.setdefault("failures", [])
     blob.setdefault("marks", [])
     blob["status"] = coerce_visual_status(str(blob.get("status") or "ok"))
     return blob
@@ -74,7 +105,21 @@ def coerce_visual_index(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     blob["marks"] = marks
     blob["pages"] = pages
     blob["targets"] = targets
+    blob["failures"] = _coerce_failures(blob.get("failures"))
     return blob
+
+
+def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Compact Agent Data metadata so the UI can explain vision without fetching S3."""
+    coerced = coerce_visual_index(payload)
+    return {
+        "status": coerced.get("status"),
+        "error": coerced.get("error"),
+        "mark_count": len(coerced.get("marks") or []),
+        "target_count": len(coerced.get("targets") or []),
+        "failures": list(coerced.get("failures") or []),
+        "targets": list(coerced.get("targets") or []),
+    }
 
 
 def upload_visual_index(

@@ -113,6 +113,113 @@ export function visualArtifactUrl(source: unknown): string | undefined {
   return readS3Artifacts(source).find((item) => item.id === "visual")?.url;
 }
 
+export type VisualFailure = {
+  page: number;
+  slot_id?: string | null;
+  document_types: string[];
+  reason: string;
+  detail?: string | null;
+};
+
+export type VisualTargetRow = {
+  page: number;
+  document_types: string[];
+};
+
+export type VisualSummary = {
+  status?: string | null;
+  error?: string | null;
+  mark_count: number;
+  target_count: number;
+  failures: VisualFailure[];
+  targets: VisualTargetRow[];
+};
+
+function asFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function parseVisualTargets(raw: unknown): VisualTargetRow[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const rows: VisualTargetRow[] = [];
+  for (const item of raw) {
+    const record = asRecord(item);
+    if (!record) {
+      continue;
+    }
+    const page = asFiniteNumber(record.page);
+    if (page == null) {
+      continue;
+    }
+    const documentTypes = Array.isArray(record.document_types)
+      ? record.document_types
+          .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+          .map((name) => name.trim())
+      : [];
+    rows.push({ page, document_types: documentTypes });
+  }
+  return rows;
+}
+
+function parseVisualFailures(raw: unknown): VisualFailure[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const rows: VisualFailure[] = [];
+  for (const item of raw) {
+    const record = asRecord(item);
+    if (!record) {
+      continue;
+    }
+    const page = asFiniteNumber(record.page);
+    const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+    if (page == null || !reason) {
+      continue;
+    }
+    const documentTypes = Array.isArray(record.document_types)
+      ? record.document_types
+          .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+          .map((name) => name.trim())
+      : [];
+    rows.push({
+      page,
+      slot_id: typeof record.slot_id === "string" ? record.slot_id : null,
+      document_types: documentTypes,
+      reason,
+      detail: typeof record.detail === "string" ? record.detail : null,
+    });
+  }
+  return rows;
+}
+
+export function readVisualSummary(source: unknown): VisualSummary | null {
+  const metadata = readItemMetadata(source);
+  const raw = asRecord(metadata?.visual_summary);
+  if (!raw) {
+    return null;
+  }
+  const markCount = asFiniteNumber(raw.mark_count) ?? 0;
+  const targetCount = asFiniteNumber(raw.target_count);
+  const targets = parseVisualTargets(raw.targets);
+  return {
+    status: typeof raw.status === "string" ? raw.status : null,
+    error: typeof raw.error === "string" ? raw.error : null,
+    mark_count: markCount,
+    target_count: targetCount ?? targets.length,
+    failures: parseVisualFailures(raw.failures),
+    targets,
+  };
+}
+
 export function readJobTiming(source: unknown): JobTiming | null {
   const record = asRecord(source);
   if (!record) {
