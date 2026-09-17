@@ -133,20 +133,25 @@ PETITION_SPLIT_JOB_TYPES = frozenset({"split_petition"})
 VERIFY_JOB_TYPES = frozenset({"verify_document"})
 EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
-FULL_JOB_TYPES = frozenset(
-    {
-        "full",
-        "compiled",
-        "bundle",
-        "upload_compiled",
-        "upload_combined",
-        "upload_full",
-        "upload_bundle",
-    }
-) | PETITION_SPLIT_JOB_TYPES
-SPLIT_JOB_TYPES = frozenset(
-    {"split", "parts", "upload_separate", "upload_split"}
-) | EXTRACT_ONLY_JOB_TYPES | INDEX_JOB_TYPES
+FULL_JOB_TYPES = (
+    frozenset(
+        {
+            "full",
+            "compiled",
+            "bundle",
+            "upload_compiled",
+            "upload_combined",
+            "upload_full",
+            "upload_bundle",
+        }
+    )
+    | PETITION_SPLIT_JOB_TYPES
+)
+SPLIT_JOB_TYPES = (
+    frozenset({"split", "parts", "upload_separate", "upload_split"})
+    | EXTRACT_ONLY_JOB_TYPES
+    | INDEX_JOB_TYPES
+)
 CATALOG_JOB_TYPES = [
     "upload_compiled",
     "upload_separate",
@@ -355,7 +360,12 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
     if alias in known:
         return alias
     dynamic = dynamic_upload_slot(underscored) or dynamic_upload_slot(key)
-    if dynamic and (not known or "annexures" in known or "applications" in known or dynamic.id in known):
+    if dynamic and (
+        not known
+        or "annexures" in known
+        or "applications" in known
+        or dynamic.id in known
+    ):
         return dynamic.id
     from_name = slot_id_from_name(key, filing_type)
     if from_name in known or (from_name and dynamic_upload_slot(from_name)):
@@ -415,9 +425,7 @@ def resolve_compiled_filing_type(
         except SplitUploadError:
             pass
     try:
-        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(
-            DEFAULT_COMPILED_FILING_TYPE
-        )
+        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(DEFAULT_COMPILED_FILING_TYPE)
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
     raise SplitUploadError(
@@ -858,8 +866,31 @@ async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
     )
 
 
+# Official Split API: splitting_strategy.custom_instructions max 5000 chars.
+# https://developers.llamaindex.ai/llamaparse/split/getting_started/
+_SPLIT_CUSTOM_INSTRUCTIONS_MAX = 5000
+
+
+def _split_strategy_payload(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        dumped = raw.model_dump(exclude_none=True)
+    elif isinstance(raw, dict):
+        dumped = {key: value for key, value in raw.items() if value is not None}
+    else:
+        return None
+    instructions = dumped.get("custom_instructions")
+    if (
+        isinstance(instructions, str)
+        and len(instructions) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX
+    ):
+        dumped["custom_instructions"] = instructions[:_SPLIT_CUSTOM_INSTRUCTIONS_MAX]
+    return dumped or None
+
+
 def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
-    """LlamaSplit accepts only category name + description."""
+    """LlamaSplit categories plus splitting_strategy (custom_instructions ≤ 5000)."""
     dumped = dump_api_configuration(split_config)
     dumped["categories"] = [
         {
@@ -869,6 +900,14 @@ def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
         for item in dumped.get("categories") or []
         if isinstance(item, dict) and item.get("name")
     ]
+    strategy = _split_strategy_payload(
+        dumped.get("splitting_strategy")
+        or getattr(split_config, "splitting_strategy", None)
+    )
+    if strategy:
+        dumped["splitting_strategy"] = strategy
+    else:
+        dumped.pop("splitting_strategy", None)
     return dumped
 
 
@@ -967,9 +1006,10 @@ def prefixed_slot_filename(slot_filename: str, bundle_name: str | None) -> str:
     bundle = uploaded_filename(bundle_name)
     if not bundle:
         return slot
-    stem = re.sub(
-        r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem
-    ).strip("._") or "filing"
+    stem = (
+        re.sub(r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem).strip("._")
+        or "filing"
+    )
     slot_stem = PurePosixPath(slot).stem
     lowered = slot_stem.lower()
     prefix = stem.lower()
@@ -1223,9 +1263,7 @@ async def _run_verify_from_file_event(
     ctx.write_event_to_stream(
         Status(
             level="info",
-            message=(
-                f"Verified {len(documents)} document(s); overall match={overall}"
-            ),
+            message=(f"Verified {len(documents)} document(s); overall match={overall}"),
         )
     )
     return BundlePrepared(
@@ -1895,9 +1933,7 @@ class ProcessFileWorkflow(Workflow):
                 f"parse and extract ({len(slices)} document part(s))"
             )
         else:
-            ready_message = (
-                f"Split JSON ready ({len(slices)} document part(s))"
-            )
+            ready_message = f"Split JSON ready ({len(slices)} document part(s))"
         ctx.write_event_to_stream(
             Status(
                 level="info",

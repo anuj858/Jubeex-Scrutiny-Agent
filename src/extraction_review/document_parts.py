@@ -207,7 +207,9 @@ _LANDMARK_STOP = re.compile(
     r"|[.;]",
     re.IGNORECASE,
 )
-_PLACEMENT_PAREN = re.compile(r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I)
+_PLACEMENT_PAREN = re.compile(
+    r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I
+)
 
 # Keep a page chunk only if ln(best_score / this_score) is below this.
 # 0.36 ≈ keep scores at least ~70% of the best hit; farther neighbours are dropped.
@@ -253,9 +255,11 @@ def split_part_names() -> tuple[str, ...]:
 
 
 def _fold(text: str) -> str:
-    return re.sub(
-        r"\s+", " ", (text or "").replace("\u2019", "'").replace("\u2018", "'")
-    ).strip().lower()
+    return (
+        re.sub(r"\s+", " ", (text or "").replace("\u2019", "'").replace("\u2018", "'"))
+        .strip()
+        .lower()
+    )
 
 
 def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
@@ -283,7 +287,9 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
 def normalize_part_name(name: str | None) -> str:
     if not name:
         return ""
-    text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
+    text = re.sub(
+        r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")
+    ).strip()
     folded = _fold(text)
     if folded in _LEGACY_PART_NAMES:
         return _LEGACY_PART_NAMES[folded]
@@ -362,17 +368,12 @@ def _format_page_span(pages: list[int]) -> str:
     return format_page_span(pages)
 
 
-# Later pages labelled the same part after this many skipped pages are a
-# mis-tag (second Index, second Cover), not a continuation.
-_FIRST_PART_GAP = 20
-
-
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
-    """Keep the first occurrence of each Split part, including nearby pages.
+    """Keep the longest contiguous run of each Split part (tie: first run).
 
-    Index at 5–7 is kept; Index at 55–57 is dropped (that page is something
-    else). A mixed page can still keep its other label. Main Petition at 17 then
-    25–35 is kept (other documents sit in between).
+    Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 25–36 is
+    kept; a later Main Petition island is dropped. Numbered annexures keep every
+    page so a Cover Page sitting between P-3 leaves does not drop the rest.
     """
     pages_by_part: dict[str, list[int]] = {}
     for page, names in page_parts.items():
@@ -381,11 +382,15 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
 
     keep: set[tuple[int, str]] = set()
     for part, pages in pages_by_part.items():
-        last_kept: int | None = None
-        for page in sorted(set(pages)):
-            if last_kept is None or page - last_kept <= _FIRST_PART_GAP:
-                keep.add((page, part))
-                last_kept = page
+        unique = sorted(set(pages))
+        if family_split_name(part) == ANNEXURE_FAMILY:
+            keep.update((page, part) for page in unique)
+            continue
+        groups = _contiguous_groups(unique)
+        if not groups:
+            continue
+        start, end = max(groups, key=lambda group: (group[1] - group[0] + 1, -group[0]))
+        keep.update((page, part) for page in unique if start <= page <= end)
 
     collapsed: PagePartMap = {}
     for page, names in page_parts.items():
@@ -451,14 +456,14 @@ def _collapse_combined_document_parts(
     return merged_order, merged_pages
 
 
-def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
+def documents_from_page_parts(
+    page_parts: PagePartMap | dict[int, str],
+) -> dict[str, Any]:
     """Build a count/items list of Split parts with page spans."""
     order, pages_by_part = _collapse_combined_document_parts(
         *_pages_by_part(page_parts)
     )
-    items = [
-        f"{name} ({_format_page_span(pages_by_part[name])})" for name in order
-    ]
+    items = [f"{name} ({_format_page_span(pages_by_part[name])})" for name in order]
     return {"count": len(items), "items": items}
 
 
@@ -518,12 +523,24 @@ ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
 
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
-    r"\s*[-/:]?\s*(\d{1,3})\b"
+    r"(?:annexure|annx\.?)\s*[-–—:]?\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
+    r"\s*[-–—/:]?\s*(\d{1,3})\b"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?[PR][-\s]?(\d{1,3})\b",
     re.IGNORECASE,
 )
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+_AFFIDAVIT_HEADING_RE = re.compile(
+    r"(?m)^(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)\b",
+    re.IGNORECASE,
+)
+_CERTIFICATE_HEADING_RE = re.compile(
+    r"(?m)^(?:C\s+E\s+R\s+T\s+I\s+F\s+I\s+C\s+A\s+T\s+E|CERTIFICATE)\b",
+    re.IGNORECASE,
+)
+_PROTECTED_HEADING_PARTS = frozenset(
+    {"Cover Page", "Index", "AOR's Certificate", "Affidavit"}
+)
+_RECLASSIFY_FAMILIES = frozenset({MAIN_PETITION_PART, APPLICATION_FAMILY})
 
 
 def family_split_name(name: str) -> str:
@@ -579,6 +596,97 @@ def page_starts_application(text: str) -> bool:
     )
 
 
+def _heading_window(text: str, lines: int = 12) -> str:
+    return "\n".join((text or "").splitlines()[:lines])[:1200]
+
+
+def _is_sci_application_start(text: str) -> bool:
+    head = _heading_window(text)
+    return bool(
+        _APPLICATION_CAUSE_RE.search(head) and re.search(r"(?m)^APPLICATION\b", head)
+    )
+
+
+def _is_strong_document_start(text: str) -> bool:
+    head = _heading_window(text)
+    return bool(
+        _is_sci_application_start(text)
+        or _AFFIDAVIT_HEADING_RE.search(head)
+        or _CERTIFICATE_HEADING_RE.search(head)
+    )
+
+
+def _page_has_protected_part(names: Sequence[str] | None) -> bool:
+    return any(name in _PROTECTED_HEADING_PARTS for name in parts_on_page(names))
+
+
+def _stealable_family(names: Sequence[str] | None) -> str | None:
+    for name in parts_on_page(names):
+        family = family_split_name(name)
+        if family in _RECLASSIFY_FAMILIES:
+            return family
+    return None
+
+
+def _replace_stealable_with_annexure(names: list[str], label: str) -> list[str]:
+    replaced: list[str] = []
+    for name in names:
+        if family_split_name(name) in _RECLASSIFY_FAMILIES:
+            if label not in replaced:
+                replaced.append(label)
+            continue
+        if name not in replaced:
+            replaced.append(name)
+    if label not in replaced:
+        replaced.append(label)
+    return replaced
+
+
+def reclassify_pages_from_headings(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Force Annexure P-n when a Main Petition/Application page prints that banner.
+
+    Extends forward only through the same wrong family, consecutive pages, until
+    the next annexure heading or an SCI Application / Affidavit / Certificate
+    start. A later Main Petition block with no banner is left alone.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    if not updated:
+        return updated
+    last_page = max(updated)
+    page = min(updated)
+    while page <= last_page:
+        names = updated.get(page)
+        if not names or _page_has_protected_part(names):
+            page += 1
+            continue
+        wrong_family = _stealable_family(names)
+        mark = annexure_mark_in_heading(page_text.get(page, ""))
+        if not wrong_family or not mark:
+            page += 1
+            continue
+        label = f"Annexure P-{mark}"
+        updated[page] = _replace_stealable_with_annexure(updated[page], label)
+        cursor = page + 1
+        while cursor in updated:
+            nxt_names = updated[cursor]
+            nxt_text = page_text.get(cursor, "")
+            if _page_has_protected_part(nxt_names):
+                break
+            if annexure_mark_in_heading(nxt_text):
+                break
+            if _is_strong_document_start(nxt_text):
+                break
+            if _stealable_family(nxt_names) != wrong_family:
+                break
+            updated[cursor] = _replace_stealable_with_annexure(nxt_names, label)
+            cursor += 1
+        page = cursor if cursor > page else page + 1
+    return updated
+
+
 def _replace_family_label(names: list[str], family: str, label: str) -> list[str]:
     replaced = [label if family_split_name(name) == family else name for name in names]
     if label not in replaced:
@@ -629,7 +737,9 @@ def _annexure_printed_labels(
     annexure_pages = sorted(
         page
         for page, names in page_parts.items()
-        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+        if any(
+            family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names)
+        )
     )
     if not annexure_pages:
         return None
@@ -739,14 +849,17 @@ def explode_repeating_split_parts(
 ) -> PagePartMap:
     """Split a merged Annexures/Application run into P-n / Application n.
 
-    Annexure numbers come from printed P-n marks: consecutive marks keep body
+    Printed ANNEXURE-Pn banners retag Main Petition/Application pages first.
+    Annexure numbers then come from those marks: consecutive marks keep body
     pages with the earlier annexure; a skipped mark fills the gap as the
     missing P-n, including unlabeled pages between the first and last
     annexure page. Applications stay sequential at each new cause title.
+    Each non-annexure type keeps only its longest contiguous page run.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     texts = page_text or {}
     if texts:
+        updated = reclassify_pages_from_headings(updated, texts)
         annexure_labels = _annexure_printed_labels(updated, texts)
         if annexure_labels:
             for page, label in annexure_labels.items():
@@ -771,7 +884,7 @@ def explode_repeating_split_parts(
                 updated[page] = _replace_family_label(
                     updated.get(page, []), APPLICATION_FAMILY, label
                 )
-    return updated
+    return collapse_repeated_split_pages(updated)
 
 
 def page_parts_from_split(job: Any) -> PagePartMap:
@@ -810,9 +923,8 @@ def page_parts_from_split(job: Any) -> PagePartMap:
             annexure_groups.append(numbers)
         if any(family_split_name(part) == APPLICATION_FAMILY for part in parts):
             application_groups.append(numbers)
-    collapsed = collapse_repeated_split_pages(mapping)
     numbered = _apply_segment_numbers(
-        collapsed, annexure_groups, ANNEXURE_FAMILY, "Annexure P-{}"
+        mapping, annexure_groups, ANNEXURE_FAMILY, "Annexure P-{}"
     )
     return _apply_segment_numbers(
         numbered, application_groups, APPLICATION_FAMILY, "Application {}"
@@ -954,9 +1066,7 @@ _PRESENCE_QUERY_HINTS: tuple[tuple[str, str], ...] = (
 
 def _presence_queries_for_defect(defect: Defect) -> list[str]:
     """Extra Pinecone queries so stamps, seals and layout marks are retrieved."""
-    blob = " ".join(
-        [defect.defect, defect.requirement, *defect.where_to_look]
-    ).lower()
+    blob = " ".join([defect.defect, defect.requirement, *defect.where_to_look]).lower()
     queries: list[str] = []
     for needle, query in _PRESENCE_QUERY_HINTS:
         if re.search(rf"\b{re.escape(needle)}\b", blob):
@@ -975,9 +1085,7 @@ def pinecone_queries_for_defect(defect: Defect) -> list[str]:
     queries.extend(_presence_queries_for_defect(defect))
     if defect.trigger_words:
         queries.extend(
-            p.strip()
-            for p in re.split(r"[;|]", defect.trigger_words)
-            if p.strip()
+            p.strip() for p in re.split(r"[;|]", defect.trigger_words) if p.strip()
         )
     for step in defect.where_to_look:
         heading = _heading_from_where_to_look(step)
@@ -1066,9 +1174,7 @@ def chunks_cover_part(chunks: list[dict[str, Any]], part: str) -> bool:
     return any(_part_match(c, [part]) for c in pages)
 
 
-def missing_required_parts(
-    defect: Defect, chunks: list[dict[str, Any]]
-) -> list[str]:
+def missing_required_parts(defect: Defect, chunks: list[dict[str, Any]]) -> list[str]:
     return [
         part
         for part in required_parts_for_defect(defect)
@@ -1106,9 +1212,7 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     must open several documents get PAGES_PER_TARGET_PART each so a
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
-    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
@@ -1258,9 +1362,7 @@ def select_chunks_for_defect(
             for c in pages
             if not (
                 parts_on_page(c.get("document_part"))
-                and {
-                    name.lower() for name in parts_on_page(c.get("document_part"))
-                }
+                and {name.lower() for name in parts_on_page(c.get("document_part"))}
                 <= excluded
             )
         ]
@@ -1274,9 +1376,7 @@ def select_chunks_for_defect(
 
     ranked = sorted(pages, key=rank_key, reverse=True)
     focused = [
-        c
-        for c in ranked
-        if _part_match(c, preferred) or _term_hits(c, terms) > 0
+        c for c in ranked if _part_match(c, preferred) or _term_hits(c, terms) > 0
     ]
     candidates = focused if focused else ranked
     if not candidates:

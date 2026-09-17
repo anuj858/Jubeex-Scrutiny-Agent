@@ -16,6 +16,7 @@ from pypdf import PdfReader, PdfWriter
 from .document_parts import (
     ANNEXURE_FAMILY,
     APPLICATION_FAMILY,
+    MAIN_PETITION_PART,
     explode_repeating_split_parts,
     family_split_name,
     format_page_span,
@@ -46,9 +47,7 @@ def _labels_match_slot(labels: Sequence[str], slot: UploadSlot) -> bool:
     return any(name in slot_parts for name in labels)
 
 
-def _slot_ids_for_labels(
-    labels: Sequence[str], catalog: UploadTypeCatalog
-) -> set[str]:
+def _slot_ids_for_labels(labels: Sequence[str], catalog: UploadTypeCatalog) -> set[str]:
     ids: set[str] = set()
     for slot in catalog.slots:
         if slot.id == UNDEFINED_SLOT_ID:
@@ -120,7 +119,9 @@ def leftover_pages(
                 assigned.add(int(page))
             except (TypeError, ValueError):
                 continue
-    return [number for number in range(1, int(page_count) + 1) if number not in assigned]
+    return [
+        number for number in range(1, int(page_count) + 1) if number not in assigned
+    ]
 
 
 def _promote_repeatable_catchall(
@@ -138,8 +139,7 @@ def _promote_repeatable_catchall(
     ):
         promoted["annexure_p1"] = promoted.pop("annexures")
     has_numbered_apps = any(
-        key.startswith("application_") and key != "applications"
-        for key in promoted
+        key.startswith("application_") and key != "applications" for key in promoted
     )
     if "applications" in promoted and not has_numbered_apps:
         promoted["application_1"] = promoted.pop("applications")
@@ -175,12 +175,12 @@ def extract_pdf_pages(
 def _pages_needing_family_text(
     normalized: Mapping[int, Sequence[str]],
 ) -> list[int]:
-    """Only annexure/application pages need OCR text to explode P-n / Application n."""
-    families = {ANNEXURE_FAMILY, APPLICATION_FAMILY}
+    """Annexure, application, Main Petition, and unlabeled pages need heading OCR."""
+    families = {ANNEXURE_FAMILY, APPLICATION_FAMILY, MAIN_PETITION_PART}
     return [
         page
         for page, names in normalized.items()
-        if any(family_split_name(name) in families for name in names)
+        if not names or any(family_split_name(name) in families for name in names)
     ]
 
 
