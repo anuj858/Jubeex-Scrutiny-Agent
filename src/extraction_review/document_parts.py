@@ -441,6 +441,20 @@ _ANNEXURE_HEADING_RE = re.compile(
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?[PR][-\s]?(\d{1,3})\b",
     re.IGNORECASE,
 )
+# Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
+_ANNEXURE_TITLE_LINE_RE = re.compile(
+    r"^(?:\d{1,4}\s+)?"
+    r"(?:"
+    r"(?:annexure|annx\.?)\s*[-–—:]?\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
+    r"\s*[-–—/:]?\s*(\d{1,3})"
+    r"|[PR][-\s]?(\d{1,3})"
+    r")\b",
+    re.IGNORECASE,
+)
+_INDEX_ROW_ANNEXURE_RE = re.compile(
+    r"^\d{1,3}[.\)]\s*(?:annexure|annx\.?)\b",
+    re.IGNORECASE,
+)
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
 _AFFIDAVIT_HEADING_RE = re.compile(
     r"(?m)^(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)\b",
@@ -493,9 +507,8 @@ def numbered_part_slot_id(name: str) -> str | None:
     return None
 
 
-def annexure_mark_in_heading(text: str) -> int | None:
-    head = "\n".join((text or "").splitlines()[:15])[:1200]
-    match = _ANNEXURE_HEADING_RE.search(head)
+def _annexure_mark_in_window(text: str) -> int | None:
+    match = _ANNEXURE_HEADING_RE.search(text or "")
     if not match:
         return None
     number = int(match.group(1) or match.group(2) or 0)
@@ -504,7 +517,63 @@ def annexure_mark_in_heading(text: str) -> int | None:
     return None
 
 
+def _annexure_mark_from_title_or_stamp(text: str) -> int | None:
+    """P-n from a title line near the top or a short foot stamp line."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return None
+    if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
+        return None
+
+    def _number_from_title_line(line: str) -> int | None:
+        if _INDEX_ROW_ANNEXURE_RE.match(line):
+            return None
+        match = _ANNEXURE_TITLE_LINE_RE.match(line)
+        if not match:
+            return None
+        number = int(match.group(1) or match.group(2) or 0)
+        if not (1 <= number <= MAX_NUMBERED_PART):
+            return None
+        # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
+        remainder = line[match.end() :].strip(" .;:-")
+        if remainder and not remainder.isdigit():
+            return None
+        return number
+
+    for line in lines[:6]:
+        number = _number_from_title_line(line)
+        if number is not None:
+            return number
+    for line in lines[-10:]:
+        if len(line) > 40:
+            continue
+        number = _number_from_title_line(line)
+        if number is not None:
+            return number
+    return None
+
+
+def annexure_mark_in_heading(text: str) -> int | None:
+    """Return printed P-n from a page title or annexure stamp.
+
+    Scanned paper-books often put ``ANNEXURE-P/n`` near the foot, after the
+    body OCR, so the first-lines window alone misses real exhibit starts.
+    Index table rows like ``15. ANNEXURE-P/4`` are ignored.
+    """
+    folded_head = _fold(_heading_window(text, lines=6))
+    if (
+        _looks_like_index_table(text)
+        or _looks_like_sci_interlocutory(text)
+        or "list of dates" in folded_head
+        or folded_head.startswith("synopsis")
+    ):
+        return None
+    return _annexure_mark_from_title_or_stamp(text)
+
+
 def page_starts_application(text: str) -> bool:
+    if _is_sci_application_start(text):
+        return True
     head = "\n".join((text or "").splitlines()[:12])[:1200]
     if re.search(
         r"(?m)^(?:A\s+P\s+P\s+L\s+I\s+C\s+A\s+T\s+I\s+O\s+N|APPLICATION)\b",
@@ -521,9 +590,13 @@ def _heading_window(text: str, lines: int = 12) -> str:
 
 
 def _is_sci_application_start(text: str) -> bool:
-    head = _heading_window(text)
+    head = _fold(_heading_window(text, lines=14))
+    if "in the supreme court of india" not in head:
+        return False
     return bool(
-        _APPLICATION_CAUSE_RE.search(head) and re.search(r"(?m)^APPLICATION\b", head)
+        re.search(r"(?m)^application\b", head)
+        or re.search(r"\bi\.?\s*a\.?\b", head)
+        or "interlocutory application" in head
     )
 
 
@@ -533,6 +606,8 @@ def _is_strong_document_start(text: str) -> bool:
         _is_sci_application_start(text)
         or _AFFIDAVIT_HEADING_RE.search(head)
         or _CERTIFICATE_HEADING_RE.search(head)
+        or re.search(r"(?m)^VAKALAT\s*NAMA\b", head, re.I)
+        or re.search(r"(?m)^MEMO OF PART", head, re.I)
     )
 
 
@@ -548,10 +623,84 @@ def _stealable_family(names: Sequence[str] | None) -> str | None:
     return None
 
 
+_UNCATEGORIZED_LABELS = frozenset(
+    {"uncategorized", "undefined", "unknown", "other", "n/a", "na"}
+)
+_CARRY_BLOCKING_PARTS = frozenset(
+    {
+        "Cover Page",
+        "Index",
+        "Record of Proceedings",
+        "Listing Proforma",
+        "Office Report on Limitation",
+        "Advocate's Checklist",
+    }
+)
+
+
+def _is_real_split_label(name: str) -> bool:
+    folded = _fold(name)
+    return bool(folded) and folded not in _UNCATEGORIZED_LABELS
+
+
+def _looks_like_index_table(text: str) -> bool:
+    head = _fold(text[:900])
+    return "index" in head and (
+        "particulars" in head or "page no" in head or "part i" in head
+    )
+
+
+def _looks_like_sci_interlocutory(text: str) -> bool:
+    """True for this-Court I.A. / application pages that only mention annexures."""
+    if _is_sci_application_start(text):
+        return True
+    blob = _fold(text[:1600])
+    cites_annexure = "annexure" in blob
+    ia_prose = (
+        "true translated copy" in blob
+        or "prima facie case" in blob
+        or "exempt" in blob
+        and "translation" in blob
+        or "balance of convenience" in blob
+    )
+    return cites_annexure and ia_prose
+
+
+def _memo_of_parties_heading(text: str) -> bool:
+    head = _fold(_heading_window(text, lines=8))
+    return "memo of part" in head
+
+
+def _vakalatnama_heading(text: str) -> bool:
+    head = _fold(_heading_window(text, lines=12))
+    compact = re.sub(r"[^a-z]", "", head)
+    return "vakalatnama" in compact
+
+
+def _can_override_with_annexure(names: Sequence[str] | None, text: str) -> bool:
+    """True when a printed Annexure P-n stamp should win over the current label."""
+    parts = parts_on_page(names)
+    if not parts:
+        return True
+    if any(not _is_real_split_label(name) for name in parts):
+        return True
+    if _looks_like_index_table(text):
+        return False
+    if any(name in _CARRY_BLOCKING_PARTS for name in parts):
+        return False
+    if _stealable_family(parts):
+        return True
+    # Checklist exhibits often mislabel body pages as Affidavit.
+    if any(name == "Affidavit" for name in parts):
+        return True
+    return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
+
+
 def _replace_stealable_with_annexure(names: list[str], label: str) -> list[str]:
     replaced: list[str] = []
     for name in names:
-        if family_split_name(name) in _RECLASSIFY_FAMILIES:
+        family = family_split_name(name)
+        if family in _RECLASSIFY_FAMILIES or name == "Affidavit":
             if label not in replaced:
                 replaced.append(label)
             continue
@@ -570,7 +719,8 @@ def reclassify_pages_from_headings(
 
     Extends forward only through the same wrong family, consecutive pages, until
     the next annexure heading or an SCI Application / Affidavit / Certificate
-    start. A later Main Petition block with no banner is left alone.
+    start. A later Main Petition block with no banner is left alone. Affidavit
+    mislabels on stamped annexure pages are also retagged.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     if not updated:
@@ -579,12 +729,19 @@ def reclassify_pages_from_headings(
     page = min(updated)
     while page <= last_page:
         names = updated.get(page)
-        if not names or _page_has_protected_part(names):
+        text = page_text.get(page, "")
+        mark = annexure_mark_in_heading(text)
+        if not names:
+            page += 1
+            continue
+        if _page_has_protected_part(names) and not (
+            mark and _can_override_with_annexure(names, text)
+        ):
             page += 1
             continue
         wrong_family = _stealable_family(names)
-        mark = annexure_mark_in_heading(page_text.get(page, ""))
-        if not wrong_family or not mark:
+        affidavit_only = parts_on_page(names) == ["Affidavit"]
+        if not mark or (not wrong_family and not affidavit_only):
             page += 1
             continue
         label = f"Annexure P-{mark}"
@@ -593,15 +750,28 @@ def reclassify_pages_from_headings(
         while cursor in updated:
             nxt_names = updated[cursor]
             nxt_text = page_text.get(cursor, "")
-            if _page_has_protected_part(nxt_names):
-                break
             if annexure_mark_in_heading(nxt_text):
                 break
             if _is_strong_document_start(nxt_text):
                 break
-            if _stealable_family(nxt_names) != wrong_family:
+            if _page_has_protected_part(nxt_names) and not _can_override_with_annexure(
+                nxt_names, nxt_text
+            ):
                 break
-            updated[cursor] = _replace_stealable_with_annexure(nxt_names, label)
+            nxt_family = _stealable_family(nxt_names)
+            nxt_affidavit = parts_on_page(nxt_names) == ["Affidavit"]
+            if (
+                wrong_family
+                and nxt_family not in {wrong_family, None}
+                and not nxt_affidavit
+            ):
+                break
+            if not wrong_family and not nxt_affidavit and nxt_family:
+                break
+            if nxt_family or nxt_affidavit or _annexure_claimable(nxt_names):
+                updated[cursor] = _replace_stealable_with_annexure(nxt_names, label)
+            else:
+                break
             cursor += 1
         page = cursor if cursor > page else page + 1
     return updated
@@ -867,13 +1037,95 @@ def page_parts_from_split(job: Any) -> PagePartMap:
                 numbers.append(int(page))
             except (TypeError, ValueError):
                 continue
-        parts = parts_on_page(category)
+        parts = [
+            part for part in parts_on_page(category) if _is_real_split_label(part)
+        ]
         for part in parts:
             for page in numbers:
                 current = mapping.setdefault(page, [])
                 if part not in current:
                     current.append(part)
     return mapping
+
+
+def complete_split_page_coverage(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    *,
+    page_count: int,
+) -> PagePartMap:
+    """Fill pages Llama left blank using printed stamps and carry-forward.
+
+    Keeps known non-annexure labels. Retags stamped exhibit pages, including
+    foot-stamped ``ANNEXURE-P/n`` scans, then continues the prior label through
+    unlabeled gaps so a 107-page PDF is not truncated mid-annexure.
+    """
+    if page_count < 1:
+        return {
+            int(page): list(names)
+            for page, names in page_parts.items()
+            if parts_on_page(names)
+        }
+
+    updated: PagePartMap = {}
+    for page, names in page_parts.items():
+        try:
+            number = int(page)
+        except (TypeError, ValueError):
+            continue
+        kept = [name for name in parts_on_page(names) if _is_real_split_label(name)]
+        if kept:
+            updated[number] = kept
+
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        if _looks_like_index_table(text) and page in updated:
+            continue
+        mark = annexure_mark_in_heading(text)
+        if mark and _can_override_with_annexure(updated.get(page), text):
+            updated[page] = [f"Annexure P-{mark}"]
+            continue
+        if page in updated:
+            continue
+        if page_starts_application(text):
+            updated[page] = ["Application 1"]
+            continue
+        if _memo_of_parties_heading(text):
+            updated[page] = ["Memo of Parties"]
+            continue
+        if _vakalatnama_heading(text):
+            updated[page] = ["Vakalatnama"]
+
+    last_label: list[str] | None = None
+    for page in range(1, page_count + 1):
+        names = updated.get(page)
+        if names:
+            last_label = list(names)
+            continue
+        text = page_text.get(page, "")
+        if not last_label:
+            continue
+        if any(name in _CARRY_BLOCKING_PARTS for name in last_label):
+            continue
+        if _is_strong_document_start(text) or _memo_of_parties_heading(text):
+            continue
+        if _looks_like_index_table(text):
+            continue
+        updated[page] = list(last_label)
+
+    # Back-fill short internal gaps from the next labelled page.
+    for page in range(page_count, 0, -1):
+        if page in updated:
+            continue
+        nxt = updated.get(page + 1)
+        if not nxt:
+            continue
+        text = page_text.get(page, "")
+        if _looks_like_index_table(text):
+            continue
+        updated[page] = list(nxt)
+
+    return explode_repeating_split_parts(updated, page_text)
 
 
 def parts_named_in_text(text: str) -> list[str]:

@@ -965,7 +965,7 @@
       },
       {
         "name": "Index",
-        "description": "The paper-book index: a table of PARTICULARS OF DOCUMENT and PAGE NO near the front of the filing, headed INDEX."
+        "description": "The paper-book index: a table of PARTICULARS OF DOCUMENT and PAGE NO near the front of the filing, headed INDEX. Rows that list Annexure P-n stay Index; they are not the annexure body."
       },
       {
         "name": "Office Report on Limitation",
@@ -985,71 +985,71 @@
       },
       {
         "name": "Main Petition",
-        "description": "This Court's main petition body (Form 28): a Special Leave Petition, transfer petition, or writ or arbitration petition in numbered paragraphs with Grounds, questions of law, and Prayer, ending Drawn By, Filed on, and the advocate for the petitioner."
+        "description": "This Court's main petition body (Form 28): a Special Leave Petition, transfer petition, or writ or arbitration petition in numbered paragraphs with Grounds, questions of law, and Prayer, ending Drawn By, Filed on, and the advocate for the petitioner. A High Court writ or petition filed as an exhibit is Annexure P-n, not Main Petition."
       },
       {
         "name": "Affidavit",
-        "description": "A sworn affidavit headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp."
+        "description": "A sworn affidavit whose page is headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp. Do not use when the word affidavit appears only as a checklist item or document list inside an Annexure exhibit."
       },
       {
         "name": "Annexure P-1",
-        "description": "Pages headed ANNEXURE P-1, ANNEXURE-P1, or ANNEXURE P-1 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-1, ANNEXURE-P1, ANNEXURE-P-1, ANNEXURE-P/1, or ANNEXURE P/1. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-1 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-2",
-        "description": "Pages headed ANNEXURE P-2, ANNEXURE-P2, or ANNEXURE P-2 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-2, ANNEXURE-P2, ANNEXURE-P-2, ANNEXURE-P/2, or ANNEXURE P/2. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-2 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-3",
-        "description": "Pages headed ANNEXURE P-3, ANNEXURE-P3, or ANNEXURE P-3 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-3, ANNEXURE-P3, ANNEXURE-P-3, ANNEXURE-P/3, or ANNEXURE P/3. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-3 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-4",
-        "description": "Pages headed ANNEXURE P-4, ANNEXURE-P4, or ANNEXURE P-4 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-4, ANNEXURE-P4, ANNEXURE-P-4, ANNEXURE-P/4, or ANNEXURE P/4. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-4 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-5",
-        "description": "Pages headed ANNEXURE P-5, ANNEXURE-P5, or ANNEXURE P-5 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-5, ANNEXURE-P5, ANNEXURE-P-5, ANNEXURE-P/5, or ANNEXURE P/5. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-5 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-6",
-        "description": "Pages headed ANNEXURE P-6, ANNEXURE-P6, or ANNEXURE P-6 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-6, ANNEXURE-P6, ANNEXURE-P-6, ANNEXURE-P/6, or ANNEXURE P/6. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-6 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-7",
-        "description": "Pages headed ANNEXURE P-7, ANNEXURE-P7, or ANNEXURE P-7 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-7, ANNEXURE-P7, ANNEXURE-P-7, ANNEXURE-P/7, or ANNEXURE P/7. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-7 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-8",
-        "description": "Pages headed ANNEXURE P-8, ANNEXURE-P8, or ANNEXURE P-8 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-8, ANNEXURE-P8, ANNEXURE-P-8, ANNEXURE-P/8, or ANNEXURE P/8. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-8 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-9",
-        "description": "Pages headed ANNEXURE P-9, ANNEXURE-P9, or ANNEXURE P-9 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-9, ANNEXURE-P9, ANNEXURE-P-9, ANNEXURE-P/9, or ANNEXURE P/9. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-9 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-10",
-        "description": "Pages headed ANNEXURE P-10, ANNEXURE-P10, or ANNEXURE P-10 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-10, ANNEXURE-P10, ANNEXURE-P-10, ANNEXURE-P/10, or ANNEXURE P/10. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-10 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-11",
-        "description": "Pages headed ANNEXURE P-11, ANNEXURE-P11, or ANNEXURE P-11 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-11, ANNEXURE-P11, ANNEXURE-P-11, ANNEXURE-P/11, or ANNEXURE P/11. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-11 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-12",
-        "description": "Pages headed ANNEXURE P-12, ANNEXURE-P12, or ANNEXURE P-12 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-12, ANNEXURE-P12, ANNEXURE-P-12, ANNEXURE-P/12, or ANNEXURE P/12. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-12 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-13",
-        "description": "Pages headed ANNEXURE P-13, ANNEXURE-P13, or ANNEXURE P-13 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-13, ANNEXURE-P13, ANNEXURE-P-13, ANNEXURE-P/13, or ANNEXURE P/13. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-13 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-14",
-        "description": "Pages headed ANNEXURE P-14, ANNEXURE-P14, or ANNEXURE P-14 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-14, ANNEXURE-P14, ANNEXURE-P-14, ANNEXURE-P/14, or ANNEXURE P/14. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-14 stay Index / List of Dates, not this category."
       },
       {
         "name": "Annexure P-15",
-        "description": "Pages headed ANNEXURE P-15, ANNEXURE-P15, or ANNEXURE P-15 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-15, ANNEXURE-P15, ANNEXURE-P-15, ANNEXURE-P/15, or ANNEXURE P/15. Include the full exhibit body until the next ANNEXURE-P/m heading. Do not use for any other P-number. Index or List of Dates rows that merely mention Annexure P-15 stay Index / List of Dates, not this category."
       },
       {
         "name": "Appendix",
@@ -1146,7 +1146,7 @@
     ],
     "splitting_strategy": {
       "allow_uncategorized": "include",
-      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexure P-1, Appendix, Application 1, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Assign Annexure P-1 through Annexure P-15 from the printed mark (ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Stop at P-15. Do not invent a number and do not use a generic Annexures category. A High Court petition inside an exhibit stays that Annexure P-n, not Main Petition. Assign Application 1 through Application 15 in filing order, one category per APPLICATION headed RESPECTFULLY SHOWETH. Stop at 15. A page headed Annexure P-n is that annexure, not an Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
+      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Label every page of the PDF; do not leave later exhibit pages uncategorized. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexure P-1 through Annexure P-n, Appendix, Application 1, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Assign Annexure P-1 through Annexure P-15 from the printed mark, including slash forms ANNEXURE-P/2, ANNEXURE P/2, ANNEXURE-P2, ANNEXURE P-2, and ANNEXURE-P-2. Keep every following page in that annexure until the next ANNEXURE-P/m heading, even when OCR is poor or the text looks like a High Court writ. Stop at P-15. Do not invent a number and do not use a generic Annexures category. A High Court petition inside an exhibit stays that Annexure P-n, not Main Petition. An Index or List of Dates that merely lists Annexure P-n is still Index or List of Dates. Affidavit is only the sworn AFFIDAVIT leaf, not checklist lines inside annexures. Assign Application 1 through Application 15 in filing order, one category per APPLICATION headed RESPECTFULLY SHOWETH in this Court. Stop at 15. A page headed Annexure P-n is that annexure, not an Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
     }
   },
   "split_upload": {

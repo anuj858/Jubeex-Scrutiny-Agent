@@ -183,18 +183,23 @@ def _pages_needing_family_text(
     ]
 
 
-def _pdf_page_texts(
+def pdf_page_texts(
     pdf_bytes: bytes,
-    pages: Sequence[int],
+    pages: Sequence[int] | None = None,
     *,
     reader: PdfReader | None = None,
 ) -> dict[int, str]:
-    if not pdf_bytes or not pages:
+    """Extract plain text for 1-indexed PDF pages (all pages when ``pages`` is None)."""
+    if not pdf_bytes:
         return {}
     local = reader or PdfReader(io.BytesIO(pdf_bytes))
-    texts: dict[int, str] = {}
     total = len(local.pages)
-    for page in pages:
+    if pages is None:
+        targets = range(1, total + 1)
+    else:
+        targets = pages
+    texts: dict[int, str] = {}
+    for page in targets:
         index = int(page) - 1
         if index < 0 or index >= total:
             continue
@@ -203,6 +208,10 @@ def _pdf_page_texts(
         except Exception:
             texts[int(page)] = ""
     return texts
+
+
+# Older call sites / tests.
+_pdf_page_texts = pdf_page_texts
 
 
 def _slice_slot_order(

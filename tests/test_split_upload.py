@@ -25,6 +25,7 @@ from extraction_review.document_parts import (
     _split_categories,
     annexure_mark_in_heading,
     collapse_repeated_split_pages,
+    complete_split_page_coverage,
     explode_repeating_split_parts,
     filing_type_label,
     format_page_span,
@@ -2118,6 +2119,43 @@ def test_annexure_mark_accepts_hyphenated_single_line_headings() -> None:
     assert annexure_mark_in_heading("ANNEXURE – P2") == 2
     assert annexure_mark_in_heading("ANNEXURE P-2") == 2
     assert annexure_mark_in_heading("P-2\nExhibit body") == 2
+    assert annexure_mark_in_heading("ANNEXURE-P/2") == 2
+    assert annexure_mark_in_heading("body OCR\nnoise\nANNEXURE-P/3\n63") == 3
+    assert (
+        annexure_mark_in_heading(
+            "LIST OF DATES\n28.11.2011 writ\nANNEXURE-P/4 (Pg 72-95).\nmore"
+        )
+        is None
+    )
+
+
+def test_complete_split_coverage_recovers_foot_stamped_annexures() -> None:
+    """Llama stopping mid-annexure must not leave the rest of the PDF unlabeled."""
+    page_parts = {page: ["Main Petition"] for page in range(1, 5)}
+    page_parts.update({page: ["Annexure P-1"] for page in range(5, 9)})
+    texts = {
+        5: "ANNEXURE P-1\nChecklist",
+        6: "checklist body",
+        7: "checklist body",
+        8: "checklist body",
+        9: "garbled OCR\nbody\nANNEXURE-P/2\n55",
+        10: "petition exhibit body",
+        11: "more body",
+        12: "stamp foot\nANNEXURE-P/3\n63",
+        13: "revision body",
+        14: "IN THE SUPREME COURT OF INDIA\nI.A. NO. 1 of 2025\nIN SPECIAL LEAVE PETITION",
+        15: "True Translated Copy\nAnnexure-P/2\nexempt from filing translation\nprima facie case",
+    }
+    completed = complete_split_page_coverage(page_parts, texts, page_count=15)
+    assert len(completed) == 15
+    assert completed[5] == ["Annexure P-1"]
+    assert completed[8] == ["Annexure P-1"]
+    assert completed[9] == ["Annexure P-2"]
+    assert completed[11] == ["Annexure P-2"]
+    assert completed[12] == ["Annexure P-3"]
+    assert completed[13] == ["Annexure P-3"]
+    assert completed[14] == ["Application 1"]
+    assert completed[15] == ["Application 1"]
 
 
 def test_annexure_banner_retags_application_and_does_not_eat_petition() -> None:
