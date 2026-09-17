@@ -1225,7 +1225,7 @@ requires-dist = [
     { name = "jsonref", specifier = ">=1.1.0" },
     { name = "llama-cloud", specifier = ">=2.8,<2.15" },
     { name = "llama-index-core", specifier = ">=0.14.0" },
-    { name = "llama-index-workflows", specifier = ">=2.16.0,<3.0.0" },
+    { name = "llama-index-workflows", specifier = ">=2.24.0,<3.0.0" },
     { name = "pinecone", specifier = ">=7.0.0,<8" },
     { name = "pymupdf", specifier = ">=1.24,<2" },
     { name = "pypdf", specifier = ">=5.0.0,<7" },
@@ -1350,16 +1350,16 @@ wheels = [
 
 [[package]]
 name = "llama-index-workflows"
-version = "2.23.3"
+version = "2.24.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "llama-index-instrumentation" },
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/f8/cb9968d2453b16dc8951b8542ea827a59b937ecb0aa1a06d3ca418a311f4/llama_index_workflows-2.23.3.tar.gz", hash = "sha256:fba140ea4d4aa7e7ca58f3ddc2526b92bfb31bfaf45ab2b4345401ae527061b4", size = 138873, upload-time = "2026-08-22T14:26:19.13Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/0a/0519ddd431154d586fb457cfebe6995e59b3a25cc6e56de457ec44b1a225/llama_index_workflows-2.24.0.tar.gz", hash = "sha256:1fa744e342ad6b8134e371a9ce01be2af18f6229dcfb5d28ff942097699e6690", size = 140674, upload-time = "2026-09-16T20:25:37.772Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/35/27a651cee0c4e4540a5b65aaec1293f52e153b870accab7f8472d035809b/llama_index_workflows-2.23.3-py3-none-any.whl", hash = "sha256:d7ad51363ba4817b4140526c5e785d2f143861f618823456e2f379adfe0b321b", size = 166772, upload-time = "2026-08-22T14:26:17.911Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/33/3005ad4414c5731b050cba9d08a4963c8f559f51d1aba7925135f7713c8e/llama_index_workflows-2.24.0-py3-none-any.whl", hash = "sha256:93cef332822f7c00d85e1bcd7de5321c824e52871e3ae41dacc934a2e15c35ad", size = 168709, upload-time = "2026-09-16T20:25:36.583Z" },
 ]
 
 [[package]]
