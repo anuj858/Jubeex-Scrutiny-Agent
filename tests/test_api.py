@@ -498,6 +498,11 @@ def test_split_petition_accepts(client: TestClient, monkeypatch: pytest.MonkeyPa
     assert getattr(captured["event"], "job_type") == "split_petition"
 
 
+def test_split_petition_post_is_not_shadowed_by_filing_id(client: TestClient) -> None:
+    response = client.post("/v1/filings/split-petition", json={})
+    assert response.status_code != 405
+
+
 def test_verify_document_accepts_multiple_files(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
