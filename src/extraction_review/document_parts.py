@@ -51,40 +51,6 @@ _LEGACY_PART_NAMES = {
     "aor declaration": "AOR's Certificate",
 }
 
-CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": (MAIN_PETITION_PART, "Affidavit"),
-    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama"),
-    "listing_proforma": ("Listing Proforma",),
-    "petition_presentation": (
-        MAIN_PETITION_PART,
-        "AOR's Certificate",
-        "Listing Proforma",
-        "Advocate's Checklist",
-    ),
-    "applications": (
-        MAIN_PETITION_PART,
-        "Annexures",
-        "Index",
-        "Application",
-    ),
-    "annexures": ("Annexures", "Index", "List of Dates & Events"),
-    "parties": ("Memo of Parties", "Cover Page", MAIN_PETITION_PART),
-    "dates_execution": (
-        MAIN_PETITION_PART,
-        "Affidavit",
-        "Vakalatnama",
-        "PoA/BR",
-    ),
-    "index_paper_book": ("Index",),
-    "limitation": ("Office Report on Limitation", MAIN_PETITION_PART),
-    # Affidavit is the inspect target; Main Petition is only retrieval context.
-    "affidavit": ("Affidavit", MAIN_PETITION_PART),
-    "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
-    "vakalatnama": ("Vakalatnama", "Memo of Appearance", "PoA/BR"),
-    "memo_of_appearance": ("Memo of Appearance", "Vakalatnama"),
-    "list_of_dates": ("List of Dates & Events", "Synopsis"),
-}
-
 # Extra catalogue phrases → Split labels (beyond the config name/description).
 _PART_ALIASES: dict[str, tuple[str, ...]] = {
     # Do not alias bare "declaration" / "check the declaration": those words
@@ -125,72 +91,11 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
 # that the named document was filed or signed.
 _NON_CONTENT_PARTS = frozenset({"Index"})
 
-# Structured CoreFilingRecord keys sent to the model for that category.
-# Always include court / petition_type; never dump unused party lists.
-CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": (
-        "court",
-        "petition_type",
-        "cause_title",
-        "impugned_orders",
-        "relief_sort",
-        "documents",
-    ),
-    "advocate_checklist": (
-        "court",
-        "petition_type",
-        "advocates_on_record",
-    ),
-    "listing_proforma": (
-        "court",
-        "petition_type",
-        "cause_title",
-    ),
-    "petition_presentation": (
-        "court",
-        "petition_type",
-        "documents",
-    ),
-    "applications": ("court", "petition_type", "documents"),
-    "annexures": ("court", "petition_type", "documents"),
-    "parties": (
-        "court",
-        "petition_type",
-        "cause_title",
-        "impugned_orders",
-    ),
-    "dates_execution": ("court", "petition_type", "documents"),
-    "index_paper_book": ("court", "petition_type", "documents"),
-    "limitation": ("court", "petition_type", "impugned_orders", "documents"),
-    "affidavit": ("court", "petition_type"),
-    "translations": ("court", "petition_type", "documents"),
-    "vakalatnama": ("court", "petition_type", "advocates_on_record", "documents"),
-    "memo_of_appearance": ("court", "petition_type", "advocates_on_record"),
-    "list_of_dates": ("court", "petition_type", "documents"),
-}
-
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
 # do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
 # raise this to PAGES_PER_TARGET_PART each.
-CATEGORY_MAX_CHUNKS: dict[str, int] = {
-    "listing_proforma": 3,
-    "advocate_checklist": 3,
-    "filing_formalities": 10,
-    "petition_presentation": 12,
-    "applications": 4,
-    "annexures": 6,
-    "parties": 6,
-    "dates_execution": 6,
-    "index_paper_book": 4,
-    "limitation": 4,
-    "affidavit": 6,
-    "translations": 4,
-    "vakalatnama": 3,
-    "memo_of_appearance": 3,
-    "list_of_dates": 3,
-}
 
 # At least this many page excerpts per document part the check must open.
 PAGES_PER_TARGET_PART = 3
@@ -369,11 +274,12 @@ def _format_page_span(pages: list[int]) -> str:
 
 
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
-    """Keep the longest contiguous run of each Split part (tie: first run).
+    """Keep one contiguous run of each Split part.
 
     Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 25–36 is
-    kept; a later Main Petition island is dropped. Numbered annexures keep every
-    page so a Cover Page sitting between P-3 leaves does not drop the rest.
+    kept; a later Main Petition island is dropped. Annexure P-2 at 29–30 is
+    kept; later P-2 islands at 100–102 and 104 are dropped. Generic unnumbered
+    Annexures stay until they are labelled P-n.
     """
     pages_by_part: dict[str, list[int]] = {}
     for page, names in page_parts.items():
@@ -383,13 +289,20 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     keep: set[tuple[int, str]] = set()
     for part, pages in pages_by_part.items():
         unique = sorted(set(pages))
-        if family_split_name(part) == ANNEXURE_FAMILY:
+        if family_split_name(part) == ANNEXURE_FAMILY and not _is_numbered_annexure(
+            part
+        ):
             keep.update((page, part) for page in unique)
             continue
         groups = _contiguous_groups(unique)
         if not groups:
             continue
-        start, end = max(groups, key=lambda group: (group[1] - group[0] + 1, -group[0]))
+        if _is_numbered_annexure(part):
+            start, end = groups[0]
+        else:
+            start, end = max(
+                groups, key=lambda group: (group[1] - group[0] + 1, -group[0])
+            )
         keep.update((page, part) for page in unique if start <= page <= end)
 
     collapsed: PagePartMap = {}
@@ -553,6 +466,13 @@ def family_split_name(name: str) -> str:
     return name
 
 
+_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure p-?\d{1,3}$")
+
+
+def _is_numbered_annexure(name: str) -> bool:
+    return bool(_NUMBERED_ANNEXURE_RE.fullmatch(_fold(name)))
+
+
 def numbered_part_slot_id(name: str) -> str | None:
     """Map `Annexure P-12` / `Application 7` onto a dynamic slot id."""
     folded = _fold(name)
@@ -702,6 +622,37 @@ def _annexure_claimable(names: Sequence[str] | None) -> bool:
     return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
 
 
+def _contiguous_annexure_pages(
+    start: int,
+    stop_before: int,
+    page_parts: PagePartMap,
+) -> list[int]:
+    """Already-labelled annexure pages from start. Stops at a gap or other document."""
+    pages: list[int] = []
+    for page in range(start, stop_before):
+        names = page_parts.get(page)
+        if names is None:
+            break
+        if not _annexure_claimable(names):
+            break
+        pages.append(page)
+    return pages
+
+
+def _contiguous_gap_pages(
+    start: int,
+    stop_before: int,
+    page_parts: PagePartMap,
+) -> list[int]:
+    """Claimable pages in a bounded heading gap, including unlabeled leaves."""
+    pages: list[int] = []
+    for page in range(start, stop_before):
+        if not _annexure_claimable(page_parts.get(page)):
+            break
+        pages.append(page)
+    return pages
+
+
 def _assign_gap_to_missing_marks(
     pages: Sequence[int], missing: Sequence[int]
 ) -> dict[int, str]:
@@ -729,10 +680,13 @@ def _annexure_printed_labels(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
 ) -> dict[int, str] | None:
-    """Label annexure pages from printed P-n marks, including unlabeled gaps.
+    """Label annexure pages from the printed P-n heading on the page.
 
-    Consecutive marks (P-2 then P-3) keep body pages with the earlier mark.
-    A skipped mark (P-2 then P-4) assigns the in-between pages to P-3.
+    A page headed Annexure P-1 is Annexure P-1, even when LlamaSplit numbered
+    that segment as P-2. One heading is enough. Repeated headings keep the
+    printed number. Consecutive marks (P-2 then P-3) keep body pages with the
+    earlier mark. A skipped mark (P-2 then P-4) assigns the in-between pages
+    to P-3. A run stops at the next heading or another document.
     """
     annexure_pages = sorted(
         page
@@ -746,47 +700,38 @@ def _annexure_printed_labels(
     first = annexure_pages[0]
     last = annexure_pages[-1]
     starts: list[tuple[int, int]] = []
-    seen_marks: set[int] = set()
     for page in range(first, last + 1):
         if not _annexure_claimable(page_parts.get(page)):
             continue
         mark = annexure_mark_in_heading(page_text.get(page, ""))
-        if mark and mark not in seen_marks:
-            seen_marks.add(mark)
+        if mark:
             starts.append((page, mark))
-    if len(starts) < 2:
+    if not starts:
         return None
 
     labels: dict[int, str] = {}
     first_start, first_mark = starts[0]
-    for page in range(first, first_start):
-        if _annexure_claimable(page_parts.get(page)):
-            labels[page] = f"Annexure P-{first_mark}"
+    page = first_start - 1
+    while page >= first and _annexure_claimable(page_parts.get(page)):
+        labels[page] = f"Annexure P-{first_mark}"
+        page -= 1
 
     for index, (start_page, mark) in enumerate(starts):
         if index + 1 < len(starts):
             next_page, next_mark = starts[index + 1]
-            if next_mark == mark + 1:
-                for page in range(start_page, next_page):
-                    if _annexure_claimable(page_parts.get(page)):
-                        labels[page] = f"Annexure P-{mark}"
-            elif next_mark > mark + 1:
+            if next_mark > mark + 1:
                 if _annexure_claimable(page_parts.get(start_page)):
                     labels[start_page] = f"Annexure P-{mark}"
-                gap = [
-                    page
-                    for page in range(start_page + 1, next_page)
-                    if _annexure_claimable(page_parts.get(page))
-                ]
+                gap = _contiguous_gap_pages(start_page + 1, next_page, page_parts)
                 labels.update(
                     _assign_gap_to_missing_marks(gap, range(mark + 1, next_mark))
                 )
-            elif _annexure_claimable(page_parts.get(start_page)):
-                labels[start_page] = f"Annexure P-{mark}"
+            else:
+                for page in _contiguous_gap_pages(start_page, next_page, page_parts):
+                    labels[page] = f"Annexure P-{mark}"
             continue
-        for page in range(start_page, last + 1):
-            if _annexure_claimable(page_parts.get(page)):
-                labels[page] = f"Annexure P-{mark}"
+        for page in _contiguous_annexure_pages(start_page, last + 1, page_parts):
+            labels[page] = f"Annexure P-{mark}"
     return labels
 
 
@@ -850,11 +795,12 @@ def explode_repeating_split_parts(
     """Split a merged Annexures/Application run into P-n / Application n.
 
     Printed ANNEXURE-Pn banners retag Main Petition/Application pages first.
-    Annexure numbers then come from those marks: consecutive marks keep body
-    pages with the earlier annexure; a skipped mark fills the gap as the
-    missing P-n, including unlabeled pages between the first and last
-    annexure page. Applications stay sequential at each new cause title.
-    Each non-annexure type keeps only its longest contiguous page run.
+    The printed mark on the page is the annexure number: a heading Annexure P-1
+    is Annexure P-1 even if LlamaSplit ordered that segment as P-2. Consecutive
+    marks keep body pages with the earlier annexure; a skipped mark fills the
+    gap as the missing P-n. Applications stay sequential at each new cause
+    title. Each numbered Annexure P-n keeps only its first contiguous page run.
+    Other types keep only their longest contiguous page run.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     texts = page_text or {}
@@ -866,6 +812,17 @@ def explode_repeating_split_parts(
                 updated[page] = _replace_family_label(
                     updated.get(page, []), ANNEXURE_FAMILY, label
                 )
+        for page, names in list(updated.items()):
+            if _page_has_protected_part(names):
+                continue
+            mark = annexure_mark_in_heading(texts.get(page, ""))
+            if not mark:
+                continue
+            label = f"Annexure P-{mark}"
+            if _stealable_family(names):
+                updated[page] = _replace_stealable_with_annexure(names, label)
+            elif _annexure_claimable(names):
+                updated[page] = _replace_family_label(names, ANNEXURE_FAMILY, label)
         app_pages = sorted(
             page
             for page, names in updated.items()
@@ -1018,14 +975,8 @@ def parts_named_in_where_to_look(defect: Defect) -> list[str]:
 
 
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
-    """Retrieval targets: catalogue/parsed parts first, then category defaults."""
-    named = parts_named_in_where_to_look(defect)
-    category = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
-    parts = list(named)
-    for name in category:
-        if name not in parts:
-            parts.append(name)
-    return parts
+    """Retrieval targets from catalogue inspect/context parts (or parsed where_to_look)."""
+    return parts_named_in_where_to_look(defect)
 
 
 def pool_search_queries() -> list[str]:
@@ -1132,13 +1083,6 @@ def required_parts_for_defect(defect: Defect) -> list[str]:
     if not named:
         return preferred_parts_for_defect(defect)
 
-    category = defect.category_id or ""
-    if category == "affidavit":
-        primary = [p for p in named if p == "Affidavit"]
-        return primary or named[:1]
-    if category == "parties":
-        primary = [p for p in named if p in {MAIN_PETITION_PART, "Memo of Parties"}]
-        return primary or named[:1]
     if len(named) > 3 and defect.where_to_look:
         first = parts_named_in_text(_strip_landmark_clauses(defect.where_to_look[0]))
         if first:
@@ -1164,8 +1108,6 @@ def allows_index_evidence(defect: Defect) -> bool:
     inspect = catalogue_inspect_parts(defect)
     if inspect:
         return "Index" in inspect
-    if (defect.category_id or "") == "index_paper_book":
-        return True
     return "Index" in _parts_parsed_from_where_to_look(defect)
 
 
@@ -1213,11 +1155,10 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
     targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
-    budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
+    budget = ceiling
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
-    # One document part stays small even when the category budget is large
-    # (signature audits raise petition_presentation to 12 pages).
+    # One document part stays small so a high-scoring neighbour cannot crowd it.
     if len(targets) <= 1:
         tight = 3 if len(defect.where_to_look) <= 2 else 6
         if defect.parent_check_id:
@@ -1272,12 +1213,9 @@ def slice_record_for_defect(
 ) -> dict[str, Any] | None:
     if not record:
         return record
-    fields = CATEGORY_RECORD_FIELDS.get(defect.category_id or "")
-    if not fields:
-        keys = list(ALWAYS_RECORD_FIELDS)
-        keys.extend(k for k in record if k not in keys)
-        fields = tuple(keys)
-    sliced = {key: record[key] for key in fields if key in record}
+    keys = list(ALWAYS_RECORD_FIELDS)
+    keys.extend(k for k in record if k not in keys)
+    sliced = {key: record[key] for key in keys if key in record}
     return sliced or record
 
 

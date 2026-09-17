@@ -765,14 +765,20 @@ def test_extract_source_parts_include_petition_and_index() -> None:
     assert "CERTIFICATE" in cert
     assert "C E R T I F I C A T E" in cert
     assert "cause title at the top" in cert
-    assert "CERTIFICATE is always printed" in cert
     assert "Certified that" in cert
     assert "CERTIFIED that" in cert
     assert "confined only to the pleadings" in cert
     assert "DRAWN & FILED BY" in cert
-    assert "Cause title without the word CERTIFICATE" in cert
+    instructions = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs" / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )["split"]["splitting_strategy"]["custom_instructions"]
+    assert "CERTIFICATE is always printed" in instructions
+    assert "Cause title without the word CERTIFICATE" in instructions
     petition = dict(_split_categories())["Main Petition"]
-    assert "CERTIFICATE" in petition
+    assert "Form 28" in petition
+    assert "CERTIFICATE" not in petition
     spaced = parts_named_in_text(
         "IN THE MATTER OF: Kailash Negi versus Smt. Shalija Shah "
         "C E R T I F I C A T E Certified that the Special Leave Petition is "
@@ -2038,12 +2044,12 @@ def test_annexure_gap_fill_does_not_steal_other_document_parts() -> None:
     assert exploded[26] == ["Annexure P-2"]
     assert exploded[27] == ["Annexure P-3"]
     assert exploded[28] == ["Cover Page"]
-    assert exploded[29] == ["Annexure P-3"]
+    assert 29 not in exploded
     assert exploded[30] == ["Annexure P-4"]
     catalog = type_catalog("SLP_CIVIL")
     pages = map_slot_pages(catalog, exploded)
     assert pages["cover_page"] == [28]
-    assert pages["annexure_p3"] == [27, 29]
+    assert pages["annexure_p3"] == [27]
 
 
 def test_slice_bundle_pdf_fills_unlabeled_annexure_gaps_from_headings(
@@ -2095,6 +2101,39 @@ def test_application_headings_number_consecutively() -> None:
     assert exploded[4] == ["Application 2"]
 
 
+def test_printed_annexure_heading_overrides_llamasplit_segment_order() -> None:
+    page_parts = {page: ["Annexure P-1"] for page in range(26, 30)}
+    texts = {
+        26: "ANNEXURE P-2\nTrial court judgment",
+        27: "continuation without a new heading",
+        28: "scan body",
+        29: "scan body",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-2"]
+    assert exploded[28] == ["Annexure P-2"]
+    assert exploded[29] == ["Annexure P-2"]
+    assert exploded[26] != ["Annexure P-1"]
+
+
+def test_single_printed_annexure_heading_keeps_that_p_n() -> None:
+    page_parts = {page: ["Annexures"] for page in range(20, 26)}
+    texts = {20: "ANNEXURE P-1\nFIR", 21: "body", 22: "body"}
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    for page in range(20, 26):
+        assert exploded[page] == ["Annexure P-1"]
+
+
+def test_printed_p5_heading_is_not_renumbered_as_first_segment() -> None:
+    page_parts = {page: ["Annexure P-1"] for page in range(40, 45)}
+    texts = {40: "ANNEXURE-P5\nHigh Court order", 41: "order body"}
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[40] == ["Annexure P-5"]
+    assert exploded[41] == ["Annexure P-5"]
+    assert "Annexure P-1" not in exploded[40]
+
+
 def test_annexure_mark_accepts_hyphenated_single_line_headings() -> None:
     assert annexure_mark_in_heading("ANNEXURE-P2") == 2
     assert annexure_mark_in_heading("ANNEXURE-P-2") == 2
@@ -2138,6 +2177,36 @@ def test_annexure_banner_retags_main_petition_high_court_copy() -> None:
     assert exploded[40] == ["Affidavit"]
 
 
+def test_numbered_annexure_drops_later_disconnected_islands() -> None:
+    page_parts = {
+        29: ["Annexure P-2"],
+        30: ["Annexure P-2"],
+        100: ["Annexure P-2"],
+        101: ["Annexure P-2"],
+        102: ["Annexure P-2"],
+        104: ["Annexure P-2"],
+    }
+    collapsed = collapse_repeated_split_pages(page_parts)
+    assert collapsed[29] == ["Annexure P-2"]
+    assert collapsed[30] == ["Annexure P-2"]
+    assert 100 not in collapsed
+    assert 102 not in collapsed
+    assert 104 not in collapsed
+    assert format_page_span([29, 30]) == "pp. 29–30"
+    assert format_page_span([29, 30, 100, 101, 102, 104]) == (
+        "pp. 29–30, 100–102, 104"
+    )
+
+    labeled = {page: ["Annexures"] for page in range(20, 31)}
+    labeled.update({page: ["Annexures"] for page in (100, 101, 102, 104)})
+    texts = {20: "ANNEXURE P-1\nFIR", 29: "ANNEXURE P-2\nExhibit"}
+    exploded = explode_repeating_split_parts(labeled, texts)
+    assert exploded[29] == ["Annexure P-2"]
+    assert exploded[30] == ["Annexure P-2"]
+    assert exploded.get(100) != ["Annexure P-2"]
+    assert exploded.get(104) != ["Annexure P-2"]
+
+
 def test_main_petition_keeps_longest_run_and_drops_later_island() -> None:
     page_parts = {page: ["Main Petition"] for page in range(25, 37)}
     page_parts[50] = ["Main Petition"]
@@ -2165,10 +2234,12 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     assert "judgment or order under challenge" in impugned
     assert "LIST OF DATES" not in impugned
     petition = cats["Main Petition"]
-    assert "IN THE SUPREME COURT OF INDIA" in petition
+    assert "Form 28" in petition
     assert "Grounds" in petition
     assert "Prayer" in petition
-    assert "contiguous" in petition
+    assert "questions of law" in petition
+    assert "IN THE SUPREME COURT OF INDIA" not in petition
+    assert "contiguous" not in petition
     affidavit = cats["Affidavit"]
     assert "A F F I D A V I T" in affidavit
     assert "Deponent" in affidavit
@@ -2176,15 +2247,14 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     annexure = cats["Annexures"]
     assert "P-1" in annexure
     assert "P-100" in annexure
-    assert "P-1 through P-7" in annexure
     assert "ANNEXURE-P2" in annexure
+    assert "P-1 through P-7" not in annexure
     appendix = cats["Appendix"]
     assert "Appendix" in appendix
     application = cats["Application"]
     assert "APPLICATION" in application
     assert "RESPECTFULLY SHOWETH" in application
-    assert "Application 1 through 7" in application
-    assert "Annexure P-n" in application
+    assert "Application 1 through 7" not in application
     filing = cats["Filing Memo"]
     assert "FILING INDEX" in filing or "INDEX OF FILING" in filing
     parties = cats["Memo of Parties"]
@@ -2194,6 +2264,15 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     assert "VAKALATNAMA" in vakalatnama
     appearance = cats["Memo of Appearance"]
     assert "MEMO OF APPEARANCE" in appearance
+    instructions = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs" / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )["split"]["splitting_strategy"]["custom_instructions"]
+    assert len(instructions) <= 5000
+    assert instructions.startswith("Near-blank scanned pages")
+    assert "starts a new Annexures segment" in instructions
+    assert "cannot reappear after it ends" in instructions
 
 
 def test_slice_uses_one_indexed_split_pages() -> None:

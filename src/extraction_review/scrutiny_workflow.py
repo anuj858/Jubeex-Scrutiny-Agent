@@ -49,10 +49,10 @@ from .scrutiny.prompts import (
 from .scrutiny.rules import (
     Catalogue,
     Defect,
+    check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
     get_catalogue,
-    serial_sort_key,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -566,7 +566,7 @@ class ScrutinyWorkflow(Workflow):
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
         ) -> ScrutinyReport:
-            snapshot = sorted(current, key=lambda f: serial_sort_key(f.serial_no))
+            snapshot = sorted(current, key=lambda f: check_id_sort_key(f.check_id))
             return ScrutinyReport(
                 catalogue_id=catalogue.catalogue_id,
                 catalogue_version=catalogue.catalogue_version,
@@ -613,7 +613,7 @@ class ScrutinyWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
+                    message=f"Checking {defect.check_id}",
                 )
             )
             try:

@@ -216,7 +216,6 @@ class UsageByCheck(BaseModel):
     """One row in the cost breakdown, sorted highest charge first."""
 
     check_id: str
-    serial_no: int | str
     cost_usd: float | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -237,7 +236,6 @@ class UsageSummary(BaseModel):
     llm_calls: int = 0
     model: str | None = None
     highest_cost_check_id: str | None = None
-    highest_cost_serial_no: int | str | None = None
     highest_cost_usd: float | None = None
     by_check: list[UsageByCheck] = Field(default_factory=list)
     note: str = (
@@ -251,7 +249,6 @@ class DefectFinding(BaseModel):
     """Server-assembled finding for one catalogue defect."""
 
     check_id: str
-    serial_no: int | str
     title: str
     defect: str = Field(
         description=(
@@ -737,7 +734,6 @@ def build_finding(
     )
     return DefectFinding(
         check_id=defect.check_id,
-        serial_no=defect.serial_no,
         title=finding_title(defect, catalogue),
         defect=defect.defect,
         requirement=defect.requirement,
@@ -794,7 +790,6 @@ def failed_finding(
     )
     return DefectFinding(
         check_id=defect.check_id,
-        serial_no=defect.serial_no,
         title=finding_title(defect, catalogue),
         defect=defect.defect,
         requirement=defect.requirement,
@@ -836,7 +831,6 @@ def summarize_usage(
         rows.append(
             UsageByCheck(
                 check_id=finding.check_id,
-                serial_no=finding.serial_no,
                 cost_usd=usage.cost_usd,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
@@ -862,7 +856,6 @@ def summarize_usage(
         llm_calls=combined.calls,
         model=combined.model or model,
         highest_cost_check_id=top.check_id if has_cost else None,
-        highest_cost_serial_no=top.serial_no if has_cost else None,
         highest_cost_usd=top.cost_usd if has_cost else None,
         by_check=rows,
     )

@@ -7,7 +7,11 @@ import json
 import jsonschema
 
 import extraction_review.scrutiny.rules as rules_mod
-from extraction_review.scrutiny.prompts import _filing_phrase, build_defect_prompt
+from extraction_review.scrutiny.prompts import (
+    _filing_phrase,
+    build_defect_prompt,
+    finding_title,
+)
 from extraction_review.scrutiny.rules import (
     Catalogue,
     Defect,
@@ -28,11 +32,8 @@ def _defect(
     special_category: str | None = None,
     notes: str | None = None,
 ) -> Defect:
-    serial = check_id[1:]
-    serial_no: int | str = int(serial) if serial.isdigit() else serial
     return Defect(
         check_id=check_id,
-        serial_no=serial_no,
         main_category=main_category,
         special_category=special_category,
         defect="The petition is missing a required form or endorsement.",
@@ -185,7 +186,6 @@ def test_comma_separated_main_category_matches_any_listed_type() -> None:
 def test_main_category_json_array_is_accepted() -> None:
     defect = Defect(
         check_id="D301",
-        serial_no=301,
         main_category=["SLP (Civil)", "SLP (Criminal)"],
         defect="The petition is missing a required form or endorsement.",
         requirement="The required form or endorsement must be filed.",
@@ -324,7 +324,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
 
     catalogue = rules_mod.get_catalogue()
-    assert catalogue.catalogue_version == "2.6.0"
+    assert catalogue.catalogue_version == "2.8.0"
     assert len(catalogue.defects) == 327
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
@@ -339,40 +339,57 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     for filename, source_id in OPAQUE_SOURCE_FILES.items():
         assert mapped[filename] == source_id
 
-    d063 = catalogue.defect("D063")
-    assert d063.serial_no == 63
-    assert d063.main_category == "General/Global"
-    assert d063.category_id == "advocate_checklist"
-    assert "Advocate's Checklist" in d063.inspect_parts
-    assert "SCI_CHECKLIST_2025" in d063.location_source
-    assert "Defect List.pdf" not in d063.location_source
+    d061 = catalogue.defect("D-61")
+    assert d061.main_category == "General/Global"
+    assert "serial_no" not in Defect.model_fields
+    assert "category_id" not in Defect.model_fields
+    assert not finding_title(d061, catalogue).startswith("61")
+    assert "Advocate's Checklist" in d061.inspect_parts
+    assert "SCI_CHECKLIST_2025" in d061.location_source
+    assert "Defect List.pdf" not in d061.location_source
 
-    d162 = catalogue.defect("D162")
-    assert d162.serial_no == 162
-    assert d162.main_category == "SLP (Civil)"
-    assert d162.category_id == "filing_formalities"
-    assert "Main Petition" in d162.inspect_parts
-    assert "SCI_FORM_28" in d162.location_source
-    assert "SCI_RULES_2013" in d162.location_source
-    assert "Form 28 - SLP.pdf" not in d162.location_source
-    assert "2024011691-1.pdf" not in d162.location_source
+    d159 = catalogue.defect("D-159")
+    assert d159.main_category == "SLP (Civil)"
+    assert "Main Petition" in d159.inspect_parts
+    assert "SCI_FORM_28" in d159.location_source
+    assert "SCI_RULES_2013" in d159.location_source
+    assert "Form 28 - SLP.pdf" not in d159.location_source
+    assert "2024011691-1.pdf" not in d159.location_source
 
-    d001 = catalogue.defect("D001")
+    d001 = catalogue.defect("D-1")
     assert d001.special_category == "Appeal (Armed Forces)"
     assert d001.main_category == "Appeals"
 
-    assert catalogue.defect("D058A").serial_no == "58A"
-    assert catalogue.defect("D331").serial_no == 331
-    for dropped in ("D024", "D055", "D116", "D182"):
+    assert catalogue.defect("D-56").check_id == "D-56"
+    assert catalogue.defect("D-323").check_id == "D-323"
+    for dropped in (
+        "D001",
+        "D024",
+        "D055",
+        "D063",
+        "D116",
+        "D162",
+        "D182",
+        "D331",
+        "D-55A",
+        "D-62A",
+        "D-92A",
+        "D-115A",
+        "D-225A",
+    ):
         assert catalogue.defect_by_id(dropped) is None
+    for category in catalogue.categories:
+        dumped_category = category.model_dump()
+        assert "id" not in dumped_category
+        assert "category_id" not in dumped_category
 
     civil = {d.check_id for d in defects_for_filing_type("SLP_CIVIL")}
     criminal = {d.check_id for d in defects_for_filing_type("SLP_CRIMINAL")}
-    assert "D162" in civil
-    assert "D162" not in criminal
-    assert "D063" in civil
-    assert "D063" in criminal
-    assert "D001" not in civil
+    assert "D-159" in civil
+    assert "D-159" not in criminal
+    assert "D-61" in civil
+    assert "D-61" in criminal
+    assert "D-1" not in civil
     motor = [
         d.check_id
         for d in catalogue.defects
@@ -385,9 +402,14 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     prompt = build_defect_prompt(noted, record={}, chunks=[], catalogue=catalogue)
     assert "## Notes" in prompt
     assert noted.notes.splitlines()[0][:20] in prompt
+    assert "This task is in the area" not in prompt
 
     for defect in catalogue.defects:
         assert ".pdf" not in defect.location_source.lower()
+        assert defect.check_id.startswith("D-")
+        dumped = defect.model_dump()
+        assert "serial_no" not in dumped
+        assert "category_id" not in dumped
 
 
 def test_rewrite_location_source_maps_opaque_pdf_names() -> None:
@@ -523,8 +545,8 @@ def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
     assert armed
     assert armed.isdisjoint(appeal_none)
     assert armed <= appeal_armed
-    assert "D001" in appeal_armed
-    assert "D001" not in appeal_none
+    assert "D-1" in appeal_armed
+    assert "D-1" not in appeal_none
     bail = {
         d.check_id
         for d in catalogue.defects

@@ -107,13 +107,8 @@
     "category": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "label", "prompt"],
+      "required": ["label", "prompt"],
       "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 2,
-          "description": "Stable id, e.g. filing_formalities"
-        },
         "label": {
           "type": "string",
           "minLength": 2,
@@ -131,7 +126,6 @@
       "additionalProperties": false,
       "required": [
         "check_id",
-        "serial_no",
         "main_category",
         "defect",
         "requirement",
@@ -142,21 +136,8 @@
       "properties": {
         "check_id": {
           "type": "string",
-          "pattern": "^D\\d{3,4}[A-Z]?$",
-          "description": "Internal check id, e.g. D001 or D058A. API serial_no is the registry S.No."
-        },
-        "serial_no": {
-          "oneOf": [
-            {
-              "type": "integer",
-              "minimum": 1
-            },
-            {
-              "type": "string",
-              "pattern": "^[0-9]+[A-Z]$"
-            }
-          ],
-          "description": "S.No. from the defect API / registry list. Letter suffixes (96A) are slices of one sheet row."
+          "pattern": "^D-\\d{1,4}[A-Z]?$",
+          "description": "Spreadsheet NEW CODES id, e.g. D-1 or D-56. Do not invent padded ids or letter suffixes."
         },
         "main_category": {
           "oneOf": [
@@ -178,13 +159,9 @@
         "special_category": {
           "type": ["string", "null"]
         },
-        "category_id": {
-          "type": ["string", "null"],
-          "description": "Links this defect to a categories[].id prompt"
-        },
         "parent_check_id": {
           "type": ["string", "null"],
-          "pattern": "^D\\d{3,4}[A-Z]?$",
+          "pattern": "^D-\\d{1,4}[A-Z]?$",
           "description": "If this is a narrower slice of another catalogue defect"
         },
         "overlap_note": {

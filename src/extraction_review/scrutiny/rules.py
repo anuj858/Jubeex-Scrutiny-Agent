@@ -1,8 +1,8 @@
 """Loader for the SCI registry defect catalogue.
 
-Defects match the API payload shape (S.No., Main Category, Defect/Objection,
-Requirement, Where to Look, How to cure, rule, source). The JSON is validated
-into Pydantic models at first use.
+Defects match the API payload shape (check_id from spreadsheet NEW CODES,
+Main Category, Defect/Objection, Requirement, Where to Look, How to cure,
+rule, source). The JSON is validated into Pydantic models at first use.
 """
 
 from __future__ import annotations
@@ -242,9 +242,8 @@ class _Strict(BaseModel):
 
 
 class DefectCategory(_Strict):
-    """One prompt shared by every defect in the same scrutiny area."""
+    """Shared scrutiny-area prompt. Identified by label only — no category id."""
 
-    id: str
     label: str
     prompt: str
 
@@ -269,10 +268,8 @@ class CatalogueSource(_Strict):
 
 class Defect(_Strict):
     check_id: str
-    serial_no: int | str
     main_category: str
     special_category: str | None = None
-    category_id: str | None = None
     parent_check_id: str | None = None
     overlap_note: str | None = None
     defect: str
@@ -290,7 +287,6 @@ class Defect(_Strict):
     @field_validator(
         "special_category",
         "trigger_words",
-        "category_id",
         "parent_check_id",
         "overlap_note",
         "applicable_rule",
@@ -314,17 +310,6 @@ class Defect(_Strict):
     @property
     def main_categories(self) -> tuple[str, ...]:
         return split_main_categories(self.main_category)
-
-    @field_validator("serial_no", mode="before")
-    @classmethod
-    def _serial_no(cls, value: object) -> object:
-        if isinstance(value, str):
-            text = value.strip().upper()
-            if text.isdigit():
-                return int(text)
-            if re.fullmatch(r"\d+[A-Z]", text):
-                return text
-        return value
 
     @field_validator(
         "where_to_look",
@@ -398,20 +383,10 @@ class Catalogue(_Strict):
         return found
 
     def category_for(self, defect: Defect) -> DefectCategory | None:
-        if defect.category_id:
-            found = next(
-                (c for c in self.categories if c.id == defect.category_id), None
-            )
-            if found:
-                return found
         if defect.special_category:
             key = defect.special_category.strip().lower()
             return next(
-                (
-                    c
-                    for c in self.categories
-                    if c.label.lower() == key or c.id.replace("_", " ") == key
-                ),
+                (c for c in self.categories if c.label.lower() == key),
                 None,
             )
         return None
@@ -617,10 +592,10 @@ def _overlay_special_key(defect: Defect) -> str:
     return ""
 
 
-def serial_sort_key(serial_no: int | str | None) -> tuple[int, str]:
-    """Sort 92 before 96A before 96B; letter suffixes follow the number."""
-    text = str(serial_no or "").strip().upper()
-    match = re.fullmatch(r"(\d+)([A-Z]*)", text)
+def check_id_sort_key(check_id: str | None) -> tuple[int, str]:
+    """Sort spreadsheet NEW CODES: D-1 before D-2 before D-10. Do not invent suffixes."""
+    text = str(check_id or "").strip().upper()
+    match = re.fullmatch(r"D-?(\d+)([A-Z]*)", text)
     if not match:
         return (10**9, text)
     return (int(match.group(1)), match.group(2))
@@ -680,8 +655,8 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
     """Run each parent immediately before its children.
 
     Consecutive OpenRouter calls then share a longer prompt prefix (same
-    petition-type system prompt, then the same category block) so the child
-    can reuse the cached parent prefix.
+    petition-type system prompt) so the child can reuse the cached parent
+    prefix.
     """
     by_id = {d.check_id: d for d in defects}
     children: dict[str, list[Defect]] = {}
@@ -690,12 +665,12 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
         if parent_id and parent_id in by_id:
             children.setdefault(parent_id, []).append(defect)
     for kids in children.values():
-        kids.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
+        kids.sort(key=lambda d: (check_id_sort_key(d.check_id), d.check_id))
 
     roots = [
         d for d in defects if not d.parent_check_id or d.parent_check_id not in by_id
     ]
-    roots.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
+    roots.sort(key=lambda d: (check_id_sort_key(d.check_id), d.check_id))
 
     ordered: list[Defect] = []
     seen: set[str] = set()

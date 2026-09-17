@@ -65,7 +65,6 @@ def _defect(
 ) -> Defect:
     return Defect(
         check_id=check_id,
-        serial_no=int(check_id[1:]) if check_id[1:].isdigit() else 1,
         main_category="General/Global",
         defect=defect,
         requirement=requirement,

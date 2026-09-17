@@ -59,7 +59,6 @@ export interface LlmUsage {
 
 export interface UsageByCheck {
   check_id: string;
-  serial_no: number | string;
   cost_usd?: number | null;
   prompt_tokens: number;
   completion_tokens: number;
@@ -78,7 +77,6 @@ export interface UsageSummary {
   llm_calls: number;
   model?: string | null;
   highest_cost_check_id?: string | null;
-  highest_cost_serial_no?: number | string | null;
   highest_cost_usd?: number | null;
   by_check?: UsageByCheck[];
   note?: string;
@@ -103,7 +101,6 @@ export interface VisualLocalization {
 
 export interface DefectFinding {
   check_id: string;
-  serial_no?: number | string;
   title: string;
   defect?: string;
   requirement?: string;
@@ -189,9 +186,9 @@ const RESULT_ORDER: ResultState[] = [
   "not_applicable",
 ];
 
-export function serialSortKey(serial: number | string | null | undefined): [number, string] {
-  const text = String(serial ?? "").trim().toUpperCase();
-  const match = text.match(/^(\d+)([A-Z]*)$/);
+export function checkIdSortKey(checkId: string | null | undefined): [number, string] {
+  const text = String(checkId ?? "").trim().toUpperCase();
+  const match = text.match(/^D-?(\d+)([A-Z]*)$/);
   if (!match) {
     return [Number.MAX_SAFE_INTEGER, text];
   }
@@ -205,8 +202,8 @@ export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
     if (byStatus !== 0) {
       return byStatus;
     }
-    const [aNum, aSuf] = serialSortKey(a.serial_no);
-    const [bNum, bSuf] = serialSortKey(b.serial_no);
+    const [aNum, aSuf] = checkIdSortKey(a.check_id);
+    const [bNum, bSuf] = checkIdSortKey(b.check_id);
     return aNum !== bNum ? aNum - bNum : aSuf.localeCompare(bSuf);
   });
 }
@@ -337,10 +334,9 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
     usage && (usage.llm_calls || usage.total_tokens || usage.cost_usd != null)
       ? `<h2 style="margin:24px 0 8px;font-size:14pt;">OpenRouter spend</h2>
         <p><b>${escapeHtml(formatUsd(usage.cost_usd))}</b> · ${escapeHtml(formatTokens(usage.prompt_tokens))} in · ${escapeHtml(formatTokens(usage.completion_tokens))} out · ${usage.llm_calls} call${usage.llm_calls === 1 ? "" : "s"}${usage.model ? ` · ${escapeHtml(usage.model)}` : ""}</p>
-        ${usage.highest_cost_check_id ? `<p>Highest: S.No. ${usage.highest_cost_serial_no} ${escapeHtml(usage.highest_cost_check_id)} · ${escapeHtml(formatUsd(usage.highest_cost_usd))}</p>` : ""}
+        ${usage.highest_cost_check_id ? `<p>Highest: ${escapeHtml(usage.highest_cost_check_id)} · ${escapeHtml(formatUsd(usage.highest_cost_usd))}</p>` : ""}
         <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:10pt;">
           <tr style="background:#F8FAFC;text-align:left;">
-            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">S.No.</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Check</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Charge</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Tokens</th>
@@ -350,7 +346,6 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
             .map(
               (row) =>
                 `<tr>
-                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${row.serial_no}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(row.check_id)}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatUsd(row.cost_usd))}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatTokens(row.total_tokens))} (${escapeHtml(formatTokens(row.prompt_tokens))} in / ${escapeHtml(formatTokens(row.completion_tokens))} out)</td>
@@ -388,12 +383,8 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
       const cure = finding.how_to_cure?.length
         ? `<p><b>How to cure</b></p><ol>${finding.how_to_cure.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>`
         : "";
-      const heading =
-        finding.serial_no != null
-          ? `S.No. ${finding.serial_no} · ${finding.check_id}`
-          : finding.check_id;
+      const heading = finding.check_id;
       const meta = [
-        finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
         finding.location,
         finding.applicable_rule,
         finding.location_source,

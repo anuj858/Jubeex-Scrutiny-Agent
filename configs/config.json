@@ -949,92 +949,92 @@
     "categories": [
       {
         "name": "Advocate's Checklist",
-        "description": "Starts in the first 2-3 lines with ADVOCATE'S CHECK LIST or PROPOSED ADVOCATE'S CHECK LIST (CHECK LIST, CHECKLIST, CHECK-LIST). Looks like a numbered YES/NO/N.A. list, often a table, usually 2-4 pages. Almost always has YES, NO, or N.A., and the AOR declaration: I hereby declare that I have personally verified the petition and its contents and it is in conformity with the Supreme Court Rules, 2013. I certify that the above requirements of this Check List have been complied with. I further certify that all the documents necessary for the purpose of hearing of the matter have been filed. Ends on the last page with the AOR name, code, signature, and date; a stamp is optional. Not Cover Page, not Listing Proforma, and not AOR's Certificate."
+        "description": "A numbered YES/NO/N.A. advocate checklist (CHECK LIST, CHECKLIST, CHECK-LIST) verifying the petition against Supreme Court filing requirements, ending with the Advocate-on-Record name and signature."
       },
       {
         "name": "Cover Page",
-        "description": "Starts at the top with IN THE SUPREME COURT OF INDIA; the second or third line has JURISDICTION. Usually 1 page, at most 1-3. Often includes For Index Please See Inside. Ends with ADVOCATE FOR THE PETITIONER or ADVOCATE FOR THE RESPONDENT (or similar). Outer title sheet of the paper book. Not Office Report on Limitation — if OFFICE REPORT ON LIMITATION is printed, use that category even when the Supreme Court caption appears at the top. Not Vakalatnama, not Memo of Appearance, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate)."
+        "description": "The outer title sheet of the Supreme Court paper book, usually one page, with IN THE SUPREME COURT OF INDIA at the top, JURISDICTION on the next line, and advocate for the petitioner or respondent at the foot. Often includes For Index Please See Inside."
       },
       {
         "name": "Record of Proceedings",
-        "description": "Starts with RECORD OF PROCEEDING or RECORD OF PROCEEDINGS. Usually 1 page, at most 1-2, in table format. Often includes Date of Record of Proceeding. Ends where the table ends. Court order sheets of this Court. Not Index, not Cover Page, and not Main Petition."
+        "description": "This Court's record of proceedings, usually a one-page table of hearing dates and orders, headed RECORD OF PROCEEDING or RECORD OF PROCEEDINGS."
       },
       {
         "name": "AOR's Certificate",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and the cause title at the top (petition type and number, IN THE MATTER OF, petitioner versus respondent). Usually 1-2 pages (mostly 1). Then the word CERTIFICATE, either as one word or letter-spaced C E R T I F I C A T E. CERTIFICATE is always printed. Directly under that heading the body starts Certified that or CERTIFIED that the Special Leave Petition (or petition) is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. It may or may not add an exception for additional facts or grounds with an application. It further certifies that the annexures are necessary for the question(s) of law, and that the certificate is given on the petitioner's instructions, with the supporting affidavit. Ends with FILED ON, Dated, and AOR details (name, signature or stamp, code, contact). Signature may be advocate name with CC No./code, mobile, date and place, or PLACE / Filed on / DRAWN & FILED BY with the advocate's name; code and mobile are often omitted. Cause title without the word CERTIFICATE is Cover Page or Main Petition, not this page. This is not Vakalatnama, Advocate's Check List, Affidavit, Application, or Main Petition — do not fold a page that has cause title then CERTIFICATE into the petition body even if it follows Main Prayer."
+        "description": "The Advocate-on-Record certificate after the cause title at the top, headed CERTIFICATE or letter-spaced C E R T I F I C A T E, stating Certified that or CERTIFIED that the Special Leave Petition is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. Ends FILED ON or DRAWN & FILED BY."
       },
       {
         "name": "Index",
-        "description": "Starts with the heading INDEX. Table listing PARTICULARS OF DOCUMENT and PAGE NO or PAGE No. Usually 1-2 pages but may be longer. Ends where the table ends; AOR signature or details are sometimes present but often absent. This part appears once, near the front (usually after the Cover Page). Do not label a later similar contents list as Index. Not Listing Proforma, not Filing Memo, and not Office Report on Limitation."
+        "description": "The paper-book index: a table of PARTICULARS OF DOCUMENT and PAGE NO near the front of the filing, headed INDEX."
       },
       {
         "name": "Office Report on Limitation",
-        "description": "May start with IN THE SUPREME COURT OF INDIA and JURISDICTION on the second or third line, then the heading OFFICE REPORT ON LIMITATION (O/R on Limitation). Always one page. States whether the petition is within time and delay in filing or re-filing. Ends with Dated and Place, and may have a Branch Officer signature or stamp. Not Cover Page, even though the caption is similar. Not the Index line that merely names O/R on Limitation."
+        "description": "The registry office report on limitation (O/R on Limitation), stating whether the petition is within time and any delay in filing or re-filing."
       },
       {
         "name": "Listing Proforma",
-        "description": "Starts with PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA (Proforma for First Listing). Usually 2-4 pages in table format. Includes Central Act and The case pertains to (please tick/check the correct box). Ends with Dated and AOR details (name, signature or stamp, code, contact). Not Index, not Cover Page, and not Advocate's Checklist."
+        "description": "The proforma for first listing (Proforma for First Listing), a table of case particulars including Central Act and The case pertains to. Also headed PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA."
       },
       {
         "name": "Synopsis",
-        "description": "Starts with SYNOPSIS. Narrative summary of the case, often immediately before List of Dates & Events. Not Main Petition (no Grounds, Prayer, or questions of law as the petition body). Not Cover Page, not Index, and not Impugned Order."
+        "description": "A narrative SYNOPSIS of the case, usually immediately before the list of dates and events."
       },
       {
         "name": "List of Dates & Events",
-        "description": "Starts with LIST OF DATES or LIST OF DATES & EVENTS. Chronological list or table with a date in front of each event (DD/MM/YYYY or MM/YYYY such as 04/2026). Ends at the last dated entry. Not Index, not Record of Proceedings, not Synopsis alone (use Synopsis when the page is only the synopsis heading without dates), and not Impugned Order."
+        "description": "A chronological LIST OF DATES or LIST OF DATES & EVENTS, with a date (DD/MM/YYYY or MM/YYYY) before each event."
       },
       {
         "name": "Main Petition",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION on the second or third line, and a cause title, then the petition body in numbered paragraphs (Form 28, Special Leave Petition, transfer petition, or writ/arbitration petition). Contains Grounds, Prayer, and questions of law. Ends with Drawn By, Filed on, AOR, Advocate for Petitioner/Respondent, signature or stamp. This Court's Form 28 appears once as contiguous pages and cannot reappear after it ends. Not Cover Page, not Office Report on Limitation, not Affidavit, not Application, not Annexures, and not a page that has the cause title and then the word CERTIFICATE (AOR's Certificate). A page headed ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2, or P-n on one line is Annexures even if the exhibit is a High Court petition or revision."
+        "description": "This Court's main petition body (Form 28): a Special Leave Petition, transfer petition, or writ or arbitration petition in numbered paragraphs with Grounds, questions of law, and Prayer, ending Drawn By, Filed on, and the advocate for the petitioner."
       },
       {
         "name": "Affidavit",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading AFFIDAVIT or letter-spaced A F F I D A V I T. Usually 1-3 pages (mostly 2). Has a notary stamp and a date stamp. Ends with Deponent and Verification. Not Main Petition, not AOR's Certificate, not Application, and not an annexure that merely repeats a verification block."
+        "description": "A sworn affidavit headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp."
       },
       {
         "name": "Annexures",
-        "description": "Each annexed exhibit is its own document, marked Annexure P-1, P-1, P1, R-1 (or P-2, P-100, and so on). A heading ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2, or P-2 on one line starts a NEW Annexures segment even when the exhibit body is a lower-court application, High Court revision, judgment, or petition — that page is never SCI Application or Main Petition. Starts with that mark or the annexed heading (for example FIRST INFORMATION REPORT) plus Annexure P-n. Pages stay in that annexure until the next P-n / R-n heading. Numbering is consecutive from P-1: if the last annexure is P-7, there MUST be a separate segment for every number P-1 through P-7 — never skip P-2 through P-6, never jump, never stop at P-1 when later marks exist. The same rule holds through P-100. Start a NEW segment at every new P-n mark even though the category name is Annexures. Not Main Petition, not Appendix, not Affidavit, not Index."
+        "description": "An annexed exhibit marked Annexure P-1, P-2, P-n, P-100, or R-n (also ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Each new annexure mark is a separate document, including when the exhibit is a High Court petition, revision, judgment, or application."
       },
       {
         "name": "Appendix",
-        "description": "Starts with Appendix. Sets out sections of an Act or Rules with a short description of each. May end with a signature or stamp. Not Annexures, not Index, not Main Petition."
+        "description": "An Appendix quoting sections of an Act or Rules relied on in the petition."
       },
       {
         "name": "Application",
-        "description": "Each interlocutory or miscellaneous application is its own document. Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and its own cause title, then APPLICATION. Contains RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH, addressed to THE HON'BLE CHIEF JUSTICE OF INDIA AND HIS COMPANION JUDGES. Ends FILED ON, FILED BY, Dated, and AOR details. Numbering is consecutive from Application 1: if the last application is Application 7, there MUST be a separate segment for every Application 1 through 7 — never skip. A later application with a new cause title is the next number, not this page. Not Main Petition, not Affidavit, not AOR's Certificate, and not headed Annexure P-n. A page with ANNEXURE-P2 / ANNEXURE P-2 is Annexures even if the body is an application under Order 7 Rule 11."
+        "description": "An interlocutory application in this Court headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH."
       },
       {
         "name": "Memo of Parties",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading MEMO OF PARTIES and IN THE MATTER OF, listing petitioner and respondent names and addresses. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Vakalatnama, not Cover Page."
+        "description": "A MEMO OF PARTIES listing petitioner and respondent names and addresses."
       },
       {
         "name": "Memo of Appearance",
-        "description": "Letter titled MEMO OF APPEARANCE, often with IN THE SUPREME COURT OF INDIA and a cause title, addressed To the Registrar, asking to enter appearance. Usually 1-3 pages with Vakalatnama. Wording: Memo of Appearance, Identified, accepted and certified. Ends FILED ON, FILED BY, Dated, AOR details, Place. Distinct from Memo of Parties and from Vakalatnama."
+        "description": "A MEMO OF APPEARANCE to the Registrar asking to enter appearance, often filed with the vakalatnama."
       },
       {
         "name": "Impugned Order",
-        "description": "Copy of the High Court or other court judgment or order under challenge. Starts with a court caption such as COURT or HIGH COURT. Not Main Petition, not List of Dates & Events, not Cover Page, not Annexures except where this order is itself marked as an annexure — prefer Impugned Order when the page is the challenged judgment."
+        "description": "The High Court or other court judgment or order under challenge."
       },
       {
         "name": "Vakalatnama",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA and/or VAKALATNAMA (V/A), JURISDICTION, and a cause title. Appoints an advocate; wording Vakalatnama, Identified, accepted and certified. Usually 1-3 pages with Memo of Appearance. Ends FILED ON, FILED BY, Dated, AOR details, Place. Not Memo of Appearance, not Memo of Parties, and not a Power of Attorney or Board Resolution."
+        "description": "A vakalatnama (V/A) appointing an advocate-on-record to act for a party, headed VAKALATNAMA."
       },
       {
         "name": "PoA/BR",
-        "description": "Power of Attorney or Board Resolution authorising the signatory. Distinct from the Vakalatnama."
+        "description": "A power of attorney or board resolution authorising the signatory, distinct from the vakalatnama."
       },
       {
         "name": "Filing Memo",
-        "description": "Starts with IN THE SUPREME COURT OF INDIA, JURISDICTION, and a cause title. Heading INDEX OF FILING, FILING INDEX, or FILING MEMO. Usually 1-2 pages listing papers filed. Ends FILED ON, FILED BY, Dated, AOR details. Not the paper-book Index (PARTICULARS OF DOCUMENT / PAGE NO near the front), not Memo of Parties, not Memo of Appearance."
+        "description": "A FILING MEMO, FILING INDEX, or INDEX OF FILING listing the papers being filed, not the paper-book Index."
       },
       {
         "name": "Court Fees",
-        "description": "Court fee stamps or court fee endorsement pages."
+        "description": "Court fee stamps or court-fee endorsement pages."
       }
     ],
     "splitting_strategy": {
       "allow_uncategorized": "include",
-      "custom_instructions": "Paper-book order is usually Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then annexures, Appendix, applications, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page with OFFICE REPORT ON LIMITATION is never Cover Page. A page with CERTIFICATE or C E R T I F I C A T E after the cause title is AOR's Certificate, not Main Petition. AFFIDAVIT / A F F I D A V I T with Deponent and Verification is Affidavit. A heading ANNEXURE-P2 / ANNEXURE P-2 / ANNEXURE-P-2 / P-n on one line starts a NEW Annexures segment even when the exhibit body is a lower-court application, High Court revision, or petition; that page is never SCI Application or Main Petition. Each Annexure P-n / P-n / P1 / R-n heading starts a NEW Annexures segment; keep those pages until the next P-n heading. Numbers are consecutive from P-1: if the last mark is P-7, emit P-1, P-2, P-3, P-4, P-5, P-6, and P-7 — never skip, never jump to P-10, and the same rule applies through P-100. SCI Application needs this Court's cause title plus APPLICATION / RESPECTFULLY SHOWETH and is not headed Annexure P-n. Each application with a fresh cause title plus APPLICATION / RESPECTFULLY SHOWETH is the next Application 1, 2, 3… in appearance order with no gaps. Main Petition is Form 28 in this Court once, contiguous pages; it cannot reappear after it ends. INDEX OF FILING / FILING INDEX / FILING MEMO is Filing Memo, not Index. Blank backs continue the previous document."
+      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexures, Appendix, Application, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Each heading ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2, or P-n starts a new Annexures segment, even if the exhibit body is a High Court petition, revision, or application. Adjacent Annexures segments are separate exhibits; keep pages with that mark until the next annexure heading. Do not classify an annexure exhibit as Main Petition or Application. Each page in this Court headed APPLICATION with RESPECTFULLY SHOWETH is a new Application segment; adjacent Application segments are separate applications. A page headed Annexure P-n is Annexures, not Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
     }
   },
   "split_upload": {
