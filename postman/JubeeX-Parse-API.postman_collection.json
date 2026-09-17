@@ -1,0 +1,1622 @@
+{
+  "info": {
+    "_postman_id": "ec466139-1f53-47d0-b1d9-a1102041530c",
+    "name": "JubeeX Parse API",
+    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited`), parse the rest, Pinecone, then scrutiny defects. Poll `completed` → `result.report`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.\n\nWhile a job is in process, `GET /v1/jobs/{job_id}` returns HTTP 200 with `status: \"running\"` and `result: null`. Keep polling until `completed` or `failed`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "job_id",
+      "value": ""
+    },
+    {
+      "key": "agent_data_id",
+      "value": ""
+    },
+    {
+      "key": "parsed_slots",
+      "value": "[\"petition\", \"cover_page\", \"vakalatnama_appearance\"]"
+    },
+    {
+      "key": "filing_type",
+      "value": "SLP_CIVIL"
+    },
+    {
+      "key": "organization_id",
+      "value": "3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11"
+    },
+    {
+      "key": "workspace_id",
+      "value": "b20c7d91-4e55-48aa-a013-9d6e2f88c104"
+    },
+    {
+      "key": "user_id",
+      "value": "7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Health",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/health",
+            "description": "Liveness. No auth."
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 Catalog",
+      "item": [
+        {
+          "name": "List filing types, slots, job types",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/catalog",
+            "description": "Returns `filing_types`, `split_upload_types` (slot catalogs), `job_types` (`upload_compiled`, `upload_separate`, `split_petition`, `verify_document`, `extract_only`, `index_parsed`), and config identity."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Recommended frontend flow",
+      "description": "Application-layer path. Poll after each 202. Every polling POST has Examples: 202 Accepted, Poll in progress, Poll completed, and Poll failed. Persist `agent_data_id` + `parsed_slots` from extract before calling index. If index poll fails with `Unable to run scrutiny defects. Try after some time.`, retry only Start scrutiny — do not re-run index.",
+      "item": [
+        {
+          "name": "1 Split Main Petition",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"Main_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/split-petition",
+            "description": "`job_type=split_petition`. Ingests the compiled Main Petition PDF, **skips LlamaClassify**, runs LlamaSplit + slice.\n\n`filing_type` is required.\nPoll result: `BundlePrepared` with `parts[]` (`slot_id`, `label`, `page_span`, sliced `file_id`) plus leftover `undefined` pages.\nDoes not parse, extract, or index.\n\n**Example responses:** open this request in Postman and use the **Examples** dropdown (202 Accepted, then the GET /v1/jobs poll body you actually consume).\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`. On failure the same poll returns HTTP 200 with `status: \"failed\"` and an `error` string."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/split-petition"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/aaaaaaaa-1111-4111-8111-111111111111\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"split_petition\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": null,\n    \"parsed_slots\": [],\n    \"report\": null,\n    \"match\": null,\n    \"filename\": \"Main_Petition.pdf\",\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"label\": \"Cover Page\",\n        \"page_span\": \"p. 1\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"Cover_Page.pdf\",\n        \"name\": \"Cover_Page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"label\": \"Main Petition\",\n        \"page_span\": \"pp. 2–18\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"Main_Petition.pdf\",\n        \"name\": \"Main_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"undefined\",\n        \"label\": \"Undefined\",\n        \"page_span\": \"pp. 19–21\",\n        \"file_id\": \"dfl-undefined\",\n        \"filename\": \"Undefined.pdf\",\n        \"name\": \"Undefined.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"Main_Petition.pdf\",\n        \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n        \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\",\n        \"file_id\": \"dfl-bundle\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "No Agent Data yet (`agent_data_id` is null). Use `result.parts[]`."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaSplit failed: unable to split Main_Petition.pdf\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        },
+        {
+          "name": "2 Verify named documents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"document_id\": \"aa111111-1111-1111-1111-111111111111\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"vakalatnama.pdf\",\n      \"document_id\": \"aa222222-2222-2222-2222-222222222222\",\n      \"download_url\": \"https://storage.example/filings/vakalatnama.pdf\"\n    },\n    {\n      \"name\": \"impugned_order.pdf\",\n      \"document_id\": \"aa333333-3333-3333-3333-333333333333\",\n      \"download_url\": \"https://storage.example/filings/impugned_order.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/verify-document",
+            "description": "`job_type=verify_document`. Each PDF is LlamaSplit independently against its filename (`cover_page.pdf` → `cover_page`). Optional explicit `slot_id` wins.\n\nPoll `result` is **only**:\n```json\n{ \"type\": \"DocumentsVerified\", \"match\": false, \"documents\": [{ \"name\": \"cover_page.pdf\", \"match\": true }] }\n```\nOverall `match` is true only if every file matches.\n\n**Example responses:** open this request in Postman and use the **Examples** dropdown (202 Accepted, then the GET /v1/jobs poll body you actually consume).\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`. On failure the same poll returns HTTP 200 with `status: \"failed\"` and an `error` string."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/verify-document"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/bbbbbbbb-2222-4222-8222-222222222222\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"DocumentsVerified\",\n    \"match\": false,\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"match\": true\n      },\n      {\n        \"name\": \"vakalatnama.pdf\",\n        \"match\": true\n      },\n      {\n        \"name\": \"impugned_order.pdf\",\n        \"match\": false\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Slim `result` only: type, match, documents[{name, match}]."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Unable to download document: cover_page.pdf\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        },
+        {
+          "name": "3 Extract only (parse extract sources, no Pinecone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"vakalatnama.pdf\",\n      \"download_url\": \"https://storage.example/filings/vakalatnama.pdf\"\n    },\n    {\n      \"name\": \"aors_certificate.pdf\",\n      \"download_url\": \"https://storage.example/filings/aors_certificate.pdf\"\n    },\n    {\n      \"name\": \"impugned_order.pdf\",\n      \"download_url\": \"https://storage.example/filings/impugned_order.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/extract",
+            "description": "`job_type=extract_only`. Parses **extract-source slots only** (Cover Page, Main Petition, Vakalatnama, AOR’s Certificate, Impugned Order) in `documents[]` send order. Runs LlamaExtract. **Skips Pinecone.** Writes the extracted JSON to S3.\n\n**Completed poll does not include cause_title / petitioners / respondents.** It returns the S3 location:\n- `result.extract.url` — presigned GET of the uploaded extract JSON\n- `result.extract.key` — `extractedfiles/.../agent-extract-....json`\n- `result.extract.filing_key` — stable `filings/{agent_data_id}/extract.json`\n- `result.artifacts.extract` — same extract upload (when S3 job artifacts are recorded)\n\nDownload that JSON (or later `GET /v1/filings/{agent_data_id}`) for `data.data.cause_title`, `petitioners`, `respondents`, `relief_sort`.\n\n**Also persist in your DB:**\n- top-level `agent_data_id`\n- `result.parsed_slots`\n- `result.filing_type`\nDo not store markdown; it is already on S3.\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`. On failure the same poll returns HTTP 200 with `status: \"failed\"` and an `error` string."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/extract"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/cccccccc-3333-4333-8333-333333333333\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"extract_only\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": null,\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"cover_page.pdf\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"01_Petition.pdf\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"memo_of_parties\",\n        \"file_id\": \"dfl-memo\",\n        \"filename\": \"memo_of_parties.pdf\",\n        \"name\": \"memo_of_parties.pdf\"\n      },\n      {\n        \"slot_id\": \"vakalatnama_appearance\",\n        \"file_id\": \"dfl-vakalat\",\n        \"filename\": \"vakalatnama.pdf\",\n        \"name\": \"vakalatnama.pdf\"\n      },\n      {\n        \"slot_id\": \"aors_declaration\",\n        \"file_id\": \"dfl-aor\",\n        \"filename\": \"aors_certificate.pdf\",\n        \"name\": \"aors_certificate.pdf\"\n      },\n      {\n        \"slot_id\": \"impugned_order\",\n        \"file_id\": \"dfl-impugned\",\n        \"filename\": \"impugned_order.pdf\",\n        \"name\": \"impugned_order.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"slot_id\": \"cover_page\",\n        \"download_url\": \"https://storage.example/filings/cover_page.pdf\",\n        \"file_id\": \"dfl-cover\"\n      },\n      {\n        \"name\": \"01_Petition.pdf\",\n        \"slot_id\": \"petition\",\n        \"download_url\": \"https://storage.example/filings/01_Petition.pdf\",\n        \"file_id\": \"dfl-petition\"\n      }\n    ],\n    \"extract\": {\n      \"step\": \"extract\",\n      \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"bucket\": \"jubeex-artifacts\",\n      \"filing_key\": \"filings/agd-8f3c1a2b4d5e4f6a/extract.json\"\n    },\n    \"artifacts\": {\n      \"extract\": {\n        \"step\": \"extract\",\n        \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"bucket\": \"jubeex-artifacts\"\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Extract JSON is on S3. Use `result.extract.url`. Persist agent_data_id, parsed_slots, filing_type."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaExtract failed: extract job timed out\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        },
+        {
+          "name": "4 Index after extract",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"edited\": false,\n  \"parsed_slots\": {{parsed_slots}},\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"index.pdf\",\n      \"download_url\": \"https://storage.example/filings/index.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"annexure_p1.pdf\",\n      \"download_url\": \"https://storage.example/filings/annexure_p1.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/index",
+            "description": "`job_type=index_parsed`. Always after extract. Path `agent_data_id` is required.\n\n- `edited: false` — reuse S3 markdown for `parsed_slots`, LlamaParse the rest.\n- `edited: true` / `\"yes\"` — re-download and re-parse **every** PDF in this request. Does **not** re-extract.\n- Echo `parsed_slots` from extract (or omit to fall back to Agent Data metadata).\n- `documents[]` **send order** sets global page numbers. Newly inserted files (index, annexures) shift later pages.\nAfter Pinecone upsert, this job runs the same defect checks as `POST /v1/filings/{agent_data_id}/scrutiny`. Poll until `completed` (`result.report`) or `failed`.\nIf poll `status` is `failed` and `error` is `Unable to run scrutiny defects. Try after some time.`, Pinecone already ran — the application layer must retry **only** the old `POST /v1/filings/{agent_data_id}/scrutiny` API. Do not call `/index` again.\nDoes not change existing `POST /v1/filings` `upload_separate` / `upload_compiled`.\n\n**Example responses:** open this request in Postman and use the **Examples** dropdown (202 Accepted, then the GET /v1/jobs poll body you actually consume).\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`. On failure the same poll returns HTTP 200 with `status: \"failed\"` and an `error` string."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/index"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/dddddddd-4444-4444-8444-444444444444\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"index_parsed\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": {\n      \"schema_name\": \"scrutiny_finding_v1\",\n      \"catalogue_id\": \"sci_registry_defects\",\n      \"catalogue_version\": \"1.0.0\",\n      \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n      \"petition_type\": \"SLP_CIVIL\",\n      \"model\": \"google/gemini-3.8-flash\",\n      \"generated_at\": \"2026-09-15T10:00:18+00:00\",\n      \"planned_checks\": 2,\n      \"stopped_early\": false,\n      \"findings\": [\n        {\n          \"check_id\": \"sci.cover_page.cause_title\",\n          \"serial_no\": 1,\n          \"title\": \"Cause title on cover page\",\n          \"status\": \"compliant\",\n          \"summary\": \"Cover page includes the cause title.\",\n          \"confidence\": 0.92,\n          \"reasoning\": \"The cover page excerpt shows the parties in the matter.\",\n          \"location\": \"Filing page 1 — Cover Page.\",\n          \"evidence\": [\n            {\n              \"page\": 1,\n              \"quote\": \"IN THE MATTER OF\"\n            }\n          ],\n          \"suggested_fix\": null\n        },\n        {\n          \"check_id\": \"sci.vakalatnama.signature\",\n          \"serial_no\": 12,\n          \"title\": \"Vakalatnama signed\",\n          \"status\": \"defect_found\",\n          \"summary\": \"Vakalatnama is missing the advocate signature.\",\n          \"confidence\": 0.88,\n          \"reasoning\": \"The vakalatnama page has the party names but no signed appearance.\",\n          \"location\": \"Filing page 40 — Vakalatnama.\",\n          \"suggested_fix\": \"Obtain a signed Vakalatnama and refile.\",\n          \"evidence\": [\n            {\n              \"page\": 40,\n              \"quote\": \"VAKALATNAMA\"\n            }\n          ]\n        }\n      ],\n      \"summary\": {\n        \"total_defects\": 2,\n        \"defects_found\": 1,\n        \"compliant\": 1,\n        \"needs_review\": 0,\n        \"not_determined\": 0,\n        \"not_applicable\": 0,\n        \"overall_confidence\": 0.9\n      }\n    },\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"index\",\n        \"file_id\": \"dfl-index\",\n        \"name\": \"index.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"annexure_p1\",\n        \"file_id\": \"dfl-ann\",\n        \"name\": \"annexure_p1.pdf\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Pinecone upserted and defects ran. Defect report is `result.report`."
+            },
+            {
+              "name": "Poll failed — job error",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Pinecone upsert failed\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Poll failed — scrutiny down (retry old scrutiny API only)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\"\n  },\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Pinecone already ran. Do not re-run /index. Later call only POST /v1/filings/{agent_data_id}/scrutiny."
+            }
+          ]
+        },
+        {
+          "name": "Poll job (after any 202)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.agent_data_id) {",
+                  "    pm.collectionVariables.set('agent_data_id', json.agent_data_id);",
+                  "  }",
+                  "  const result = json.result || {};",
+                  "  if (result.agent_data_id) {",
+                  "    pm.collectionVariables.set('agent_data_id', result.agent_data_id);",
+                  "  }",
+                  "  if (Array.isArray(result.parsed_slots) && result.parsed_slots.length) {",
+                  "    pm.collectionVariables.set('parsed_slots', JSON.stringify(result.parsed_slots));",
+                  "  }",
+                  "  if (result.filing_type) {",
+                  "    pm.collectionVariables.set('filing_type', result.filing_type);",
+                  "  }",
+                  "  pm.test('status is running, completed, or failed', function () {",
+                  "    pm.expect(['running', 'completed', 'failed']).to.include(json.status);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
+            "description": "Poll until `status` is `completed` or `failed`. HTTP is always 200 while the job exists (404 only if `job_id` is unknown).\n\n**In progress:** `status` is `running`. `result`, `agent_data_id`, `error`, and `completed_at` are null. Keep polling.\n**Failed:** `status` is `failed`. Read `error`. Stop polling.\n**Completed extract:** `result.extract.url` / `result.extract.key` point at the S3 extract JSON.\n**Completed index:** `result.report` is the defect report.\nIf index fails with `Unable to run scrutiny defects. Try after some time.`, retry only `POST /v1/filings/{agent_data_id}/scrutiny`.\n"
+          },
+          "response": [
+            {
+              "name": "In progress (still running)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Split in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Split completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"split_petition\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": null,\n    \"parsed_slots\": [],\n    \"report\": null,\n    \"match\": null,\n    \"filename\": \"Main_Petition.pdf\",\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"label\": \"Cover Page\",\n        \"page_span\": \"p. 1\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"Cover_Page.pdf\",\n        \"name\": \"Cover_Page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"label\": \"Main Petition\",\n        \"page_span\": \"pp. 2–18\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"Main_Petition.pdf\",\n        \"name\": \"Main_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"undefined\",\n        \"label\": \"Undefined\",\n        \"page_span\": \"pp. 19–21\",\n        \"file_id\": \"dfl-undefined\",\n        \"filename\": \"Undefined.pdf\",\n        \"name\": \"Undefined.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"Main_Petition.pdf\",\n        \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n        \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\",\n        \"file_id\": \"dfl-bundle\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings/split-petition."
+            },
+            {
+              "name": "Split failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaSplit failed: unable to split Main_Petition.pdf\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Verify in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Verify document completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"DocumentsVerified\",\n    \"match\": false,\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"match\": true\n      },\n      {\n        \"name\": \"vakalatnama.pdf\",\n        \"match\": true\n      },\n      {\n        \"name\": \"impugned_order.pdf\",\n        \"match\": false\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings/verify-document. Slim `result` only."
+            },
+            {
+              "name": "Verify failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"bbbbbbbb-2222-4222-8222-222222222222\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Unable to download document: cover_page.pdf\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Extract in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Extract completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"extract_only\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": null,\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"cover_page.pdf\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"01_Petition.pdf\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"memo_of_parties\",\n        \"file_id\": \"dfl-memo\",\n        \"filename\": \"memo_of_parties.pdf\",\n        \"name\": \"memo_of_parties.pdf\"\n      },\n      {\n        \"slot_id\": \"vakalatnama_appearance\",\n        \"file_id\": \"dfl-vakalat\",\n        \"filename\": \"vakalatnama.pdf\",\n        \"name\": \"vakalatnama.pdf\"\n      },\n      {\n        \"slot_id\": \"aors_declaration\",\n        \"file_id\": \"dfl-aor\",\n        \"filename\": \"aors_certificate.pdf\",\n        \"name\": \"aors_certificate.pdf\"\n      },\n      {\n        \"slot_id\": \"impugned_order\",\n        \"file_id\": \"dfl-impugned\",\n        \"filename\": \"impugned_order.pdf\",\n        \"name\": \"impugned_order.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"slot_id\": \"cover_page\",\n        \"download_url\": \"https://storage.example/filings/cover_page.pdf\",\n        \"file_id\": \"dfl-cover\"\n      },\n      {\n        \"name\": \"01_Petition.pdf\",\n        \"slot_id\": \"petition\",\n        \"download_url\": \"https://storage.example/filings/01_Petition.pdf\",\n        \"file_id\": \"dfl-petition\"\n      }\n    ],\n    \"extract\": {\n      \"step\": \"extract\",\n      \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"bucket\": \"jubeex-artifacts\",\n      \"filing_key\": \"filings/agd-8f3c1a2b4d5e4f6a/extract.json\"\n    },\n    \"artifacts\": {\n      \"extract\": {\n        \"step\": \"extract\",\n        \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"bucket\": \"jubeex-artifacts\"\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings/extract. Download `result.extract.url`."
+            },
+            {
+              "name": "Extract failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaExtract failed: extract job timed out\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Index in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Index completed (defects in result.report)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"index_parsed\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": {\n      \"schema_name\": \"scrutiny_finding_v1\",\n      \"catalogue_id\": \"sci_registry_defects\",\n      \"catalogue_version\": \"1.0.0\",\n      \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n      \"petition_type\": \"SLP_CIVIL\",\n      \"model\": \"google/gemini-3.8-flash\",\n      \"generated_at\": \"2026-09-15T10:00:18+00:00\",\n      \"planned_checks\": 2,\n      \"stopped_early\": false,\n      \"findings\": [\n        {\n          \"check_id\": \"sci.cover_page.cause_title\",\n          \"serial_no\": 1,\n          \"title\": \"Cause title on cover page\",\n          \"status\": \"compliant\",\n          \"summary\": \"Cover page includes the cause title.\",\n          \"confidence\": 0.92,\n          \"reasoning\": \"The cover page excerpt shows the parties in the matter.\",\n          \"location\": \"Filing page 1 — Cover Page.\",\n          \"evidence\": [\n            {\n              \"page\": 1,\n              \"quote\": \"IN THE MATTER OF\"\n            }\n          ],\n          \"suggested_fix\": null\n        },\n        {\n          \"check_id\": \"sci.vakalatnama.signature\",\n          \"serial_no\": 12,\n          \"title\": \"Vakalatnama signed\",\n          \"status\": \"defect_found\",\n          \"summary\": \"Vakalatnama is missing the advocate signature.\",\n          \"confidence\": 0.88,\n          \"reasoning\": \"The vakalatnama page has the party names but no signed appearance.\",\n          \"location\": \"Filing page 40 — Vakalatnama.\",\n          \"suggested_fix\": \"Obtain a signed Vakalatnama and refile.\",\n          \"evidence\": [\n            {\n              \"page\": 40,\n              \"quote\": \"VAKALATNAMA\"\n            }\n          ]\n        }\n      ],\n      \"summary\": {\n        \"total_defects\": 2,\n        \"defects_found\": 1,\n        \"compliant\": 1,\n        \"needs_review\": 0,\n        \"not_determined\": 0,\n        \"not_applicable\": 0,\n        \"overall_confidence\": 0.9\n      }\n    },\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"index\",\n        \"file_id\": \"dfl-index\",\n        \"name\": \"index.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"annexure_p1\",\n        \"file_id\": \"dfl-ann\",\n        \"name\": \"annexure_p1.pdf\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings/{agent_data_id}/index when OpenRouter succeeded."
+            },
+            {
+              "name": "Index failed — retry old scrutiny API only",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\"\n  },\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Pinecone already ran. Do not re-run /index. Later call only POST /v1/filings/{agent_data_id}/scrutiny."
+            },
+            {
+              "name": "Index failed — job error",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Pinecone upsert failed\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Upload compiled in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Upload compiled completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"upload_compiled\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": null,\n    \"parsed_slots\": [],\n    \"report\": null,\n    \"match\": null,\n    \"filename\": \"Main_Petition.pdf\",\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"label\": \"Cover Page\",\n        \"page_span\": \"p. 1\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"Cover_Page.pdf\",\n        \"name\": \"Cover_Page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"label\": \"Main Petition\",\n        \"page_span\": \"pp. 2–18\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"Main_Petition.pdf\",\n        \"name\": \"Main_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"undefined\",\n        \"label\": \"Undefined\",\n        \"page_span\": \"pp. 19–21\",\n        \"file_id\": \"dfl-undefined\",\n        \"filename\": \"Undefined.pdf\",\n        \"name\": \"Undefined.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"Main_Petition.pdf\",\n        \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n        \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\",\n        \"file_id\": \"dfl-bundle\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings job_type=upload_compiled."
+            },
+            {
+              "name": "Upload compiled failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaSplit failed: compiled PDF has no extractable pages\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Upload separate in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Upload separate completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"upload_separate\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": null,\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"cover_page.pdf\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"01_Petition.pdf\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"memo_of_parties\",\n        \"file_id\": \"dfl-memo\",\n        \"filename\": \"memo_of_parties.pdf\",\n        \"name\": \"memo_of_parties.pdf\"\n      },\n      {\n        \"slot_id\": \"vakalatnama_appearance\",\n        \"file_id\": \"dfl-vakalat\",\n        \"filename\": \"vakalatnama.pdf\",\n        \"name\": \"vakalatnama.pdf\"\n      },\n      {\n        \"slot_id\": \"aors_declaration\",\n        \"file_id\": \"dfl-aor\",\n        \"filename\": \"aors_certificate.pdf\",\n        \"name\": \"aors_certificate.pdf\"\n      },\n      {\n        \"slot_id\": \"impugned_order\",\n        \"file_id\": \"dfl-impugned\",\n        \"filename\": \"impugned_order.pdf\",\n        \"name\": \"impugned_order.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"slot_id\": \"cover_page\",\n        \"download_url\": \"https://storage.example/filings/cover_page.pdf\",\n        \"file_id\": \"dfl-cover\"\n      },\n      {\n        \"name\": \"01_Petition.pdf\",\n        \"slot_id\": \"petition\",\n        \"download_url\": \"https://storage.example/filings/01_Petition.pdf\",\n        \"file_id\": \"dfl-petition\"\n      }\n    ],\n    \"extract\": {\n      \"step\": \"extract\",\n      \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"bucket\": \"jubeex-artifacts\",\n      \"filing_key\": \"filings/agd-8f3c1a2b4d5e4f6a/extract.json\"\n    },\n    \"artifacts\": {\n      \"extract\": {\n        \"step\": \"extract\",\n        \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"bucket\": \"jubeex-artifacts\"\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings job_type=upload_separate."
+            },
+            {
+              "name": "Upload separate failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaExtract failed: extract job timed out\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            },
+            {
+              "name": "Scrutiny in progress",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Scrutiny completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"ScrutinyResponse\",\n    \"report\": {\n      \"schema_name\": \"scrutiny_finding_v1\",\n      \"catalogue_id\": \"sci_registry_defects\",\n      \"catalogue_version\": \"1.0.0\",\n      \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n      \"petition_type\": \"SLP_CIVIL\",\n      \"model\": \"google/gemini-3.8-flash\",\n      \"generated_at\": \"2026-09-15T10:00:18+00:00\",\n      \"planned_checks\": 2,\n      \"stopped_early\": false,\n      \"findings\": [\n        {\n          \"check_id\": \"sci.cover_page.cause_title\",\n          \"serial_no\": 1,\n          \"title\": \"Cause title on cover page\",\n          \"status\": \"compliant\",\n          \"summary\": \"Cover page includes the cause title.\",\n          \"confidence\": 0.92,\n          \"reasoning\": \"The cover page excerpt shows the parties in the matter.\",\n          \"location\": \"Filing page 1 — Cover Page.\",\n          \"evidence\": [\n            {\n              \"page\": 1,\n              \"quote\": \"IN THE MATTER OF\"\n            }\n          ],\n          \"suggested_fix\": null\n        },\n        {\n          \"check_id\": \"sci.vakalatnama.signature\",\n          \"serial_no\": 12,\n          \"title\": \"Vakalatnama signed\",\n          \"status\": \"defect_found\",\n          \"summary\": \"Vakalatnama is missing the advocate signature.\",\n          \"confidence\": 0.88,\n          \"reasoning\": \"The vakalatnama page has the party names but no signed appearance.\",\n          \"location\": \"Filing page 40 — Vakalatnama.\",\n          \"suggested_fix\": \"Obtain a signed Vakalatnama and refile.\",\n          \"evidence\": [\n            {\n              \"page\": 40,\n              \"quote\": \"VAKALATNAMA\"\n            }\n          ]\n        }\n      ],\n      \"summary\": {\n        \"total_defects\": 2,\n        \"defects_found\": 1,\n        \"compliant\": 1,\n        \"needs_review\": 0,\n        \"not_determined\": 0,\n        \"not_applicable\": 0,\n        \"overall_confidence\": 0.9\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "After POST /v1/filings/{agent_data_id}/scrutiny. Report is `result.report`."
+            },
+            {
+              "name": "Scrutiny failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Legacy process filing",
+      "description": "Existing `POST /v1/filings`. Unchanged. Prefer folder 02 for the new frontend flow. These jobs also poll: each has 202, in progress, completed, and failed examples.",
+      "item": [
+        {
+          "name": "Upload compiled PDF",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_compiled\",\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"Defect_SLP_Civil.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Defect_SLP_Civil.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "`job_type=upload_compiled`. Classify (unless filing_type is already a slice catalog), LlamaSplit, slice slot PDFs, then stop. Parse/extract wait for submit or use upload_separate / extract.\n\nPoll `GET /v1/jobs/{job_id}` until `completed` or `failed`. While working: HTTP 200, `status: \"running\"`, `result: null`. On failure: HTTP 200, `status: \"failed\"`, read `error`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/eeeeeeee-5555-4555-8555-555555555555\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"upload_compiled\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": null,\n    \"parsed_slots\": [],\n    \"report\": null,\n    \"match\": null,\n    \"filename\": \"Main_Petition.pdf\",\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"label\": \"Cover Page\",\n        \"page_span\": \"p. 1\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"Cover_Page.pdf\",\n        \"name\": \"Cover_Page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"label\": \"Main Petition\",\n        \"page_span\": \"pp. 2–18\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"Main_Petition.pdf\",\n        \"name\": \"Main_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"undefined\",\n        \"label\": \"Undefined\",\n        \"page_span\": \"pp. 19–21\",\n        \"file_id\": \"dfl-undefined\",\n        \"filename\": \"Undefined.pdf\",\n        \"name\": \"Undefined.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"Main_Petition.pdf\",\n        \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n        \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\",\n        \"file_id\": \"dfl-bundle\"\n      }\n    ]\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Split/sliced compiled PDF. No extract yet (`agent_data_id` is null). Use `result.parts[]`."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaSplit failed: compiled PDF has no extractable pages\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        },
+        {
+          "name": "Upload separate files (parse + extract + Pinecone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_type\": \"upload_separate\",\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"02_List_of_Dates.pdf\",\n      \"document_id\": \"22bb33cc-44dd-55ee-96ff-778899001122\",\n      \"download_url\": \"https://storage.example/filings/02_List_of_Dates.pdf\"\n    },\n    {\n      \"name\": \"03_Annexure_P1_Impugned_Order.pdf\",\n      \"document_id\": \"33cc44dd-55ee-66ff-a700-889900112233\",\n      \"download_url\": \"https://storage.example/filings/03_Annexure_P1_Impugned_Order.pdf\"\n    },\n    {\n      \"name\": \"04_Vakalatnama.pdf\",\n      \"document_id\": \"44dd55ee-66ff-77aa-b811-990011223344\",\n      \"download_url\": \"https://storage.example/filings/04_Vakalatnama.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings",
+            "description": "`job_type=upload_separate`. Already-split files. Parses all slots, extracts, stores Agent Data, **indexes Pinecone**. Stitches pages in **catalog order** (not send order). Prefer `/v1/filings/extract` + `/index` for the new frontend flow.\n\nPoll `GET /v1/jobs/{job_id}` until `completed` or `failed`. While working: HTTP 200, `status: \"running\"`, `result: null`. On failure: HTTP 200, `status: \"failed\"`, read `error`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/ffffffff-6666-4666-8666-666666666666\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"upload_separate\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": null,\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"cover_page.pdf\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"01_Petition.pdf\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"memo_of_parties\",\n        \"file_id\": \"dfl-memo\",\n        \"filename\": \"memo_of_parties.pdf\",\n        \"name\": \"memo_of_parties.pdf\"\n      },\n      {\n        \"slot_id\": \"vakalatnama_appearance\",\n        \"file_id\": \"dfl-vakalat\",\n        \"filename\": \"vakalatnama.pdf\",\n        \"name\": \"vakalatnama.pdf\"\n      },\n      {\n        \"slot_id\": \"aors_declaration\",\n        \"file_id\": \"dfl-aor\",\n        \"filename\": \"aors_certificate.pdf\",\n        \"name\": \"aors_certificate.pdf\"\n      },\n      {\n        \"slot_id\": \"impugned_order\",\n        \"file_id\": \"dfl-impugned\",\n        \"filename\": \"impugned_order.pdf\",\n        \"name\": \"impugned_order.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"slot_id\": \"cover_page\",\n        \"download_url\": \"https://storage.example/filings/cover_page.pdf\",\n        \"file_id\": \"dfl-cover\"\n      },\n      {\n        \"name\": \"01_Petition.pdf\",\n        \"slot_id\": \"petition\",\n        \"download_url\": \"https://storage.example/filings/01_Petition.pdf\",\n        \"file_id\": \"dfl-petition\"\n      }\n    ],\n    \"extract\": {\n      \"step\": \"extract\",\n      \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"bucket\": \"jubeex-artifacts\",\n      \"filing_key\": \"filings/agd-8f3c1a2b4d5e4f6a/extract.json\"\n    },\n    \"artifacts\": {\n      \"extract\": {\n        \"step\": \"extract\",\n        \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"bucket\": \"jubeex-artifacts\"\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Extract + Pinecone finished. Persist `agent_data_id`. Extract JSON is `result.extract.url`."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"ffffffff-6666-4666-8666-666666666666\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaExtract failed: extract job timed out\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Jobs",
+      "item": [
+        {
+          "name": "Get job status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.agent_data_id) pm.collectionVariables.set('agent_data_id', json.agent_data_id);",
+                  "  const result = json.result || {};",
+                  "  if (result.agent_data_id) pm.collectionVariables.set('agent_data_id', result.agent_data_id);",
+                  "  if (Array.isArray(result.parsed_slots) && result.parsed_slots.length) {",
+                  "    pm.collectionVariables.set('parsed_slots', JSON.stringify(result.parsed_slots));",
+                  "  }",
+                  "  pm.test('status is running, completed, or failed', function () {",
+                  "    pm.expect(['running', 'completed', 'failed']).to.include(json.status);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/jobs/{{job_id}}",
+            "description": "Same poll endpoint for every `kind: process_file` and `kind: scrutiny` job. HTTP 200 while the job exists. `status` is `running` (keep polling), `completed`, or `failed` (read `error`)."
+          },
+          "response": [
+            {
+              "name": "In progress (still running)",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Completed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"BundlePrepared\",\n    \"job_type\": \"extract_only\",\n    \"filing_type\": \"SLP_CIVIL\",\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"parsed_slots\": [\n      \"cover_page\",\n      \"petition\",\n      \"vakalatnama_appearance\",\n      \"aors_declaration\",\n      \"impugned_order\"\n    ],\n    \"report\": null,\n    \"match\": null,\n    \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n    \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n    \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n    \"parts\": [\n      {\n        \"slot_id\": \"cover_page\",\n        \"file_id\": \"dfl-cover\",\n        \"filename\": \"cover_page.pdf\",\n        \"name\": \"cover_page.pdf\"\n      },\n      {\n        \"slot_id\": \"petition\",\n        \"file_id\": \"dfl-petition\",\n        \"filename\": \"01_Petition.pdf\",\n        \"name\": \"01_Petition.pdf\"\n      },\n      {\n        \"slot_id\": \"memo_of_parties\",\n        \"file_id\": \"dfl-memo\",\n        \"filename\": \"memo_of_parties.pdf\",\n        \"name\": \"memo_of_parties.pdf\"\n      },\n      {\n        \"slot_id\": \"vakalatnama_appearance\",\n        \"file_id\": \"dfl-vakalat\",\n        \"filename\": \"vakalatnama.pdf\",\n        \"name\": \"vakalatnama.pdf\"\n      },\n      {\n        \"slot_id\": \"aors_declaration\",\n        \"file_id\": \"dfl-aor\",\n        \"filename\": \"aors_certificate.pdf\",\n        \"name\": \"aors_certificate.pdf\"\n      },\n      {\n        \"slot_id\": \"impugned_order\",\n        \"file_id\": \"dfl-impugned\",\n        \"filename\": \"impugned_order.pdf\",\n        \"name\": \"impugned_order.pdf\"\n      }\n    ],\n    \"documents\": [\n      {\n        \"name\": \"cover_page.pdf\",\n        \"slot_id\": \"cover_page\",\n        \"download_url\": \"https://storage.example/filings/cover_page.pdf\",\n        \"file_id\": \"dfl-cover\"\n      },\n      {\n        \"name\": \"01_Petition.pdf\",\n        \"slot_id\": \"petition\",\n        \"download_url\": \"https://storage.example/filings/01_Petition.pdf\",\n        \"file_id\": \"dfl-petition\"\n      }\n    ],\n    \"extract\": {\n      \"step\": \"extract\",\n      \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n      \"bucket\": \"jubeex-artifacts\",\n      \"filing_key\": \"filings/agd-8f3c1a2b4d5e4f6a/extract.json\"\n    },\n    \"artifacts\": {\n      \"extract\": {\n        \"step\": \"extract\",\n        \"url\": \"https://s3.example/org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"key\": \"org/3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11/filing-workspace/b20c7d91-4e55-48aa-a013-9d6e2f88c104/extractedfiles/agd-8f3c1a2b4d5e4f6a-v001-agent-extract-cccccccc.json\",\n        \"bucket\": \"jubeex-artifacts\"\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Example completed extract poll. Other jobs use the same envelope with a different `result`."
+            },
+            {
+              "name": "Failed",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"cccccccc-3333-4333-8333-333333333333\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"LlamaExtract failed: extract job timed out\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Filing record",
+      "item": [
+        {
+          "name": "Get filing by agent_data_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Fetches the extracted record from S3 (`filings/{agent_data_id}/extract.json`). Extracted JSON is in `data.data` (`cause_title`, `petitioners`, `respondents`, `relief_sort`, …). After extract-only, the **completed** job poll only returns the S3 location (`result.extract`); the **running** poll has `result: null`. Use this GET (or the presigned URL) to read the JSON."
+          },
+          "response": [
+            {
+              "name": "Extracted filing",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"collection\": \"jubeex-filing-extraction\",\n  \"data\": {\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n    \"status\": \"pending_review\",\n    \"data\": {\n      \"court\": \"IN THE SUPREME COURT OF INDIA\",\n      \"petition_type\": \"Transfer Petition (Criminal)\",\n      \"cause_title\": {\n        \"title\": \"Anchal Thakur v. Yogesh Kumar\",\n        \"raw_text\": \"Anchal Thakur ...Petitioner\\n\\nVersus\\n\\nYogesh Kumar ...Respondent\",\n        \"confidence\": \"99%\",\n        \"source_part\": \"Cover Page\",\n        \"source_pages\": [\n          3\n        ],\n        \"formatted_title\": \"Anchal Thakur VS Yogesh Kumar\",\n        \"main_petitioner\": \"Anchal Thakur\",\n        \"main_respondent\": \"Yogesh Kumar\"\n      },\n      \"petitioners\": [\n        {\n          \"city\": \"Una\",\n          \"kind\": \"INDIVIDUAL\",\n          \"name\": \"Anchal Thakur\",\n          \"serial\": 1,\n          \"state\": \"Himachal Pradesh\",\n          \"address\": \"R/o VPO Upper Kotla Kalan,\\nDistrict Una, Himachal Pradesh-174303\",\n          \"guardian\": \"D/o Sh. Purshotam Kumar\",\n          \"pin_code\": \"174303\",\n          \"source_part\": \"Memo of Parties\",\n          \"source_pages\": [\n            47\n          ]\n        }\n      ],\n      \"respondents\": [\n        {\n          \"city\": \"Delhi\",\n          \"kind\": \"INDIVIDUAL\",\n          \"name\": \"Yogesh Kumar\",\n          \"serial\": 1,\n          \"address\": \"R/o P8-/157, Mangolpuri,\\nDelhi-110083\",\n          \"guardian\": \"S/o Amresh Kumar\",\n          \"pin_code\": \"110083\",\n          \"source_part\": \"Memo of Parties\",\n          \"source_pages\": [\n            47\n          ]\n        }\n      ],\n      \"relief_sort\": \"a) Grant transfer of the Suit for Damages for Defamation and Permanent Injunction bearing CS DJ/167/2025 titled Yogesh Kumar Vs Anchal Thakur pending before the Ld. Court of District Judge-12, Central, Tis Hazari Court listed on 23.04.2026 to The court of ld. DJ Dehra, HP.\"\n    }\n  }\n}",
+              "description": "Full extracted record. Not returned on extract poll; download `result.extract.url` or call this GET after poll `status` is `completed`."
+            }
+          ]
+        },
+        {
+          "name": "Set review status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}",
+            "description": "Sets Agent Data review status. Allowed: `approved`, `rejected`, `pending_review`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Scrutiny",
+      "description": "Defect check against an extracted filing. Returns 202; poll GET /v1/jobs/{job_id}. Examples include in progress, completed (`result.report`), and failed.",
+      "item": [
+        {
+          "name": "Start scrutiny",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\"\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny",
+            "description": "Runs scrutiny on the extracted Agent Data record. Body is optional (`file_hash`, `file_url`/`download_url`, org/workspace).\nPoll Get job status. Report is `result.report`.\nRejected filings return 409.\nUse this old API after a failed index job whose `error` is `Unable to run scrutiny defects. Try after some time.` Do not re-run `/index`.\n\nPoll `GET /v1/jobs/{job_id}` until `completed` or `failed`. While working: HTTP 200, `status: \"running\"`, `result: null`. On failure: HTTP 200, `status: \"failed\"`, read `error`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/scrutiny"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/77777777-7777-4777-8777-777777777777\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            },
+            {
+              "name": "Poll in progress — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"running\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": null\n}",
+              "description": "Job is still working. HTTP is 200; keep polling. `agent_data_id`, `result`, and `error` are null. `completed_at` is null. Do not treat this as success. Poll again until `status` is `completed` or `failed`."
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"completed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"type\": \"ScrutinyResponse\",\n    \"report\": {\n      \"schema_name\": \"scrutiny_finding_v1\",\n      \"catalogue_id\": \"sci_registry_defects\",\n      \"catalogue_version\": \"1.0.0\",\n      \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n      \"petition_type\": \"SLP_CIVIL\",\n      \"model\": \"google/gemini-3.8-flash\",\n      \"generated_at\": \"2026-09-15T10:00:18+00:00\",\n      \"planned_checks\": 2,\n      \"stopped_early\": false,\n      \"findings\": [\n        {\n          \"check_id\": \"sci.cover_page.cause_title\",\n          \"serial_no\": 1,\n          \"title\": \"Cause title on cover page\",\n          \"status\": \"compliant\",\n          \"summary\": \"Cover page includes the cause title.\",\n          \"confidence\": 0.92,\n          \"reasoning\": \"The cover page excerpt shows the parties in the matter.\",\n          \"location\": \"Filing page 1 — Cover Page.\",\n          \"evidence\": [\n            {\n              \"page\": 1,\n              \"quote\": \"IN THE MATTER OF\"\n            }\n          ],\n          \"suggested_fix\": null\n        },\n        {\n          \"check_id\": \"sci.vakalatnama.signature\",\n          \"serial_no\": 12,\n          \"title\": \"Vakalatnama signed\",\n          \"status\": \"defect_found\",\n          \"summary\": \"Vakalatnama is missing the advocate signature.\",\n          \"confidence\": 0.88,\n          \"reasoning\": \"The vakalatnama page has the party names but no signed appearance.\",\n          \"location\": \"Filing page 40 — Vakalatnama.\",\n          \"suggested_fix\": \"Obtain a signed Vakalatnama and refile.\",\n          \"evidence\": [\n            {\n              \"page\": 40,\n              \"quote\": \"VAKALATNAMA\"\n            }\n          ]\n        }\n      ],\n      \"summary\": {\n        \"total_defects\": 2,\n        \"defects_found\": 1,\n        \"compliant\": 1,\n        \"needs_review\": 0,\n        \"not_determined\": 0,\n        \"not_applicable\": 0,\n        \"overall_confidence\": 0.9\n      }\n    }\n  },\n  \"error\": null,\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "Defect report is `result.report`."
+            },
+            {
+              "name": "Poll failed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
+              "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

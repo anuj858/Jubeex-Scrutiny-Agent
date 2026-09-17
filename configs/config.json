@@ -104,7 +104,7 @@
     "data_schema": {
       "$defs": {
         "AdvocateOnRecord": {
-          "description": "AOR identity. Fill from Vakalatnama, then the signature or DRAWN & FILED BY block on AOR's Certificate (cause title at the top, then CERTIFICATE or C E R T I F I C A T E, then confined-to-pleadings text). Code and mobile only if printed. Not the Advocate's Check List.",
+          "description": "AOR identity. Fill from Vakalatnama first. If Vakalatnama is missing or prints no AOR, fill from the last page of the Main Petition (Drawn By, Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent). Listing Proforma and Advocate's Checklist may fill blanks only; never override Vakalatnama. Then the signature or DRAWN & FILED BY block on AOR's Certificate (cause title at the top, then CERTIFICATE or C E R T I F I C A T E, then confined-to-pleadings text). Code and mobile only if printed.",
           "properties": {
             "name": {
               "anyOf": [
@@ -194,7 +194,7 @@
                 }
               ],
               "default": null,
-              "description": "Vakalatnama or AOR's Certificate (the page headed CERTIFICATE)",
+              "description": "Vakalatnama if present. If Vakalatnama is missing or prints no AOR, Main Petition (last page only). Listing Proforma, Advocate's Checklist, or AOR's Certificate may fill blanks only; never override Vakalatnama.",
               "title": "Source Part"
             },
             "raw_text": {
@@ -261,7 +261,7 @@
                 }
               ],
               "default": null,
-              "description": "Cause title built from Cover Page main names and party counts. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page. Do not invent extra parties.",
+              "description": "Cause title built from Cover Page main names and party counts when Cover Page is in this pack. If Cover Page is missing, use Main Petition petitioner 1 and respondent 1. Each side is 'MainName' if that side has 1 party, 'MainName and Anr.' if that side has exactly 2 parties, 'MainName and Ors.' if that side has 3 or more. Join sides with ' VS '. Example: two petitioners and four respondents → 'Meera Krishnan and Anr. VS Union of India and Ors.' Never write [And ors.], [and Anr.], or any square brackets around and Anr./and Ors. Main names come from the Cover Page if present, else the Main Petition caption. Do not invent extra parties.",
               "title": "Formatted Title"
             },
             "raw_text": {
@@ -287,7 +287,7 @@
                 }
               ],
               "default": null,
-              "description": "Main petitioner name as printed on the Cover Page cause-title line.",
+              "description": "Main petitioner name as printed on the Cover Page cause-title line if Cover Page is in this pack. If Cover Page is missing, use petitioner 1 from the Main Petition caption. Cover Page has only this one petitioner. This person must be the same as petitioner 1 on the Main Petition starting pages.",
               "title": "Main Petitioner"
             },
             "main_respondent": {
@@ -300,7 +300,7 @@
                 }
               ],
               "default": null,
-              "description": "Main respondent name as printed on the Cover Page cause-title line.",
+              "description": "Main respondent name as printed on the Cover Page cause-title line if Cover Page is in this pack. If Cover Page is missing, use respondent 1 from the Main Petition caption. Cover Page has only this one respondent. This person must be the same as respondent 1 on the Main Petition starting pages.",
               "title": "Main Respondent"
             },
             "source_part": {
@@ -313,7 +313,7 @@
                 }
               ],
               "default": null,
-              "description": "Split label where the stored title was filled (Memo of Parties or Cover Page).",
+              "description": "Split label where the stored title was filled (Cover Page or Main Petition).",
               "title": "Source Part"
             },
             "source_pages": {
@@ -342,7 +342,7 @@
           "type": "object"
         },
         "ImpugnedOrder": {
-          "description": "The order under challenge. Primary Impugned Order slot only.",
+          "description": "The order under challenge. Fill from the Impugned Order PDF if present; if it is not attached, fill from bracketed particulars on Main Petition, Cover Page, AOR's Certificate, and Affidavit.",
           "properties": {
             "is_primary": {
               "anyOf": [
@@ -458,7 +458,7 @@
                 }
               ],
               "default": null,
-              "description": "Impugned Order",
+              "description": "Impugned Order if that document is in this pack. If it is not attached, Main Petition, Cover Page, AOR's Certificate, or Affidavit — the bracketed particulars on those pages.",
               "title": "Source Part"
             },
             "source_pages": {
@@ -575,7 +575,7 @@
           "type": "object"
         },
         "Party": {
-          "description": "One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1.",
+          "description": "One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present.",
           "properties": {
             "serial": {
               "anyOf": [
@@ -600,7 +600,7 @@
                 }
               ],
               "default": null,
-              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition (and Memo of Parties). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
+              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
               "title": "Kind"
             },
             "name": {
@@ -795,7 +795,7 @@
                 }
               ],
               "default": null,
-              "description": "Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.",
+              "description": "Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.",
               "title": "Source Part"
             },
             "source_pages": {
@@ -836,7 +836,7 @@
             }
           ],
           "default": null,
-          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition, Vakalatnama, and Memo of Parties.",
+          "description": "Court where the petition is filed, as a string. Fill from Cover Page; check spelling on Main Petition and Vakalatnama.",
           "title": "Court"
         },
         "petition_type": {
@@ -849,7 +849,7 @@
             }
           ],
           "default": null,
-          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from Cover Page; check spelling on Main Petition, Vakalatnama, and Memo of Parties.",
+          "description": "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). Fill from the Main Petition cause title first. If not printed there, fill from the Cover Page cause title. Check spelling against the other.",
           "title": "Petition Type"
         },
         "cause_title": {
@@ -862,7 +862,7 @@
             }
           ],
           "default": null,
-          "description": "Cause title representing petitioner vs respondent."
+          "description": "Cause title representing petitioner vs respondent. Fill from Cover Page. If Cover Page is not in this pack, fill from the Main Petition caption and draft formatted_title from party counts."
         },
         "petitioners": {
           "description": "Petitioners. One record per petitioner.",
@@ -881,7 +881,7 @@
           "type": "array"
         },
         "advocates_on_record": {
-          "description": "Advocates-on-Record. Fill from Vakalatnama, then the signature or DRAWN & FILED BY block on AOR's Certificate. That page always has the cause title at the top, then the word CERTIFICATE or C E R T I F I C A T E, then the confined-to-pleadings text. Code and mobile only if printed. Not the Advocate's Check List.",
+          "description": "Advocates-on-Record. Fill from Vakalatnama first. If Vakalatnama is not in this pack or prints no AOR, fill from the last page of the Main Petition (Drawn By, Filed on, DRAWN & FILED BY, or Advocate for Petitioner/Respondent: name and any printed code, mobile, firm, or address). Do not use Main Petition opening or party-list pages. Listing Proforma and Advocate's Checklist may fill blanks only; never override Vakalatnama. Then the signature or DRAWN & FILED BY block on AOR's Certificate. That page always has the cause title at the top, then the word CERTIFICATE or C E R T I F I C A T E, then the confined-to-pleadings text. Code and mobile only if printed.",
           "items": {
             "$ref": "#/$defs/AdvocateOnRecord"
           },
@@ -889,7 +889,7 @@
           "type": "array"
         },
         "impugned_orders": {
-          "description": "Primary impugned order only.",
+          "description": "Primary impugned order only. Fill from the Impugned Order PDF if it is in this pack. If it is not attached, fill from bracketed particulars on the Main Petition cause title, Cover Page, AOR's Certificate, and Affidavit. If the same order appears in several of those, keep the Impugned Order PDF values when present; otherwise keep one consistent set and record mismatches in inconsistencies.",
           "items": {
             "$ref": "#/$defs/ImpugnedOrder"
           },
@@ -919,7 +919,7 @@
             }
           ],
           "default": null,
-          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cover Page main petitioner or main respondent versus Memo of Parties or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". items[].id is '1', '2', …."
+          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cause Title main petitioner or main respondent versus petitioner 1 / respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Also flag when that Cause Title person is missing on those pages, is a different person than petitioner 1 / respondent 1, or is listed on the other side. Extra parties are not a mismatch against Cover Page And Anr/Ors. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Party-name items[].raw_text is Cause Title: \"Name\"; Main Petition: \"Name\". items[].id is '1', '2', …."
         }
       },
       "title": "LegalExtractRecord",
@@ -1045,33 +1045,32 @@
         ],
         "verify": [
           "Main Petition",
-          "Vakalatnama",
-          "Memo of Parties"
+          "Vakalatnama"
         ]
       },
       "petition_type": {
         "fill": [
+          "Main Petition",
           "Cover Page"
         ],
         "verify": [
-          "Main Petition",
-          "Vakalatnama",
-          "Memo of Parties"
+          "Cover Page",
+          "Main Petition"
         ]
       },
       "cause_title": {
         "fill": [
-          "Cover Page"
+          "Cover Page",
+          "Main Petition"
         ],
         "verify": [
-          "Main Petition",
-          "Memo of Parties"
+          "Main Petition"
         ]
       },
       "petitioners": {
         "fill": [
-          "Memo of Parties",
-          "Main Petition"
+          "Main Petition",
+          "Cover Page"
         ],
         "verify": [
           "Main Petition",
@@ -1080,8 +1079,8 @@
       },
       "respondents": {
         "fill": [
-          "Memo of Parties",
-          "Main Petition"
+          "Main Petition",
+          "Cover Page"
         ],
         "verify": [
           "Main Petition",
@@ -1091,12 +1090,19 @@
       "advocates_on_record": {
         "fill": [
           "Vakalatnama",
-          "AOR's Certificate"
+          "Main Petition",
+          "AOR's Certificate",
+          "Listing Proforma",
+          "Advocate's Checklist"
         ]
       },
       "impugned_orders": {
         "fill": [
-          "Impugned Order"
+          "Impugned Order",
+          "Main Petition",
+          "Cover Page",
+          "AOR's Certificate",
+          "Affidavit"
         ]
       },
       "relief_sort": {

@@ -422,3 +422,220 @@ async def test_prepare_extracted_filing_normalizes_llamaextract_error(
     await prepare_extracted_filing_for_scrutiny("agd-err-1")
     assert stored["status"] == "pending_review"
     assert stored["metadata"]["extract_status"] == "error"
+
+
+def _doc(name: str, url: str = "https://example.com/file.pdf") -> dict[str, str]:
+    return {"name": name, "download_url": url}
+
+
+def test_serialize_verify_result_is_only_match_documents() -> None:
+    from extraction_review.api import _serialize_result
+
+    payload = _serialize_result(
+        BundlePrepared(
+            filing_type="SLP_CIVIL",
+            match=False,
+            verified_documents=[
+                {"name": "cover_page.pdf", "match": True},
+                {"name": "vakalatnama.pdf", "match": False},
+            ],
+            result={"match": False, "documents": []},
+        )
+    )
+    assert payload == {
+        "type": "DocumentsVerified",
+        "match": False,
+        "documents": [
+            {"name": "cover_page.pdf", "match": True},
+            {"name": "vakalatnama.pdf", "match": False},
+        ],
+    }
+
+
+def test_catalog_lists_new_job_types(client: TestClient) -> None:
+    body = client.get("/v1/catalog").json()
+    for job_type in (
+        "split_petition",
+        "verify_document",
+        "extract_only",
+        "index_parsed",
+    ):
+        assert job_type in body["job_types"]
+
+
+def test_split_petition_requires_filing_type(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/split-petition",
+        json={"documents": [_doc("Main_Petition.pdf")]},
+    )
+    assert response.status_code == 422
+
+
+def test_split_petition_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", parsed_slots=[])
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(prepared),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/split-petition",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("Main_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "job_type") == "split_petition"
+
+
+def test_verify_document_accepts_multiple_files(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        match=False,
+        verified_documents=[
+            {"name": "cover_page.pdf", "match": True},
+            {"name": "vakalatnama.pdf", "match": False},
+        ],
+        result={
+            "match": False,
+            "documents": [
+                {"name": "cover_page.pdf", "match": True},
+                {"name": "vakalatnama.pdf", "match": False},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(verified),
+    )
+    response = client.post(
+        "/v1/filings/verify-document",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("vakalatnama.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    body = polled.json()
+    assert body["status"] == "completed"
+    result = body["result"]
+    assert result["match"] is False
+    names = {item["name"]: item["match"] for item in result["documents"]}
+    assert names["cover_page.pdf"] is True
+    assert names["vakalatnama.pdf"] is False
+    assert result["type"] == "DocumentsVerified"
+    assert set(result.keys()) <= {"type", "match", "documents", "artifacts"}
+    assert {"type", "match", "documents"} <= set(result.keys())
+
+
+def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-extract-1",
+        parsed_slots=["petition", "cover_page"],
+        result="agd-extract-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("01_Petition.pdf"),
+                _doc("cover_page.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "job_type") == "extract_only"
+
+
+def test_index_accepts_edited_yes_and_parsed_slots(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index-1",
+        result="agd-index-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/agd-index-1/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "edited": "yes",
+            "parsed_slots": ["cover_page", "petition"],
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("01_Petition.pdf"),
+                _doc("annexure_p1.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    event = captured["event"]
+    assert getattr(event, "job_type") == "index_parsed"
+    assert getattr(event, "agent_data_id") == "agd-index-1"
+    assert getattr(event, "edited") is True
+    assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
+
+
+def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-index-2")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+    response = client.post(
+        "/v1/filings/agd-index-2/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "edited": False,
+            "parsed_slots": ["petition"],
+            "documents": [_doc("01_Petition.pdf"), _doc("index.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "edited") is False

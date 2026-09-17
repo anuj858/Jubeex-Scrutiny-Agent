@@ -114,47 +114,55 @@ class CauseTitle(BaseModel):
     formatted_title: str | None = Field(
         default=None,
         description=(
-            "Cause title built from Cover Page main names and party counts. "
+            "Cause title built from Cover Page main names and party counts when "
+            "Cover Page is in this pack. If Cover Page is missing, use Main Petition "
+            "petitioner 1 and respondent 1. "
             "Each side is 'MainName' if that side has 1 party, "
             "'MainName and Anr.' if that side has exactly 2 parties, "
             "'MainName and Ors.' if that side has 3 or more. "
             "Join sides with ' VS '. Example: two petitioners and four respondents → "
             "'Meera Krishnan and Anr. VS Union of India and Ors.' "
             "Never write [And ors.], [and Anr.], or any square brackets around "
-            "and Anr./and Ors. Main names come from the Cover Page. "
-            "Do not invent extra parties."
+            "and Anr./and Ors. Main names come from the Cover Page if present, else "
+            "the Main Petition caption. Do not invent extra parties."
         ),
     )
     raw_text: str | None = Field(default=None, description="The cause title verbatim, including '...and others' / '...and another'")
     main_petitioner: str | None = Field(
         default=None,
         description=(
-            "Main petitioner name from the Cover Page cause-title line. "
-            "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Petitioner, Petitioner(s), or leading dots."
+            "Main petitioner name from the Cover Page cause-title line if Cover Page "
+            "is in this pack. If Cover Page is missing, use petitioner 1 from the "
+            "Main Petition caption. The person's or body's name only. Do not include "
+            "And Anr, And Ors, Petitioner, Petitioner(s), or leading dots. Cover Page "
+            "has only this one petitioner. This person must be the same as petitioner 1 "
+            "on the Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
     main_respondent: str | None = Field(
         default=None,
         description=(
-            "Main respondent name from the Cover Page cause-title line. "
-            "The person's or body's name only. Do not include And Anr, And Ors, "
-            "Respondent, Respondent(s), or leading dots."
+            "Main respondent name from the Cover Page cause-title line if Cover Page "
+            "is in this pack. If Cover Page is missing, use respondent 1 from the "
+            "Main Petition caption. The person's or body's name only. Do not include "
+            "And Anr, And Ors, Respondent, Respondent(s), or leading dots. Cover Page "
+            "has only this one respondent. This person must be the same as respondent 1 "
+            "on the Main Petition starting pages (the party list can run 3-4 pages or more)."
         ),
     )
-    source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Memo of Parties or Cover Page).")
+    source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Cover Page or Main Petition).")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Memo of Parties then Main Petition page 1."""
+    """One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
         description=(
             "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition "
-            "(and Memo of Parties). ORGANIZATION if the name has a prefix "
+            "starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix "
             "M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, "
             "or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, "
             "Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. "
@@ -196,7 +204,7 @@ class Party(BaseModel):
         ),
     )
     raw_text: str | None = Field(default=None, description="Verbatim party block as printed, including name, relation, and address lines.")
-    source_part: str | None = Field(default=None, description="Must be Memo of Parties or Main Petition. Never Vakalatnama or Cover Page.")
+    source_part: str | None = Field(default=None, description="Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -214,7 +222,7 @@ class Party(BaseModel):
 
 
 class AdvocateOnRecord(BaseModel):
-    """AOR identity. Fill from Vakalatnama then AOR's Certificate."""
+    """AOR identity. Fill from Vakalatnama; if none, Main Petition last page."""
     name: str | None = Field(default=None, description="AOR name")
     registration_number: str | None = Field(default=None, description="AOR code / registration number. Extract verbatim.")
     email: str | None = Field(default=None, description="AOR email ONLY if printed")
@@ -224,11 +232,14 @@ class AdvocateOnRecord(BaseModel):
     source_part: str | None = Field(
         default=None,
         description=(
-            "Vakalatnama or AOR's Certificate. AOR's Certificate always has the cause "
-            "title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
-            "then Certified that / CERTIFIED that the petition is confined only to the "
-            "pleadings below. Take name from the signature or DRAWN & FILED BY block; "
-            "take code (CC No.) and mobile only if printed. Not the Advocate's Check List."
+            "Vakalatnama if present. If Vakalatnama is missing or prints no AOR, "
+            "Main Petition (last page only). Listing Proforma, Advocate's Checklist, "
+            "or AOR's Certificate may fill blanks only; never override Vakalatnama. "
+            "AOR's Certificate always has the cause title at the top, then the word "
+            "CERTIFICATE (or C E R T I F I C A T E), then Certified that / CERTIFIED "
+            "that the petition is confined only to the pleadings below. Take name from "
+            "the signature or DRAWN & FILED BY block; take code (CC No.) and mobile "
+            "only if printed."
         ),
     )
     raw_text: str | None = Field(default=None, description="Verbatim AOR block as printed, including name, address, email, and contact.")
@@ -245,7 +256,7 @@ class AdvocateOnRecord(BaseModel):
 
 
 class ImpugnedOrder(BaseModel):
-    """The order under challenge. Primary Impugned Order slot only."""
+    """The order under challenge. Impugned Order PDF first; else bracketed captions."""
     model_config = ConfigDict(populate_by_name=True)
 
     is_primary: bool | None = Field(default=True, description="True for the Impugned Order slot. Do not invent extra annexure orders.")
@@ -256,7 +267,14 @@ class ImpugnedOrder(BaseModel):
     certified_copy_applied_on: str | None = Field(default=None, description="Date the certified copy was applied for")
     certified_copy_obtained_on: str | None = Field(default=None, description="Date it was obtained")
     raw_text: str | None = Field(default=None, description="Verbatim impugned-order identification as printed.")
-    source_part: str | None = Field(default=None, description="Impugned Order")
+    source_part: str | None = Field(
+        default=None,
+        description=(
+            "Impugned Order if that document is in this pack. If it is not attached, "
+            "Main Petition, Cover Page, AOR's Certificate, or Affidavit — the "
+            "bracketed particulars on those pages."
+        ),
+    )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -320,8 +338,7 @@ class LegalExtractRecord(BaseModel):
         default=None,
         description=(
             "Court where the petition is filed, as a string. "
-            "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "and Memo of Parties."
+            "Fill from Cover Page; check spelling on Main Petition and Vakalatnama."
         ),
     )
     petition_type: str | None = Field(
@@ -329,24 +346,45 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Petition type as printed, e.g. Special Leave Petition (Civil), Civil Appeal, "
             "Writ Petition (Criminal), or Miscellaneous Application. "
-            "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "and Memo of Parties."
+            "Fill from the Main Petition cause title first. If not printed there, fill "
+            "from the Cover Page cause title. Check spelling against the other."
         ),
     )
-    cause_title: CauseTitle | None = Field(default=None, description="Cause title representing petitioner vs respondent.")
+    cause_title: CauseTitle | None = Field(
+        default=None,
+        description=(
+            "Cause title representing petitioner vs respondent. Fill from Cover Page. "
+            "If Cover Page is not in this pack, fill from the Main Petition caption "
+            "and draft formatted_title from party counts."
+        ),
+    )
     petitioners: list[Party] = Field(default_factory=list, description="Petitioners. One record per petitioner.")
     respondents: list[Party] = Field(default_factory=list, description="Respondents. One record per respondent.")
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocates-on-Record. Fill from Vakalatnama, then the signature or "
-            "DRAWN & FILED BY block on AOR's Certificate. That page always has the "
-            "cause title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
-            "then the confined-to-pleadings text. Code and mobile only if printed. "
-            "Not the Advocate's Check List."
+            "Advocates-on-Record. Fill from Vakalatnama first. If Vakalatnama is not "
+            "in this pack or prints no AOR, fill from the last page of the Main Petition "
+            "(Drawn By, Filed on, DRAWN & FILED BY, or Advocate for Petitioner/Respondent: "
+            "name and any printed code, mobile, firm, or address). Do not use Main Petition "
+            "opening or party-list pages. Listing Proforma and Advocate's Checklist may "
+            "fill blanks only; never override Vakalatnama. AOR's Certificate signature "
+            "or DRAWN & FILED BY may also fill blanks. That page always has the cause "
+            "title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
+            "then the confined-to-pleadings text. Code and mobile only if printed."
         ),
     )
-    impugned_orders: list[ImpugnedOrder] = Field(default_factory=list, description="Primary impugned order only.")
+    impugned_orders: list[ImpugnedOrder] = Field(
+        default_factory=list,
+        description=(
+            "Primary impugned order only. Fill from the Impugned Order PDF if it is in "
+            "this pack. If it is not attached, fill from bracketed particulars on the "
+            "Main Petition cause title, Cover Page, AOR's Certificate, and Affidavit. "
+            "If the same order appears in several of those, keep the Impugned Order PDF "
+            "values when present; otherwise keep one consistent set and record mismatches "
+            "in inconsistencies."
+        ),
+    )
     relief_sort: str | None = Field(
         default=None,
         description=(
@@ -363,10 +401,16 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Spelling mismatches between fill and verify sources, plus an ORGANIZATION "
             "party with no acting_through. Always include a letter-level mismatch of "
-            "the Cover Page main petitioner or main respondent versus Memo of Parties "
-            "or the Main Petition (e.g. Shalija vs Shailja). Extra parties are not a "
-            "mismatch against Cover Page And Anr/Ors. Party-name items[].raw_text is "
-            'Cover Page: "Name"; Main Petition / Memo of Parties: "Name". '
+            "the Cause Title main petitioner or main respondent versus petitioner 1 / "
+            "respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). "
+            "Cover Page has only one name per side; extra parties continue on later "
+            "starting pages. Also flag when that Cause Title person is missing on those "
+            "pages, is a different person than petitioner 1 / respondent 1, or is listed "
+            "on the other side. Extra parties are not a mismatch against Cover Page "
+            "And Anr/Ors. Also record Impugned Order case number, date, or forum "
+            "mismatches across Impugned Order, Main Petition, Cover Page, AOR's "
+            "Certificate, and Affidavit. Party-name items[].raw_text "
+            'is Cause Title: "Name"; Main Petition: "Name". '
             "items[].id is '1', '2', …."
         ),
     )

@@ -14,6 +14,7 @@ import io
 import logging
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
@@ -33,18 +34,13 @@ from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import slice_bundle_pdf
+from .bundle_slicer import map_slot_pages, slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
     SplitConfig,
     dump_api_configuration,
     with_config_identity,
-)
-from .llama_usage import (
-    collect_optional_usage,
-    summarize_llamacloud_usage,
-    usage_status_message,
 )
 from .document_parts import page_parts_from_split, parts_on_page
 from .job_timing import (
@@ -54,6 +50,11 @@ from .job_timing import (
     timing_payload,
     timing_status_message,
     uploaded_filename,
+)
+from .llama_usage import (
+    collect_optional_usage,
+    summarize_llamacloud_usage,
+    usage_status_message,
 )
 from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import (
@@ -128,6 +129,10 @@ SPLIT_DONE_STATUSES = frozenset({"COMPLETED", "SUCCESS"})
 SPLIT_FAILED_STATUSES = frozenset({"FAILED", "CANCELLED", "CANCELED", "ERROR"})
 FILE_DOWNLOAD_TIMEOUT_S = 120.0
 FULL_PETITION_SLOTS = frozenset({"fullpetition", "full_petition", "compiled"})
+PETITION_SPLIT_JOB_TYPES = frozenset({"split_petition"})
+VERIFY_JOB_TYPES = frozenset({"verify_document"})
+EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
+INDEX_JOB_TYPES = frozenset({"index_parsed"})
 FULL_JOB_TYPES = frozenset(
     {
         "full",
@@ -138,10 +143,18 @@ FULL_JOB_TYPES = frozenset(
         "upload_full",
         "upload_bundle",
     }
-)
+) | PETITION_SPLIT_JOB_TYPES
 SPLIT_JOB_TYPES = frozenset(
     {"split", "parts", "upload_separate", "upload_split"}
-)
+) | EXTRACT_ONLY_JOB_TYPES | INDEX_JOB_TYPES
+CATALOG_JOB_TYPES = [
+    "upload_compiled",
+    "upload_separate",
+    "split_petition",
+    "verify_document",
+    "extract_only",
+    "index_parsed",
+]
 DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
 SWAGGER_PLACEHOLDERS = frozenset({"string", "str", "none", "null"})
 _ANNEXURE_SLOT_RE = re.compile(r"annexure_p_?(\d+)")
@@ -235,7 +248,20 @@ def normalize_job_type(value: str | None) -> str | None:
         return "full"
     if raw in SPLIT_JOB_TYPES:
         return "split"
+    if raw in VERIFY_JOB_TYPES:
+        return "verify"
     return None
+
+
+def parse_edited_flag(value: object) -> bool:
+    """Accept true/false, yes/no, 1/0 for the index ``edited`` flag."""
+    if value is None or value == "":
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return str(value).strip().lower() in _TRUTHY | {"yes"}
 
 
 def normalize_petitiontype(value: str | None) -> str | None:
@@ -400,6 +426,28 @@ def resolve_compiled_filing_type(
     )
 
 
+def split_labels_match_expected_slot(
+    *,
+    expected_slot: str | None,
+    catalog: Any,
+    page_parts: Mapping[int, Sequence[str] | str | None],
+) -> bool:
+    """True when LlamaSplit's dominant known slot is the named document type."""
+    expected = (expected_slot or "").strip()
+    if not expected or expected == UNDEFINED_SLOT_ID:
+        return False
+    pages_by_slot = map_slot_pages(catalog, page_parts)
+    counts = {
+        slot_id: len(pages)
+        for slot_id, pages in pages_by_slot.items()
+        if pages and slot_id != UNDEFINED_SLOT_ID
+    }
+    if not counts:
+        return False
+    dominant = max(counts, key=lambda slot_id: (counts[slot_id], slot_id))
+    return dominant == expected
+
+
 def compiled_catalog_override(filing_type: str | None) -> Any | None:
     """Return a slice catalog when the caller already sent a usable filing_type."""
     key = (filing_type or "").strip()
@@ -537,6 +585,9 @@ class FileEvent(StartEvent):
         default_factory=list,
         validation_alias=AliasChoices("documents", "parts"),
     )
+    edited: bool | None = None
+    parsed_slots: list[str] = Field(default_factory=list)
+    agent_data_id: str | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -559,6 +610,8 @@ class FileEvent(StartEvent):
             params["file_url"] = params.pop("download_url")
         if "filename" not in params and "name" in params:
             params["filename"] = params.pop("name")
+        if "edited" in params:
+            params["edited"] = parse_edited_flag(params.get("edited"))
         super().__init__(**params)
 
     @property
@@ -583,27 +636,28 @@ class FileEvent(StartEvent):
     @model_validator(mode="after")
     def _require_file_id_or_url(self) -> FileEvent:
         mode = intake_mode(self)
+        slot_mode = "split" if mode == "verify" else mode
         resolved: list[FilingPartIn] = []
         for item in self.documents:
             resolved.append(
                 item.model_copy(
                     update={
                         "slot_id": resolve_document_slot(
-                            item, mode=mode, filing_type=self.filing_type
+                            item, mode=slot_mode, filing_type=self.filing_type
                         )
                     }
                 )
             )
         self.documents = resolved
-        if mode == "split":
+        job = (self.job_type or "").strip().lower()
+        if job in PETITION_SPLIT_JOB_TYPES and not (self.filing_type or "").strip():
+            raise ValueError("filing_type is required when job_type is split_petition")
+        if mode in {"split", "verify"}:
+            label = "upload_separate" if mode == "split" else "verify_document"
             if not self.documents:
-                raise ValueError(
-                    "documents[] is required when job_type is upload_separate"
-                )
+                raise ValueError(f"documents[] is required when job_type is {label}")
             if not (self.filing_type or "").strip():
-                raise ValueError(
-                    "filing_type is required when job_type is upload_separate"
-                )
+                raise ValueError(f"filing_type is required when job_type is {label}")
             try:
                 catalog = type_catalog(self.filing_type)
             except SplitUploadError as exc:
@@ -620,6 +674,12 @@ class FileEvent(StartEvent):
                     slot = UNDEFINED_SLOT_ID
                 coerced.append(item.model_copy(update={"slot_id": slot}))
             self.documents = coerced
+            if mode == "verify":
+                return self
+            if job in INDEX_JOB_TYPES and not (self.agent_data_id or "").strip():
+                raise ValueError(
+                    "agent_data_id is required when job_type is index_parsed"
+                )
             return self
         file_id, file_url, _name, _hash = compiled_source(self)
         if not file_id and not file_url:
@@ -683,6 +743,11 @@ class SourceDocument(BaseModel):
     file_hash: str | None = None
 
 
+class VerifiedDocument(BaseModel):
+    name: str | None = None
+    match: bool
+
+
 class BundlePrepared(StopEvent):
     filing_type: str
     parts: list[PreparedPart] = Field(default_factory=list)
@@ -698,6 +763,10 @@ class BundlePrepared(StopEvent):
     classify_split_seconds: float | None = None
     timing: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
+    parsed_slots: list[str] = Field(default_factory=list)
+    match: bool | None = None
+    verified_documents: list[VerifiedDocument] = Field(default_factory=list)
+    report: dict[str, Any] | None = None
 
 
 class PrepareState(BaseModel):
@@ -1083,6 +1152,124 @@ async def _upload_sliced_slots(
     return list(await asyncio.gather(*[_one(item) for item in slices]))
 
 
+async def _verify_one_document(
+    client: AsyncLlamaCloud,
+    *,
+    item: FilingPartIn,
+    catalog: Any,
+    split_config: SplitConfig,
+    semaphore: asyncio.Semaphore,
+) -> VerifiedDocument:
+    name = item.filename or item.document_id or item.slot_id
+    expected = (item.slot_id or "").strip()
+    try:
+        async with semaphore:
+            file_id = (item.file_id or "").strip() or None
+            filename = (item.filename or "").strip() or None
+            if not file_id:
+                file_id, _digest, filename = await ingest_remote_file(
+                    client,
+                    item.file_url or "",
+                    filename=filename,
+                    external_file_id=item.document_id or item.file_hash,
+                )
+            page_parts, _job_id = await _split_page_parts(
+                client,
+                file_id=file_id,
+                split_config=split_config,
+                filename=filename or name,
+            )
+        matched = split_labels_match_expected_slot(
+            expected_slot=expected,
+            catalog=catalog,
+            page_parts=page_parts,
+        )
+        return VerifiedDocument(name=name, match=matched)
+    except Exception:
+        logger.exception("Verify failed for %s", name)
+        return VerifiedDocument(name=name, match=False)
+
+
+async def _run_verify_from_file_event(
+    event: FileEvent,
+    ctx: Context[PrepareState],
+    client: AsyncLlamaCloud,
+    split_config: SplitConfig,
+) -> BundlePrepared:
+    filing_type = (event.filing_type or "").strip()
+    catalog = type_catalog(filing_type)
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=f"Verifying {len(event.documents)} named document(s)",
+        )
+    )
+    semaphore = asyncio.Semaphore(slot_upload_concurrency())
+    results = await asyncio.gather(
+        *[
+            _verify_one_document(
+                client,
+                item=item,
+                catalog=catalog,
+                split_config=split_config,
+                semaphore=semaphore,
+            )
+            for item in event.documents
+        ]
+    )
+    documents = list(results)
+    overall = all(item.match for item in documents) if documents else False
+    echo = intake_echo(event)
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"Verified {len(documents)} document(s); overall match={overall}"
+            ),
+        )
+    )
+    return BundlePrepared(
+        filing_type=filing_type,
+        match=overall,
+        verified_documents=documents,
+        job_type=echo["job_type"],
+        organization_id=echo["organization_id"],
+        workspace_id=echo["workspace_id"],
+        user_id=echo["user_id"],
+        result={
+            "match": overall,
+            "documents": [item.model_dump() for item in documents],
+        },
+    )
+
+
+def _nested_split_payload(result: Any) -> dict[str, Any]:
+    item = getattr(result, "result", result)
+    if isinstance(item, dict):
+        agent_data_id = item.get("agent_data_id") or item.get("result")
+        report = item.get("report")
+        if hasattr(report, "model_dump"):
+            report = report.model_dump(mode="json")
+        return {
+            "agent_data_id": str(agent_data_id) if agent_data_id else None,
+            "report": report if isinstance(report, dict) else None,
+        }
+    return {"agent_data_id": str(item) if item else None, "report": None}
+
+
+def _split_result_fields(nested: Any) -> tuple[str | None, dict[str, Any] | None]:
+    if isinstance(nested, dict):
+        agent_data_id = nested.get("agent_data_id") or nested.get("result")
+        report = nested.get("report")
+        if hasattr(report, "model_dump") and not isinstance(report, dict):
+            report = report.model_dump(mode="json")
+        return (
+            str(agent_data_id) if agent_data_id else None,
+            report if isinstance(report, dict) else None,
+        )
+    return (str(nested) if nested else None, None)
+
+
 async def _extract_sliced_parts(
     ctx: Context[PrepareState],
     *,
@@ -1092,7 +1279,17 @@ async def _extract_sliced_parts(
     require_all_slots: bool,
     fallback_file_id: str | None = None,
     classify_split_seconds: float | None = None,
-) -> str | None:
+    parse_scope: str = "all",
+    skip_index: bool = False,
+    skip_extract: bool = False,
+    stitch_in_request_order: bool = False,
+    edited: bool = False,
+    parsed_slots: list[str] | None = None,
+    agent_data_id: str | None = None,
+    reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
+    reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
+    reuse_parse_job_ids: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
 
@@ -1110,13 +1307,22 @@ async def _extract_sliced_parts(
             fallback_file_id=fallback_file_id,
             filename=echo.get("filename") if isinstance(echo, dict) else None,
             classify_split_seconds=classify_split_seconds,
+            parse_scope=parse_scope,
+            skip_index=skip_index,
+            skip_extract=skip_extract,
+            stitch_in_request_order=stitch_in_request_order,
+            edited=edited,
+            parsed_slots=list(parsed_slots or []),
+            agent_data_id=agent_data_id,
+            reuse_pages_by_slot=reuse_pages_by_slot or {},
+            reuse_layouts_by_slot=reuse_layouts_by_slot or {},
+            reuse_parse_job_ids=reuse_parse_job_ids or {},
         )
     )
     async for ev in handler.stream_events():
         ctx.write_event_to_stream(ev)
     result = await handler
-    item_id = getattr(result, "result", result)
-    return str(item_id) if item_id else None
+    return _nested_split_payload(result)
 
 
 async def _run_split_from_file_event(
@@ -1126,13 +1332,68 @@ async def _run_split_from_file_event(
 ) -> BundlePrepared:
     """Ingest labeled URLs and run process-split-files inside this handler."""
     from .process_split_files import SplitPartEvent
+    from .s3_artifacts import download_json_object
+    from .split_upload import (
+        PARSE_ARTIFACT_KEY_KEY,
+        SplitPartInput,
+        load_parse_artifact,
+        resolve_upload_slot,
+        slot_is_extract_source,
+    )
 
     filing_type = (event.filing_type or "").strip()
+    job = (event.job_type or "").strip().lower()
+    prior_file_ids: dict[str, str] = {}
+    parsed_slots = [slot for slot in (event.parsed_slots or []) if slot]
+    reuse_pages: dict[str, dict[str, str]] = {}
+    reuse_layouts: dict[str, dict[str, Any]] = {}
+    reuse_jobs: dict[str, str] = {}
+    agent_data_id = (event.agent_data_id or "").strip() or None
+    if agent_data_id:
+        try:
+            item = await client.beta.agent_data.get(agent_data_id)
+        except Exception as exc:
+            raise ValueError(f"Filing not found: {agent_data_id}") from exc
+        data = item.data if isinstance(getattr(item, "data", None), dict) else {}
+        if hasattr(item.data, "model_dump") and not isinstance(item.data, dict):
+            dumped = item.data.model_dump(mode="json")
+            data = dumped if isinstance(dumped, dict) else {}
+        meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        split_files = meta.get("split_files")
+        if isinstance(split_files, dict):
+            prior_file_ids = {
+                str(slot): str(file_id)
+                for slot, file_id in split_files.items()
+                if slot and file_id
+            }
+        if not parsed_slots:
+            parsed_slots = [
+                str(slot).strip()
+                for slot in (meta.get("parsed_slots") or [])
+                if str(slot).strip()
+            ]
+        artifact = download_json_object(str(meta.get(PARSE_ARTIFACT_KEY_KEY) or ""))
+        _slots, _order, pages_by_slot, job_ids, layouts_by_slot = load_parse_artifact(
+            artifact
+        )
+        reuse_pages = {
+            slot: {str(page): text for page, text in pages.items()}
+            for slot, pages in pages_by_slot.items()
+        }
+        reuse_layouts = {
+            slot: {str(page): payload for page, payload in layout.items()}
+            for slot, layout in layouts_by_slot.items()
+        }
+        reuse_jobs = dict(job_ids)
+        if not parsed_slots:
+            parsed_slots = list(_slots)
+
     ctx.write_event_to_stream(
         Status(
             level="info",
             message=(
-                f"job_type=upload_separate: ingesting {len(event.documents)} file(s)"
+                f"job_type={job or 'upload_separate'}: ingesting "
+                f"{len(event.documents)} file(s)"
             ),
         )
     )
@@ -1144,7 +1405,11 @@ async def _run_split_from_file_event(
             raise ValueError(
                 f"slot_id {slot!r} belongs to job_type upload_compiled, not upload_separate"
             )
-        file_id = (item.file_id or "").strip() or None
+        item_file_id = (item.file_id or "").strip() or None
+        prior_id = prior_file_ids.get(slot) or None
+        edited = bool(event.edited)
+        # Edited filings must re-ingest download_url; cached LlamaCloud ids are stale.
+        file_id = item_file_id if edited else (item_file_id or prior_id)
         filename = (item.filename or "").strip() or None
         file_hash = item.file_hash
         if not file_id:
@@ -1185,13 +1450,45 @@ async def _run_split_from_file_event(
         organization_id=echo["organization_id"],
         workspace_id=echo["workspace_id"],
     )
-    agent_data_id = await _extract_sliced_parts(
+    catalog = type_catalog(filing_type)
+    extract_only = job in EXTRACT_ONLY_JOB_TYPES
+    index_only = job in INDEX_JOB_TYPES
+    edited = bool(event.edited)
+    if extract_only:
+        parsed_slots = []
+        for part in split_parts:
+            slot = resolve_upload_slot(catalog, part.slot_id)
+            names = slot.parts if slot else ()
+            probe = SplitPartInput(
+                slot_id=part.slot_id,
+                file_id=part.file_id or "",
+                document_parts=names,
+            )
+            if slot_is_extract_source(probe, catalog):
+                parsed_slots.append(part.slot_id)
+    parse_scope = "all"
+    if extract_only:
+        parse_scope = "extract_sources"
+    elif index_only:
+        parse_scope = "all" if edited else "unparsed"
+    nested_payload = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
         parts=split_parts,
         echo=echo,
         require_all_slots=False,
+        parse_scope=parse_scope,
+        skip_index=extract_only,
+        skip_extract=index_only,
+        stitch_in_request_order=extract_only or index_only,
+        edited=edited,
+        parsed_slots=parsed_slots,
+        agent_data_id=agent_data_id,
+        reuse_pages_by_slot=reuse_pages if index_only and not edited else {},
+        reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
+        reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},
     )
+    agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [
         PreparedPart(
             slot_id=part.slot_id,
@@ -1211,6 +1508,8 @@ async def _run_split_from_file_event(
         parts=prepared,
         documents=source_docs,
         agent_data_id=agent_data_id,
+        parsed_slots=parsed_slots,
+        report=report,
         **echo,
     )
 
@@ -1235,9 +1534,23 @@ class ProcessFileWorkflow(Workflow):
                 description="Rules for classifying JubeeX filing types",
             ),
         ],
+        split_config: Annotated[
+            SplitConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="split",
+                label="Document Parts",
+                description="LlamaSplit categories for petition bundle parts",
+            ),
+        ],
     ) -> FileClassifiedEvent | BundlePrepared:
-        if intake_mode(event) == "split":
+        mode = intake_mode(event)
+        if mode == "split":
             return await _run_split_from_file_event(event, ctx, llama_cloud_client)
+        if mode == "verify":
+            return await _run_verify_from_file_event(
+                event, ctx, llama_cloud_client, split_config
+            )
 
         file_id, file_url, filename, file_hash_hint = compiled_source(event)
         content_hash: str | None = None

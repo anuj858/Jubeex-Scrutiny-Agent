@@ -1,6 +1,10 @@
 from importlib.metadata import version
+from types import SimpleNamespace
 
 import pytest
+from llama_cloud_fake import FakeLlamaCloudServer
+from workflows.events import StartEvent
+
 from extraction_review.config import (
     EXTRACTED_DATA_COLLECTION,
     JUBEEX_FILING_TYPES,
@@ -10,8 +14,6 @@ from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataRes
 from extraction_review.metadata_workflow import workflow as metadata_workflow
 from extraction_review.process_file import BundlePrepared, FileEvent, Status
 from extraction_review.process_file import workflow as process_file_workflow
-from llama_cloud_fake import FakeLlamaCloudServer
-from workflows.events import StartEvent
 
 FILING_TYPES = set(JUBEEX_FILING_TYPES)
 FAKE_HAS_CLASSIFY_V2 = version("llama-cloud-fake") >= "0.1.1"
@@ -105,3 +107,303 @@ async def test_metadata_workflow() -> None:
     assert result.config["extract"]["config_version"] == "1.0.0"
     assert result.config["split"]["config_version"] == "1.0.0"
     assert result.upload_sliced_slot_pdfs is True
+
+
+@pytest.mark.asyncio
+async def test_split_petition_skips_classify(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeLlamaCloudServer,
+) -> None:
+    monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("extract")),
+    )
+    file_id = fake.files.preload(path="tests/files/test.pdf")
+    handler = process_file_workflow.run(
+        start_event=FileEvent(
+            job_type="split_petition",
+            filing_type="SLP_CIVIL",
+            file_id=file_id,
+        )
+    )
+    classified: list[Status] = []
+    skipped = False
+    async for event in handler.stream_events():
+        if isinstance(event, Status) and event.message.startswith("Classified as "):
+            classified.append(event)
+        if isinstance(event, Status) and "skipping classify" in event.message.lower():
+            skipped = True
+    result = await handler
+    assert skipped is True
+    assert classified == []
+    assert isinstance(result, BundlePrepared)
+    assert result.filing_type == "SLP_CIVIL"
+    assert result.agent_data_id is None
+    assert result.job_type == "split_petition"
+
+
+@pytest.mark.asyncio
+async def test_extract_only_skips_index_and_limits_parse_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeLlamaCloudServer,
+) -> None:
+    monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-extract"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    result = await process_file_workflow.run(
+        start_event=FileEvent(
+            job_type="extract_only",
+            filing_type="SLP_CIVIL",
+            documents=[
+                {
+                    "slot_id": "petition",
+                    "file_id": "dfl-petition",
+                    "name": "01_Petition.pdf",
+                },
+                {
+                    "slot_id": "annexure_p1",
+                    "file_id": "dfl-ann",
+                    "name": "annexure_p1.pdf",
+                },
+            ],
+        )
+    )
+    assert isinstance(result, BundlePrepared)
+    assert captured["skip_index"] is True
+    assert captured["skip_extract"] is False
+    assert captured["parse_scope"] == "extract_sources"
+    assert captured["stitch_in_request_order"] is True
+    assert "petition" in captured["parsed_slots"]
+    assert "annexure_p1" not in captured["parsed_slots"]
+    assert result.report is None
+
+
+@pytest.mark.asyncio
+async def test_index_parsed_reuses_slots_when_not_edited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "document_order": ["petition"],
+            "slots": {
+                "petition": {
+                    "pages": {"1": "kept"},
+                    "parse_job_id": "old-parse",
+                    "layout": {},
+                }
+            },
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition"],
+                        "split_files": {"petition": "dfl-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        parsed_slots=["petition"],
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition",
+                "name": "01_Petition.pdf",
+            },
+            {
+                "slot_id": "index",
+                "file_id": "dfl-index",
+                "name": "index.pdf",
+            },
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+    assert isinstance(result, BundlePrepared)
+    assert captured["skip_extract"] is True
+    assert captured["skip_index"] is False
+    assert captured["parse_scope"] == "unparsed"
+    assert captured["parsed_slots"] == ["petition"]
+    assert captured["stitch_in_request_order"] is True
+    assert "petition" in captured["reuse_pages_by_slot"]
+    assert result.report is None
+
+
+@pytest.mark.asyncio
+async def test_index_parsed_includes_nested_scrutiny_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_extract(_ctx: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "agent_data_id": "agd-index",
+            "report": {
+                "schema_name": "scrutiny_finding_v1",
+                "agent_data_id": "agd-index",
+            },
+        }
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "document_order": ["petition"],
+            "slots": {
+                "petition": {
+                    "pages": {"1": "kept"},
+                    "parse_job_id": "old-parse",
+                    "layout": {},
+                }
+            },
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition"],
+                        "split_files": {"petition": "dfl-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        parsed_slots=["petition"],
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition",
+                "name": "01_Petition.pdf",
+            }
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+    assert isinstance(result, BundlePrepared)
+    assert result.agent_data_id == "agd-index"
+    assert result.report == {
+        "schema_name": "scrutiny_finding_v1",
+        "agent_data_id": "agd-index",
+    }
+
+
+@pytest.mark.asyncio
+async def test_index_edited_reingests_download_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest_calls: list[str] = []
+
+    async def fake_ingest(_client: object, url: str, **kwargs: object) -> tuple[str, str, str]:
+        ingest_calls.append(str(url))
+        return (f"dfl-new-{len(ingest_calls)}", "hash", str(kwargs.get("filename") or ""))
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file.ingest_remote_file",
+        fake_ingest,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "slots": {"petition": {"pages": {"1": "old"}}},
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "split_files": {"petition": "dfl-old-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=True,
+        parsed_slots=["petition"],
+        documents=[
+            {
+                "name": "01_Petition.pdf",
+                "download_url": "https://example.com/petition.pdf",
+            }
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+    assert isinstance(result, BundlePrepared)
+    assert ingest_calls == ["https://example.com/petition.pdf"]
+    assert result.parts[0].file_id == "dfl-new-1"

@@ -91,6 +91,16 @@ export interface Coverage {
   evidence_complete: boolean;
 }
 
+export interface VisualLocalization {
+  page: number | null;
+  document_type?: string | null;
+  marking_type: string;
+  signature_role?: string | null;
+  bounding_boxes?: BoundingBox[];
+  boxes_status?: BoxesStatus;
+  confidence?: number | null;
+}
+
 export interface DefectFinding {
   check_id: string;
   serial_no?: number | string;
@@ -111,6 +121,7 @@ export interface DefectFinding {
   location?: string | null;
   location_source?: string | null;
   evidence_ids?: string[];
+  visual_localizations?: VisualLocalization[];
   coverage: Coverage;
   usage?: LlmUsage | null;
   error?: string | null;

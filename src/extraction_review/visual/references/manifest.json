@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "catalog_version": "legal-visual-references-v1",
+  "privacy_policy": {
+    "contains_only_synthetic_or_sanitized_assets": true,
+    "authenticity_examples": false,
+    "identity_examples": false
+  },
+  "assets": [
+    {
+      "reference_id": "notary-contact-sheet-v1",
+      "filename": "notary-reference-sheet.png",
+      "class_name": "notary_seal",
+      "status": "mixed_positive_and_hard_negative",
+      "expected_role": "unknown",
+      "expected_nearby_wording": ["NOTARY", "GOVERNMENT OF INDIA", "REG. NO.", "BEFORE ME"],
+      "visual_cues": ["circular seal", "notary wording", "registration field", "government wording"],
+      "sha256": "eb880dfbe9af4cc13b6fff50188710b2f84cf7241448fb5f7f00f113c2b4c66c",
+      "approved_for_model_use": true,
+      "contains_personal_data": false
+    },
+    {
+      "reference_id": "advocate-signature-contact-sheet-v1",
+      "filename": "advocate-signature-reference-sheet.png",
+      "class_name": "signature_like_mark",
+      "status": "mixed_positive_and_hard_negative",
+      "expected_role": "advocate",
+      "expected_nearby_wording": ["FILED BY", "ADVOCATE FOR", "COUNSEL FOR"],
+      "visual_cues": ["signature-like strokes", "nearest role label", "filing block"],
+      "sha256": "47a473c29deeb56137f6ba69f0a9a67b6d65ebefbe0b983e7878a8f4e3a517d3",
+      "approved_for_model_use": true,
+      "contains_personal_data": false
+    },
+    {
+      "reference_id": "deponent-signature-contact-sheet-v1",
+      "filename": "deponent-signature-reference-sheet.png",
+      "class_name": "signature_like_mark",
+      "status": "mixed_positive_and_hard_negative",
+      "expected_role": "deponent",
+      "expected_nearby_wording": ["DEPONENT", "VERIFICATION"],
+      "visual_cues": ["signature-like strokes", "nearest deponent label", "verification block"],
+      "sha256": "f744d04e9d908d6a24521671272676c306147aba597857b86cc7cd75a30cc59a",
+      "approved_for_model_use": true,
+      "contains_personal_data": false
+    }
+  ]
+}
