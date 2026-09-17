@@ -23,6 +23,21 @@ def test_client_uses_explicit_env_credentials(monkeypatch) -> None:
     assert kwargs["aws_secret_access_key"] == "secret"
 
 
+def test_client_uses_jubeex_credential_aliases(monkeypatch) -> None:
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    monkeypatch.setenv("JUBEEX_AWS_REGION", "ap-south-1")
+    monkeypatch.setenv("JUBEEX_AWS_ACCESS_KEY_ID", "AKIAALIAS")
+    monkeypatch.setenv("JUBEEX_AWS_SECRET_ACCESS_KEY", "alias-secret")
+    kwargs = _client_kwargs()
+    assert kwargs["region_name"] == "ap-south-1"
+    assert kwargs["aws_access_key_id"] == "AKIAALIAS"
+    assert kwargs["aws_secret_access_key"] == "alias-secret"
+
+
 def test_sqs_disabled_without_env(monkeypatch) -> None:
     monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)

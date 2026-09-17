@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +20,7 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
+from extraction_review.config import Config, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.document_parts import (
     _split_categories,
     explode_repeating_split_parts,
@@ -56,6 +59,7 @@ from extraction_review.process_split_files import (
     parse_create_kwargs,
 )
 from extraction_review.split_upload import (
+    UNDEFINED_SLOT_ID,
     FieldSources,
     SplitPartInput,
     SplitUploadError,
@@ -64,6 +68,7 @@ from extraction_review.split_upload import (
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
+    display_filename,
     extract_source_parts,
     inject_where_to_look,
     ordered_parts,
@@ -83,7 +88,8 @@ def _required_parts(
     omit: set[str] | None = None,
 ) -> list[dict]:
     catalog = type_catalog(filing_type)
-    skip = omit or set()
+    skip = {UNDEFINED_SLOT_ID, "annexures", "applications"}
+    skip.update(omit or ())
     parts = [
         {
             "slot_id": slot.id,
@@ -92,21 +98,92 @@ def _required_parts(
             "filename": f"{slot.id}.pdf",
         }
         for slot in catalog.slots
-        if slot.required and slot.id not in skip
+        if slot.id not in skip
     ]
     if extra:
         parts.extend(extra)
     return parts
 
 
+def test_config_json_has_versioning() -> None:
+    from extraction_review.config import (
+        JUBEEX_FILING_TYPES,
+        JUBEEX_UPLOAD_FILING_TYPES,
+        config_identity,
+        dump_api_configuration,
+        load_config_payload,
+    )
+    from extraction_review.process_file import _split_api_configuration
+    from extraction_review.split_upload import extract_configuration, type_catalog
+
+    path = Path(__file__).resolve().parents[1] / "configs" / "config.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["config_id"] == "jubeex_parse"
+    assert data["schema_version"] == "1.0"
+    assert data["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.0"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.0"
+    assert [rule["type"] for rule in data["classify"]["rules"]] == list(
+        JUBEEX_FILING_TYPES
+    )
+    assert list(data["split_upload"]["types"]) == list(JUBEEX_UPLOAD_FILING_TYPES)
+    assert "schema_version" not in data["classify"]
+    assert "config_version" not in data["classify"]
+    assert "schema_version" not in data["extract-jubeex"]
+    assert "config_version" not in data["extract-jubeex"]
+    assert "schema_version" not in data["split"]
+    assert "config_version" not in data["split"]
+    load_config_payload.cache_clear()
+    config = Config.model_validate(data)
+    assert config.config_id == "jubeex_parse"
+    assert config.schema_version == "1.0"
+    assert config.config_version == "1.0.0"
+    assert config.pipeline_versions.classify.config_version == "1.0.0"
+    assert config.pipeline_versions.extract.config_version == "1.0.0"
+    assert config.pipeline_versions.split.config_version == "1.0.0"
+    classify_sent = dump_api_configuration(config.classify)
+    assert "schema_version" not in classify_sent
+    assert "config_version" not in classify_sent
+    assert classify_sent["mode"] == "FAST"
+    extract_sent = extract_configuration(
+        config.extract_jubeex, type_catalog("SLP_CIVIL")
+    )
+    assert "schema_version" not in extract_sent
+    assert "config_version" not in extract_sent
+    assert config.split is not None
+    split_sent = _split_api_configuration(config.split)
+    assert "schema_version" not in split_sent
+    assert "config_version" not in split_sent
+    assert split_sent["categories"]
+    stamped = config_identity(data)
+    assert stamped["classify"]["config_version"] == "1.0.0"
+    assert stamped["extract"]["config_version"] == "1.0.0"
+    assert stamped["split"]["config_version"] == "1.0.0"
+
+
+def test_classify_dump_strips_unsupported_version_keys() -> None:
+    from extraction_review.config import ClassifyConfig, dump_api_configuration
+
+    dumped = dump_api_configuration(
+        ClassifyConfig.model_validate(
+            {
+                "product_type": "classify_v2",
+                "rules": [{"type": "SLP_CIVIL", "description": "x"}],
+                "mode": "FAST",
+                "schema_version": "1.0",
+                "config_version": "1.0.0",
+            }
+        )
+    )
+    assert "schema_version" not in dumped
+    assert "config_version" not in dumped
+    assert dumped["mode"] == "FAST"
+
+
 def test_ui_catalog_is_driven_by_config_types() -> None:
     catalog = ui_catalog()
-    assert set(catalog) == {
-        "SLP_CIVIL",
-        "SLP_CRIMINAL",
-        "TRANSFER_PETITION_CIVIL",
-        "TRANSFER_PETITION_CRIMINAL",
-    }
+    assert set(catalog) == set(JUBEEX_UPLOAD_FILING_TYPES)
     assert catalog["SLP_CIVIL"]["label"] == "SLP (Civil)"
     assert catalog["TRANSFER_PETITION_CIVIL"]["label"] == "Transfer Petition (Civil)"
     assert catalog["TRANSFER_PETITION_CRIMINAL"]["label"] == (
@@ -124,7 +201,8 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert "court_fees" not in tp_criminal_ids
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
-    assert "filing_memo" not in civil_ids
+    assert "filing_memo" in civil_ids
+    assert "filing_memo" in criminal_ids
     assert "annexure_p1" in civil_ids
     assert "application_1" in civil_ids
     assert "annexures" not in civil_ids
@@ -150,16 +228,18 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     criminal_required = {
         slot["id"]: slot["required"] for slot in catalog["SLP_CRIMINAL"]["slots"]
     }
-    assert civil_required["memo_of_parties"] is False
-    assert civil_required["court_fees"] is False
-    assert civil_required["undefined"] is False
-    assert civil_required["petition"] is True
-    assert criminal_required["memo_of_parties"] is False
-    assert criminal_required["vakalatnama_appearance"] is True
-    assert criminal_required["poa_br"] is False
-    assert criminal_required["undefined"] is False
+    assert set(civil_required.values()) == {False}
+    assert set(criminal_required.values()) == {False}
+    assert "memo_of_parties" in civil_required
+    assert "court_fees" in civil_required
+    assert "filing_memo" in civil_required
+    assert "filing_memo" in criminal_required
+    assert "undefined" in civil_required
+    assert "petition" in civil_required
+    assert "vakalatnama_appearance" in criminal_required
+    assert "poa_br" in criminal_required
     assert "court_fees" not in criminal_required
-    assert civil_required["vakalatnama_appearance"] is True
+    assert "vakalatnama_appearance" in civil_required
     assert "memo_of_appearance" not in civil_required
     assert "vakalatnama" not in civil_required
     assert "memo_of_appearance" not in criminal_required
@@ -185,6 +265,21 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert filing_type_label("TRANSFER_PETITION_CRIMINAL") == (
         "Transfer Petition (Criminal)"
     )
+    assert filing_type_label("CIVIL_APPEAL") == "Civil Appeal"
+    assert filing_type_label("MISCELLANEOUS_APPLICATION") == (
+        "Miscellaneous Application"
+    )
+    assert catalog["CIVIL_APPEAL"]["label"] == "Civil Appeal"
+    assert catalog["MISCELLANEOUS_APPLICATION"]["label"] == (
+        "Miscellaneous Application"
+    )
+    assert catalog["REVIEW_PETITION_CIVIL"]["label"] == "Review Petition (Civil)"
+    civil_appeal_ids = [slot["id"] for slot in catalog["CIVIL_APPEAL"]["slots"]]
+    criminal_appeal_ids = [
+        slot["id"] for slot in catalog["CRIMINAL_APPEAL"]["slots"]
+    ]
+    assert "court_fees" in civil_appeal_ids
+    assert "court_fees" not in criminal_appeal_ids
     tp_civil_required = {
         slot["id"]: slot["required"]
         for slot in catalog["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -193,16 +288,16 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
         slot["id"]: slot["required"]
         for slot in catalog["TRANSFER_PETITION_CRIMINAL"]["slots"]
     }
-    assert tp_civil_required["filing_memo"] is True
-    assert tp_civil_required["vakalatnama_appearance"] is True
+    assert set(tp_civil_required.values()) == {False}
+    assert tp_civil_required["filing_memo"] is False
+    assert tp_civil_required["vakalatnama_appearance"] is False
     assert tp_civil_required["memo_of_parties"] is False
     assert tp_civil_required["poa_br"] is False
     assert tp_civil_required["annexure_p1"] is False
     assert tp_civil_required["application_1"] is False
     assert "court_fees" not in tp_civil_required
     assert "filing_memo" not in tp_criminal_required
-    assert tp_criminal_required["vakalatnama_appearance"] is True
-    assert tp_criminal_required["petition"] is True
+    assert set(tp_criminal_required.values()) == {False}
 
 
 def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
@@ -210,10 +305,11 @@ def test_slp_civil_accepts_required_slots_without_optional_annexures() -> None:
     assert catalog.filing_type == "SLP_CIVIL"
     present = {item.slot_id for item in parts}
     assert "annexures" not in present
-    assert "memo_of_parties" not in present
-    assert "court_fees" not in present
-    assert "poa_br" not in present
     assert "undefined" not in present
+    assert "memo_of_parties" in present
+    assert "court_fees" in present
+    assert "filing_memo" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     assert "vakalatnama" not in present
     assert "memo_of_appearance" not in present
@@ -248,8 +344,9 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
     _, parts = validate_parts("SLP_CRIMINAL", _required_parts("SLP_CRIMINAL"))
     present = {item.slot_id for item in parts}
     assert "court_fees" not in present
-    assert "memo_of_parties" not in present
-    assert "poa_br" not in present
+    assert "filing_memo" in present
+    assert "memo_of_parties" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     with pytest.raises(SplitUploadError, match="Unknown slot"):
         validate_parts(
@@ -266,7 +363,7 @@ def test_slp_criminal_omits_court_fees_and_rejects_it() -> None:
         )
 
 
-def test_transfer_petition_civil_requires_filing_memo() -> None:
+def test_transfer_petition_civil_includes_filing_memo() -> None:
     catalog, parts = validate_parts(
         "TRANSFER_PETITION_CIVIL",
         _required_parts("TRANSFER_PETITION_CIVIL"),
@@ -276,13 +373,11 @@ def test_transfer_petition_civil_requires_filing_memo() -> None:
     assert "filing_memo" in present
     assert "court_fees" not in present
     assert "annexures" not in present
-    assert "memo_of_parties" not in present
-    assert "poa_br" not in present
+    assert "memo_of_parties" in present
+    assert "poa_br" in present
     assert "vakalatnama_appearance" in present
     assert "aors_declaration" in present
     extra = [
-        {"slot_id": "memo_of_parties", "file_id": "file-memo-of-parties"},
-        {"slot_id": "poa_br", "file_id": "file-poa-br"},
         {"slot_id": "annexures", "file_id": "file-annexures"},
     ]
     _, with_optional = validate_parts(
@@ -321,9 +416,14 @@ def test_transfer_petition_criminal_omits_filing_memo_and_rejects_it() -> None:
         )
 
 
-def test_missing_required_petition_fails() -> None:
-    with pytest.raises(SplitUploadError, match="Main Petition"):
-        validate_parts("SLP_CIVIL", _required_parts("SLP_CIVIL", omit={"petition"}))
+def test_missing_petition_is_allowed() -> None:
+    catalog, parts = validate_parts(
+        "SLP_CIVIL",
+        _required_parts("SLP_CIVIL", omit={"petition"}),
+    )
+    present = {item.slot_id for item in parts}
+    assert "petition" not in present
+    assert "cover_page" in present
 
 
 def test_compiled_slices_skip_missing_required_slots() -> None:
@@ -341,7 +441,7 @@ def test_compiled_slices_skip_missing_required_slots() -> None:
 
 def test_unknown_filing_type_fails() -> None:
     with pytest.raises(SplitUploadError, match="Unknown filing type"):
-        validate_parts("WRIT_PETITION_CIVIL", [])
+        validate_parts("NOT_A_FILING_TYPE", [])
 
 
 def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
@@ -358,10 +458,9 @@ def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
 
 
 def test_vakalatnama_and_poa_br_are_separate_slots() -> None:
-    extra = [{"slot_id": "poa_br", "file_id": "file-poa-br"}]
     catalog, parts = validate_parts(
         "SLP_CRIMINAL",
-        _required_parts("SLP_CRIMINAL", extra=extra),
+        _required_parts("SLP_CRIMINAL"),
     )
     pages_by_slot = {item.slot_id: {1: f"text for {item.slot_id}"} for item in parts}
     _markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
@@ -465,10 +564,10 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "[Cover Page]" in pack
     assert "[Main Petition]" in pack
     assert "[Memo of Parties]" in pack
-    assert "[Affidavit]" in pack
-    assert "[Office Report on Limitation]" in pack
-    assert "affidavit deponent" in pack
-    assert "office report limitation" in pack
+    assert "[Affidavit]" not in pack
+    assert "[Office Report on Limitation]" not in pack
+    assert "affidavit deponent" not in pack
+    assert "office report limitation" not in pack
     assert "petition first page parties" in pack
     assert "petition prayer page one" in pack
     assert "petition prayer page three" in pack
@@ -491,13 +590,73 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "[Application 1]" not in pack
 
 
+def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_markdown = {
+        1: "cover caption",
+        2: "impugned caption page one",
+        3: "impugned caption page two",
+        4: "impugned judgment body page three",
+        5: "impugned judgment body page four",
+        6: "impugned closing page five",
+        7: "impugned signature page six",
+        8: "vakalatnama first page",
+        9: "vakalatnama middle page",
+        10: "vakalatnama last page one",
+        11: "vakalatnama last page two",
+        12: "checklist yes no",
+        13: "synopsis of the case",
+        14: "list of dates events",
+        15: "filing memo index",
+        16: "memo of appearance advocates",
+    }
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Impugned Order"],
+        3: ["Impugned Order"],
+        4: ["Impugned Order"],
+        5: ["Impugned Order"],
+        6: ["Impugned Order"],
+        7: ["Impugned Order"],
+        8: ["Vakalatnama"],
+        9: ["Vakalatnama"],
+        10: ["Vakalatnama"],
+        11: ["Vakalatnama"],
+        12: ["Advocate's Checklist"],
+        13: ["Synopsis"],
+        14: ["List of Dates & Events"],
+        15: ["Filing Memo"],
+        16: ["Memo of Appearance"],
+    }
+    pack = build_extract_pack_markdown(
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
+    )
+    assert "cover caption" in pack
+    assert "impugned caption page one" in pack
+    assert "impugned caption page two" in pack
+    assert "impugned closing page five" in pack
+    assert "impugned signature page six" in pack
+    assert "impugned judgment body page three" not in pack
+    assert "impugned judgment body page four" not in pack
+    assert "vakalatnama first page" in pack
+    assert "vakalatnama last page one" in pack
+    assert "vakalatnama last page two" in pack
+    assert "vakalatnama middle page" not in pack
+    assert "checklist yes no" not in pack
+    assert "synopsis of the case" not in pack
+    assert "list of dates events" not in pack
+    assert "filing memo index" not in pack
+    assert "memo of appearance advocates" not in pack
+
+
 def test_party_fields_prefer_memo_of_parties_then_petition() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
-        "Office Report on Limitation",
-        "Affidavit",
         "Memo of Parties",
     )
     assert catalog.extract_field_sources["petitioners"] == FieldSources(
@@ -532,9 +691,9 @@ def test_extract_source_parts_include_petition_and_index() -> None:
         "Impugned Order",
         "Vakalatnama",
         "AOR's Certificate",
-        "Affidavit",
-        "Office Report on Limitation",
     }
+    assert "Affidavit" not in parts
+    assert "Office Report on Limitation" not in parts
     assert "Undefined" not in parts
     assert "Index" not in parts
     assert "Listing Proforma" not in parts
@@ -591,6 +750,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     assert "Prefer Memo of Parties" in petitioners
     assert "first page of the Main Petition" in petitioners
     assert "fill it from the other" in petitioners
+    assert "set party names to N/A" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Look only in" not in updated["properties"]["court"]["description"]
     assert schema["properties"]["cause_title"]["description"] == "Cause title."
@@ -602,6 +762,7 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     assert "cause_title: fill Cover Page; verify Main Petition, Memo of Parties" in prompt
     assert "Never use [And ors.] or other square brackets" in prompt
     assert "Copy printed text only" in prompt
+    assert "write N/A" in prompt
     assert "inconsistencies: one item per spelling" in prompt
     assert "Always keep the Cover Page main petitioner/respondent letter mismatch" in prompt
     assert "Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources" in prompt
@@ -619,9 +780,46 @@ def test_overlay_uses_stitched_document_parts() -> None:
     assert "filing_summary" not in payload
     names = [span["name"] for span in payload["documents"]]
     assert "Main Petition" in names
-    assert "Synopsis" in names
-    assert "List of Dates & Events" in names
+    assert "Synopsis + List of Dates & Events" in names
+    assert "Memo of Appearance + Vakalatnama" in names
+    assert "Synopsis" not in names
+    assert "List of Dates & Events" not in names
+    assert "Memo of Appearance" not in names
+    assert "Vakalatnama" not in names
     assert payload["document_counts"]["processed"] == len(payload["documents"])
+
+
+def test_overlay_merges_combined_slots_into_one_document_row() -> None:
+    payload: dict = {}
+    overlay_split_documents(
+        payload,
+        {
+            11: ["Synopsis"],
+            12: ["List of Dates & Events"],
+            13: ["Synopsis", "List of Dates & Events"],
+            48: ["Memo of Appearance", "Vakalatnama"],
+            15: ["Main Petition"],
+        },
+    )
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Synopsis + List of Dates & Events"] == {
+        "name": "Synopsis + List of Dates & Events",
+        "start_page": 11,
+        "end_page": 13,
+    }
+    assert spans["Memo of Appearance + Vakalatnama"] == {
+        "name": "Memo of Appearance + Vakalatnama",
+        "start_page": 48,
+        "end_page": 48,
+    }
+    assert "Synopsis" not in spans
+    assert "List of Dates & Events" not in spans
+    assert "Memo of Appearance" not in spans
+    assert "Vakalatnama" not in spans
+    names = [item["name"] for item in payload["documents"]]
+    assert names.index("Synopsis + List of Dates & Events") < names.index(
+        "Main Petition"
+    )
 
 
 def test_extract_envelope_sets_null_ids_and_stitch_documents() -> None:
@@ -1025,6 +1223,25 @@ def test_bundle_hash_is_stable() -> None:
     assert bundle_file_hash(parts) == bundle_file_hash(list(reversed(parts)))
 
 
+def test_display_filename_prefers_uploaded_bundle_name() -> None:
+    parts = [
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="1",
+            filename="Cover Page.pdf",
+        ),
+        SplitPartInput(
+            slot_id="petition",
+            file_id="2",
+            filename="Main Petition.pdf",
+        ),
+    ]
+    assert (
+        display_filename("SLP_CIVIL", parts, original="Defect_SLP_Civil.pdf")
+        == "Defect_SLP_Civil.pdf"
+    )
+
+
 def test_empty_parse_still_stamps_document_part() -> None:
     catalog, parts = validate_parts(
         "SLP_CRIMINAL",
@@ -1075,16 +1292,15 @@ def test_page_maps_survive_string_keys() -> None:
 @pytest.mark.asyncio
 async def test_metadata_exposes_split_upload_types() -> None:
     result = await metadata_workflow.run(start_event=StartEvent())
-    assert set(result.split_upload_types.keys()) == {
-        "SLP_CIVIL",
-        "SLP_CRIMINAL",
-        "TRANSFER_PETITION_CIVIL",
-        "TRANSFER_PETITION_CRIMINAL",
-    }
+    assert set(result.split_upload_types.keys()) == set(JUBEEX_UPLOAD_FILING_TYPES)
     criminal_ids = [
         slot["id"] for slot in result.split_upload_types["SLP_CRIMINAL"]["slots"]
     ]
     assert "court_fees" not in criminal_ids
+    assert result.config["config_id"] == "jubeex_parse"
+    assert result.config["classify"]["config_version"] == "1.0.0"
+    assert result.config["extract"]["config_version"] == "1.0.0"
+    assert result.config["split"]["config_version"] == "1.0.0"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -1096,6 +1312,8 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert "filing_memo" in tp_civil_ids
     assert "filing_memo" not in tp_criminal_ids
     civil_ids = [slot["id"] for slot in result.split_upload_types["SLP_CIVIL"]["slots"]]
+    assert "filing_memo" in civil_ids
+    assert "filing_memo" in criminal_ids
     assert "annexure_p1" in civil_ids
     assert "application_1" in civil_ids
     assert "annexures" not in civil_ids
@@ -1304,6 +1522,15 @@ def test_filing_memo_maps_on_transfer_petition_civil() -> None:
     assert "court_fees" not in {slot.id for slot in catalog.slots}
 
 
+def test_filing_memo_maps_on_slp_civil_and_criminal() -> None:
+    civil = type_catalog("SLP_CIVIL")
+    criminal = type_catalog("SLP_CRIMINAL")
+    assert map_slot_pages(civil, {60: ["Filing Memo"]})["filing_memo"] == [60]
+    assert map_slot_pages(criminal, {61: ["Filing Memo"]})["filing_memo"] == [61]
+    assert "filing_memo" in {slot.id for slot in civil.slots}
+    assert "filing_memo" in {slot.id for slot in criminal.slots}
+
+
 def test_numbered_annexure_and_application_map_to_own_slots() -> None:
     catalog = type_catalog("SLP_CIVIL")
     pages = map_slot_pages(
@@ -1324,6 +1551,71 @@ def test_numbered_annexure_and_application_map_to_own_slots() -> None:
     assert pages["application_3"] == [31]
     assert pages["applications"] == [32]
     assert "20" not in str(pages.get("annexures", []))
+
+
+def test_catchall_annexures_and_applications_promote_to_first_numbered_slot() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(
+        catalog,
+        {
+            20: ["Annexures"],
+            21: ["Annexures"],
+            30: ["Application"],
+            31: ["Application"],
+        },
+    )
+    assert pages["annexure_p1"] == [20, 21]
+    assert pages["application_1"] == [30, 31]
+    assert "annexures" not in pages
+    assert "applications" not in pages
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            _blank_pdf(31),
+            catalog,
+            {
+                20: ["Annexures"],
+                21: ["Annexures"],
+                30: ["Application"],
+                31: ["Application"],
+            },
+        )
+    }
+    assert slices["annexure_p1"].filename == "Annexure P-1.pdf"
+    assert slices["annexure_p1"].pages == (20, 21)
+    assert slices["application_1"].filename == "Application 1.pdf"
+    assert slices["application_1"].pages == (30, 31)
+
+
+def test_heading_split_annexures_each_get_their_own_slot_pdf() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Annexures"],
+        3: ["Annexures"],
+        4: ["Annexures"],
+        5: ["Application"],
+        6: ["Application"],
+    }
+    texts = {
+        2: "ANNEXURE P-1\nImpugned order",
+        3: "ANNEXURE P-2\nTrial court judgment",
+        4: "ANNEXURE P-3\nEvidence",
+        5: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nCONDONATION",
+        6: "IN THE SUPREME COURT OF INDIA\nAPPLICATION\nEXEMPTION",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(6), catalog, exploded)
+    }
+    assert slices["annexure_p1"].pages == (2,)
+    assert slices["annexure_p2"].pages == (3,)
+    assert slices["annexure_p3"].pages == (4,)
+    assert slices["application_1"].pages == (5,)
+    assert slices["application_2"].pages == (6,)
+    assert "annexures" not in slices
+    assert "applications" not in slices
 
 
 def test_validate_parts_accepts_dynamic_annexure_and_application_slots() -> None:
@@ -1383,6 +1675,145 @@ def test_merged_annexures_split_on_p_n_headings_through_last_number() -> None:
     assert pages["annexure_p1"] == [1]
     assert pages["annexure_p7"] == [7]
     assert "annexure_p100" not in pages
+
+
+def test_consecutive_annexure_headings_keep_body_pages_with_earlier_mark() -> None:
+    page_parts = {page: ["Annexures"] for page in range(20, 26)}
+    page_parts[26] = ["Annexures"]
+    page_parts[30] = ["Annexures"]
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nTrial court judgment",
+        27: "continuation without heading",
+        28: "scan body",
+        29: "scan body",
+        30: "ANNEXURE P-3\nEvidence",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert [exploded[page] for page in range(20, 26)] == [["Annexure P-1"]] * 6
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-2"]
+    assert exploded[28] == ["Annexure P-2"]
+    assert exploded[29] == ["Annexure P-2"]
+    assert exploded[30] == ["Annexure P-3"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["annexure_p1"] == list(range(20, 26))
+    assert pages["annexure_p2"] == [26, 27, 28, 29]
+    assert pages["annexure_p3"] == [30]
+    payload: dict = {}
+    overlay_split_documents(payload, exploded)
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Annexure P-2"] == {
+        "name": "Annexure P-2",
+        "start_page": 26,
+        "end_page": 29,
+    }
+    assert spans["Annexure P-3"]["start_page"] == 30
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(30), catalog, exploded)
+    }
+    assert slices["annexure_p2"].pages == (26, 27, 28, 29)
+    assert slices["annexure_p2"].page_span == "pp. 26–29"
+    assert slices["annexure_p3"].pages == (30,)
+    assert 27 not in slices["undefined"].pages
+    assert 28 not in slices["undefined"].pages
+    assert 29 not in slices["undefined"].pages
+
+
+def test_skipped_annexure_heading_fills_gap_as_missing_p_n() -> None:
+    page_parts = {page: ["Annexures"] for page in range(20, 26)}
+    page_parts[26] = ["Annexures"]
+    page_parts.update({page: ["Annexures"] for page in range(30, 41)})
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nTrial court judgment",
+        30: "ANNEXURE P-4\nHigh Court order",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-3"]
+    assert exploded[28] == ["Annexure P-3"]
+    assert exploded[29] == ["Annexure P-3"]
+    assert exploded[30] == ["Annexure P-4"]
+    assert exploded[40] == ["Annexure P-4"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["annexure_p2"] == [26]
+    assert pages["annexure_p3"] == [27, 28, 29]
+    assert pages["annexure_p4"] == list(range(30, 41))
+    payload: dict = {}
+    overlay_split_documents(payload, exploded)
+    spans = {item["name"]: item for item in payload["documents"]}
+    assert spans["Annexure P-3"] == {
+        "name": "Annexure P-3",
+        "start_page": 27,
+        "end_page": 29,
+    }
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(40), catalog, exploded)
+    }
+    assert slices["annexure_p2"].pages == (26,)
+    assert slices["annexure_p3"].pages == (27, 28, 29)
+    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert slices["annexure_p4"].pages == tuple(range(30, 41))
+    assert 27 not in slices["undefined"].pages
+    assert 28 not in slices["undefined"].pages
+    assert 29 not in slices["undefined"].pages
+
+
+def test_annexure_gap_fill_does_not_steal_other_document_parts() -> None:
+    page_parts = {
+        26: ["Annexures"],
+        28: ["Cover Page"],
+        30: ["Annexures"],
+        31: ["Annexures"],
+    }
+    texts = {
+        26: "ANNEXURE P-2\nJudgment",
+        30: "ANNEXURE P-4\nOrder",
+    }
+    exploded = explode_repeating_split_parts(page_parts, texts)
+    assert exploded[26] == ["Annexure P-2"]
+    assert exploded[27] == ["Annexure P-3"]
+    assert exploded[28] == ["Cover Page"]
+    assert exploded[29] == ["Annexure P-3"]
+    assert exploded[30] == ["Annexure P-4"]
+    catalog = type_catalog("SLP_CIVIL")
+    pages = map_slot_pages(catalog, exploded)
+    assert pages["cover_page"] == [28]
+    assert pages["annexure_p3"] == [27, 29]
+
+
+def test_slice_bundle_pdf_fills_unlabeled_annexure_gaps_from_headings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    texts = {
+        20: "ANNEXURE P-1\nFIR",
+        26: "ANNEXURE P-2\nJudgment",
+        30: "ANNEXURE P-4\nOrder",
+    }
+    monkeypatch.setattr(
+        "extraction_review.bundle_slicer._pdf_page_texts",
+        lambda _pdf, pages, **_kwargs: {
+            int(page): texts.get(int(page), "") for page in pages
+        },
+    )
+    page_parts = {page: ["Annexures"] for page in range(20, 27)}
+    page_parts.update({page: ["Annexures"] for page in range(30, 41)})
+    catalog = type_catalog("SLP_CIVIL")
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(_blank_pdf(40), catalog, page_parts)
+    }
+    assert slices["annexure_p2"].pages == (26,)
+    assert slices["annexure_p2"].page_span == "p. 26"
+    assert slices["annexure_p3"].pages == (27, 28, 29)
+    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert slices["annexure_p4"].pages == tuple(range(30, 41))
+    assert 27 not in slices["undefined"].pages
 
 
 def test_application_headings_number_consecutively() -> None:

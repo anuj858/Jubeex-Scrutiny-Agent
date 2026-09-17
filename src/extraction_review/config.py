@@ -4,9 +4,14 @@ Configuration for the extraction review application.
 Adapted for JubeeX Core Filing Record schema with deep descriptive context.
 """
 
+import json
 import logging
+from collections.abc import Mapping
+from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Any
 
+from dotenv import load_dotenv
 from llama_cloud.types.beta.split_category import SplitCategory
 from llama_cloud.types.classify_v2_parameters import ClassifyV2Parameters, Rule
 from llama_cloud.types.extract_v2_parameters import ExtractV2Parameters
@@ -19,18 +24,40 @@ from .json_util import get_extraction_schema as get_extraction_schema
 
 logger = logging.getLogger(__name__)
 
+_REPO_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+
+def load_repo_dotenv() -> Path:
+    """Load the repo `.env` over process env so local runs match the file."""
+    load_dotenv(_REPO_ENV_PATH, override=True)
+    return _REPO_ENV_PATH
+
+
+load_repo_dotenv()
+
 EXTRACTED_DATA_COLLECTION: str = "jubeex-filing-extraction"
 
 JUBEEX_FILING_TYPES = [
     "SLP_CIVIL",
     "SLP_CRIMINAL",
-    "TRANSFER_PETITION_CIVIL",
-    "TRANSFER_PETITION_CRIMINAL",
-    "ARBITRATION_PETITION",
+    "CIVIL_APPEAL",
+    "CRIMINAL_APPEAL",
     "WRIT_PETITION_CIVIL",
     "WRIT_PETITION_CRIMINAL",
-    "other"
+    "TRANSFER_PETITION_CIVIL",
+    "TRANSFER_PETITION_CRIMINAL",
+    "REVIEW_PETITION_CIVIL",
+    "REVIEW_PETITION_CRIMINAL",
+    "ORIGINAL_SUIT_CIVIL",
+    "CONTEMPT_PETITION_CIVIL",
+    "CONTEMPT_PETITION_CRIMINAL",
+    "ELECTION_PETITION_CIVIL",
+    "ARBITRATION_PETITION",
+    "CURATIVE_PETITION_CIVIL",
+    "CURATIVE_PETITION_CRIMINAL",
+    "MISCELLANEOUS_APPLICATION",
 ]
+JUBEEX_UPLOAD_FILING_TYPES = tuple(JUBEEX_FILING_TYPES)
 
 CONFIDENCE_DESCRIPTION = (
     "Extractor confidence as a percentage string such as 95% or 65%. "
@@ -294,15 +321,16 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Court where the petition is filed, as a string. "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "Office Report on Limitation, Affidavit, and Memo of Parties."
+            "and Memo of Parties."
         ),
     )
     petition_type: str | None = Field(
         default=None,
         description=(
-            "Petition type as printed, e.g. Special Leave Petition (Civil) or Transfer Petition (Civil). "
+            "Petition type as printed, e.g. Special Leave Petition (Civil), Civil Appeal, "
+            "Writ Petition (Criminal), or Miscellaneous Application. "
             "Fill from Cover Page; check spelling on Main Petition, Vakalatnama, "
-            "Office Report on Limitation, Affidavit, and Memo of Parties."
+            "and Memo of Parties."
         ),
     )
     cause_title: CauseTitle | None = Field(default=None, description="Cause title representing petitioner vs respondent.")
@@ -395,16 +423,7 @@ class ExtractionSchema(CoreFilingRecord):
     """Default extraction schema"""
     pass
 
-FILING_SCHEMAS = {
-    "SLP_CIVIL": CoreFilingRecord,
-    "SLP_CRIMINAL": CoreFilingRecord,
-    "TRANSFER_PETITION_CIVIL": CoreFilingRecord,
-    "TRANSFER_PETITION_CRIMINAL": CoreFilingRecord,
-    "ARBITRATION_PETITION": CoreFilingRecord,
-    "WRIT_PETITION_CIVIL": CoreFilingRecord,
-    "WRIT_PETITION_CRIMINAL": CoreFilingRecord,
-    "other": CoreFilingRecord,
-}
+FILING_SCHEMAS = {filing_type: CoreFilingRecord for filing_type in JUBEEX_FILING_TYPES}
 
 class ExtractConfig(ExtractV2Parameters):
     configuration_id: str | None = None
@@ -421,11 +440,20 @@ class SplitConfig(SplitV1Parameters):
     categories: list[SplitCategory] = []
     configuration_id: str | None = None
 
+class BlockVersion(BaseModel):
+    schema_version: str
+    config_version: str
+
+class PipelineVersions(BaseModel):
+    classify: BlockVersion
+    extract: BlockVersion
+    split: BlockVersion
+
 class SplitUploadSlot(BaseModel):
     id: str
     label: str
     parts: list[str]
-    required: bool = True
+    required: bool = False
 
 class SplitUploadType(BaseModel):
     label: str
@@ -438,8 +466,97 @@ class SplitUploadConfig(BaseModel):
 
 class Config(BaseModel):
     """Root configuration model for configs/config.json."""
+    config_id: str
+    schema_version: str
+    config_version: str
+    pipeline_versions: PipelineVersions
     classify: ClassifyConfig
     extract_jubeex: ExtractConfig = Field(alias="extract-jubeex")
     parse: ParseConfig | None = None
     split: SplitConfig | None = None
     split_upload: SplitUploadConfig | None = None
+
+
+_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
+_API_EXCLUDE = {
+    "configuration_id",
+    "product_type",
+    "schema_version",
+    "config_version",
+}
+
+
+def _block_versions(block: Any) -> dict[str, str]:
+    if isinstance(block, Mapping):
+        schema = block.get("schema_version")
+        version = block.get("config_version")
+    else:
+        schema = getattr(block, "schema_version", None)
+        version = getattr(block, "config_version", None)
+    out: dict[str, str] = {}
+    if schema:
+        out["schema_version"] = str(schema)
+    if version:
+        out["config_version"] = str(version)
+    return out
+
+
+@lru_cache(maxsize=1)
+def load_config_payload() -> dict[str, Any]:
+    with _CONFIG_PATH.open(encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return payload if isinstance(payload, dict) else {}
+
+
+def config_identity(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Version stamp included in metadata, artifacts, and stored extract JSON."""
+    data = payload if payload is not None else load_config_payload()
+    versions = data.get("pipeline_versions")
+    version_map = versions if isinstance(versions, Mapping) else {}
+    return {
+        "config_id": data.get("config_id"),
+        "schema_version": data.get("schema_version"),
+        "config_version": data.get("config_version"),
+        "classify": _block_versions(
+            version_map.get("classify") or data.get("classify")
+        ),
+        "extract": _block_versions(
+            version_map.get("extract") or data.get("extract-jubeex")
+        ),
+        "split": _block_versions(version_map.get("split") or data.get("split")),
+    }
+
+
+def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
+    """JSON sent to LlamaCloud classify / extract / split.
+
+    Only LlamaCloud's own fields are forwarded. Version keys stay on our
+    metadata and S3 artifacts.
+    """
+    dumped = config.model_dump(exclude_none=True)
+    for key in _API_EXCLUDE:
+        dumped.pop(key, None)
+    parent = next(
+        (
+            base
+            for base in type(config).__mro__[1:]
+            if base
+            in (
+                ClassifyV2Parameters,
+                ExtractV2Parameters,
+                SplitV1Parameters,
+                ParseV2Parameters,
+            )
+        ),
+        None,
+    )
+    if parent is not None:
+        allowed = set(parent.model_fields) - {"product_type"}
+        dumped = {key: value for key, value in dumped.items() if key in allowed}
+    return dumped
+
+
+def with_config_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    stamped = dict(payload)
+    stamped["config"] = config_identity()
+    return stamped

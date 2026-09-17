@@ -13,6 +13,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -21,8 +22,6 @@ logger = logging.getLogger(__name__)
 CATALOGUE_FILENAME = "sci_registry_defects.v1.json"
 SCHEMA_FILENAME = "sci_registry_defects.schema.v1.json"
 
-DEFAULT_ENABLED_DEFECTS = ("D003", "D004", "D005", "D006")
-
 _DRIVE_FILE_MARKER = "/file/d/"
 
 
@@ -30,6 +29,57 @@ def _drive_file_id(url: str | None) -> str | None:
     if not url or _DRIVE_FILE_MARKER not in url:
         return None
     return url.split(_DRIVE_FILE_MARKER, 1)[1].split("/", 1)[0] or None
+
+
+def _url_filename(url: str | None) -> str | None:
+    """Basename of a source URL when it is a real file, not a Drive viewer path."""
+    if not url:
+        return None
+    name = unquote(urlparse(url).path).rstrip("/").rsplit("/", 1)[-1].strip()
+    if not name or "." not in name:
+        return None
+    lowered = name.lower()
+    if lowered in {"view", "preview", "edit", "usp=sharing"}:
+        return None
+    return name
+
+
+def source_match_tokens(source: CatalogueSource) -> tuple[str, ...]:
+    """Filenames and shorthands that mean this catalogue source."""
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str | None) -> None:
+        text = (raw or "").strip()
+        if not text:
+            return
+        key = text.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        tokens.append(text)
+
+    for alias in source.filename_aliases:
+        add(alias)
+    for url in source.urls():
+        add(_url_filename(url))
+    return tuple(tokens)
+
+
+def rewrite_location_source(text: str, sources: list[CatalogueSource]) -> str:
+    """Replace opaque PDF names with catalogue source_ids. Longest alias first."""
+    raw = text or ""
+    replacements: list[tuple[str, str]] = []
+    for source in sources:
+        for token in source_match_tokens(source):
+            if token.casefold() == source.source_id.casefold():
+                continue
+            replacements.append((token, source.source_id))
+    replacements.sort(key=lambda item: len(item[0]), reverse=True)
+    rewritten = raw
+    for token, source_id in replacements:
+        rewritten = re.sub(re.escape(token), source_id, rewritten, flags=re.IGNORECASE)
+    return rewritten
 
 
 # Pipeline classify labels (SLP_CIVIL) vs catalogue Main Category ("SLP (Civil)").
@@ -109,6 +159,13 @@ _CATEGORY_ALIASES = {
     "original suit (civil)": "original_suit_civil",
     "original suit civil": "original_suit_civil",
     "original_suit_civil": "original_suit_civil",
+    "miscellaneous application": "miscellaneous_application",
+    "miscellaneous_application": "miscellaneous_application",
+    "m.a.": "miscellaneous_application",
+    "rp (civil)": "review_petition_civil",
+    "r.p. (civil)": "review_petition_civil",
+    "rp (criminal)": "review_petition_criminal",
+    "r.p. (criminal)": "review_petition_criminal",
     "general/global": "global",
     "global/general": "global",
     "global / general": "global",
@@ -144,6 +201,7 @@ class CatalogueSource(_Strict):
     checksum: str | None = None
     locators: dict[str, str] = Field(default_factory=dict)
     alternate_urls: list[str] = Field(default_factory=list)
+    filename_aliases: list[str] = Field(default_factory=list)
 
     def urls(self) -> list[str]:
         return [u for u in [self.url, *self.alternate_urls] if u]
@@ -262,7 +320,7 @@ class Catalogue(_Strict):
     disclaimer: str | None = None
     sources: list[CatalogueSource] = Field(default_factory=list)
     categories: list[DefectCategory] = Field(default_factory=list)
-    defects: list[Defect] = Field(min_length=1)
+    defects: list[Defect] = Field(default_factory=list)
 
     @property
     def defect_order(self) -> list[str]:
@@ -301,6 +359,7 @@ class Catalogue(_Strict):
 
     def sources_cited_by(self, defect: Defect) -> list[CatalogueSource]:
         text = defect.location_source
+        folded = text.casefold()
         cited: list[CatalogueSource] = []
         for source in self.sources:
             if source.source_id and source.source_id in text:
@@ -313,6 +372,9 @@ class Catalogue(_Strict):
                 (file_id := _drive_file_id(url)) and file_id in text
                 for url in source.urls()
             ):
+                cited.append(source)
+                continue
+            if any(token.casefold() in folded for token in source_match_tokens(source)):
                 cited.append(source)
         return cited
 

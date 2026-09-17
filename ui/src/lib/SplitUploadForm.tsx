@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useMetadataContext } from "./MetadataProvider";
 import type { SplitUploadSlot } from "./useMetadata";
 import { clickDownloadUrl, downloadFile } from "./export";
+import { formatDuration } from "./utils";
 import styles from "./SplitUploadForm.module.css";
 
 type UploadedPart = {
@@ -30,6 +31,8 @@ export type BundlePrepared = {
   filing_type: string;
   parts: PreparedPart[];
   slot_pages?: Record<string, string>;
+  filename?: string | null;
+  classify_split_seconds?: number | null;
 };
 
 type PresignedFile = {
@@ -126,16 +129,43 @@ function presignedFileUrl(value: unknown): string | null {
   return null;
 }
 
+async function fileDownloadPayload(
+  files: CloudFiles["files"],
+  fileId: string,
+): Promise<unknown> {
+  const methods: Array<(id: string) => Promise<PresignedFile>> = [];
+  // Call through the files object so Fern/OpenAPI clients keep `this._client`.
+  if (typeof files.content === "function") {
+    methods.push((id) => files.content!(id));
+  }
+  if (typeof files.get === "function") {
+    methods.push((id) => files.get!(id));
+  }
+  if (methods.length === 0) {
+    throw new Error("This LlamaCloud client cannot download files");
+  }
+  let lastError: unknown;
+  for (const method of methods) {
+    try {
+      return await method(fileId);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("This LlamaCloud client cannot download files");
+}
+
 async function downloadCloudPdf(
   cloud: CloudFiles,
   fileId: string,
   filename: string,
 ) {
-  const getter = cloud.files.get ?? cloud.files.content;
-  if (!getter) {
-    throw new Error("This LlamaCloud client cannot download files");
+  if (!cloud?.files) {
+    throw new Error("LlamaCloud file client is not configured");
   }
-  const url = presignedFileUrl(await getter(fileId));
+  const url = presignedFileUrl(await fileDownloadPayload(cloud.files, fileId));
   if (!url) {
     throw new Error(`No download URL for ${filename}`);
   }
@@ -200,6 +230,20 @@ export function readBundlePrepared(payload: unknown): BundlePrepared | null {
     filing_type: source.filing_type as string,
     parts: asPreparedParts(source.parts),
     slot_pages: asSlotPages(source.slot_pages ?? source.slotPages),
+    filename:
+      typeof source.filename === "string"
+        ? source.filename
+        : typeof source.file_name === "string"
+          ? source.file_name
+          : null,
+    classify_split_seconds:
+      typeof source.classify_split_seconds === "number"
+        ? source.classify_split_seconds
+        : typeof source.classifySplitSeconds === "number"
+          ? source.classifySplitSeconds
+          : typeof asRecord(source.timing)?.classify_split_seconds === "number"
+            ? (asRecord(source.timing)?.classify_split_seconds as number)
+            : null,
   };
 }
 
@@ -324,6 +368,37 @@ function expandRepeatableSlots(
   return expanded;
 }
 
+function nestedSlotLabel(slot: SplitUploadSlot): string {
+  const annexure = numberedIndex(slot.id, "annexures");
+  if (annexure) {
+    return `P-${annexure}`;
+  }
+  if (slot.id === "annexures") {
+    return "Other annexures";
+  }
+  const application = numberedIndex(slot.id, "applications");
+  if (application) {
+    return `Application ${application}`;
+  }
+  if (slot.id === "applications") {
+    return "Other applications";
+  }
+  return slot.label;
+}
+
+function groupHeadingForSlot(
+  slot: SplitUploadSlot,
+  previous: SplitUploadSlot | undefined,
+): string | null {
+  if (isAnnexureGroup(slot) && (!previous || !isAnnexureGroup(previous))) {
+    return "Annexures";
+  }
+  if (isApplicationGroup(slot) && (!previous || !isApplicationGroup(previous))) {
+    return "Applications";
+  }
+  return null;
+}
+
 export function SplitUploadForm({
   onStarted,
   prepareHandler,
@@ -339,6 +414,12 @@ export function SplitUploadForm({
   const [slotPages, setSlotPages] = useState<Record<string, string>>({});
   const [annexureCount, setAnnexureCount] = useState(1);
   const [applicationCount, setApplicationCount] = useState(1);
+  const [originalFilename, setOriginalFilename] = useState<string | null>(
+    null,
+  );
+  const [classifySplitSeconds, setClassifySplitSeconds] = useState<
+    number | null
+  >(null);
   const [typeLocked, setTypeLocked] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
@@ -372,9 +453,7 @@ export function SplitUploadForm({
     [catalog?.slots, annexureCount, applicationCount, leftoverIds],
   );
 
-  const requiredReady = slots
-    .filter((slot) => slot.required)
-    .every((slot) => Boolean(uploads[slot.id]));
+  const canSubmit = Object.keys(uploads).length > 0;
 
   const applyPrepared = (prepared: BundlePrepared, handlerId?: string) => {
     if (!types[prepared.filing_type]) {
@@ -420,6 +499,12 @@ export function SplitUploadForm({
         ? { ...prev, ...(prepared.slot_pages ?? {}) }
         : (prepared.slot_pages ?? {}),
     );
+    if (!alreadyApplied || prepared.filename) {
+      setOriginalFilename(prepared.filename ?? null);
+    }
+    if (!alreadyApplied || prepared.classify_split_seconds != null) {
+      setClassifySplitSeconds(prepared.classify_split_seconds ?? null);
+    }
     if (found > 0) {
       setUploads((prev) =>
         alreadyApplied ? { ...prev, ...nextUploads } : nextUploads,
@@ -432,7 +517,7 @@ export function SplitUploadForm({
       toast.success(
         found
           ? `Loaded ${found} sliced file${found === 1 ? "" : "s"} from the bundled PDF`
-          : "Split finished. Upload the missing required documents, then Submit.",
+          : "Split finished. Review the files that were found, then Submit.",
       );
     }
   };
@@ -498,6 +583,8 @@ export function SplitUploadForm({
     setAnnexureCount(1);
     setApplicationCount(1);
     setUploadingSlot(null);
+    setOriginalFilename(null);
+    setClassifySplitSeconds(null);
   };
 
   const pickFile = (slot: SplitUploadSlot) => {
@@ -638,7 +725,7 @@ export function SplitUploadForm({
     if (
       !filingType ||
       !catalog ||
-      !requiredReady ||
+      !canSubmit ||
       submitting ||
       preparing
     ) {
@@ -669,6 +756,8 @@ export function SplitUploadForm({
       const created = await wf.createHandler({
         filing_type: filingType,
         parts,
+        filename: originalFilename,
+        classify_split_seconds: classifySplitSeconds,
       });
       onStarted(created);
       toast.success(`Started ${catalog.label} split upload`);
@@ -702,8 +791,14 @@ export function SplitUploadForm({
               ? "Classifying and splitting the uploaded PDF into document files…"
               : typeLocked
                 ? "Files below were sliced from the bundled PDF. Review them, then Submit to parse and extract."
-                : "Choose the matter type, then upload each document on its own row. Annexures (P-1, P-2, …) and applications each have a separate Upload button — use Add annexure or Add application for more."}
+                : "Choose the matter type, then upload each document on its own row. Annexures are grouped (P-1, P-2, …) and applications the same way — use Add annexure or Add application for more."}
           </p>
+          {classifySplitSeconds != null ? (
+            <p className={styles.timing} data-testid="bundle-upload-duration">
+              {originalFilename ? `${originalFilename} · ` : ""}
+              Bundle upload took {formatDuration(classifySplitSeconds)}
+            </p>
+          ) : null}
         </div>
         <label className={styles.typeLabel}>
           Matter type
@@ -728,22 +823,21 @@ export function SplitUploadForm({
           const busy = uploadingSlot === slot.id;
           const pages = slotPages[slot.id];
           const next = slots[index + 1];
+          const previous = slots[index - 1];
+          const heading = groupHeadingForSlot(slot, previous);
+          const nested = isAnnexureGroup(slot) || isApplicationGroup(slot);
           const showAddAnnexure =
-            slot.repeat_group === "annexures" &&
-            next?.repeat_group !== "annexures";
+            isAnnexureGroup(slot) && (!next || !isAnnexureGroup(next));
           const showAddApplication =
-            slot.repeat_group === "applications" &&
-            next?.repeat_group !== "applications";
+            isApplicationGroup(slot) && (!next || !isApplicationGroup(next));
           return (
             <Fragment key={slot.id}>
-            <li className={styles.row}>
+            {heading ? (
+              <li className={styles.groupHeading}>{heading}</li>
+            ) : null}
+            <li className={nested ? styles.nestedRow : styles.row}>
               <div className={styles.name}>
-                <span>{slot.label}</span>
-                {slot.required ? (
-                  <span className={styles.required}>required</span>
-                ) : (
-                  <span className={styles.optional}>optional</span>
-                )}
+                <span>{nestedSlotLabel(slot)}</span>
                 {pages ? (
                   <span className={styles.pageSpan}>{pages}</span>
                 ) : null}
@@ -858,7 +952,7 @@ export function SplitUploadForm({
                 ? "Submitting…"
                 : "Submit"
           }
-          disabled={!requiredReady || formBusy}
+          disabled={!canSubmit || formBusy}
           onClick={() => void onSubmit()}
         />
       </div>

@@ -580,19 +580,49 @@ def part_for_page(
     return names[0] if names else None
 
 
-async def load_layout_index(url: str | None) -> LayoutIndex:
-    """GET a stored compact layout index. Empty on any failure — never re-parse."""
-    if not (url or "").strip():
-        return {}
-    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            payload = response.json()
-    except Exception:
-        logger.warning("Failed to load layout index from %s", url, exc_info=True)
-        return {}
+async def load_layout_index(
+    url: str | None,
+    *,
+    key: str | None = None,
+) -> LayoutIndex:
+    """Load a stored compact layout index. Empty on any failure — never re-parse.
+
+    Tries the presigned URL first, then the durable S3 object key.
+    """
+    from .s3_artifacts import download_json_object
+
+    payload: Any = None
+    cleaned_url = (url or "").strip()
+    cleaned_key = (key or "").strip()
+    if cleaned_url:
+        timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                response = await client.get(cleaned_url)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            logger.warning(
+                "Failed to load layout index from URL; trying S3 key",
+                exc_info=True,
+            )
+            payload = None
+    if payload is None and cleaned_key:
+        payload = download_json_object(cleaned_key)
     if not isinstance(payload, Mapping):
+        logger.warning(
+            "Layout index empty pages=0 url=%s key=%s",
+            cleaned_url or None,
+            cleaned_key or None,
+        )
         return {}
-    return coerce_page_layout(payload)
+    pages = coerce_page_layout(payload)
+    if not pages:
+        logger.warning(
+            "Layout index empty pages=0 url=%s key=%s",
+            cleaned_url or None,
+            cleaned_key or None,
+        )
+    return pages

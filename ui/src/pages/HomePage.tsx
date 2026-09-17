@@ -14,6 +14,8 @@ import { WorkflowProgress } from "@/lib/WorkflowProgress";
 import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
 import { SplitUploadForm } from "@/lib/SplitUploadForm";
+import { useMetadataContext } from "@/lib/MetadataProvider";
+import { readJobTiming, timingLabel } from "@/lib/utils";
 
 export default function HomePage() {
   return <TaskList />;
@@ -21,6 +23,7 @@ export default function HomePage() {
 
 function TaskList() {
   const navigate = useNavigate();
+  const { metadata } = useMetadataContext();
   const goToItem = (item: AgentDataItem) => {
     navigate(`/item/${item.id}`);
   };
@@ -78,6 +81,21 @@ function TaskList() {
     [runScrutiny, viewSaved, scrutinyBusy],
   );
 
+  const durationColumn = useMemo(
+    () => ({
+      key: "duration",
+      header: "Duration",
+      getValue: (item: AgentDataItem) =>
+        timingLabel(readJobTiming(item.data)) ?? "",
+      renderCell: (value: unknown) => (
+        <span className="text-xs whitespace-nowrap text-slate-600">
+          {typeof value === "string" && value ? value : "—"}
+        </span>
+      ),
+    }),
+    [],
+  );
+
   return (
     <div className={styles.page}>
       <main className={styles.main}>
@@ -117,9 +135,28 @@ function TaskList() {
             workflowName="process-file"
             contentHash={{ enabled: true }}
             customWorkflowInput={(files) => {
+              const file = files[0] as {
+                fileId: string;
+                contentHash?: string | null;
+                name?: string;
+                filename?: string;
+              };
+              const original = file.name ?? file.filename ?? "filing.pdf";
+              let filename = original;
+              if (metadata.upload_sliced_slot_pdfs !== false) {
+                const named = window.prompt(
+                  "Name this filing. Sliced PDFs are stored under this name so a later run of the same paper book does not replace the previous files.",
+                  original,
+                );
+                if (named == null) {
+                  throw new Error("Enter a filing name to start.");
+                }
+                filename = named.trim() || original;
+              }
               return {
-                file_id: files[0].fileId,
-                file_hash: files[0].contentHash ?? null,
+                file_id: file.fileId,
+                file_hash: file.contentHash ?? null,
+                filename,
               };
             }}
             onSuccess={(handler) => {
@@ -139,7 +176,7 @@ function TaskList() {
         <ExtractedDataItemGrid
           key={reloadSignal}
           onRowClick={goToItem}
-          customColumns={[scrutinyColumn]}
+          customColumns={[durationColumn, scrutinyColumn]}
           builtInColumns={{
             fileName: true,
             status: true,
