@@ -66,7 +66,7 @@ const ARTIFACT_FIELDS: { id: string; label: string; urlKey: string; keyKey: stri
     },
     {
       id: "parse",
-      label: "Parse JSON",
+      label: "Parse",
       urlKey: "parse_artifact_url",
       keyKey: "parse_artifact_key",
     },
@@ -126,6 +126,15 @@ export type VisualTargetRow = {
   document_types: string[];
 };
 
+export type VisualUsage = {
+  cost_usd?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  calls?: number | null;
+  model?: string | null;
+};
+
 export type VisualSummary = {
   status?: string | null;
   error?: string | null;
@@ -133,6 +142,7 @@ export type VisualSummary = {
   target_count: number;
   failures: VisualFailure[];
   targets: VisualTargetRow[];
+  usage?: VisualUsage | null;
 };
 
 function asFiniteNumber(value: unknown): number | null {
@@ -201,6 +211,37 @@ function parseVisualFailures(raw: unknown): VisualFailure[] {
   return rows;
 }
 
+function parseVisualUsage(raw: unknown): VisualUsage | null {
+  const record = asRecord(raw);
+  if (!record) {
+    return null;
+  }
+  const cost = asFiniteNumber(record.cost_usd);
+  const calls = asFiniteNumber(record.calls);
+  const prompt = asFiniteNumber(record.prompt_tokens);
+  const completion = asFiniteNumber(record.completion_tokens);
+  const total = asFiniteNumber(record.total_tokens);
+  const model = typeof record.model === "string" ? record.model : null;
+  if (
+    cost == null &&
+    calls == null &&
+    prompt == null &&
+    completion == null &&
+    total == null &&
+    !model
+  ) {
+    return null;
+  }
+  return {
+    cost_usd: cost,
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+    calls: calls,
+    model,
+  };
+}
+
 export function readVisualSummary(source: unknown): VisualSummary | null {
   const metadata = readItemMetadata(source);
   const raw = asRecord(metadata?.visual_summary);
@@ -217,6 +258,7 @@ export function readVisualSummary(source: unknown): VisualSummary | null {
     target_count: targetCount ?? targets.length,
     failures: parseVisualFailures(raw.failures),
     targets,
+    usage: parseVisualUsage(raw.usage),
   };
 }
 

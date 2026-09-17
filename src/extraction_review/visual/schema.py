@@ -72,6 +72,14 @@ _VISUAL_INDEX_EXAMPLE = {
     "pages": [20],
     "targets": [{"page": 20, "document_types": ["Main Petition"]}],
     "failures": [],
+    "usage": {
+        "cost_usd": 0.012345,
+        "prompt_tokens": 1200,
+        "completion_tokens": 400,
+        "total_tokens": 1600,
+        "calls": 1,
+        "model": "google/gemini-3.8-flash",
+    },
     "marks": [
         {
             "page": 20,
@@ -150,6 +158,13 @@ class VisualIndex(BaseModel):
         default_factory=list,
         description=(
             "Per-page load/render/vision errors. Absent when every page succeeded."
+        ),
+    )
+    usage: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "OpenRouter usage.cost summed across vision /chat/completions calls. "
+            "Never estimated from list prices."
         ),
     )
     marks: list[VisualMark] = Field(default_factory=list)

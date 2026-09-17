@@ -15,6 +15,7 @@ from ..s3_artifacts import (
     download_json_object,
     upload_step_json,
 )
+from ..scrutiny.schema import LlmUsage
 from .schema import (
     PROMPT_VERSION,
     VISUAL_SCHEMA,
@@ -57,6 +58,30 @@ def _coerce_failures(raw: Any) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _coerce_usage(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, LlmUsage):
+            usage = raw
+        elif isinstance(raw, Mapping):
+            usage = LlmUsage.model_validate(dict(raw))
+        else:
+            return None
+    except ValidationError:
+        return None
+    if usage.calls <= 0 and usage.cost_usd is None and usage.total_tokens <= 0:
+        return None
+    return {
+        "cost_usd": usage.cost_usd,
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "calls": usage.calls,
+        "model": usage.model,
+    }
 
 
 def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -106,13 +131,18 @@ def coerce_visual_index(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     blob["pages"] = pages
     blob["targets"] = targets
     blob["failures"] = _coerce_failures(blob.get("failures"))
+    usage = _coerce_usage(blob.get("usage"))
+    if usage:
+        blob["usage"] = usage
+    else:
+        blob.pop("usage", None)
     return blob
 
 
 def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     """Compact Agent Data metadata so the UI can explain vision without fetching S3."""
     coerced = coerce_visual_index(payload)
-    return {
+    summary = {
         "status": coerced.get("status"),
         "error": coerced.get("error"),
         "mark_count": len(coerced.get("marks") or []),
@@ -120,6 +150,9 @@ def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "failures": list(coerced.get("failures") or []),
         "targets": list(coerced.get("targets") or []),
     }
+    if coerced.get("usage"):
+        summary["usage"] = coerced["usage"]
+    return summary
 
 
 def upload_visual_index(

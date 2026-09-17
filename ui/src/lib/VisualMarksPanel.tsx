@@ -7,7 +7,9 @@ import {
   type S3ArtifactLink,
   type VisualFailure,
   type VisualTargetRow,
+  type VisualUsage,
 } from "./utils";
+import { formatUsd } from "./scrutiny";
 
 type VisualMarkRow = {
   page: number;
@@ -127,6 +129,28 @@ function parseFailures(payload: unknown): VisualFailure[] {
   return rows;
 }
 
+function parseUsage(payload: unknown): VisualUsage | null {
+  const root = asRecord(payload);
+  const record = asRecord(root?.usage);
+  if (!record) {
+    return null;
+  }
+  const cost = asNumber(record.cost_usd);
+  const calls = asNumber(record.calls);
+  const model = typeof record.model === "string" ? record.model : null;
+  if (cost == null && calls == null && !model) {
+    return null;
+  }
+  return {
+    cost_usd: cost,
+    prompt_tokens: asNumber(record.prompt_tokens),
+    completion_tokens: asNumber(record.completion_tokens),
+    total_tokens: asNumber(record.total_tokens),
+    calls,
+    model,
+  };
+}
+
 function formatBox(bbox?: VisualMarkRow["bbox"]): string {
   if (!bbox) {
     return "—";
@@ -135,10 +159,13 @@ function formatBox(bbox?: VisualMarkRow["bbox"]): string {
 }
 
 function ArtifactLink({ item }: { item: S3ArtifactLink }) {
+  const label = item.label.trim().toLowerCase().endsWith("json")
+    ? item.label
+    : `${item.label} JSON`;
   if (!item.url) {
     return (
       <span className="text-xs text-slate-500" title={item.key}>
-        {item.label}: stored at {item.key}
+        {label}: stored at {item.key}
       </span>
     );
   }
@@ -151,7 +178,7 @@ function ArtifactLink({ item }: { item: S3ArtifactLink }) {
       title={item.key || item.url}
     >
       <ExternalLink className="h-3 w-3 shrink-0" />
-      {item.label} JSON
+      {label}
     </a>
   );
 }
@@ -176,6 +203,7 @@ export function VisualMarksPanel({
   const [fetchedFailures, setFetchedFailures] = useState<VisualFailure[]>([]);
   const [fetchedStatus, setFetchedStatus] = useState<string | null>(null);
   const [fetchedError, setFetchedError] = useState<string | null>(null);
+  const [fetchedUsage, setFetchedUsage] = useState<VisualUsage | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">(
     visual?.url ? "loading" : "idle",
   );
@@ -188,6 +216,7 @@ export function VisualMarksPanel({
       setFetchedFailures([]);
       setFetchedStatus(null);
       setFetchedError(null);
+      setFetchedUsage(null);
       setStatus("idle");
       setError(null);
       return;
@@ -209,6 +238,7 @@ export function VisualMarksPanel({
         setFetchedFailures(parseFailures(payload));
         setFetchedStatus(typeof root?.status === "string" ? root.status : null);
         setFetchedError(typeof root?.error === "string" ? root.error : null);
+        setFetchedUsage(parseUsage(payload));
         setStatus("ready");
       })
       .catch((cause: unknown) => {
@@ -220,6 +250,7 @@ export function VisualMarksPanel({
         setFetchedFailures([]);
         setFetchedStatus(null);
         setFetchedError(null);
+        setFetchedUsage(null);
         setStatus("error");
         setError(
           cause instanceof Error
@@ -235,6 +266,7 @@ export function VisualMarksPanel({
     fetchedFailures.length ? fetchedFailures : summary?.failures || [];
   const visionStatus = fetchedStatus || summary?.status || null;
   const visionError = fetchedError || summary?.error || null;
+  const usage = fetchedUsage || summary?.usage || null;
   const markCount = status === "ready" ? marks.length : (summary?.mark_count ?? 0);
   const hasVision =
     Boolean(visual) || Boolean(summary) || others.length > 0;
@@ -291,6 +323,13 @@ export function VisualMarksPanel({
             {` · ${summary?.target_count ?? targets.length} page(s) sent`}
             {` · ${markCount} mark(s)`}
             {failures.length ? ` · ${failures.length} failed` : ""}
+            {usage?.cost_usd != null
+              ? ` · OpenRouter ${formatUsd(usage.cost_usd)}`
+              : ""}
+            {usage?.calls != null
+              ? ` · ${usage.calls} call${usage.calls === 1 ? "" : "s"}`
+              : ""}
+            {usage?.model ? ` · ${usage.model}` : ""}
           </div>
         </div>
       ) : null}

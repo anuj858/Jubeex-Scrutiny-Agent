@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import re
@@ -18,14 +19,15 @@ from ..llm import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_S,
     LLMError,
+    _close_truncated_json,
     _extract_content,
     _headers,
-    _parse_json,
     openrouter_api_key,
     openrouter_model,
     parse_openrouter_usage,
 )
 from ..process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from ..scrutiny.schema import LlmUsage
 from .pages import coerce_pages_by_slot, global_page_sources, select_formality_pages
 from .prompt import VISION_SYSTEM_PROMPT, user_prompt
 from .references import load_reference_assets
@@ -85,6 +87,12 @@ def _int_env(name: str, default: int) -> int:
 
 
 def safe_normalized_bbox(value: Any) -> dict[str, float] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        try:
+            x, y, width, height = (float(item) for item in value)
+        except (TypeError, ValueError):
+            return None
+        value = {"x": x, "y": y, "width": width, "height": height}
     if not isinstance(value, dict):
         return None
     raw = value
@@ -171,6 +179,115 @@ def infer_signature_role(
     return "unknown"
 
 
+def _strip_code_fence(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        cleaned = cleaned.removeprefix("json").strip()
+    return cleaned
+
+
+def _extract_complete_objects(text: str) -> list[dict[str, Any]]:
+    """Keep complete objects from a truncated JSON array; drop the cut-off tail."""
+    items: list[dict[str, Any]] = []
+    start = text.find("{")
+    while start != -1:
+        in_string = False
+        escape = False
+        depth = 0
+        end: int | None = None
+        for index, char in enumerate(text[start:], start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            break
+        try:
+            value = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            break
+        if isinstance(value, dict):
+            items.append(value)
+        start = text.find("{", end + 1)
+    return items
+
+
+def _parse_vision_json(content: str) -> Any:
+    """Parse Gemini vision JSON: object, array, or truncated array of elements."""
+    text = _strip_code_fence(content)
+    if not text:
+        raise LLMError("Model returned empty content")
+    candidates = [text]
+    repaired = _close_truncated_json(text)
+    if repaired and repaired not in candidates:
+        candidates.append(repaired)
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        last_error = LLMError(
+            f"Response JSON was not a list or object: {content[:400]}"
+        )
+    complete = _extract_complete_objects(text)
+    if complete:
+        return complete
+    raise LLMError(
+        "Response was truncated or not JSON: " + content[:400]
+    ) from last_error
+
+
+def _is_chat_text_part(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and "text" in item
+        and "probable_type" not in item
+        and item.get("type") in {None, "text"}
+    )
+
+
+def _elements_from_parsed(parsed: Any) -> list[Any]:
+    if isinstance(parsed, list):
+        if parsed and all(_is_chat_text_part(item) for item in parsed):
+            joined = "".join(
+                str(item.get("text") or "") for item in parsed if isinstance(item, dict)
+            )
+            if not joined.strip():
+                return []
+            return _elements_from_parsed(_parse_vision_json(joined))
+        return parsed
+    if isinstance(parsed, dict):
+        elements = parsed.get("elements")
+        if isinstance(elements, list):
+            return elements
+        if parsed.get("probable_type") is not None:
+            return [parsed]
+        return []
+    if isinstance(parsed, str):
+        if not parsed.strip():
+            return []
+        return _elements_from_parsed(_parse_vision_json(parsed))
+    return []
+
+
 def parse_vision_elements(
     content: Any,
     *,
@@ -180,20 +297,12 @@ def parse_vision_elements(
     slot_id: str | None = None,
     local_page: int | None = None,
 ) -> list[VisualMark]:
-    if isinstance(content, list):
-        content = "".join(
-            str(part.get("text") or "") for part in content if isinstance(part, dict)
+    try:
+        elements = _elements_from_parsed(content)
+    except LLMError:
+        elements = (
+            _extract_complete_objects(content) if isinstance(content, str) else []
         )
-    if isinstance(content, dict):
-        parsed = content
-    else:
-        if not isinstance(content, str) or not content.strip():
-            return []
-        try:
-            parsed = _parse_json(content)
-        except LLMError:
-            return []
-    elements = parsed.get("elements") if isinstance(parsed, dict) else None
     if not isinstance(elements, list):
         return []
     marks: list[VisualMark] = []
@@ -348,7 +457,7 @@ async def analyze_page_image(
     references: Sequence[Any],
     model: str,
     http: httpx.AsyncClient,
-) -> list[VisualMark]:
+) -> tuple[list[VisualMark], LlmUsage]:
     prompt = user_prompt(
         page_number=target.page,
         document_types=target.document_types,
@@ -408,8 +517,11 @@ async def analyze_page_image(
         usage.total_tokens,
         usage.cost_usd,
     )
-    parsed = _parse_json(_extract_content(body))
-    return parse_vision_elements(
+    try:
+        parsed = _parse_vision_json(_extract_content(body))
+    except LLMError as exc:
+        raise LLMError(str(exc), usage=usage) from exc
+    marks = parse_vision_elements(
         parsed,
         page_number=target.page,
         document_type=_document_type_for_page(target),
@@ -417,6 +529,7 @@ async def analyze_page_image(
         slot_id=target.slot_id,
         local_page=target.local_page,
     )
+    return marks, usage
 
 
 async def _analyze_with_fallback(
@@ -425,24 +538,33 @@ async def _analyze_with_fallback(
     target: VisualPageTarget,
     references: Sequence[Any],
     http: httpx.AsyncClient,
-) -> tuple[list[VisualMark], Exception | None]:
+) -> tuple[list[VisualMark], Exception | None, LlmUsage]:
     models = [vision_model()]
     fallback = vision_fallback_model()
     if fallback and fallback not in models:
         models.append(fallback)
     last_error: Exception | None = None
+    combined = LlmUsage()
     for model in models:
         try:
-            found = await analyze_page_image(
+            found, usage = await analyze_page_image(
                 page_image=page_image,
                 target=target,
                 references=_references_for_target(references, target.document_types),
                 model=model,
                 http=http,
             )
-            return found, None
+            return found, None, combined.plus(usage)
+        except LLMError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.warning(
+                "Vision analysis failed page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
         except (
-            LLMError,
             httpx.HTTPError,
             OSError,
             ValueError,
@@ -461,7 +583,7 @@ async def _analyze_with_fallback(
             "Skipping visual marks for page %s after vision failures",
             target.page,
         )
-    return [], last_error
+    return [], last_error, combined
 
 
 @dataclass(frozen=True)
@@ -469,6 +591,28 @@ class _PageVisionResult:
     marks: list[VisualMark]
     reason: str | None = None
     detail: str | None = None
+    usage: LlmUsage | None = None
+
+
+def _usage_payload(usage: LlmUsage | None) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    if usage.calls <= 0 and usage.cost_usd is None and usage.total_tokens <= 0:
+        return None
+    return {
+        "cost_usd": usage.cost_usd,
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "calls": usage.calls,
+        "model": usage.model,
+    }
+
+
+def _openrouter_cost_note(usage: LlmUsage | None) -> str:
+    if usage is None or usage.cost_usd is None:
+        return ""
+    return f", OpenRouter {usage.cost_usd:.6f} USD"
 
 
 def _failure_row(
@@ -644,7 +788,7 @@ async def detect_visual_marks(
                     detail=str(exc)[:300],
                 )
             async with semaphore:
-                found, vision_error = await _analyze_with_fallback(
+                found, vision_error, usage = await _analyze_with_fallback(
                     page_image=image,
                     target=target,
                     references=references,
@@ -655,8 +799,12 @@ async def detect_visual_marks(
                     marks=[],
                     reason="vision_failed",
                     detail=str(vision_error)[:300],
+                    usage=usage,
                 )
-            return _PageVisionResult(marks=_expand_marks_for_parts(found, target))
+            return _PageVisionResult(
+                marks=_expand_marks_for_parts(found, target),
+                usage=usage,
+            )
 
         results = await asyncio.gather(
             *(run_one(target) for target in targets),
@@ -664,6 +812,7 @@ async def detect_visual_marks(
         )
 
     succeeded = 0
+    combined_usage = LlmUsage()
     for target, result in zip(targets, results, strict=True):
         analyzed_pages.append(target.page)
         if isinstance(result, Exception):
@@ -678,6 +827,8 @@ async def detect_visual_marks(
                 f"Visual page {target.page} failed: {result}",
             )
             continue
+        if result.usage:
+            combined_usage = combined_usage.plus(result.usage)
         if result.reason:
             failures.append(_failure_row(target, result.reason, result.detail))
             await _emit_log(
@@ -685,6 +836,7 @@ async def detect_visual_marks(
                 (
                     f"Visual page {target.page} {result.reason}"
                     + (f": {result.detail}" if result.detail else "")
+                    + _openrouter_cost_note(result.usage)
                 ),
             )
             continue
@@ -692,19 +844,24 @@ async def detect_visual_marks(
         marks.extend(result.marks)
         await _emit_log(
             on_log,
-            f"Visual page {target.page}: {len(result.marks)} mark(s)",
+            (
+                f"Visual page {target.page}: {len(result.marks)} mark(s)"
+                + _openrouter_cost_note(result.usage)
+            ),
         )
 
     status = "error" if succeeded == 0 else "ok"
     error = _dominant_error(failures) if status == "error" else None
+    usage_payload = _usage_payload(combined_usage)
     await _emit_log(
         on_log,
         (
             f"Visual summary: {len(targets)} targets, {succeeded} ok, "
             f"{len(failures)} failed, {len(marks)} marks"
+            + _openrouter_cost_note(combined_usage)
         ),
     )
-    return {
+    payload: dict[str, Any] = {
         "schema": VISUAL_SCHEMA,
         "prompt_version": PROMPT_VERSION,
         "status": status,
@@ -717,3 +874,6 @@ async def detect_visual_marks(
         "failures": failures,
         "marks": [mark.model_dump() for mark in marks],
     }
+    if usage_payload:
+        payload["usage"] = usage_payload
+    return payload

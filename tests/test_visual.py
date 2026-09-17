@@ -11,6 +11,7 @@ from extraction_review.scrutiny.schema import (
     Coverage,
     DefectResponse,
     EvidenceRef,
+    LlmUsage,
     apply_status_policy,
     apply_undetermined_policy,
     build_finding,
@@ -20,6 +21,7 @@ from extraction_review.visual.attach import (
     visual_needs_for_defect,
 )
 from extraction_review.visual.detect import (
+    _parse_vision_json,
     detect_visual_marks,
     parse_vision_elements,
     safe_normalized_bbox,
@@ -136,6 +138,8 @@ def test_safe_bbox_rejects_full_page_and_accepts_tight_box() -> None:
     assert safe_normalized_bbox({"x": 0, "y": 0, "width": 1, "height": 1}) is None
     box = safe_normalized_bbox({"x": 0.62, "y": 0.81, "w": 0.28, "h": 0.08})
     assert box == {"x": 0.62, "y": 0.81, "w": 0.28, "h": 0.08}
+    listed = safe_normalized_bbox([0.565, 0.041, 0.156, 0.222])
+    assert listed == {"x": 0.565, "y": 0.041, "w": 0.156, "h": 0.222}
 
 
 def test_parse_vision_elements_keeps_signature_and_drops_page_wide_box() -> None:
@@ -815,7 +819,7 @@ def _enable_vision(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     async def fake_analyze(**_kwargs):
-        return [], None
+        return [], None, LlmUsage()
 
     monkeypatch.setattr(
         "extraction_review.visual.detect._analyze_with_fallback",
@@ -945,3 +949,143 @@ async def test_detect_api_error_is_vision_failed(
     assert index["marks"] == []
     assert index["failures"][0]["reason"] == "vision_failed"
     assert "401" in (index["failures"][0]["detail"] or "")
+
+
+def test_parse_vision_empty_array_is_zero_marks() -> None:
+    assert _parse_vision_json("[]") == []
+    assert (
+        parse_vision_elements("[]", page_number=31, document_type="Annexure P-3") == []
+    )
+    assert (
+        parse_vision_elements(
+            {"elements": []}, page_number=31, document_type="Annexure P-3"
+        )
+        == []
+    )
+
+
+def test_parse_vision_top_level_array_list_bbox() -> None:
+    marks = parse_vision_elements(
+        [
+            {
+                "probable_type": "notary_seal",
+                "bbox_normalized": [0.565, 0.041, 0.156, 0.222],
+                "confidence": 0.8,
+            }
+        ],
+        page_number=26,
+        document_type="Affidavit",
+    )
+    assert len(marks) == 1
+    assert marks[0].marking_type == "notary_seal"
+    assert marks[0].bbox["x"] == 0.565
+
+
+def test_parse_vision_truncated_array_keeps_complete_object() -> None:
+    truncated = (
+        '[ { "probable_type": "notary_seal", "bbox_normalized": [0.565, 0.041, 0.156, 0.222], '
+        '"confidence": 0.9, "associated_label": "NOTARY" }, { "probable_type": "table", '
+        '"bbox_normalized": [0.1, 0.1'
+    )
+    parsed = _parse_vision_json(truncated)
+    assert isinstance(parsed, list)
+    marks = parse_vision_elements(truncated, page_number=26, document_type="Affidavit")
+    assert [mark.marking_type for mark in marks] == ["notary_seal"]
+
+
+def _openrouter_body(content: str, cost: float) -> dict:
+    return {
+        "id": f"gen-{cost}",
+        "model": "google/gemini-3.8-flash",
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 14,
+            "cost": cost,
+        },
+        "choices": [{"message": {"content": content}}],
+    }
+
+
+def _stub_openrouter_post(monkeypatch: pytest.MonkeyPatch, bodies: list[dict]) -> None:
+    queue = list(bodies)
+
+    async def fake_post(self, url, **_kwargs):
+        del self, url
+        payload = queue.pop(0)
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: payload,
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_fallback_model",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._headers",
+        lambda: {
+            "Authorization": "Bearer test-key",
+            "Content-Type": "application/json",
+        },
+    )
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+
+@pytest.mark.asyncio
+async def test_detect_empty_array_body_is_ok_not_vision_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_openrouter_post(monkeypatch, [_openrouter_body("[]", 0.01)])
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    assert index["failures"] == []
+    assert index["marks"] == []
+    assert index["usage"]["cost_usd"] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_detect_sums_openrouter_cost_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_openrouter_post(
+        monkeypatch,
+        [
+            _openrouter_body("[]", 0.01),
+            _openrouter_body("[]", 0.02),
+        ],
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1"),
+            _part("affidavit", ["Affidavit"], file_id="dfl-affidavit-1"),
+        ],
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "ok"
+    assert index["usage"]["cost_usd"] == pytest.approx(0.03)
+    assert index["usage"]["calls"] == 2
+    summary = visual_summary(index)
+    assert summary["usage"]["cost_usd"] == pytest.approx(0.03)
