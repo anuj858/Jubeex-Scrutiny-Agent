@@ -223,7 +223,6 @@ _SPECIAL_ALIASES = {
     "civil appeal with high court certificate": "civil_appeal_high_court_certificate",
     "criminal appeal with high court certificate": "criminal_appeal_high_court_certificate",
     "appeal (armed forces)": "appeal_armed_forces",
-    "armed forces": "appeal_armed_forces",
     "pil": "pil",
     "advocates act, 1961": "advocates_act",
     "advocates act 1961": "advocates_act",
@@ -235,6 +234,36 @@ _SPECIAL_ALIASES = {
 }
 
 _OVERLAY_SPECIALS = frozenset({"miscellaneous_application", "refiling_defect"})
+
+
+def _fold_special_phrase(value: str) -> str:
+    """Lowercase and drop punctuation so caps and parentheses do not matter.
+
+    "Appeal (Armed Forces)" and "appeal armed forces" become the same phrase.
+    This is exact after folding. It does not guess a nearby label.
+    """
+    text = re.sub(r"[^a-z0-9]+", " ", (value or "").casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _special_lookup() -> dict[str, str]:
+    """Folded known labels only. Unknown phrases are not mapped."""
+    lookup: dict[str, str] = {}
+    for label, key in _SPECIAL_ALIASES.items():
+        phrase = _fold_special_phrase(label)
+        if not phrase:
+            continue
+        existing = lookup.get(phrase)
+        if existing and existing != key:
+            raise ValueError(
+                f"Special-category phrase {phrase!r} maps to both "
+                f"{existing!r} and {key!r}"
+            )
+        lookup[phrase] = key
+    return lookup
+
+
+_SPECIAL_BY_PHRASE = _special_lookup()
 
 
 class _Strict(BaseModel):
@@ -531,22 +560,18 @@ def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
 def normalize_special_category(value: str | None) -> str:
     """Map a frontend or catalogue special-category label onto one key.
 
-    Empty, N/A, none, and similar tokens are no special category.
+    Case, spaces, hyphens, slashes, and parentheses do not matter
+    ("APPEAL (ARMED FORCES)" == "appeal armed forces"). Empty, N/A, and
+    any phrase that is not a known label return "" — unknown text is never
+    assigned to a nearby special.
     """
     raw = re.sub(r"\s+", " ", (value or "").strip().lower())
     if raw in _EMPTY_SPECIAL_TOKENS:
         return ""
-    if raw in _SPECIAL_ALIASES:
-        return _SPECIAL_ALIASES[raw]
-    spaced = re.sub(r"\s*\(\s*", " (", raw)
-    spaced = re.sub(r"\s*\)\s*", ")", spaced).strip()
-    if spaced in _SPECIAL_ALIASES:
-        return _SPECIAL_ALIASES[spaced]
-    collapsed = (
-        spaced.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
-    )
-    collapsed = re.sub(r"_+", "_", collapsed).strip("_")
-    return _SPECIAL_ALIASES.get(collapsed, collapsed)
+    phrase = _fold_special_phrase(value or "")
+    if not phrase or phrase in {"n a", "na"}:
+        return ""
+    return _SPECIAL_BY_PHRASE.get(phrase, "")
 
 
 def allowed_special_keys(filing_type: str | None) -> frozenset[str]:

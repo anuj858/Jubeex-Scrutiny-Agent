@@ -444,6 +444,20 @@ def test_normalize_special_treats_na_as_empty() -> None:
     assert (
         normalize_special_category("Bail Applications/Bail Matters") == "bail_matters"
     )
+    assert normalize_special_category("APPEAL (ARMED FORCES)") == "appeal_armed_forces"
+    assert normalize_special_category("Appeal Armed Forces") == "appeal_armed_forces"
+    assert normalize_special_category("appeal armed forces") == "appeal_armed_forces"
+    assert normalize_special_category("RE-FILING DEFECT") == "refiling_defect"
+    assert normalize_special_category("re filing defect") == "refiling_defect"
+    assert normalize_special_category("BAIL APPLICATIONS / BAIL MATTERS") == (
+        "bail_matters"
+    )
+    # Partial or unknown labels must not be assigned to a real special.
+    assert normalize_special_category("Appeal") == ""
+    assert normalize_special_category("Armed") == ""
+    assert normalize_special_category("Civil Appeal") == ""
+    assert normalize_special_category("something else") == ""
+    assert normalize_special_category("Armed Forces") == ""
 
 
 def test_special_category_null_skips_tagged_defects(monkeypatch) -> None:
