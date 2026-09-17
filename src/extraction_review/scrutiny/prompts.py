@@ -20,7 +20,6 @@ from ..document_parts import (
 from .rules import (
     Catalogue,
     Defect,
-    DefectCategory,
     normalize_filing_type,
     split_main_categories,
 )
@@ -108,13 +107,8 @@ If that part is not in the excerpts, return needs_review.
 Respond with JSON matching the required schema. No prose outside the JSON."""
 
 
-def _format_category(defect: Defect, category: DefectCategory | None) -> str:
+def _format_category(defect: Defect) -> str:
     filing = _filing_phrase(defect.main_category)
-    if category:
-        return (
-            f"\nThis task is in the area “{category.label}”, for {filing}.\n"
-            f"{category.prompt.strip()}\n"
-        )
     return f"\nThis task is for {filing}.\n"
 
 
@@ -504,30 +498,22 @@ def _short_objection(text: str) -> str:
 
 
 def finding_title(defect: Defect, catalogue: Catalogue | None = None) -> str:
-    """Short UI/API title: serial number, category, then the objection."""
+    """Short UI/API title from the objection. Never a serial number."""
     objection = _short_objection(defect.defect)
-    label = None
-    if catalogue:
-        category = catalogue.category_for(defect)
-        if category:
-            label = category.label
-    if not label and defect.special_category:
-        label = defect.special_category.strip()
+    objection = re.sub(
+        r"^(?:D-\d{1,4}[A-Z]?|\d{1,4})[.):\s-]+",
+        "",
+        objection,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    label = (defect.special_category or "").strip() or None
     if label:
         folded_label = label.lower()
         if not objection.lower().startswith(folded_label):
-            title = f"{label}: {objection}"
-        else:
-            title = objection
-    else:
-        title = objection
-    serial = defect.serial_no
-    if serial is None or str(serial).strip() == "":
-        return title
-    prefix = f"{serial}. "
-    if title.startswith(prefix) or title.startswith(f"{serial} "):
-        return title
-    return f"{prefix}{title}"
+            return f"{label}: {objection}"
+        return objection
+    return objection
 
 
 def readable_location_source(defect: Defect, catalogue: Catalogue | None = None) -> str:
@@ -761,8 +747,7 @@ def build_defect_prompt(
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     filing = _filing_phrase(defect.main_category)
-    category = catalogue.category_for(defect) if catalogue else None
-    category_block = _format_category(defect, category)
+    category_block = _format_category(defect)
     search = "\n".join(
         f"{i}. {_search_step(step)}"
         for i, step in enumerate(defect.where_to_look, start=1)
@@ -829,6 +814,8 @@ def build_defect_prompt(
             _format_authority(defect, catalogue),
         ]
     )
+    if getattr(defect, "notes", None):
+        sections.extend(["", "## Notes", defect.notes.strip()])
     if parent:
         sections.extend(["", "## Scope", parent])
     sections.extend(

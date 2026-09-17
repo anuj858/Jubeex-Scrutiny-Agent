@@ -33,6 +33,7 @@ export type BundlePrepared = {
   slot_pages?: Record<string, string>;
   filename?: string | null;
   classify_split_seconds?: number | null;
+  llama_split?: Record<string, unknown> | null;
 };
 
 type PresignedFile = {
@@ -244,6 +245,7 @@ export function readBundlePrepared(payload: unknown): BundlePrepared | null {
           : typeof asRecord(source.timing)?.classify_split_seconds === "number"
             ? (asRecord(source.timing)?.classify_split_seconds as number)
             : null,
+    llama_split: asRecord(source.llama_split) ?? asRecord(source.llamaSplit),
   };
 }
 
@@ -425,6 +427,9 @@ export function SplitUploadForm({
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [downloadingSlot, setDownloadingSlot] = useState<string | null>(null);
+  const [llamaSplit, setLlamaSplit] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const preparedFor = useRef<string | null>(null);
   const cloud = useCloudApiClient() as unknown as CloudFiles;
@@ -505,6 +510,9 @@ export function SplitUploadForm({
     if (!alreadyApplied || prepared.classify_split_seconds != null) {
       setClassifySplitSeconds(prepared.classify_split_seconds ?? null);
     }
+    if (prepared.llama_split) {
+      setLlamaSplit(prepared.llama_split);
+    }
     if (found > 0) {
       setUploads((prev) =>
         alreadyApplied ? { ...prev, ...nextUploads } : nextUploads,
@@ -580,6 +588,7 @@ export function SplitUploadForm({
     setFilingType(next);
     setUploads({});
     setSlotPages({});
+    setLlamaSplit(null);
     setAnnexureCount(1);
     setApplicationCount(1);
     setUploadingSlot(null);
@@ -929,6 +938,24 @@ export function SplitUploadForm({
       </ul>
 
       <div className={styles.footer}>
+        {llamaSplit ? (
+          <Button
+            size="sm"
+            variant="outline"
+            label="LlamaSplit JSON"
+            disabled={formBusy}
+            title="Download the exact request sent to LlamaSplit and the exact response it returned"
+            onClick={() =>
+              downloadFile(
+                JSON.stringify(llamaSplit),
+                "llama-split.json",
+                "application/json",
+              )
+            }
+          />
+        ) : (
+          <span />
+        )}
         {slicedCount > 0 ? (
           <Button
             size="sm"

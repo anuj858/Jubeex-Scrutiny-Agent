@@ -71,6 +71,15 @@ _VISUAL_INDEX_EXAMPLE = {
     "error": None,
     "pages": [20],
     "targets": [{"page": 20, "document_types": ["Main Petition"]}],
+    "failures": [],
+    "usage": {
+        "cost_usd": 0.012345,
+        "prompt_tokens": 1200,
+        "completion_tokens": 400,
+        "total_tokens": 1600,
+        "calls": 1,
+        "model": "google/gemini-3.8-flash",
+    },
     "marks": [
         {
             "page": 20,
@@ -125,6 +134,7 @@ class VisualPageTarget(BaseModel):
         ),
     )
     file_url: str | None = None
+    file_id: str | None = None
     markdown: str = ""
 
 
@@ -142,6 +152,19 @@ class VisualIndex(BaseModel):
         description=(
             "Inventory of pages sent. Missing D093 types are omitted, "
             "never listed as null."
+        ),
+    )
+    failures: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-page load/render/vision errors. Absent when every page succeeded."
+        ),
+    )
+    usage: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "OpenRouter usage.cost summed across vision /chat/completions calls. "
+            "Never estimated from list prices."
         ),
     )
     marks: list[VisualMark] = Field(default_factory=list)
@@ -173,5 +196,6 @@ def empty_visual_index(
         "error": error,
         "pages": [],
         "targets": [],
+        "failures": [],
         "marks": [],
     }

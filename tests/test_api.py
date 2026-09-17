@@ -54,6 +54,9 @@ def test_catalog(client: TestClient) -> None:
     assert body["filing_types"] == list(JUBEEX_FILING_TYPES)
     assert "CIVIL_APPEAL" in body["filing_types"]
     assert "MISCELLANEOUS_APPLICATION" in body["filing_types"]
+    assert "Motor Vehical Act" in body["special_categories"]["SLP_CIVIL"]
+    assert "Appeal (Armed Forces)" in body["special_categories"]["CIVIL_APPEAL"]
+    assert "Motor Vehical Act" not in body["special_categories"]["SLP_CRIMINAL"]
     assert set(body["split_upload_types"]) == set(JUBEEX_UPLOAD_FILING_TYPES)
     assert "CIVIL_APPEAL" in body["split_upload_types"]
     assert "MISCELLANEOUS_APPLICATION" in body["split_upload_types"]

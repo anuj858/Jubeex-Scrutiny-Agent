@@ -23,7 +23,7 @@ from .scrutiny.schema import LlmUsage
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-#DEFAULT_MODEL = "openai/gpt-5.5"
+# DEFAULT_MODEL = "openai/gpt-5.5"
 DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
 # Gemini thinking models spend this budget on hidden reasoning first.
@@ -168,10 +168,11 @@ def _extract_content(payload: dict[str, Any]) -> str:
 
 
 def _close_truncated_json(text: str) -> str | None:
-    """Close a cut-off JSON object so salvageable fields can still parse."""
-    start = text.find("{")
-    if start == -1:
+    """Close a cut-off JSON object or array so salvageable fields can still parse."""
+    starts = [index for index in (text.find("{"), text.find("[")) if index != -1]
+    if not starts:
         return None
+    start = min(starts)
     fragment = text[start:]
     in_string = False
     escape = False

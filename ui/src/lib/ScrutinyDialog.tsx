@@ -132,11 +132,6 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
       >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            {finding.serial_no != null && (
-              <span className="inline-flex items-center rounded-md border border-border bg-muted px-2 py-0.5 text-sm font-semibold tabular-nums">
-                S.No. {finding.serial_no}
-              </span>
-            )}
             <span className="text-xs font-medium text-muted-foreground">
               {finding.check_id}
             </span>
@@ -240,20 +235,12 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               the relevant text was not retrieved.
             </div>
           )}
-          {(finding.serial_no != null ||
-            finding.location ||
+          {(finding.location ||
             finding.applicable_rule ||
             finding.location_source ||
             (finding.authority_refs ?? []).length > 0) && (
             <div className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              <div>
-                {[
-                  finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
-                  finding.location,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
+              {finding.location && <div>{finding.location}</div>}
               {(finding.applicable_rule ||
                 finding.location_source ||
                 (finding.authority_refs ?? []).length > 0) && (
@@ -300,8 +287,7 @@ function UsagePanel({ report }: { report: ScrutinyReport }) {
         </div>
         {usage.highest_cost_check_id && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
-            Highest: S.No. {usage.highest_cost_serial_no}{" "}
-            {usage.highest_cost_check_id} · {formatUsd(usage.highest_cost_usd)}
+            Highest: {usage.highest_cost_check_id} · {formatUsd(usage.highest_cost_usd)}
           </div>
         )}
       </div>
@@ -313,7 +299,7 @@ function UsagePanel({ report }: { report: ScrutinyReport }) {
               <div key={row.check_id} className="space-y-0.5">
                 <div className="flex items-center justify-between gap-2 text-xs">
                   <span className="min-w-0 truncate">
-                    S.No. {row.serial_no} · {row.check_id}
+                    {row.check_id}
                   </span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
                     {formatUsd(row.cost_usd)} · {formatTokens(row.total_tokens)} ·{" "}

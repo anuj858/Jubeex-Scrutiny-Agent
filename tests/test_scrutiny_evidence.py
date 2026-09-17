@@ -7,20 +7,21 @@ import pytest
 
 from extraction_review.document_parts import (
     documents_from_page_parts,
+    explode_repeating_split_parts,
     keep_nearby_scores,
     overlay_split_documents,
     page_parts_from_split,
     parts_named_in_text,
     pool_search_queries,
 )
+from extraction_review.process_file import _split_page_parts
+from extraction_review.scrutiny.prompts import filing_location
 from extraction_review.scrutiny.schema import (
     DefectResponse,
     EvidenceRef,
     apply_evidence_pages,
     apply_status_policy,
 )
-from extraction_review.process_file import _split_page_parts
-from extraction_review.scrutiny.prompts import filing_location
 from extraction_review.vector_store import build_page_records
 
 
@@ -59,21 +60,25 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
                 SimpleNamespace(category="Office Report on Limitation", pages=[8, 58]),
                 SimpleNamespace(category="Listing Proforma", pages=[9, 10, 59, 60]),
                 SimpleNamespace(category="Main Petition", pages=[17, 25, 26, 35]),
-                SimpleNamespace(category="Record of Proceedings", pages=[4, 20, 21, 23, 54]),
+                SimpleNamespace(
+                    category="Record of Proceedings", pages=[4, 20, 21, 23, 54]
+                ),
             ]
         )
     )
-    mapping = page_parts_from_split(job)
+    mapping = explode_repeating_split_parts(page_parts_from_split(job))
     docs = documents_from_page_parts(mapping)
     assert "Index (pp. 5–7)" in docs["items"]
     assert all("55" not in item for item in docs["items"])
     assert mapping[1] == ["Advocate's Checklist"]
     assert 51 not in mapping
-    assert mapping[17] == ["Main Petition"]
+    assert 17 not in mapping
     assert mapping[25] == ["Main Petition"]
-    assert mapping[4] == ["Record of Proceedings"]
+    assert mapping[26] == ["Main Petition"]
+    assert 4 not in mapping
     assert 54 not in mapping
     assert mapping[20] == ["Record of Proceedings"]
+    assert mapping[21] == ["Record of Proceedings"]
 
 
 def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
@@ -85,7 +90,7 @@ def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
             ]
         )
     )
-    mapping = page_parts_from_split(job)
+    mapping = explode_repeating_split_parts(page_parts_from_split(job))
     assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Main Petition"]}
 
 
@@ -160,7 +165,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
         categories=[SimpleNamespace(name="Main Petition")],
         model_dump=lambda **_kwargs: {"categories": [{"name": "Main Petition"}]},
     )
-    mapping, split_job_id = await _split_page_parts(
+    mapping, split_job_id, exchange = await _split_page_parts(
         SimpleNamespace(split=split_api),
         file_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         split_config=split_config,

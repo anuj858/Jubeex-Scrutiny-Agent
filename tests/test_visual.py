@@ -2,12 +2,16 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from extraction_review.document_parts import MAIN_PETITION_PART
+from extraction_review.llm import LLMError
 from extraction_review.scrutiny.rules import Defect
 from extraction_review.scrutiny.schema import (
     Coverage,
     DefectResponse,
     EvidenceRef,
+    LlmUsage,
     apply_status_policy,
     apply_undetermined_policy,
     build_finding,
@@ -16,7 +20,12 @@ from extraction_review.visual.attach import (
     attach_visual_localizations,
     visual_needs_for_defect,
 )
-from extraction_review.visual.detect import parse_vision_elements, safe_normalized_bbox
+from extraction_review.visual.detect import (
+    _parse_vision_json,
+    detect_visual_marks,
+    parse_vision_elements,
+    safe_normalized_bbox,
+)
 from extraction_review.visual.pages import (
     global_page_sources,
     select_formality_pages,
@@ -24,16 +33,25 @@ from extraction_review.visual.pages import (
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
 from extraction_review.visual.schema import empty_visual_index
-from extraction_review.visual.store import coerce_visual_index, dump_visual_index
+from extraction_review.visual.store import (
+    coerce_visual_index,
+    dump_visual_index,
+    visual_summary,
+)
 
 
 def _part(
-    slot_id: str, names: list[str], *, file_url: str | None = None
+    slot_id: str,
+    names: list[str],
+    *,
+    file_url: str | None = None,
+    file_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         slot_id=slot_id,
         document_parts=tuple(names),
         file_url=file_url,
+        file_id=file_id,
     )
 
 
@@ -47,7 +65,6 @@ def _defect(
 ) -> Defect:
     return Defect(
         check_id=check_id,
-        serial_no=int(check_id[1:]) if check_id[1:].isdigit() else 1,
         main_category="General/Global",
         defect=defect,
         requirement=requirement,
@@ -120,6 +137,8 @@ def test_safe_bbox_rejects_full_page_and_accepts_tight_box() -> None:
     assert safe_normalized_bbox({"x": 0, "y": 0, "width": 1, "height": 1}) is None
     box = safe_normalized_bbox({"x": 0.62, "y": 0.81, "w": 0.28, "h": 0.08})
     assert box == {"x": 0.62, "y": 0.81, "w": 0.28, "h": 0.08}
+    listed = safe_normalized_bbox([0.565, 0.041, 0.156, 0.222])
+    assert listed == {"x": 0.565, "y": 0.041, "w": 0.156, "h": 0.222}
 
 
 def test_parse_vision_elements_keeps_signature_and_drops_page_wide_box() -> None:
@@ -737,13 +756,31 @@ def test_visual_index_error_is_structured() -> None:
     assert skipped["schema"] == "visual_index_v1"
     assert skipped["status"] == "skipped"
     assert skipped["marks"] == []
+    assert skipped["failures"] == []
     dumped = dump_visual_index(
-        {"status": "error", "error": "vision_failed", "marks": []}
+        {
+            "status": "error",
+            "error": "missing_pdf",
+            "marks": [],
+            "failures": [
+                {
+                    "page": 1,
+                    "slot_id": "petition",
+                    "document_types": [MAIN_PETITION_PART],
+                    "reason": "missing_pdf",
+                    "detail": "slot has no file_url or file_id",
+                }
+            ],
+        }
     )
     coerced = coerce_visual_index(dumped)
     assert coerced["status"] == "error"
-    assert coerced["error"] == "vision_failed"
+    assert coerced["error"] == "missing_pdf"
     assert coerced["marks"] == []
+    assert coerced["failures"][0]["reason"] == "missing_pdf"
+    summary = visual_summary(coerced)
+    assert summary["target_count"] == 0
+    assert summary["failures"][0]["reason"] == "missing_pdf"
     missing = empty_visual_index(status="missing")
     assert missing["status"] == "skipped"
 
@@ -754,3 +791,300 @@ def test_missing_listing_proforma_omitted_from_targets() -> None:
     names = [name for target in targets for name in target.document_types]
     assert "Listing Proforma" not in names
     assert MAIN_PETITION_PART in names
+
+
+def test_formality_targets_carry_file_id() -> None:
+    parts = [_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")]
+    targets = select_formality_pages(global_page_sources(parts, {"petition": {1: "p"}}))
+    assert targets[0].file_id == "dfl-petition-1"
+    assert targets[0].file_url is None
+
+
+def _one_page_pdf() -> bytes:
+    import pymupdf
+
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Formality page")
+    pdf_bytes = document.tobytes()
+    document.close()
+    return pdf_bytes
+
+
+def _enable_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+
+    async def fake_analyze(**_kwargs):
+        return [], None, LlmUsage()
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._analyze_with_fallback",
+        fake_analyze,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detect_missing_pdf_records_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    logs: list[str] = []
+    parts = [_part("petition", [MAIN_PETITION_PART])]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        on_log=logs.append,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "missing_pdf"
+    assert index["marks"] == []
+    assert index["failures"][0]["reason"] == "missing_pdf"
+    assert index["targets"][0]["page"] == 1
+    assert any("file_id=no" in line for line in logs)
+    assert any("missing_pdf" in line for line in logs)
+
+
+@pytest.mark.asyncio
+async def test_detect_uses_file_id_when_url_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    pdf_bytes = _one_page_pdf()
+    calls: list[str] = []
+
+    async def fake_download(file_id: str) -> bytes:
+        calls.append(file_id)
+        return pdf_bytes
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._default_download_file_id",
+        fake_download,
+    )
+    parts = [_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+    )
+    assert calls == ["dfl-petition-1"]
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    assert index["failures"] == []
+    assert index["targets"][0]["document_types"] == [MAIN_PETITION_PART]
+
+
+@pytest.mark.asyncio
+async def test_detect_mixed_success_keeps_status_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    pdf_bytes = _one_page_pdf()
+    calls: list[str] = []
+
+    async def fake_download(file_id: str) -> bytes:
+        calls.append(file_id)
+        return pdf_bytes
+
+    parts = [
+        _part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1"),
+        _part("affidavit", ["Affidavit"]),
+    ]
+    index = await detect_visual_marks(
+        parts=parts,
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+    assert calls == ["dfl-petition-1"]
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    reasons = {item["reason"] for item in index["failures"]}
+    assert reasons == {"missing_pdf"}
+    assert len(index["failures"]) == 1
+    assert index["failures"][0]["slot_id"] == "affidavit"
+    assert len(index["targets"]) == 2
+    summary = visual_summary(index)
+    assert summary["status"] == "ok"
+    assert summary["target_count"] == 2
+    assert summary["failures"][0]["reason"] == "missing_pdf"
+
+
+@pytest.mark.asyncio
+async def test_detect_api_error_is_vision_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_fallback_model",
+        lambda: None,
+    )
+
+    async def boom(**_kwargs):
+        raise LLMError("401 unauthorized")
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.analyze_page_image",
+        boom,
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "vision_failed"
+    assert index["marks"] == []
+    assert index["failures"][0]["reason"] == "vision_failed"
+    assert "401" in (index["failures"][0]["detail"] or "")
+
+
+def test_parse_vision_empty_array_is_zero_marks() -> None:
+    assert _parse_vision_json("[]") == []
+    assert (
+        parse_vision_elements("[]", page_number=31, document_type="Annexure P-3") == []
+    )
+    assert (
+        parse_vision_elements(
+            {"elements": []}, page_number=31, document_type="Annexure P-3"
+        )
+        == []
+    )
+
+
+def test_parse_vision_top_level_array_list_bbox() -> None:
+    marks = parse_vision_elements(
+        [
+            {
+                "probable_type": "notary_seal",
+                "bbox_normalized": [0.565, 0.041, 0.156, 0.222],
+                "confidence": 0.8,
+            }
+        ],
+        page_number=26,
+        document_type="Affidavit",
+    )
+    assert len(marks) == 1
+    assert marks[0].marking_type == "notary_seal"
+    assert marks[0].bbox["x"] == 0.565
+
+
+def test_parse_vision_truncated_array_keeps_complete_object() -> None:
+    truncated = (
+        '[ { "probable_type": "notary_seal", "bbox_normalized": [0.565, 0.041, 0.156, 0.222], '
+        '"confidence": 0.9, "associated_label": "NOTARY" }, { "probable_type": "table", '
+        '"bbox_normalized": [0.1, 0.1'
+    )
+    parsed = _parse_vision_json(truncated)
+    assert isinstance(parsed, list)
+    marks = parse_vision_elements(truncated, page_number=26, document_type="Affidavit")
+    assert [mark.marking_type for mark in marks] == ["notary_seal"]
+
+
+def _openrouter_body(content: str, cost: float) -> dict:
+    return {
+        "id": f"gen-{cost}",
+        "model": "google/gemini-3.8-flash",
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 14,
+            "cost": cost,
+        },
+        "choices": [{"message": {"content": content}}],
+    }
+
+
+def _stub_openrouter_post(monkeypatch: pytest.MonkeyPatch, bodies: list[dict]) -> None:
+    queue = list(bodies)
+
+    async def fake_post(self, url, **_kwargs):
+        del self, url
+        payload = queue.pop(0)
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: payload,
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_fallback_model",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._headers",
+        lambda: {
+            "Authorization": "Bearer test-key",
+            "Content-Type": "application/json",
+        },
+    )
+    monkeypatch.setattr("httpx.AsyncClient.post", fake_post)
+
+
+@pytest.mark.asyncio
+async def test_detect_empty_array_body_is_ok_not_vision_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_openrouter_post(monkeypatch, [_openrouter_body("[]", 0.01)])
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "ok"
+    assert index["error"] is None
+    assert index["failures"] == []
+    assert index["marks"] == []
+    assert index["usage"]["cost_usd"] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_detect_sums_openrouter_cost_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_openrouter_post(
+        monkeypatch,
+        [
+            _openrouter_body("[]", 0.01),
+            _openrouter_body("[]", 0.02),
+        ],
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1"),
+            _part("affidavit", ["Affidavit"], file_id="dfl-affidavit-1"),
+        ],
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "ok"
+    assert index["usage"]["cost_usd"] == pytest.approx(0.03)
+    assert index["usage"]["calls"] == 2
+    summary = visual_summary(index)
+    assert summary["usage"]["cost_usd"] == pytest.approx(0.03)

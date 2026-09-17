@@ -49,10 +49,10 @@ from .scrutiny.prompts import (
 from .scrutiny.rules import (
     Catalogue,
     Defect,
+    check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
     get_catalogue,
-    serial_sort_key,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -100,6 +100,7 @@ class ScrutinyEvent(StartEvent):
     file_url: str | None = None
     organization_id: str | None = None
     workspace_id: str | None = None
+    special_category: str | None = None
 
 
 class Status(Event):
@@ -494,7 +495,10 @@ class ScrutinyWorkflow(Workflow):
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
         catalogue = get_catalogue()
-        defects = defects_for_filing_type(filing_type)
+        defects = defects_for_filing_type(
+            filing_type,
+            special_category=event.special_category,
+        )
 
         if not defects:
             covered = sorted({d.main_category for d in catalogue.defects})
@@ -562,7 +566,7 @@ class ScrutinyWorkflow(Workflow):
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
         ) -> ScrutinyReport:
-            snapshot = sorted(current, key=lambda f: serial_sort_key(f.serial_no))
+            snapshot = sorted(current, key=lambda f: check_id_sort_key(f.check_id))
             return ScrutinyReport(
                 catalogue_id=catalogue.catalogue_id,
                 catalogue_version=catalogue.catalogue_version,
@@ -609,7 +613,7 @@ class ScrutinyWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Checking {defect.check_id} — S.No. {defect.serial_no}",
+                    message=f"Checking {defect.check_id}",
                 )
             )
             try:

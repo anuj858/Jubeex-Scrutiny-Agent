@@ -191,6 +191,7 @@ async def test_run_nested_scrutiny_wraps_openrouter_failure(
     from extraction_review.process_split_files import _run_nested_scrutiny
 
     state = _index_state()
+    state.special_category = "Appeal (Armed Forces)"
     streamed: list[object] = []
     ctx = SimpleNamespace(
         store=_Store(state),
@@ -201,6 +202,7 @@ async def test_run_nested_scrutiny_wraps_openrouter_failure(
     assert str(err.value) == "Unable to run scrutiny defects. Try after some time."
     assert err.value.agent_data_id == "agd-index"
     assert captured["event"].agent_data_id == "agd-index"
+    assert captured["event"].special_category == "Appeal (Armed Forces)"
 
 
 def test_extract_path_does_not_nest_scrutiny() -> None:

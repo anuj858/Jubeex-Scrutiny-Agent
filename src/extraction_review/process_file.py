@@ -133,20 +133,25 @@ PETITION_SPLIT_JOB_TYPES = frozenset({"split_petition"})
 VERIFY_JOB_TYPES = frozenset({"verify_document"})
 EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
-FULL_JOB_TYPES = frozenset(
-    {
-        "full",
-        "compiled",
-        "bundle",
-        "upload_compiled",
-        "upload_combined",
-        "upload_full",
-        "upload_bundle",
-    }
-) | PETITION_SPLIT_JOB_TYPES
-SPLIT_JOB_TYPES = frozenset(
-    {"split", "parts", "upload_separate", "upload_split"}
-) | EXTRACT_ONLY_JOB_TYPES | INDEX_JOB_TYPES
+FULL_JOB_TYPES = (
+    frozenset(
+        {
+            "full",
+            "compiled",
+            "bundle",
+            "upload_compiled",
+            "upload_combined",
+            "upload_full",
+            "upload_bundle",
+        }
+    )
+    | PETITION_SPLIT_JOB_TYPES
+)
+SPLIT_JOB_TYPES = (
+    frozenset({"split", "parts", "upload_separate", "upload_split"})
+    | EXTRACT_ONLY_JOB_TYPES
+    | INDEX_JOB_TYPES
+)
 CATALOG_JOB_TYPES = [
     "upload_compiled",
     "upload_separate",
@@ -355,7 +360,12 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
     if alias in known:
         return alias
     dynamic = dynamic_upload_slot(underscored) or dynamic_upload_slot(key)
-    if dynamic and (not known or "annexures" in known or "applications" in known or dynamic.id in known):
+    if dynamic and (
+        not known
+        or "annexures" in known
+        or "applications" in known
+        or dynamic.id in known
+    ):
         return dynamic.id
     from_name = slot_id_from_name(key, filing_type)
     if from_name in known or (from_name and dynamic_upload_slot(from_name)):
@@ -415,9 +425,7 @@ def resolve_compiled_filing_type(
         except SplitUploadError:
             pass
     try:
-        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(
-            DEFAULT_COMPILED_FILING_TYPE
-        )
+        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(DEFAULT_COMPILED_FILING_TYPE)
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
     raise SplitUploadError(
@@ -588,6 +596,7 @@ class FileEvent(StartEvent):
     edited: bool | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
+    special_category: str | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -763,6 +772,7 @@ class BundlePrepared(StopEvent):
     classify_split_seconds: float | None = None
     timing: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
+    llama_split: dict[str, Any] | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     match: bool | None = None
     verified_documents: list[VerifiedDocument] = Field(default_factory=list)
@@ -858,8 +868,31 @@ async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
     )
 
 
+# Official Split API: splitting_strategy.custom_instructions max 5000 chars.
+# https://developers.llamaindex.ai/llamaparse/split/getting_started/
+_SPLIT_CUSTOM_INSTRUCTIONS_MAX = 5000
+
+
+def _split_strategy_payload(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        dumped = raw.model_dump(exclude_none=True)
+    elif isinstance(raw, dict):
+        dumped = {key: value for key, value in raw.items() if value is not None}
+    else:
+        return None
+    instructions = dumped.get("custom_instructions")
+    if (
+        isinstance(instructions, str)
+        and len(instructions) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX
+    ):
+        dumped["custom_instructions"] = instructions[:_SPLIT_CUSTOM_INSTRUCTIONS_MAX]
+    return dumped or None
+
+
 def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
-    """LlamaSplit accepts only category name + description."""
+    """LlamaSplit categories plus splitting_strategy (custom_instructions ≤ 5000)."""
     dumped = dump_api_configuration(split_config)
     dumped["categories"] = [
         {
@@ -869,7 +902,24 @@ def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
         for item in dumped.get("categories") or []
         if isinstance(item, dict) and item.get("name")
     ]
+    strategy = _split_strategy_payload(
+        dumped.get("splitting_strategy")
+        or getattr(split_config, "splitting_strategy", None)
+    )
+    if strategy:
+        dumped["splitting_strategy"] = strategy
+    else:
+        dumped.pop("splitting_strategy", None)
     return dumped
+
+
+def _json_value(value: Any) -> Any:
+    """SDK object as JSON data. Does not rename or reformat fields."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return value
+    return value
 
 
 async def _split_page_parts(
@@ -878,8 +928,12 @@ async def _split_page_parts(
     file_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
-) -> tuple[dict[int, list[str]], str]:
-    """Label pages with Split categories. Returns (page_parts, split_job_id)."""
+) -> tuple[dict[int, list[str]], str, dict[str, Any]]:
+    """Label pages with Split categories.
+
+    Returns page labels, the split job id, and the request/response pair
+    exactly as sent to and returned by LlamaSplit.
+    """
     label = filename or "filing"
     if split_config is None:
         raise RuntimeError(
@@ -897,25 +951,37 @@ async def _split_page_parts(
         )
 
     if split_config.configuration_id:
+        sent: dict[str, Any] = {
+            "file_input": file_id,
+            "configuration_id": split_config.configuration_id,
+            "project_id": project_id,
+        }
         job = await client.split.create(
             file_input=file_id,
             configuration_id=split_config.configuration_id,
             project_id=project_id,
         )
     else:
+        configuration = _split_api_configuration(split_config)
+        sent = {
+            "file_input": file_id,
+            "configuration": configuration,
+            "project_id": project_id,
+        }
         job = await client.split.create(
             file_input=file_id,
-            configuration=_split_api_configuration(split_config),
+            configuration=configuration,
             project_id=project_id,
         )
     completed = await _wait_for_split(client, job.id)
+    exchange = {"sent": sent, "returned": _json_value(completed)}
     mapping = page_parts_from_split(completed)
     if not mapping:
         raise RuntimeError(
             f"Split finished for {label} but labelled no pages. "
             "Scrutiny cannot filter Listing Proforma / Main Petition / checklist parts."
         )
-    return mapping, str(getattr(completed, "id", None) or job.id)
+    return mapping, str(getattr(completed, "id", None) or job.id), exchange
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
@@ -967,9 +1033,10 @@ def prefixed_slot_filename(slot_filename: str, bundle_name: str | None) -> str:
     bundle = uploaded_filename(bundle_name)
     if not bundle:
         return slot
-    stem = re.sub(
-        r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem
-    ).strip("._") or "filing"
+    stem = (
+        re.sub(r"[^A-Za-z0-9._-]+", "_", PurePosixPath(bundle).stem).strip("._")
+        or "filing"
+    )
     slot_stem = PurePosixPath(slot).stem
     lowered = slot_stem.lower()
     prefix = stem.lower()
@@ -1173,7 +1240,7 @@ async def _verify_one_document(
                     filename=filename,
                     external_file_id=item.document_id or item.file_hash,
                 )
-            page_parts, _job_id = await _split_page_parts(
+            page_parts, _job_id, _exchange = await _split_page_parts(
                 client,
                 file_id=file_id,
                 split_config=split_config,
@@ -1223,9 +1290,7 @@ async def _run_verify_from_file_event(
     ctx.write_event_to_stream(
         Status(
             level="info",
-            message=(
-                f"Verified {len(documents)} document(s); overall match={overall}"
-            ),
+            message=(f"Verified {len(documents)} document(s); overall match={overall}"),
         )
     )
     return BundlePrepared(
@@ -1286,6 +1351,7 @@ async def _extract_sliced_parts(
     edited: bool = False,
     parsed_slots: list[str] | None = None,
     agent_data_id: str | None = None,
+    special_category: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
@@ -1314,6 +1380,7 @@ async def _extract_sliced_parts(
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
+            special_category=special_category,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
@@ -1484,6 +1551,7 @@ async def _run_split_from_file_event(
         edited=edited,
         parsed_slots=parsed_slots,
         agent_data_id=agent_data_id,
+        special_category=event.special_category,
         reuse_pages_by_slot=reuse_pages if index_only and not edited else {},
         reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
         reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},
@@ -1768,7 +1836,7 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        page_parts, split_job_id = await _split_page_parts(
+        page_parts, split_job_id, llama_split = await _split_page_parts(
             llama_cloud_client,
             file_id=state.file_id,
             split_config=split_config,
@@ -1895,9 +1963,7 @@ class ProcessFileWorkflow(Workflow):
                 f"parse and extract ({len(slices)} document part(s))"
             )
         else:
-            ready_message = (
-                f"Split JSON ready ({len(slices)} document part(s))"
-            )
+            ready_message = f"Split JSON ready ({len(slices)} document part(s))"
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -1928,6 +1994,7 @@ class ProcessFileWorkflow(Workflow):
             classify_split_seconds=classify_split_seconds,
             timing=timing,
             usage={"llamacloud": usage_summary},
+            llama_split=llama_split,
         )
 
 

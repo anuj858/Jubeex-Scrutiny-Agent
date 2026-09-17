@@ -26,6 +26,7 @@ Important boundaries:
   0 and 1. The box must tightly contain one complete visible object. Never return the whole
   page as the object's box.
 - Omit ordinary text and false positives instead of forcing a label.
+- Keep relevance_reason to one short clause.
 - Return JSON matching the supplied schema and nothing else."""
 
 
@@ -39,7 +40,7 @@ def user_prompt(
         "Inspect this private legal-document page. The first image is the complete page. "
         "Later images, when present, are sanitized reference sheets. "
         "Return every relevant object independently. Every element must contain probable_type, "
-        "bbox_normalized, legal_relevance, relevance_reason, associated_label, "
+        "bbox_normalized, legal_relevance, a short relevance_reason, associated_label, "
         "field_role, visible_text, near_label, signature_role, confidence (0..1), and reason. "
         f"Allowed types: {types}. Never identify a signer and never claim authenticity or "
         f"legal validity. Page={page_number}. Document parts on this page: {parts}. "

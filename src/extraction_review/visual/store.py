@@ -15,6 +15,7 @@ from ..s3_artifacts import (
     download_json_object,
     upload_step_json,
 )
+from ..scrutiny.schema import LlmUsage
 from .schema import (
     PROMPT_VERSION,
     VISUAL_SCHEMA,
@@ -27,6 +28,60 @@ logger = logging.getLogger(__name__)
 
 VISUAL_ARTIFACT_URL_KEY = "visual_artifact_url"
 VISUAL_ARTIFACT_KEY_KEY = "visual_artifact_key"
+VISUAL_SUMMARY_KEY = "visual_summary"
+
+
+def _coerce_failures(raw: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in raw or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            continue
+        types = [
+            str(name).strip()
+            for name in (item.get("document_types") or [])
+            if str(name).strip()
+        ]
+        reason = str(item.get("reason") or "").strip() or "vision_failed"
+        detail = item.get("detail")
+        slot_id = str(item.get("slot_id") or "").strip() or None
+        rows.append(
+            {
+                "page": page,
+                "slot_id": slot_id,
+                "document_types": types,
+                "reason": reason,
+                "detail": (str(detail).strip()[:300] if detail else None) or None,
+            }
+        )
+    return rows
+
+
+def _coerce_usage(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, LlmUsage):
+            usage = raw
+        elif isinstance(raw, Mapping):
+            usage = LlmUsage.model_validate(dict(raw))
+        else:
+            return None
+    except ValidationError:
+        return None
+    if usage.calls <= 0 and usage.cost_usd is None and usage.total_tokens <= 0:
+        return None
+    return {
+        "cost_usd": usage.cost_usd,
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "calls": usage.calls,
+        "model": usage.model,
+    }
 
 
 def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -36,6 +91,7 @@ def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     blob.setdefault("error", None)
     blob.setdefault("pages", [])
     blob.setdefault("targets", [])
+    blob.setdefault("failures", [])
     blob.setdefault("marks", [])
     blob["status"] = coerce_visual_status(str(blob.get("status") or "ok"))
     return blob
@@ -74,7 +130,29 @@ def coerce_visual_index(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     blob["marks"] = marks
     blob["pages"] = pages
     blob["targets"] = targets
+    blob["failures"] = _coerce_failures(blob.get("failures"))
+    usage = _coerce_usage(blob.get("usage"))
+    if usage:
+        blob["usage"] = usage
+    else:
+        blob.pop("usage", None)
     return blob
+
+
+def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Compact Agent Data metadata so the UI can explain vision without fetching S3."""
+    coerced = coerce_visual_index(payload)
+    summary = {
+        "status": coerced.get("status"),
+        "error": coerced.get("error"),
+        "mark_count": len(coerced.get("marks") or []),
+        "target_count": len(coerced.get("targets") or []),
+        "failures": list(coerced.get("failures") or []),
+        "targets": list(coerced.get("targets") or []),
+    }
+    if coerced.get("usage"):
+        summary["usage"] = coerced["usage"]
+    return summary
 
 
 def upload_visual_index(

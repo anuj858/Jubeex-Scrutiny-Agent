@@ -1,8 +1,8 @@
 """Loader for the SCI registry defect catalogue.
 
-Defects match the API payload shape (S.No., Main Category, Defect/Objection,
-Requirement, Where to Look, How to cure, rule, source). The JSON is validated
-into Pydantic models at first use.
+Defects match the API payload shape (check_id from spreadsheet NEW CODES,
+Main Category, Defect/Objection, Requirement, Where to Look, How to cure,
+rule, source). The JSON is validated into Pydantic models at first use.
 """
 
 from __future__ import annotations
@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 CATALOGUE_FILENAME = "sci_registry_defects.v1.json"
 SCHEMA_FILENAME = "sci_registry_defects.schema.v1.json"
+CASE_TYPES_FILENAME = "sci_case_types.v1.json"
+
+DEFAULT_ENABLED_DEFECTS: tuple[str, ...] = ()
 
 _DRIVE_FILE_MARKER = "/file/d/"
 
@@ -162,6 +165,14 @@ _CATEGORY_ALIASES = {
     "miscellaneous application": "miscellaneous_application",
     "miscellaneous_application": "miscellaneous_application",
     "m.a.": "miscellaneous_application",
+    "appeals": "appeals",
+    "appeal": "appeals",
+    "contempt matters": "contempt_petition",
+    "election petition(civil)": "election_petition_civil",
+    "refiling defects": "refiling_defect",
+    "re-filing defect": "refiling_defect",
+    "re-filing defects": "refiling_defect",
+    "refiling defect": "refiling_defect",
     "rp (civil)": "review_petition_civil",
     "r.p. (civil)": "review_petition_civil",
     "rp (criminal)": "review_petition_criminal",
@@ -176,15 +187,92 @@ _CATEGORY_ALIASES = {
 
 _SIDE_SUFFIXES = ("_civil", "_criminal")
 
+_EMPTY_SPECIAL_TOKENS = {
+    "",
+    "n/a",
+    "na",
+    "n.a.",
+    "n.a",
+    "none",
+    "null",
+    "nothing",
+    "nil",
+    "-",
+    "not applicable",
+}
+
+_SPECIAL_ALIASES = {
+    "motor vehical act": "motor_vehicle_act",
+    "motor vehicle act": "motor_vehicle_act",
+    "demolition matters": "demolition_matters",
+    "eviction matters": "eviction_matters",
+    "interlocutory applications": "interlocutory_applications",
+    "interlocutory application": "interlocutory_applications",
+    "miscellaneous application": "miscellaneous_application",
+    "matters involving/pertaining to minors": "minors",
+    "matters involving pertaining to minors": "minors",
+    "re-filing defect": "refiling_defect",
+    "refiling defects": "refiling_defect",
+    "re-filing defects": "refiling_defect",
+    "refiling defect": "refiling_defect",
+    "indigent person": "indigent_person",
+    "jail petition": "jail_petition",
+    "bail applications/bail matters": "bail_matters",
+    "bail applications": "bail_matters",
+    "bail matters": "bail_matters",
+    "civil appeal with high court certificate": "civil_appeal_high_court_certificate",
+    "criminal appeal with high court certificate": "criminal_appeal_high_court_certificate",
+    "appeal (armed forces)": "appeal_armed_forces",
+    "pil": "pil",
+    "advocates act, 1961": "advocates_act",
+    "advocates act 1961": "advocates_act",
+    "consumer protection act, 1986": "consumer_protection_act",
+    "consumer protection act 1986": "consumer_protection_act",
+    "caveat": "caveat",
+    "tax matters": "tax_matters",
+    "transfer petition": "transfer_petition",
+}
+
+_OVERLAY_SPECIALS = frozenset({"miscellaneous_application", "refiling_defect"})
+
+
+def _fold_special_phrase(value: str) -> str:
+    """Lowercase and drop punctuation so caps and parentheses do not matter.
+
+    "Appeal (Armed Forces)" and "appeal armed forces" become the same phrase.
+    This is exact after folding. It does not guess a nearby label.
+    """
+    text = re.sub(r"[^a-z0-9]+", " ", (value or "").casefold())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _special_lookup() -> dict[str, str]:
+    """Folded known labels only. Unknown phrases are not mapped."""
+    lookup: dict[str, str] = {}
+    for label, key in _SPECIAL_ALIASES.items():
+        phrase = _fold_special_phrase(label)
+        if not phrase:
+            continue
+        existing = lookup.get(phrase)
+        if existing and existing != key:
+            raise ValueError(
+                f"Special-category phrase {phrase!r} maps to both "
+                f"{existing!r} and {key!r}"
+            )
+        lookup[phrase] = key
+    return lookup
+
+
+_SPECIAL_BY_PHRASE = _special_lookup()
+
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
 class DefectCategory(_Strict):
-    """One prompt shared by every defect in the same scrutiny area."""
+    """Shared scrutiny-area prompt. Identified by label only — no category id."""
 
-    id: str
     label: str
     prompt: str
 
@@ -209,10 +297,8 @@ class CatalogueSource(_Strict):
 
 class Defect(_Strict):
     check_id: str
-    serial_no: int | str
     main_category: str
     special_category: str | None = None
-    category_id: str | None = None
     parent_check_id: str | None = None
     overlap_note: str | None = None
     defect: str
@@ -225,14 +311,15 @@ class Defect(_Strict):
     how_to_cure: list[str]
     applicable_rule: str | None = None
     location_source: str
+    notes: str | None = None
 
     @field_validator(
         "special_category",
         "trigger_words",
-        "category_id",
         "parent_check_id",
         "overlap_note",
         "applicable_rule",
+        "notes",
         mode="before",
     )
     @classmethod
@@ -252,17 +339,6 @@ class Defect(_Strict):
     @property
     def main_categories(self) -> tuple[str, ...]:
         return split_main_categories(self.main_category)
-
-    @field_validator("serial_no", mode="before")
-    @classmethod
-    def _serial_no(cls, value: object) -> object:
-        if isinstance(value, str):
-            text = value.strip().upper()
-            if text.isdigit():
-                return int(text)
-            if re.fullmatch(r"\d+[A-Z]", text):
-                return text
-        return value
 
     @field_validator(
         "where_to_look",
@@ -336,20 +412,10 @@ class Catalogue(_Strict):
         return found
 
     def category_for(self, defect: Defect) -> DefectCategory | None:
-        if defect.category_id:
-            found = next(
-                (c for c in self.categories if c.id == defect.category_id), None
-            )
-            if found:
-                return found
         if defect.special_category:
             key = defect.special_category.strip().lower()
             return next(
-                (
-                    c
-                    for c in self.categories
-                    if c.label.lower() == key or c.id.replace("_", " ") == key
-                ),
+                (c for c in self.categories if c.label.lower() == key),
                 None,
             )
         return None
@@ -411,6 +477,23 @@ def catalogue_schema_path() -> Path:
     return _locate(SCHEMA_FILENAME)
 
 
+def case_types_path() -> Path:
+    return _locate(CASE_TYPES_FILENAME)
+
+
+@lru_cache(maxsize=1)
+def get_case_types() -> dict[str, dict[str, object]]:
+    path = case_types_path()
+    with path.open(encoding="utf-8") as fh:
+        raw = json.load(fh)
+    by_key: dict[str, dict[str, object]] = {}
+    for row in raw.get("case_types") or []:
+        filing_type = str(row.get("filing_type") or "").strip()
+        if filing_type:
+            by_key[filing_type] = row
+    return by_key
+
+
 @lru_cache(maxsize=1)
 def get_catalogue() -> Catalogue:
     path = catalogue_path()
@@ -450,15 +533,20 @@ def normalize_filing_type(filing_type: str | None) -> str:
 def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
     """Normalized main_category keys that run for this petition type.
 
-    SLP_CIVIL → global + slp + slp_civil
-    SLP_CRIMINAL → global + slp + slp_criminal
-
-    Later types follow the same family pattern: Transfer Petition (Civil)
-    runs Global/General + Transfer Petition + Transfer Petition (Civil).
+    When sci_case_types.v1.json lists the type, use that sheet's
+    Rules Applicable labels. Otherwise fall back to global + family + side.
     """
     normalized = normalize_filing_type(filing_type)
     if not normalized:
         return frozenset()
+    spec = get_case_types().get(normalized)
+    if spec:
+        keys = {"global", normalized}
+        for label in spec.get("rules_applicable") or []:
+            key = normalize_filing_type(str(label))
+            if key:
+                keys.add(key)
+        return frozenset(keys)
     keys = {"global", normalized}
     for suffix in _SIDE_SUFFIXES:
         if normalized.endswith(suffix):
@@ -469,10 +557,70 @@ def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
     return frozenset(keys)
 
 
-def serial_sort_key(serial_no: int | str | None) -> tuple[int, str]:
-    """Sort 92 before 96A before 96B; letter suffixes follow the number."""
-    text = str(serial_no or "").strip().upper()
-    match = re.fullmatch(r"(\d+)([A-Z]*)", text)
+def normalize_special_category(value: str | None) -> str:
+    """Map a frontend or catalogue special-category label onto one key.
+
+    Case, spaces, hyphens, slashes, and parentheses do not matter
+    ("APPEAL (ARMED FORCES)" == "appeal armed forces"). Empty, N/A, and
+    any phrase that is not a known label return "" — unknown text is never
+    assigned to a nearby special.
+    """
+    raw = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if raw in _EMPTY_SPECIAL_TOKENS:
+        return ""
+    phrase = _fold_special_phrase(value or "")
+    if not phrase or phrase in {"n a", "na"}:
+        return ""
+    return _SPECIAL_BY_PHRASE.get(phrase, "")
+
+
+def allowed_special_keys(filing_type: str | None) -> frozenset[str]:
+    normalized = normalize_filing_type(filing_type)
+    spec = get_case_types().get(normalized)
+    if not spec:
+        return frozenset()
+    keys: set[str] = set()
+    for label in spec.get("special_categories") or []:
+        key = normalize_special_category(str(label))
+        if key:
+            keys.add(key)
+    return frozenset(keys)
+
+
+def special_categories_for_catalog() -> dict[str, list[str]]:
+    """Display labels per API filing type (SLP_CIVIL, …) for the frontend."""
+    from extraction_review.config import JUBEEX_FILING_TYPES
+
+    listed: dict[str, list[str]] = {}
+    for filing_type in JUBEEX_FILING_TYPES:
+        spec = get_case_types().get(normalize_filing_type(filing_type))
+        labels = [
+            str(label).strip()
+            for label in (spec or {}).get("special_categories") or []
+            if str(label).strip()
+        ]
+        listed[filing_type] = labels
+    return listed
+
+
+def _overlay_special_key(defect: Defect) -> str:
+    """Main-category labels that also act as a frontend special overlay."""
+    if defect.special_category:
+        return ""
+    for category in defect.main_categories:
+        key = normalize_filing_type(category)
+        if key in _OVERLAY_SPECIALS:
+            return key
+        special_key = normalize_special_category(category)
+        if special_key in _OVERLAY_SPECIALS:
+            return special_key
+    return ""
+
+
+def check_id_sort_key(check_id: str | None) -> tuple[int, str]:
+    """Sort spreadsheet NEW CODES: D-1 before D-2 before D-10. Do not invent suffixes."""
+    text = str(check_id or "").strip().upper()
+    match = re.fullmatch(r"D-?(\d+)([A-Z]*)", text)
     if not match:
         return (10**9, text)
     return (int(match.group(1)), match.group(2))
@@ -499,12 +647,41 @@ def _applies_to_filing(defect: Defect, normalized_filing_type: str) -> bool:
     return False
 
 
+def _applies_to_special(
+    defect: Defect,
+    filing_type: str | None,
+    special_category: str | None,
+) -> bool:
+    """Gate tagged specials on the frontend value.
+
+    Null / omitted / N/A skips every defect that has a special_category.
+    Generic (untagged) defects still run when main_category matches.
+    """
+    requested = normalize_special_category(special_category)
+    tagged = normalize_special_category(defect.special_category)
+    overlay = _overlay_special_key(defect)
+    allowed = allowed_special_keys(filing_type)
+
+    if tagged:
+        return bool(requested) and requested == tagged and requested in allowed
+
+    if overlay == "refiling_defect":
+        return bool(requested) and requested == overlay and requested in allowed
+
+    if overlay == "miscellaneous_application":
+        if _applies_to_filing(defect, normalize_filing_type(filing_type)):
+            return True
+        return bool(requested) and requested == overlay and requested in allowed
+
+    return True
+
+
 def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
     """Run each parent immediately before its children.
 
     Consecutive OpenRouter calls then share a longer prompt prefix (same
-    petition-type system prompt, then the same category block) so the child
-    can reuse the cached parent prefix.
+    petition-type system prompt) so the child can reuse the cached parent
+    prefix.
     """
     by_id = {d.check_id: d for d in defects}
     children: dict[str, list[Defect]] = {}
@@ -513,12 +690,12 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
         if parent_id and parent_id in by_id:
             children.setdefault(parent_id, []).append(defect)
     for kids in children.values():
-        kids.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
+        kids.sort(key=lambda d: (check_id_sort_key(d.check_id), d.check_id))
 
     roots = [
         d for d in defects if not d.parent_check_id or d.parent_check_id not in by_id
     ]
-    roots.sort(key=lambda d: (serial_sort_key(d.serial_no), d.check_id))
+    roots.sort(key=lambda d: (check_id_sort_key(d.check_id), d.check_id))
 
     ordered: list[Defect] = []
     seen: set[str] = set()
@@ -538,15 +715,27 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
     return ordered
 
 
-def defects_for_filing_type(filing_type: str | None) -> list[Defect]:
+def defects_for_filing_type(
+    filing_type: str | None,
+    special_category: str | None = None,
+) -> list[Defect]:
     catalogue = get_catalogue()
     normalized = normalize_filing_type(filing_type)
     allowed = set(enabled_defect_ids())
+    overlay_requested = normalize_special_category(special_category)
 
     selected = [
         defect
         for defect in catalogue.defects
-        if defect.check_id in allowed and _applies_to_filing(defect, normalized)
+        if defect.check_id in allowed
+        and (
+            _applies_to_filing(defect, normalized)
+            or (
+                overlay_requested
+                and _overlay_special_key(defect) == overlay_requested
+            )
+        )
+        and _applies_to_special(defect, filing_type, special_category)
     ]
     selected = order_parent_then_children(selected)
 
@@ -557,8 +746,9 @@ def defects_for_filing_type(filing_type: str | None) -> list[Defect]:
             ", ".join(sorted(unknown)),
         )
     logger.info(
-        "[Scrutiny] Petition type %s selected %s defect(s) from main_category {%s}",
+        "[Scrutiny] Petition type %s special %s selected %s defect(s) from main_category {%s}",
         filing_type or "(missing)",
+        special_category or "(none)",
         len(selected),
         ", ".join(sorted(categories_for_filing_type(filing_type))),
     )
