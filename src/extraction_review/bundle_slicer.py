@@ -17,7 +17,6 @@ from .document_parts import (
     ANNEXURE_FAMILY,
     APPLICATION_FAMILY,
     MAIN_PETITION_PART,
-    explode_repeating_split_parts,
     family_split_name,
     format_page_span,
     numbered_part_slot_id,
@@ -252,8 +251,9 @@ def slice_bundle_pdf(
     """Cut the bundle into one PDF per catalog slot that LlamaSplit found.
 
     Pages that match no known slot are copied into Undefined when that slot
-    exists and leftover pages remain. Consecutive annexures and applications
-    are sliced into Annexure P-1…P-n and Application 1…n with no gaps.
+    exists and leftover pages remain. Annexure P-n and Application n names
+    are used as LlamaSplit returned them. Printed headings are not used to
+    invent or renumber those labels.
     """
     normalized: dict[int, list[str]] = {}
     for page, raw in page_parts.items():
@@ -265,21 +265,7 @@ def slice_bundle_pdf(
         if labels:
             normalized[number] = labels
     reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
-    annexure_pages = [
-        number
-        for number, labels in normalized.items()
-        if any(family_split_name(name) == ANNEXURE_FAMILY for name in labels)
-    ]
-    text_pages = set(_pages_needing_family_text(normalized))
-    if annexure_pages:
-        text_pages.update(range(min(annexure_pages), max(annexure_pages) + 1))
-    page_texts = _pdf_page_texts(
-        pdf_bytes,
-        sorted(text_pages),
-        reader=reader,
-    )
-    exploded = explode_repeating_split_parts(normalized, page_texts)
-    pages_by_slot = dict(map_slot_pages(catalog, exploded))
+    pages_by_slot = dict(map_slot_pages(catalog, normalized))
     if reader is not None and any(
         slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots
     ):

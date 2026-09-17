@@ -992,16 +992,128 @@
         "description": "A sworn affidavit headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp."
       },
       {
-        "name": "Annexures",
-        "description": "An annexed exhibit marked Annexure P-1, P-2, P-n, P-100, or R-n (also ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Each new annexure mark is a separate document, including when the exhibit is a High Court petition, revision, judgment, or application."
+        "name": "Annexure P-1",
+        "description": "Pages headed ANNEXURE P-1, ANNEXURE-P1, or ANNEXURE P-1 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-2",
+        "description": "Pages headed ANNEXURE P-2, ANNEXURE-P2, or ANNEXURE P-2 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-3",
+        "description": "Pages headed ANNEXURE P-3, ANNEXURE-P3, or ANNEXURE P-3 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-4",
+        "description": "Pages headed ANNEXURE P-4, ANNEXURE-P4, or ANNEXURE P-4 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-5",
+        "description": "Pages headed ANNEXURE P-5, ANNEXURE-P5, or ANNEXURE P-5 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-6",
+        "description": "Pages headed ANNEXURE P-6, ANNEXURE-P6, or ANNEXURE P-6 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-7",
+        "description": "Pages headed ANNEXURE P-7, ANNEXURE-P7, or ANNEXURE P-7 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-8",
+        "description": "Pages headed ANNEXURE P-8, ANNEXURE-P8, or ANNEXURE P-8 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-9",
+        "description": "Pages headed ANNEXURE P-9, ANNEXURE-P9, or ANNEXURE P-9 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-10",
+        "description": "Pages headed ANNEXURE P-10, ANNEXURE-P10, or ANNEXURE P-10 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-11",
+        "description": "Pages headed ANNEXURE P-11, ANNEXURE-P11, or ANNEXURE P-11 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-12",
+        "description": "Pages headed ANNEXURE P-12, ANNEXURE-P12, or ANNEXURE P-12 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-13",
+        "description": "Pages headed ANNEXURE P-13, ANNEXURE-P13, or ANNEXURE P-13 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-14",
+        "description": "Pages headed ANNEXURE P-14, ANNEXURE-P14, or ANNEXURE P-14 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+      },
+      {
+        "name": "Annexure P-15",
+        "description": "Pages headed ANNEXURE P-15, ANNEXURE-P15, or ANNEXURE P-15 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
       },
       {
         "name": "Appendix",
         "description": "An Appendix quoting sections of an Act or Rules relied on in the petition."
       },
       {
-        "name": "Application",
-        "description": "An interlocutory application in this Court headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH."
+        "name": "Application 1",
+        "description": "Interlocutory application 1 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 2",
+        "description": "Interlocutory application 2 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 3",
+        "description": "Interlocutory application 3 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 4",
+        "description": "Interlocutory application 4 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 5",
+        "description": "Interlocutory application 5 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 6",
+        "description": "Interlocutory application 6 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 7",
+        "description": "Interlocutory application 7 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 8",
+        "description": "Interlocutory application 8 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 9",
+        "description": "Interlocutory application 9 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 10",
+        "description": "Interlocutory application 10 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 11",
+        "description": "Interlocutory application 11 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 12",
+        "description": "Interlocutory application 12 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 13",
+        "description": "Interlocutory application 13 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 14",
+        "description": "Interlocutory application 14 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+      },
+      {
+        "name": "Application 15",
+        "description": "Interlocutory application 15 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
       },
       {
         "name": "Memo of Parties",
@@ -1034,7 +1146,7 @@
     ],
     "splitting_strategy": {
       "allow_uncategorized": "include",
-      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexures, Appendix, Application, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Each heading ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2, or P-n starts a new Annexures segment, even if the exhibit body is a High Court petition, revision, or application. Adjacent Annexures segments are separate exhibits; keep pages with that mark until the next annexure heading. Do not classify an annexure exhibit as Main Petition or Application. Each page in this Court headed APPLICATION with RESPECTFULLY SHOWETH is a new Application segment; adjacent Application segments are separate applications. A page headed Annexure P-n is Annexures, not Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
+      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexure P-1, Appendix, Application 1, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Assign Annexure P-1 through Annexure P-15 from the printed mark (ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Stop at P-15. Do not invent a number and do not use a generic Annexures category. A High Court petition inside an exhibit stays that Annexure P-n, not Main Petition. Assign Application 1 through Application 15 in filing order, one category per APPLICATION headed RESPECTFULLY SHOWETH. Stop at 15. A page headed Annexure P-n is that annexure, not an Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
     }
   },
   "split_upload": {

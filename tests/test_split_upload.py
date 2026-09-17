@@ -2052,33 +2052,20 @@ def test_annexure_gap_fill_does_not_steal_other_document_parts() -> None:
     assert pages["annexure_p3"] == [27]
 
 
-def test_slice_bundle_pdf_fills_unlabeled_annexure_gaps_from_headings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    texts = {
-        20: "ANNEXURE P-1\nFIR",
-        26: "ANNEXURE P-2\nJudgment",
-        30: "ANNEXURE P-4\nOrder",
-    }
-    monkeypatch.setattr(
-        "extraction_review.bundle_slicer._pdf_page_texts",
-        lambda _pdf, pages, **_kwargs: {
-            int(page): texts.get(int(page), "") for page in pages
-        },
-    )
-    page_parts = {page: ["Annexures"] for page in range(20, 27)}
-    page_parts.update({page: ["Annexures"] for page in range(30, 41)})
+def test_slice_bundle_pdf_keeps_llamaspilt_annexure_numbers() -> None:
+    """Printed headings must not invent or renumber Split categories."""
+    page_parts = {page: ["Annexure P-1"] for page in range(20, 26)}
+    page_parts[26] = ["Annexure P-2"]
+    page_parts.update({page: ["Annexure P-4"] for page in range(30, 41)})
     catalog = type_catalog("SLP_CIVIL")
     slices = {
         item.slot_id: item
         for item in slice_bundle_pdf(_blank_pdf(40), catalog, page_parts)
     }
+    assert slices["annexure_p1"].pages == tuple(range(20, 26))
     assert slices["annexure_p2"].pages == (26,)
-    assert slices["annexure_p2"].page_span == "p. 26"
-    assert slices["annexure_p3"].pages == (27, 28, 29)
-    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert "annexure_p3" not in slices
     assert slices["annexure_p4"].pages == tuple(range(30, 41))
-    assert 27 not in slices["undefined"].pages
 
 
 def test_application_headings_number_consecutively() -> None:
@@ -2244,17 +2231,18 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     assert "A F F I D A V I T" in affidavit
     assert "Deponent" in affidavit
     assert "Verification" in affidavit
-    annexure = cats["Annexures"]
-    assert "P-1" in annexure
-    assert "P-100" in annexure
-    assert "ANNEXURE-P2" in annexure
-    assert "P-1 through P-7" not in annexure
+    annexure = cats["Annexure P-1"]
+    assert "ANNEXURE P-1" in annexure
+    assert "P-15" in annexure
+    assert "Annexure P-15" in cats
+    assert "Annexures" not in cats
     appendix = cats["Appendix"]
     assert "Appendix" in appendix
-    application = cats["Application"]
+    application = cats["Application 1"]
     assert "APPLICATION" in application
     assert "RESPECTFULLY SHOWETH" in application
-    assert "Application 1 through 7" not in application
+    assert "Application 15" in cats
+    assert "Application" not in cats
     filing = cats["Filing Memo"]
     assert "FILING INDEX" in filing or "INDEX OF FILING" in filing
     parties = cats["Memo of Parties"]
@@ -2271,7 +2259,8 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     )["split"]["splitting_strategy"]["custom_instructions"]
     assert len(instructions) <= 5000
     assert instructions.startswith("Near-blank scanned pages")
-    assert "starts a new Annexures segment" in instructions
+    assert "Annexure P-1 through Annexure P-15" in instructions
+    assert "Application 1 through Application 15" in instructions
     assert "cannot reappear after it ends" in instructions
 
 
