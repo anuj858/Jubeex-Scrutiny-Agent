@@ -16,6 +16,7 @@ import { modifyJsonSchema } from "@llamaindex/ui/lib";
 import { APP_TITLE } from "@/lib/config";
 import { downloadExtractedDataItem } from "@/lib/export";
 import { useMetadataContext } from "@/lib/MetadataProvider";
+import { VisualMarksPanel } from "@/lib/VisualMarksPanel";
 import {
   convertBoundingBoxesToHighlights,
   readJobTiming,
@@ -303,6 +304,13 @@ export default function ItemPage() {
               </div>
             </div>
           )}
+
+          <div className="mb-4">
+            <VisualMarksPanel
+              extractedData={extractedData}
+              onHighlight={setHighlight}
+            />
+          </div>
 
           {inconsistencyItems.length > 0 && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 mb-4">

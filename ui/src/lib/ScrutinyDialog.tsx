@@ -9,6 +9,7 @@ import {
   ResultState,
   ScrutinyReport,
   ScrutinyTarget,
+  VisualLocalization,
   sortFindings,
   downloadScrutinyReport,
   downloadScrutinyDoc,
@@ -56,6 +57,36 @@ function EvidenceList({
           <span className="italic">“{ref.quote}”</span>
         </li>
       ))}
+    </ul>
+  );
+}
+
+function VisualList({ items }: { items: VisualLocalization[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="mt-2 space-y-1.5">
+      {items.map((item, i) => {
+        const box = item.bounding_boxes?.[0];
+        const coords = box
+          ? `x ${box.x.toFixed(2)}, y ${box.y.toFixed(2)}, ${box.w.toFixed(2)}×${box.h.toFixed(2)}`
+          : item.boxes_status === "page_only"
+            ? "page only — no box"
+            : "no box";
+        return (
+          <li
+            key={i}
+            className="border-l-2 border-violet-300 pl-3 text-xs text-muted-foreground"
+          >
+            <span className="font-medium text-violet-900">
+              {item.document_type || "Document"} · {item.marking_type}
+            </span>
+            {item.signature_role ? ` (${item.signature_role})` : ""}
+            {item.page != null ? ` · page ${item.page}` : ""} · {coords}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -139,6 +170,7 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               <p className="text-sm text-muted-foreground">{finding.reasoning}</p>
             )}
             <EvidenceList evidence={finding.evidence ?? []} />
+            <VisualList items={finding.visual_localizations ?? []} />
             {(finding.defect || finding.requirement) && (
               <div className="mt-3 space-y-2 text-sm">
                 {finding.defect && (

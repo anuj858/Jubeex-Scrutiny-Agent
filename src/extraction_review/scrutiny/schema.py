@@ -93,6 +93,39 @@ class FindingEvidence(BaseModel):
     local_page: int | None = None
 
 
+class VisualLocalization(BaseModel):
+    """Ink-mark box attached to a visual catalogue defect after detection."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "page": 20,
+                "document_type": "Main Petition",
+                "marking_type": "advocate_on_record_signature",
+                "signature_role": "advocate",
+                "bounding_boxes": [
+                    {"page": 20, "x": 0.62, "y": 0.81, "w": 0.28, "h": 0.08}
+                ],
+                "boxes_status": "matched",
+                "confidence": 0.86,
+            }
+        }
+    )
+
+    page: int | None = None
+    document_type: str | None = None
+    marking_type: str = Field(
+        description=(
+            "Attached values: advocate_on_record_signature, "
+            "executant_signature, or notary_seal."
+        )
+    )
+    signature_role: str | None = None
+    bounding_boxes: list[BoundingBox] = Field(default_factory=list)
+    boxes_status: BoxesStatus = "unavailable"
+    confidence: float | None = None
+
+
 class DefectResponse(BaseModel):
     """Exactly what the model returns for one defect."""
 
@@ -253,6 +286,7 @@ class DefectFinding(BaseModel):
     )
     location_source: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
+    visual_localizations: list[VisualLocalization] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
     usage: LlmUsage | None = None
     error: str | None = None
@@ -674,6 +708,9 @@ def build_finding(
     usage: LlmUsage | None = None,
     chunks: list[dict[str, Any]] | None = None,
     layout: dict[int, dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
+    page_parts: dict[int, list[str]] | None = None,
+    record: dict[str, Any] | None = None,
 ) -> DefectFinding:
     suggested = response.suggested_fix if response.status == "defect_found" else None
     rationale = response.fix_rationale if response.status == "defect_found" else None
@@ -689,6 +726,14 @@ def build_finding(
         evidence_pages=evidence_pages,
         reviewed_pages=pages,
         document_parts=parts,
+    )
+    from ..visual.attach import attach_visual_localizations
+
+    visual_localizations = attach_visual_localizations(
+        defect,
+        visual_index=visual_index,
+        page_parts=page_parts,
+        record=record,
     )
     return DefectFinding(
         check_id=defect.check_id,
@@ -722,16 +767,31 @@ def build_finding(
         location=location,
         location_source=readable_location_source(defect, catalogue),
         evidence_ids=evidence_ids,
+        visual_localizations=visual_localizations,
         coverage=coverage,
         usage=usage,
     )
 
 
 def failed_finding(
-    defect: Defect, error: str, usage: LlmUsage | None = None
+    defect: Defect,
+    error: str,
+    usage: LlmUsage | None = None,
+    *,
+    visual_index: dict[str, Any] | None = None,
+    page_parts: dict[int, list[str]] | None = None,
+    record: dict[str, Any] | None = None,
 ) -> DefectFinding:
     """Placeholder when a defect could not be evaluated at all."""
     catalogue = get_catalogue()
+    from ..visual.attach import attach_visual_localizations
+
+    visual_localizations = attach_visual_localizations(
+        defect,
+        visual_index=visual_index,
+        page_parts=page_parts,
+        record=record,
+    )
     return DefectFinding(
         check_id=defect.check_id,
         serial_no=defect.serial_no,
@@ -745,6 +805,7 @@ def failed_finding(
         confidence=0.0,
         reasoning=f"This check did not run: {error}",
         evidence=[],
+        visual_localizations=visual_localizations,
         suggested_fix=None,
         fix_rationale=None,
         how_to_cure=display_cure_steps(defect.how_to_cure),

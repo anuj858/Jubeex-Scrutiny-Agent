@@ -17,6 +17,7 @@ dependencies = [
     "llama-index-core>=0.14.0",
     "pinecone>=7.0.0,<8",
     "pypdf>=5.0.0,<7",
+    "pymupdf>=1.24,<2",
     "boto3>=1.35,<2.0",
     "awscrt>=0.23,<1.0",
     "botocore[crt]>=1.43.89",
@@ -50,6 +51,7 @@ packages = ["src/extraction_review"]
 # without depending on the repo layout.
 [tool.hatch.build.targets.wheel.force-include]
 "scrutiny_harness/rules" = "extraction_review/_rules"
+"src/extraction_review/visual/references" = "extraction_review/visual/references"
 
 [tool.hatch.envs.default.scripts]
 "format" = "ruff format ."
@@ -88,6 +90,10 @@ OPENROUTER_MODEL = "google/gemini-3.8-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_TIMEOUT_S = "180"
 OPENROUTER_APP_TITLE = "JubeeX Scrutiny"
+OPENROUTER_VISION_ENABLED = "true"
+OPENROUTER_VISION_MODEL = "google/gemini-3.8-flash"
+VISION_PREVIEW_DPI = "160"
+VISION_CONCURRENCY = "4"
 SCRUTINY_ENABLED = "true"
 SCRUTINY_DEFECTS = "all"
 SCRUTINY_CONCURRENCY = "6"

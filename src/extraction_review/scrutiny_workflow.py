@@ -32,12 +32,12 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
+from .extract_record import stamp_review_status
 from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
     load_layout_index,
 )
-from .extract_record import stamp_review_status
 from .llm import LLMError, call_structured, openrouter_enabled, openrouter_model
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -72,6 +72,11 @@ from .vector_store import (
     gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
+)
+from .visual.store import (
+    VISUAL_ARTIFACT_KEY_KEY,
+    VISUAL_ARTIFACT_URL_KEY,
+    load_visual_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -227,6 +232,7 @@ async def _run_defect(
     file_name: str | None,
     filing_type: str | None,
     layout: dict[int, dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
 ) -> DefectFinding:
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     coverage = Coverage(
@@ -257,6 +263,8 @@ async def _run_defect(
         usage=usage,
         chunks=chunks,
         layout=layout,
+        visual_index=visual_index,
+        record=record if isinstance(record, dict) else None,
     )
 
 
@@ -452,6 +460,20 @@ class ScrutinyWorkflow(Workflow):
             layout_url if isinstance(layout_url, str) else None,
             key=layout_key if isinstance(layout_key, str) else None,
         )
+        visual_url = (
+            metadata.get(VISUAL_ARTIFACT_URL_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        visual_key = (
+            metadata.get(VISUAL_ARTIFACT_KEY_KEY)
+            if isinstance(metadata, dict)
+            else None
+        )
+        visual_index = await load_visual_index(
+            visual_url if isinstance(visual_url, str) else None,
+            key=visual_key if isinstance(visual_key, str) else None,
+        )
         if not layout:
             logger.warning(
                 "Layout index empty pages=0; defect findings will have no "
@@ -483,7 +505,9 @@ class ScrutinyWorkflow(Workflow):
             )
 
         concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
-        persist_every = max(1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY))
+        persist_every = max(
+            1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY)
+        )
         max_chunks = scrutiny_max_chunks()
         use_pinecone = pinecone_enabled() and bool(file_hash)
 
@@ -603,6 +627,7 @@ class ScrutinyWorkflow(Workflow):
                     file_name=file_name,
                     filing_type=filing_type,
                     layout=layout,
+                    visual_index=visual_index,
                 )
             except asyncio.CancelledError:
                 raise
@@ -614,7 +639,13 @@ class ScrutinyWorkflow(Workflow):
                         message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
-                return failed_finding(defect, str(e), usage=e.usage)
+                return failed_finding(
+                    defect,
+                    str(e),
+                    usage=e.usage,
+                    visual_index=visual_index,
+                    record=record if isinstance(record, dict) else None,
+                )
             except Exception as e:
                 logger.exception("[Scrutiny] %s failed", defect.check_id)
                 ctx.write_event_to_stream(
@@ -623,7 +654,12 @@ class ScrutinyWorkflow(Workflow):
                         message=f"{defect.check_id} failed; continuing remaining checks. {e}",
                     )
                 )
-                return failed_finding(defect, str(e))
+                return failed_finding(
+                    defect,
+                    str(e),
+                    visual_index=visual_index,
+                    record=record if isinstance(record, dict) else None,
+                )
 
             ctx.write_event_to_stream(
                 Status(

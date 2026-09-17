@@ -107,6 +107,13 @@ from .vector_store import (
     pinecone_enabled,
     upsert_records,
 )
+from .visual.detect import detect_visual_marks
+from .visual.schema import empty_visual_index
+from .visual.store import (
+    VISUAL_ARTIFACT_KEY_KEY,
+    VISUAL_ARTIFACT_URL_KEY,
+    upload_visual_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -291,9 +298,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         file_hash = bundle_file_hash(parts)
         petition = find_part(parts, PETITION_SLOT_ID)
         source_parts = extract_source_parts(catalog)
-        reuse_pages, reuse_layouts, reuse_jobs = _reuse_parse_maps(
-            event, parts=parts
-        )
+        reuse_pages, reuse_layouts, reuse_jobs = _reuse_parse_maps(event, parts=parts)
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -306,20 +311,23 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
 
-        pages_by_slot, parse_job_ids, layouts_by_slot, parse_usage = (
-            await _parse_labeled_files(
-                llama_cloud_client,
-                parse_config=parse_config,
-                parts=parts,
-                source_parts=source_parts,
-                catalog=catalog,
-                parse_scope=event.parse_scope,
-                reuse_slots=set(event.parsed_slots),
-                reuse_pages=reuse_pages,
-                reuse_layouts=reuse_layouts,
-                reuse_job_ids=reuse_jobs,
-                ctx=ctx,
-            )
+        (
+            pages_by_slot,
+            parse_job_ids,
+            layouts_by_slot,
+            parse_usage,
+        ) = await _parse_labeled_files(
+            llama_cloud_client,
+            parse_config=parse_config,
+            parts=parts,
+            source_parts=source_parts,
+            catalog=catalog,
+            parse_scope=event.parse_scope,
+            reuse_slots=set(event.parsed_slots),
+            reuse_pages=reuse_pages,
+            reuse_layouts=reuse_layouts,
+            reuse_job_ids=reuse_jobs,
+            ctx=ctx,
         )
         if event.stitch_in_request_order:
             omit_empty = (event.parse_scope or "").strip().lower() == "extract_sources"
@@ -579,6 +587,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         del extract_jubeex
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
+        visual_task = asyncio.create_task(_detect_visual_for_state(state, ctx))
 
         await llama_cloud_client.extract.wait_for_completion(
             state.extract_job_id,
@@ -601,6 +610,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=usage_status_message(usage_summary))
         )
+        visual_index = await _await_visual_index(visual_task)
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
@@ -622,9 +632,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
             data.metadata["parsed_slots"] = list(state.parsed_slots)
-            data.metadata["document_order"] = [
-                item.slot_id for item in state.parts
-            ]
+            data.metadata["document_order"] = [item.slot_id for item in state.parts]
             data.metadata["page_count"] = len(page_markdown)
             data.metadata["split_upload"] = True
             data.metadata["usage"] = {"llamacloud": usage_summary}
@@ -683,6 +691,25 @@ class ProcessSplitFilesWorkflow(Workflow):
             if layout_record:
                 data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
                 data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+            visual_record = upload_visual_index(
+                visual_index,
+                organization_id=state.organization_id or state.org_id,
+                workspace_id=state.workspace_id,
+                job_id=state.extract_job_id or state.file_hash,
+            )
+            if visual_record:
+                data.metadata[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
+                data.metadata[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            "Visual marks JSON saved to S3. Open the filing "
+                            "to download the link and verify signatures, "
+                            "seals, and stamps."
+                        ),
+                    )
+                )
             if state.parse_artifact_url:
                 data.metadata[PARSE_ARTIFACT_URL_KEY] = state.parse_artifact_url
             if state.parse_artifact_key:
@@ -847,9 +874,7 @@ async def _ingest_one_part(
     file_hash = part.file_hash
     if not file_id:
         if not (part.file_url or "").strip():
-            raise SplitUploadError(
-                f"Slot {part.slot_id!r} needs file_url or file_id"
-            )
+            raise SplitUploadError(f"Slot {part.slot_id!r} needs file_url or file_id")
         file_id, digest, filename = await ingest_remote_file(
             client,
             part.file_url or "",
@@ -1178,6 +1203,54 @@ def _reuse_parse_maps(
     return pages, layouts, dict(event.reuse_parse_job_ids or {})
 
 
+async def _detect_visual_for_state(
+    state: SplitFilesState,
+    ctx: Context[SplitFilesState],
+) -> dict[str, Any]:
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message="Detecting signatures, seals, and stamps on formality pages",
+        )
+    )
+    try:
+        index = await detect_visual_marks(
+            parts=state.parts,
+            pages_by_slot=state.pages_by_slot,
+            page_parts=coerce_page_parts(state.page_parts),
+            page_markdown=coerce_page_markdown(state.page_markdown),
+            omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
+        )
+    except Exception:
+        logger.exception("Visual ink detection failed for %s", state.filename)
+        ctx.write_event_to_stream(
+            Status(
+                level="warning",
+                message="Visual ink detection failed; scrutiny will have no mark boxes",
+            )
+        )
+        return empty_visual_index(status="error", error="visual_detection_failed")
+    mark_count = len((index or {}).get("marks") or [])
+    page_count = len((index or {}).get("pages") or [])
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"Stored {mark_count} visual mark(s) from {page_count} formality page(s)"
+            ),
+        )
+    )
+    return index
+
+
+async def _await_visual_index(task: asyncio.Task[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return await task
+    except Exception:
+        logger.exception("Visual ink detection task failed")
+        return empty_visual_index(status="error", error="visual_detection_failed")
+
+
 def _upload_parse_artifact(
     *,
     parsed_slots: list[str],
@@ -1254,6 +1327,25 @@ async def _complete_index_only(
     if layout_record:
         meta[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
         meta[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+    visual_index = await _detect_visual_for_state(state, ctx)
+    visual_record = upload_visual_index(
+        visual_index,
+        organization_id=state.organization_id or state.org_id,
+        workspace_id=state.workspace_id,
+        job_id=state.file_hash,
+    )
+    if visual_record:
+        meta[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
+        meta[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    "Visual marks JSON saved to S3. Open the filing to "
+                    "download the link and verify signatures, seals, and stamps."
+                ),
+            )
+        )
     if page_parts:
         overlay_split_documents(data_dict, page_parts)
     await client.beta.agent_data.update(agent_data_id, data=data_dict)

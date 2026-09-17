@@ -43,6 +43,76 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+export type S3ArtifactLink = {
+  id: string;
+  label: string;
+  url?: string;
+  key?: string;
+};
+
+const ARTIFACT_FIELDS: { id: string; label: string; urlKey: string; keyKey: string }[] =
+  [
+    {
+      id: "visual",
+      label: "Visual marks",
+      urlKey: "visual_artifact_url",
+      keyKey: "visual_artifact_key",
+    },
+    {
+      id: "layout",
+      label: "Page layout",
+      urlKey: "layout_artifact_url",
+      keyKey: "layout_artifact_key",
+    },
+    {
+      id: "parse",
+      label: "Parse JSON",
+      urlKey: "parse_artifact_url",
+      keyKey: "parse_artifact_key",
+    },
+  ];
+
+export function readItemMetadata(source: unknown): Record<string, unknown> | null {
+  const record = asRecord(source);
+  if (!record) {
+    return null;
+  }
+  const nested = asRecord(record.data);
+  return asRecord(record.metadata) ?? asRecord(nested?.metadata);
+}
+
+export function readS3Artifacts(source: unknown): S3ArtifactLink[] {
+  const metadata = readItemMetadata(source);
+  if (!metadata) {
+    return [];
+  }
+  const links: S3ArtifactLink[] = [];
+  for (const field of ARTIFACT_FIELDS) {
+    const url =
+      typeof metadata[field.urlKey] === "string"
+        ? (metadata[field.urlKey] as string).trim()
+        : "";
+    const key =
+      typeof metadata[field.keyKey] === "string"
+        ? (metadata[field.keyKey] as string).trim()
+        : "";
+    if (!url && !key) {
+      continue;
+    }
+    links.push({
+      id: field.id,
+      label: field.label,
+      url: url || undefined,
+      key: key || undefined,
+    });
+  }
+  return links;
+}
+
+export function visualArtifactUrl(source: unknown): string | undefined {
+  return readS3Artifacts(source).find((item) => item.id === "visual")?.url;
+}
+
 export function readJobTiming(source: unknown): JobTiming | null {
   const record = asRecord(source);
   if (!record) {

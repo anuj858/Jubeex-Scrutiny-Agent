@@ -156,9 +156,7 @@ class CreateFilingRequest(BaseModel):
         self.job_type = job
         catalog_types = set(ui_catalog())
         mode = normalize_job_type(job)
-        if mode == "split" or (
-            mode is None and len(self.documents) > 1
-        ):
+        if mode == "split" or (mode is None and len(self.documents) > 1):
             if not self.filing_type:
                 raise ValueError(
                     "filing_type is required for upload_separate. "
@@ -169,7 +167,9 @@ class CreateFilingRequest(BaseModel):
                 raise ValueError(
                     f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
                 )
-        elif self.filing_type and catalog_types and self.filing_type not in catalog_types:
+        elif (
+            self.filing_type and catalog_types and self.filing_type not in catalog_types
+        ):
             allowed = ", ".join(sorted(catalog_types))
             raise ValueError(
                 f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
@@ -307,7 +307,14 @@ class JobRecordOut(BaseModel):
     workspace_id: str | None = None
     user_id: str | None = None
     agent_data_id: str | None = None
-    result: dict[str, Any] | None = None
+    result: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Job payload. result.artifacts.visual is the D093 last-page mark "
+            "index (S3 visualfiles / agent-visual). Absent document types are "
+            "omitted from visual_index.targets."
+        ),
+    )
     error: str | None = None
     created_at: str
     completed_at: str | None = None
@@ -665,6 +672,10 @@ async def extract_only(
     "/v1/jobs/{job_id}",
     response_model=JobRecordOut,
     tags=["jobs"],
+    operation_id="getJob",
+    summary=(
+        "Poll a filing job; result.artifacts.visual is the D093 last-page mark index"
+    ),
     dependencies=[Depends(require_api_key)],
 )
 async def get_job(job_id: str) -> JobRecordOut:
