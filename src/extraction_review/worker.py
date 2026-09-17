@@ -11,6 +11,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from .api import JOBS, JobState, _run_workflow
+from .job_progress import load_job_status
 from .process_file import FileEvent
 from .process_file import workflow as process_file_workflow
 from .queue import delete_job, receive_jobs, sqs_enabled
@@ -35,7 +36,16 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
     )
     job.callback_url = message.get("callback_url")
     job.event_id = str(message.get("event_id") or uuid.uuid4())
+    prior = load_job_status(job_id)
+    if prior:
+        created = prior.get("created_at")
+        if isinstance(created, str) and created:
+            job.created_at = created
+        progress = prior.get("progress")
+        if isinstance(progress, int) and progress > job.progress:
+            job.progress = progress
     JOBS[job_id] = job
+    job.persist(force=True)
     return job
 
 

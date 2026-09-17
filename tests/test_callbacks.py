@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from extraction_review.callbacks import notify_job_finished, sign_callback
+from extraction_review.callbacks import (
+    notify_job_finished,
+    resolve_callback_url,
+    sign_callback,
+)
 
 
 def test_callback_signature_is_stable() -> None:
@@ -11,6 +15,26 @@ def test_callback_signature_is_stable() -> None:
     second = sign_callback(body, secret="secret", timestamp="100")
     assert first == second
     assert first != sign_callback(body, secret="other", timestamp="100")
+
+
+def test_resolve_callback_url_ignores_loopback_when_env_is_public(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61/api/v1/webhooks/ai-agent"
+    )
+    assert (
+        resolve_callback_url("http://localhost:8000/api/v1/webhooks/ai-agent")
+        == "http://3.111.86.61/api/v1/webhooks/ai-agent"
+    )
+
+
+def test_resolve_callback_url_keeps_public_request(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61/api/v1/webhooks/ai-agent"
+    )
+    assert (
+        resolve_callback_url("https://api.example.com/api/v1/webhooks/ai-agent")
+        == "https://api.example.com/api/v1/webhooks/ai-agent"
+    )
 
 
 @pytest.mark.asyncio
