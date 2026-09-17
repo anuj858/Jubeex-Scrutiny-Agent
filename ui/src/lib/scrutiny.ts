@@ -527,6 +527,8 @@ export function useScrutiny() {
         const created = await wf.createHandler({
           agent_data_id: item.id,
           file_hash: (data?.file_hash as string | undefined) ?? null,
+          special_category:
+            (data?.special_category as string | undefined) ?? null,
         });
         handlersService.setHandler(created);
         setHandlerId(created.handler_id);

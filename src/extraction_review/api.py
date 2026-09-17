@@ -44,6 +44,7 @@ from .process_file import (
 from .process_file import workflow as process_file_workflow
 from .queue import enqueue_job, sqs_enabled
 from .s3_artifacts import recorded_artifacts, set_job_context
+from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
@@ -279,6 +280,14 @@ class CreateScrutinyRequest(BaseModel):
     )
     organization_id: str | None = None
     workspace_id: str | None = None
+    special_category: str | None = Field(
+        default=None,
+        examples=["Eviction Matters", "N/A"],
+        description=(
+            "Optional matter subtype. Null, omitted, or N/A skips every "
+            "catalogue defect that has a special_category."
+        ),
+    )
 
     @field_validator(
         "file_hash",
@@ -286,6 +295,7 @@ class CreateScrutinyRequest(BaseModel):
         "callback_url",
         "organization_id",
         "workspace_id",
+        "special_category",
         mode="before",
     )
     @classmethod
@@ -574,6 +584,7 @@ async def health() -> dict[str, str]:
 async def catalog() -> dict[str, Any]:
     return {
         "filing_types": list(JUBEEX_FILING_TYPES),
+        "special_categories": special_categories_for_catalog(),
         "split_upload_types": ui_catalog(),
         "collection": FILING_COLLECTION,
         "job_types": list(CATALOG_JOB_TYPES),
@@ -833,6 +844,7 @@ async def create_scrutiny(
         file_url=(body.file_url if body else None),
         organization_id=(body.organization_id if body else None),
         workspace_id=(body.workspace_id if body else None),
+        special_category=(body.special_category if body else None),
     )
     job_id = str(uuid.uuid4())
     job = JobState(

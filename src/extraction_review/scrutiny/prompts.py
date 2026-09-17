@@ -829,6 +829,8 @@ def build_defect_prompt(
             _format_authority(defect, catalogue),
         ]
     )
+    if getattr(defect, "notes", None):
+        sections.extend(["", "## Notes", defect.notes.strip()])
     if parent:
         sections.extend(["", "## Scope", parent])
     sections.extend(

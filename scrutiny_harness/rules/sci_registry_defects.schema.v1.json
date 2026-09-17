@@ -142,8 +142,8 @@
       "properties": {
         "check_id": {
           "type": "string",
-          "pattern": "^D\\d{3,4}$",
-          "description": "Internal check id, e.g. D001. API serial_no is the registry S.No."
+          "pattern": "^D\\d{3,4}[A-Z]?$",
+          "description": "Internal check id, e.g. D001 or D058A. API serial_no is the registry S.No."
         },
         "serial_no": {
           "oneOf": [
@@ -184,7 +184,7 @@
         },
         "parent_check_id": {
           "type": ["string", "null"],
-          "pattern": "^D\\d{3,4}$",
+          "pattern": "^D\\d{3,4}[A-Z]?$",
           "description": "If this is a narrower slice of another catalogue defect"
         },
         "overlap_note": {
@@ -255,6 +255,10 @@
           "type": "string",
           "minLength": 5,
           "description": "Location/Source"
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "Spreadsheet Notes; injected into the defect prompt"
         }
       }
     }

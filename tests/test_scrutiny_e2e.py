@@ -27,8 +27,8 @@ def test_scrutiny_allows_pending_review_and_blocks_rejected() -> None:
 async def test_all_defects_are_catalogue_sized() -> None:
     get_catalogue.cache_clear()
     catalogue = get_catalogue()
-    assert catalogue.catalogue_version == "2.5.0"
-    assert len(catalogue.defects) == 331
+    assert catalogue.catalogue_version == "2.6.0"
+    assert len(catalogue.defects) == 327
     assert catalogue.defect("D001").serial_no == 1
     assert catalogue.defect("D331").serial_no == 331
 

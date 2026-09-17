@@ -100,6 +100,7 @@ class ScrutinyEvent(StartEvent):
     file_url: str | None = None
     organization_id: str | None = None
     workspace_id: str | None = None
+    special_category: str | None = None
 
 
 class Status(Event):
@@ -494,7 +495,10 @@ class ScrutinyWorkflow(Workflow):
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
         catalogue = get_catalogue()
-        defects = defects_for_filing_type(filing_type)
+        defects = defects_for_filing_type(
+            filing_type,
+            special_category=event.special_category,
+        )
 
         if not defects:
             covered = sorted({d.main_category for d in catalogue.defects})

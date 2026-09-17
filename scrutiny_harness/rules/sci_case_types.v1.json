@@ -1,0 +1,254 @@
+{
+  "table_id": "sci_case_types",
+  "version": "1.0.0",
+  "case_types": [
+    {
+      "label": "SLP (Civil)",
+      "filing_type": "slp_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "SLP (Civil)"],
+      "special_categories": [
+        "Motor Vehical Act",
+        "Demolition Matters",
+        "Eviction Matters",
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Indigent person",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "SLP (Criminal)",
+      "filing_type": "slp_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "SLP (Criminal)"],
+      "special_categories": [
+        "Bail Applications/Bail Matters",
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Civil Appeal",
+      "filing_type": "civil_appeal",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Civil Appeal", "Appeals"],
+      "special_categories": [
+        "Civil Appeal with High Court Certificate",
+        "Appeal (Armed Forces)",
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Demolition Matters",
+        "Eviction Matters",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Criminal Appeal",
+      "filing_type": "criminal_appeal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Criminal Appeal", "Appeals"],
+      "special_categories": [
+        "Criminal Appeal with High Court Certificate",
+        "Appeal (Armed Forces)",
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Bail Applications/Bail Matters",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Writ Petition (Civil)",
+      "filing_type": "writ_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Writ Petition"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Demolition Matters",
+        "Eviction Matters",
+        "PIL",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Writ Petition (Criminal)",
+      "filing_type": "writ_petition_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Writ Petition"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Bail Applications/Bail Matters",
+        "PIL",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Transfer Petition (Civil)",
+      "filing_type": "transfer_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Transfer Petition (Civil)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Transfer Petition (Criminal)",
+      "filing_type": "transfer_petition_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Transfer Petition (Criminal)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Review Petition (Civil)",
+      "filing_type": "review_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Review Petition (Civil)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Review Petition (Criminal)",
+      "filing_type": "review_petition_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Review Petition (Criminal)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Original Suit (Civil)",
+      "filing_type": "original_suit_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Original Suit (Civil)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect"
+      ]
+    },
+    {
+      "label": "Contempt Petition (Civil)",
+      "filing_type": "contempt_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Contempt Matters"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Contempt Petition (Criminal)",
+      "filing_type": "contempt_petition_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Contempt Matters"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Election Petition (Civil)",
+      "filing_type": "election_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Election Petition (Civil)"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Arbitration Petition",
+      "filing_type": "arbitration_petition",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Arbitration Petition"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Curative Petition (Civil)",
+      "filing_type": "curative_petition_civil",
+      "side": "civil",
+      "rules_applicable": ["Global/General", "Curative Petition"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Curative Petition (Criminal)",
+      "filing_type": "curative_petition_criminal",
+      "side": "criminal",
+      "rules_applicable": ["Global/General", "Curative Petition"],
+      "special_categories": [
+        "Interlocutory Applications",
+        "Miscellaneous Application",
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    },
+    {
+      "label": "Miscellaneous Application",
+      "filing_type": "miscellaneous_application",
+      "side": "civil_criminal",
+      "rules_applicable": ["Global/General", "Miscellaneous Application"],
+      "special_categories": [
+        "Matters involving/pertaining to minors",
+        "Re-filing defect",
+        "Jail Petition"
+      ]
+    }
+  ]
+}
