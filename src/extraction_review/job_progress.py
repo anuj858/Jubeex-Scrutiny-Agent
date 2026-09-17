@@ -31,9 +31,10 @@ _PROCESS_RULES: list[tuple[int, str, tuple[str, ...]]] = [
 ]
 
 _SCRUTINY_RULES: list[tuple[int, str, tuple[str, ...]]] = [
-    (12, "loading", ("loading", "fetch", "agent data", "starting")),
-    (35, "retrieve", ("retriev", "pinecone", "evidence", "search")),
-    (55, "checking", ("checking", "defect", "scrutin")),
+    (12, "loading", ("loading", "fetch", "agent data", "starting", "workflow started")),
+    (28, "retrieve", ("retriev", "pinecone", "evidence", "excerpt", "search")),
+    # Per-defect Status lines; fine-grained % comes from ScrutinyPartial.
+    (40, "checking", ("checking", "defect", "scrutin", "checked ")),
     (78, "reasoning", ("reasoning", "llm", "model", "openrouter")),
     (92, "report", ("report", "writing", "artifact", "usage", "complete")),
 ]

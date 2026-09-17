@@ -227,6 +227,13 @@ class FilingDocumentsRequest(BaseModel):
 
 
 class IndexFilingRequest(FilingDocumentsRequest):
+    """Body for POST /v1/filings/{id}/index (vector index, then nested defects).
+
+    Runs process_file ``index_parsed`` (Pinecone first, then scrutiny). The
+    JubeeX backend records the job on ``scrutiny_jobs`` and receives a
+    SCRUTINY_* webhook when it finishes.
+    """
+
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     special_category: str | None = Field(
@@ -381,6 +388,9 @@ class JobState:
         self.progress: int = 2
         self.stage: str | None = "queued"
         self.stage_message: str | None = "Job accepted"
+        # Webhook event family. /index runs process_file (vector + nested
+        # defects) but the JubeeX backend stores it on scrutiny_jobs.
+        self.callback_kind: JobKind = kind
 
     def as_out(self) -> JobRecordOut:
         return JobRecordOut(
@@ -433,10 +443,30 @@ JOBS: dict[str, JobState] = {}
 
 
 def _apply_event_progress(job: JobState, event: Any) -> None:
+    # ScrutinyPartial carries completed/total — the only signal that moves %
+    # while dozens of defect checks run (Status text alone stays on "checking").
+    completed = getattr(event, "completed", None)
+    total = getattr(event, "total", None)
+    if (
+        (job.callback_kind or job.kind) == "scrutiny"
+        and isinstance(completed, int)
+        and isinstance(total, int)
+        and total > 0
+    ):
+        ratio = min(max(completed, 0), total) / total
+        percent = 20 + int(72 * ratio)  # 20% → 92% across checks
+        job.bump_progress(
+            percent,
+            stage="checking",
+            message=f"Checked {completed}/{total} defects",
+        )
+        return
     message = getattr(event, "message", None)
     if not isinstance(message, str) or not message.strip():
         return
-    percent, stage = progress_for_status(message, kind=job.kind)
+    percent, stage = progress_for_status(
+        message, kind=job.callback_kind or job.kind
+    )
     job.bump_progress(percent, stage=stage, message=message)
 
 
@@ -541,7 +571,7 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         await notify_job_finished(
             callback_url=job.callback_url,
             job_id=job.job_id,
-            kind=job.kind,
+            kind=job.callback_kind or job.kind,
             status=job.status,
             agent_data_id=job.agent_data_id,
             organization_id=job.organization_id,
@@ -581,6 +611,7 @@ def _accept_process_file(
     *,
     callback_url: str | None,
     background_tasks: BackgroundTasks,
+    callback_kind: JobKind | None = None,
 ) -> JobAccepted:
     job_id = str(uuid.uuid4())
     job = JobState(
@@ -591,6 +622,8 @@ def _accept_process_file(
         user_id=event.user_id,
     )
     job.callback_url = callback_url
+    if callback_kind:
+        job.callback_kind = callback_kind
     JOBS[job_id] = job
     job.persist(force=True)
     if sqs_enabled():
@@ -598,6 +631,7 @@ def _accept_process_file(
             {
                 "job_id": job_id,
                 "kind": "process_file",
+                "callback_kind": job.callback_kind,
                 "event_id": job.event_id,
                 "callback_url": job.callback_url,
                 "event": event.model_dump(exclude_none=True),
@@ -877,11 +911,46 @@ async def update_filing(
     )
 
 
+def _accept_scrutiny(
+    *,
+    event: ScrutinyEvent,
+    callback_url: str | None,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue a defects-only scrutiny job (kind=scrutiny → SCRUTINY_* webhooks)."""
+    job_id = str(uuid.uuid4())
+    job = JobState(
+        job_id=job_id,
+        kind="scrutiny",
+        organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
+    )
+    job.callback_url = callback_url
+    job.callback_kind = "scrutiny"
+    JOBS[job_id] = job
+    job.persist(force=True)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "scrutiny",
+                "callback_kind": "scrutiny",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_scrutiny, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
 @app.post(
     "/v1/filings/{agent_data_id}/index",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
-    tags=["filings"],
+    tags=["scrutiny"],
+    summary="Index vectors then run Registry scrutiny defects",
     dependencies=[Depends(require_api_key)],
 )
 async def index_filing(
@@ -889,6 +958,11 @@ async def index_filing(
     body: IndexFilingRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
+    """Assemble→Scrutiny: Pinecone index, then nested defect checks.
+
+    Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
+    ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
+    """
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
     payload["job_type"] = "index_parsed"
@@ -899,6 +973,7 @@ async def index_filing(
         event,
         callback_url=body.callback_url,
         background_tasks=background_tasks,
+        callback_kind="scrutiny",
     )
 
 
@@ -914,6 +989,7 @@ async def create_scrutiny(
     background_tasks: BackgroundTasks,
     body: CreateScrutinyRequest | None = None,
 ) -> JobAccepted:
+    """Defects-only scrutiny (vectors already indexed)."""
     await prepare_extracted_filing_for_scrutiny(agent_data_id)
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
@@ -923,29 +999,11 @@ async def create_scrutiny(
         workspace_id=(body.workspace_id if body else None),
         special_category=(body.special_category if body else None),
     )
-    job_id = str(uuid.uuid4())
-    job = JobState(
-        job_id=job_id,
-        kind="scrutiny",
-        organization_id=event.organization_id,
-        workspace_id=event.workspace_id,
+    return _accept_scrutiny(
+        event=event,
+        callback_url=(body.callback_url if body else None),
+        background_tasks=background_tasks,
     )
-    job.callback_url = body.callback_url if body else None
-    JOBS[job_id] = job
-    job.persist(force=True)
-    if sqs_enabled():
-        enqueue_job(
-            {
-                "job_id": job_id,
-                "kind": "scrutiny",
-                "event_id": job.event_id,
-                "callback_url": job.callback_url,
-                "event": event.model_dump(exclude_none=True),
-            }
-        )
-    else:
-        background_tasks.add_task(_start_scrutiny, job, event)
-    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
 def main() -> None:

@@ -36,6 +36,9 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
     )
     job.callback_url = message.get("callback_url")
     job.event_id = str(message.get("event_id") or uuid.uuid4())
+    callback_kind = str(message.get("callback_kind") or "").strip()
+    if callback_kind in {"scrutiny", "process_file"}:
+        job.callback_kind = callback_kind  # type: ignore[assignment]
     prior = load_job_status(job_id)
     if prior:
         created = prior.get("created_at")

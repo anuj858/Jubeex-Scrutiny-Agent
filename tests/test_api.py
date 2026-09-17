@@ -589,30 +589,37 @@ def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert getattr(captured["event"], "job_type") == "extract_only"
 
 
-def test_index_accepts_edited_yes_and_parsed_slots(
+def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prepared = BundlePrepared(
         filing_type="SLP_CIVIL",
         agent_data_id="agd-index-1",
         result="agd-index-1",
+        report={"schema_name": "scrutiny_finding_v1", "agent_data_id": "agd-index-1"},
     )
     captured: dict[str, object] = {}
+    notified: dict[str, object] = {}
 
     def fake_run(start_event):
         captured["event"] = start_event
         return ImmediateHandler(prepared)
 
+    async def fake_notify(**kwargs):
+        notified.update(kwargs)
+
     monkeypatch.setattr(
         "extraction_review.api.process_file_workflow.run",
         fake_run,
     )
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
     response = client.post(
         "/v1/filings/agd-index-1/index",
         json={
             "filing_type": "SLP_CIVIL",
             "edited": "yes",
             "parsed_slots": ["cover_page", "petition"],
+            "special_category": "Eviction Matters",
             "documents": [
                 _doc("cover_page.pdf"),
                 _doc("01_Petition.pdf"),
@@ -621,11 +628,21 @@ def test_index_accepts_edited_yes_and_parsed_slots(
         },
     )
     assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    assert polled.json()["status"] == "completed"
+    assert polled.json()["kind"] == "process_file"
     event = captured["event"]
     assert getattr(event, "job_type") == "index_parsed"
     assert getattr(event, "agent_data_id") == "agd-index-1"
     assert getattr(event, "edited") is True
     assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
+    assert notified.get("kind") == "scrutiny"
 
 
 def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -647,3 +664,4 @@ def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch)
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "edited") is False
+    assert getattr(captured["event"], "job_type") == "index_parsed"

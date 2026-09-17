@@ -1,8 +1,10 @@
 import json
 
+import httpx
 import pytest
 
 from extraction_review.callbacks import (
+    callback_url_candidates,
     notify_job_finished,
     resolve_callback_url,
     sign_callback,
@@ -19,22 +21,85 @@ def test_callback_signature_is_stable() -> None:
 
 def test_resolve_callback_url_ignores_loopback_when_env_is_public(monkeypatch) -> None:
     monkeypatch.setenv(
-        "JUBEEX_CALLBACK_URL", "http://3.111.86.61/api/v1/webhooks/ai-agent"
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
     )
     assert (
         resolve_callback_url("http://localhost:8000/api/v1/webhooks/ai-agent")
-        == "http://3.111.86.61/api/v1/webhooks/ai-agent"
+        == "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
     )
 
 
 def test_resolve_callback_url_keeps_public_request(monkeypatch) -> None:
     monkeypatch.setenv(
-        "JUBEEX_CALLBACK_URL", "http://3.111.86.61/api/v1/webhooks/ai-agent"
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
     )
     assert (
         resolve_callback_url("https://api.example.com/api/v1/webhooks/ai-agent")
         == "https://api.example.com/api/v1/webhooks/ai-agent"
     )
+
+
+def test_callback_url_candidates_adds_api_port() -> None:
+    assert callback_url_candidates("http://3.111.86.61/api/v1/webhooks/ai-agent") == [
+        "http://3.111.86.61/api/v1/webhooks/ai-agent",
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
+    ]
+    assert callback_url_candidates(
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    ) == ["http://3.111.86.61:8000/api/v1/webhooks/ai-agent"]
+
+
+@pytest.mark.asyncio
+async def test_notify_retries_port_8000_after_404(monkeypatch) -> None:
+    hits: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, url: str) -> None:
+            self.status_code = status_code
+            self.request = httpx.Request("POST", url)
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    "error",
+                    request=self.request,
+                    response=httpx.Response(self.status_code, request=self.request),
+                )
+
+    class FakeClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            hits.append(url)
+            if ":8000" in url:
+                return FakeResponse(200, url)
+            return FakeResponse(404, url)
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
+    await notify_job_finished(
+        callback_url="http://3.111.86.61/api/v1/webhooks/ai-agent",
+        job_id="job-9",
+        kind="scrutiny",
+        status="completed",
+        agent_data_id="agd-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        error=None,
+        result={},
+        artifacts={},
+        event_id="evt-1",
+    )
+    assert hits == [
+        "http://3.111.86.61/api/v1/webhooks/ai-agent",
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
+    ]
 
 
 @pytest.mark.asyncio
@@ -44,6 +109,8 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     class FakeResponse:
         def raise_for_status(self) -> None:
             return None
+
+        status_code = 200
 
     class FakeClient:
         def __init__(self, timeout: object = None) -> None:

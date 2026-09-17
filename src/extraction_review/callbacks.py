@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -50,6 +51,24 @@ def resolve_callback_url(callback_url: str | None) -> str:
             )
         return configured
     return requested or configured
+
+
+def callback_url_candidates(url: str) -> list[str]:
+    """Try the configured URL, then :8000 when the host has no port.
+
+    A common misconfig points at the frontend on :80 while the Jubeex API
+    listens on :8000 — that returns 404 for /api/v1/webhooks/ai-agent.
+    """
+    cleaned = (url or "").strip()
+    if not cleaned:
+        return []
+    candidates = [cleaned]
+    parsed = urlparse(cleaned)
+    if parsed.scheme in {"http", "https"} and parsed.hostname and parsed.port is None:
+        with_port = urlunparse(parsed._replace(netloc=f"{parsed.hostname}:8000"))
+        if with_port not in candidates:
+            candidates.append(with_port)
+    return candidates
 
 
 async def notify_job_finished(
@@ -111,22 +130,57 @@ async def notify_job_finished(
     }
     secret = callback_secret()
     if secret:
-        headers["X-Agent-Signature"] = sign_callback(body, secret=secret, timestamp=timestamp)
+        headers["X-Agent-Signature"] = sign_callback(
+            body, secret=secret, timestamp=timestamp
+        )
     last_error: Exception | None = None
-    for attempt in range(1, 4):
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, content=body, headers=headers)
-                response.raise_for_status()
-            return
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Callback attempt %s/3 failed for job %s at %s",
-                attempt,
-                job_id,
-                url,
-            )
+    for candidate in callback_url_candidates(url):
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        candidate, content=body, headers=headers
+                    )
+                    if response.status_code == 404:
+                        logger.warning(
+                            "Callback 404 for job %s at %s — trying next candidate "
+                            "if any (API is often on :8000, not the frontend host)",
+                            job_id,
+                            candidate,
+                        )
+                        last_error = httpx.HTTPStatusError(
+                            f"404 for {candidate}",
+                            request=response.request,
+                            response=response,
+                        )
+                        break  # next candidate
+                    response.raise_for_status()
+                if candidate != url:
+                    logger.info(
+                        "Callback for job %s succeeded at fallback URL %s "
+                        "(update JUBEEX_CALLBACK_URL / AI_AGENT_CALLBACK_URL)",
+                        job_id,
+                        candidate,
+                    )
+                return
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response is not None and exc.response.status_code == 404:
+                    break
+                logger.warning(
+                    "Callback attempt %s/3 failed for job %s at %s",
+                    attempt,
+                    job_id,
+                    candidate,
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Callback attempt %s/3 failed for job %s at %s",
+                    attempt,
+                    job_id,
+                    candidate,
+                )
     logger.exception(
         "Failed to notify Jubeex Backend at %s for job %s",
         url,
