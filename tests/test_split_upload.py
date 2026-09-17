@@ -1899,34 +1899,24 @@ def test_validate_parts_accepts_dynamic_annexure_and_application_slots() -> None
     assert present["application_7"].document_parts == ("Application 7",)
 
 
-def test_contiguous_annexure_segments_number_without_gaps() -> None:
+def test_page_parts_from_split_keeps_llamaspilt_category_names() -> None:
     from types import SimpleNamespace
 
     job = SimpleNamespace(
         result=SimpleNamespace(
             segments=[
-                SimpleNamespace(category="Annexures", pages=[20, 21]),
-                SimpleNamespace(category="Annexures", pages=[22, 23]),
-                SimpleNamespace(category="Annexures", pages=[24]),
-                SimpleNamespace(category="Annexures", pages=[25, 26]),
-                SimpleNamespace(category="Annexures", pages=[27]),
-                SimpleNamespace(category="Annexures", pages=[28]),
-                SimpleNamespace(category="Annexures", pages=[29]),
+                SimpleNamespace(category="Annexure P-1", pages=[20, 21]),
+                SimpleNamespace(category="Annexure P-3", pages=[24]),
+                SimpleNamespace(category="Application 2", pages=[30]),
             ]
         )
     )
     mapping = page_parts_from_split(job)
     assert mapping[20] == ["Annexure P-1"]
-    assert mapping[22] == ["Annexure P-2"]
+    assert mapping[21] == ["Annexure P-1"]
     assert mapping[24] == ["Annexure P-3"]
-    assert mapping[25] == ["Annexure P-4"]
-    assert mapping[27] == ["Annexure P-5"]
-    assert mapping[28] == ["Annexure P-6"]
-    assert mapping[29] == ["Annexure P-7"]
-    catalog = type_catalog("SLP_CIVIL")
-    pages = map_slot_pages(catalog, mapping)
-    for number in range(1, 8):
-        assert f"annexure_p{number}" in pages
+    assert mapping[30] == ["Application 2"]
+    assert "Annexure P-2" not in {name for names in mapping.values() for name in names}
 
 
 def test_merged_annexures_split_on_p_n_headings_through_last_number() -> None:
@@ -2233,7 +2223,6 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     assert "Verification" in affidavit
     annexure = cats["Annexure P-1"]
     assert "ANNEXURE P-1" in annexure
-    assert "P-15" in annexure
     assert "Annexure P-15" in cats
     assert "Annexures" not in cats
     appendix = cats["Appendix"]

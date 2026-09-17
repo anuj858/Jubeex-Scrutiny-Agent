@@ -772,6 +772,7 @@ class BundlePrepared(StopEvent):
     classify_split_seconds: float | None = None
     timing: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
+    llama_split: dict[str, Any] | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     match: bool | None = None
     verified_documents: list[VerifiedDocument] = Field(default_factory=list)
@@ -912,14 +913,27 @@ def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
     return dumped
 
 
+def _json_value(value: Any) -> Any:
+    """SDK object as JSON data. Does not rename or reformat fields."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return value
+    return value
+
+
 async def _split_page_parts(
     client: AsyncLlamaCloud,
     *,
     file_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
-) -> tuple[dict[int, list[str]], str]:
-    """Label pages with Split categories. Returns (page_parts, split_job_id)."""
+) -> tuple[dict[int, list[str]], str, dict[str, Any]]:
+    """Label pages with Split categories.
+
+    Returns page labels, the split job id, and the request/response pair
+    exactly as sent to and returned by LlamaSplit.
+    """
     label = filename or "filing"
     if split_config is None:
         raise RuntimeError(
@@ -937,25 +951,37 @@ async def _split_page_parts(
         )
 
     if split_config.configuration_id:
+        sent: dict[str, Any] = {
+            "file_input": file_id,
+            "configuration_id": split_config.configuration_id,
+            "project_id": project_id,
+        }
         job = await client.split.create(
             file_input=file_id,
             configuration_id=split_config.configuration_id,
             project_id=project_id,
         )
     else:
+        configuration = _split_api_configuration(split_config)
+        sent = {
+            "file_input": file_id,
+            "configuration": configuration,
+            "project_id": project_id,
+        }
         job = await client.split.create(
             file_input=file_id,
-            configuration=_split_api_configuration(split_config),
+            configuration=configuration,
             project_id=project_id,
         )
     completed = await _wait_for_split(client, job.id)
+    exchange = {"sent": sent, "returned": _json_value(completed)}
     mapping = page_parts_from_split(completed)
     if not mapping:
         raise RuntimeError(
             f"Split finished for {label} but labelled no pages. "
             "Scrutiny cannot filter Listing Proforma / Main Petition / checklist parts."
         )
-    return mapping, str(getattr(completed, "id", None) or job.id)
+    return mapping, str(getattr(completed, "id", None) or job.id), exchange
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
@@ -1214,7 +1240,7 @@ async def _verify_one_document(
                     filename=filename,
                     external_file_id=item.document_id or item.file_hash,
                 )
-            page_parts, _job_id = await _split_page_parts(
+            page_parts, _job_id, _exchange = await _split_page_parts(
                 client,
                 file_id=file_id,
                 split_config=split_config,
@@ -1810,7 +1836,7 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        page_parts, split_job_id = await _split_page_parts(
+        page_parts, split_job_id, llama_split = await _split_page_parts(
             llama_cloud_client,
             file_id=state.file_id,
             split_config=split_config,
@@ -1968,6 +1994,7 @@ class ProcessFileWorkflow(Workflow):
             classify_split_seconds=classify_split_seconds,
             timing=timing,
             usage={"llamacloud": usage_summary},
+            llama_split=llama_split,
         )
 
 

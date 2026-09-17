@@ -854,8 +854,6 @@ def page_parts_from_split(job: Any) -> PagePartMap:
         return {}
 
     mapping: PagePartMap = {}
-    annexure_groups: list[list[int]] = []
-    application_groups: list[list[int]] = []
     for segment in segments:
         if isinstance(segment, dict):
             category = segment.get("category")
@@ -871,21 +869,11 @@ def page_parts_from_split(job: Any) -> PagePartMap:
                 continue
         parts = parts_on_page(category)
         for part in parts:
-            family = family_split_name(part)
             for page in numbers:
                 current = mapping.setdefault(page, [])
-                if family not in current:
-                    current.append(family)
-        if any(family_split_name(part) == ANNEXURE_FAMILY for part in parts):
-            annexure_groups.append(numbers)
-        if any(family_split_name(part) == APPLICATION_FAMILY for part in parts):
-            application_groups.append(numbers)
-    numbered = _apply_segment_numbers(
-        mapping, annexure_groups, ANNEXURE_FAMILY, "Annexure P-{}"
-    )
-    return _apply_segment_numbers(
-        numbered, application_groups, APPLICATION_FAMILY, "Application {}"
-    )
+                if part not in current:
+                    current.append(part)
+    return mapping
 
 
 def parts_named_in_text(text: str) -> list[str]:

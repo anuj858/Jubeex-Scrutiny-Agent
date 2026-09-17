@@ -165,7 +165,7 @@ async def test_split_sends_file_uuid_not_parse_job_id() -> None:
         categories=[SimpleNamespace(name="Main Petition")],
         model_dump=lambda **_kwargs: {"categories": [{"name": "Main Petition"}]},
     )
-    mapping, split_job_id = await _split_page_parts(
+    mapping, split_job_id, exchange = await _split_page_parts(
         SimpleNamespace(split=split_api),
         file_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         split_config=split_config,
