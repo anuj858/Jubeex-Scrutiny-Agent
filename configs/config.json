@@ -949,11 +949,11 @@
     "categories": [
       {
         "name": "Advocate's Checklist",
-        "description": "A numbered YES/NO/N.A. advocate checklist (CHECK LIST, CHECKLIST, CHECK-LIST) verifying the petition against Supreme Court filing requirements, ending with the Advocate-on-Record name and signature."
+        "description": "A numbered YES/NO/N.A. advocate checklist (CHECK LIST, CHECKLIST, CHECK-LIST) verifying THIS petition against Supreme Court filing requirements (limitation, court fee, number of copies, annexure certification, etc.), ending with the Advocate-on-Record's name and signature. Do NOT use this category for a government, registry, or tribunal form or circular that is merely titled 'Check List' or 'Checklist' (for example, a state circular listing documents required to register a cooperative society) -- that stays whichever Annexure or Appendix it is part of, no matter how many times it repeats the words CHECK LIST."
       },
       {
         "name": "Cover Page",
-        "description": "The outer title sheet of the Supreme Court paper book, usually one page, with IN THE SUPREME COURT OF INDIA at the top, JURISDICTION on the next line, and advocate for the petitioner or respondent at the foot. Often includes For Index Please See Inside."
+        "description": "The outer title sheet of the Supreme Court paper book, usually one page, with IN THE SUPREME COURT OF INDIA at the top, JURISDICTION on the next line, and advocate for the petitioner or respondent at the foot. Often includes the words PAPER BOOK, {COVER PAGE}, and For Index Please See Inside above the advocate's name."
       },
       {
         "name": "Record of Proceedings",
@@ -961,11 +961,11 @@
       },
       {
         "name": "AOR's Certificate",
-        "description": "The Advocate-on-Record certificate after the cause title at the top, headed CERTIFICATE or letter-spaced C E R T I F I C A T E, stating Certified that or CERTIFIED that the Special Leave Petition is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. Ends FILED ON or DRAWN & FILED BY."
+        "description": "The Advocate-on-Record certificate after the cause title at the top, headed CERTIFICATE or letter-spaced C E R T I F I C A T E, stating Certified that or CERTIFIED that the Special Leave Petition is confined only to the pleadings before the High Court, Court, or Tribunal whose order is challenged. Ends FILED ON or DRAWN & FILED BY. The word CERTIFICATE or 'Registration Certificate' appearing inside an Annexure, Appendix, or a checklist's body text (e.g. a government-issued registration certificate, or the phrase 'title clearance certificate') is NOT this category -- only a page that opens with the full Supreme Court cause title (party names and VERSUS) immediately followed by the heading CERTIFICATE, in the AOR's own voice ('Certified that...'), belongs here."
       },
       {
         "name": "Index",
-        "description": "The paper-book index: a table of PARTICULARS OF DOCUMENT and PAGE NO near the front of the filing, headed INDEX."
+        "description": "The paper-book index: a table of PARTICULARS OF DOCUMENT and PAGE NO near the front of the filing, headed INDEX. The heading usually appears only on the first page; later pages continue the same numbered table without repeating it -- keep classifying those continuation pages as Index even when a row's text mentions other document names (e.g. ANNEXURE-P/1, APPENDIX, V/A, F/M), since those are entries in the table, not the documents themselves."
       },
       {
         "name": "Office Report on Limitation",
@@ -973,19 +973,19 @@
       },
       {
         "name": "Listing Proforma",
-        "description": "The proforma for first listing (Proforma for First Listing), a table of case particulars including Central Act and The case pertains to. Also headed PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA."
+        "description": "The proforma for first listing (Proforma for First Listing), a table of case particulars including Central Act and The case pertains to. Also headed PROFORMA FOR FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or PERFORMA. Usually runs 1-2 pages and ends with the Advocate-on-Record's name, AOR code, and chamber address as a signature block -- that signature block is still part of the Listing Proforma, not a separate AOR's Certificate."
       },
       {
         "name": "Synopsis",
-        "description": "A narrative SYNOPSIS of the case, usually immediately before the list of dates and events."
+        "description": "A narrative SYNOPSIS of the case, usually immediately before the list of dates and events. Only the first page carries the heading SYNOPSIS; later pages continue the narrative without repeating it -- keep those continuation pages as Synopsis even if they mention other document names in passing."
       },
       {
         "name": "List of Dates & Events",
-        "description": "A chronological LIST OF DATES or LIST OF DATES & EVENTS, with a date (DD/MM/YYYY or MM/YYYY) before each event."
+        "description": "A chronological LIST OF DATES or LIST OF DATES & EVENTS, with a date (DD/MM/YYYY or MM/YYYY) before each event. Only the first page carries the heading; later pages continue the same dated entries without repeating it. A date entry that mentions an Annexure (e.g. '...is annexed as ANNEXURE-P/1 (Page 24-54)') is still List of Dates, not that Annexure."
       },
       {
         "name": "Main Petition",
-        "description": "This Court's main petition body (Form 28): a Special Leave Petition, transfer petition, or writ or arbitration petition in numbered paragraphs with Grounds, questions of law, and Prayer, ending Drawn By, Filed on, and the advocate for the petitioner."
+        "description": "This Court's main petition body (Form 28): a Special Leave Petition, transfer petition, or writ or arbitration petition in numbered paragraphs with Grounds, questions of law, and Prayer, ending Drawn By, Filed on, and the advocate for the petitioner. Its cause title reads IN THE SUPREME COURT OF INDIA with this case's own SLP/petition number. Do not confuse with a High Court or tribunal petition reproduced inside an Annexure: that is captioned IN THE HIGH COURT... (or names a different Writ/Appeal/Revision number) and stays that Annexure P-n, even if it also has sections titled GROUNDS and PRAYER and opens with MOST RESPECTFULLY SHOWETH or SHEWETH."
       },
       {
         "name": "Affidavit",
@@ -993,63 +993,63 @@
       },
       {
         "name": "Annexure P-1",
-        "description": "Pages headed ANNEXURE P-1, ANNEXURE-P1, or ANNEXURE P-1 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-1, ANNEXURE-P1, or ANNEXURE P-1 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-2",
-        "description": "Pages headed ANNEXURE P-2, ANNEXURE-P2, or ANNEXURE P-2 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-2, ANNEXURE-P2, or ANNEXURE P-2 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-3",
-        "description": "Pages headed ANNEXURE P-3, ANNEXURE-P3, or ANNEXURE P-3 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-3, ANNEXURE-P3, or ANNEXURE P-3 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-4",
-        "description": "Pages headed ANNEXURE P-4, ANNEXURE-P4, or ANNEXURE P-4 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-4, ANNEXURE-P4, or ANNEXURE P-4 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-5",
-        "description": "Pages headed ANNEXURE P-5, ANNEXURE-P5, or ANNEXURE P-5 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-5, ANNEXURE-P5, or ANNEXURE P-5 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-6",
-        "description": "Pages headed ANNEXURE P-6, ANNEXURE-P6, or ANNEXURE P-6 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-6, ANNEXURE-P6, or ANNEXURE P-6 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-7",
-        "description": "Pages headed ANNEXURE P-7, ANNEXURE-P7, or ANNEXURE P-7 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-7, ANNEXURE-P7, or ANNEXURE P-7 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-8",
-        "description": "Pages headed ANNEXURE P-8, ANNEXURE-P8, or ANNEXURE P-8 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-8, ANNEXURE-P8, or ANNEXURE P-8 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-9",
-        "description": "Pages headed ANNEXURE P-9, ANNEXURE-P9, or ANNEXURE P-9 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-9, ANNEXURE-P9, or ANNEXURE P-9 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-10",
-        "description": "Pages headed ANNEXURE P-10, ANNEXURE-P10, or ANNEXURE P-10 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-10, ANNEXURE-P10, or ANNEXURE P-10 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-11",
-        "description": "Pages headed ANNEXURE P-11, ANNEXURE-P11, or ANNEXURE P-11 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-11, ANNEXURE-P11, or ANNEXURE P-11 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-12",
-        "description": "Pages headed ANNEXURE P-12, ANNEXURE-P12, or ANNEXURE P-12 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-12, ANNEXURE-P12, or ANNEXURE P-12 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-13",
-        "description": "Pages headed ANNEXURE P-13, ANNEXURE-P13, or ANNEXURE P-13 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-13, ANNEXURE-P13, or ANNEXURE P-13 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-14",
-        "description": "Pages headed ANNEXURE P-14, ANNEXURE-P14, or ANNEXURE P-14 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-14, ANNEXURE-P14, or ANNEXURE P-14 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Annexure P-15",
-        "description": "Pages headed ANNEXURE P-15, ANNEXURE-P15, or ANNEXURE P-15 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number."
+        "description": "Pages headed ANNEXURE P-15, ANNEXURE-P15, or ANNEXURE P-15 only. Include the exhibit body until the next annexure heading. Do not use this category for any other P-number. A page inside this range that is a poorly OCR'd scan with garbled or partly unreadable text is still this Annexure -- use its position between identified Annexure pages and any partially legible heading or page-corner numbering, rather than marking it uncategorized. A lower court/tribunal order, judgment, or petition reproduced here keeps this Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections."
       },
       {
         "name": "Appendix",
@@ -1057,79 +1057,79 @@
       },
       {
         "name": "Application 1",
-        "description": "Interlocutory application 1 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 1 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 2",
-        "description": "Interlocutory application 2 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 2 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 3",
-        "description": "Interlocutory application 3 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 3 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 4",
-        "description": "Interlocutory application 4 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 4 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 5",
-        "description": "Interlocutory application 5 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 5 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 6",
-        "description": "Interlocutory application 6 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 6 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 7",
-        "description": "Interlocutory application 7 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 7 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 8",
-        "description": "Interlocutory application 8 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 8 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 9",
-        "description": "Interlocutory application 9 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 9 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 10",
-        "description": "Interlocutory application 10 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 10 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 11",
-        "description": "Interlocutory application 11 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 11 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 12",
-        "description": "Interlocutory application 12 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 12 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 13",
-        "description": "Interlocutory application 13 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 13 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 14",
-        "description": "Interlocutory application 14 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 14 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Application 15",
-        "description": "Interlocutory application 15 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH. Not an annexure."
+        "description": "Interlocutory application 15 in this Court, headed APPLICATION, typically beginning RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Not an annexure."
       },
       {
         "name": "Memo of Parties",
-        "description": "A MEMO OF PARTIES listing petitioner and respondent names and addresses."
+        "description": "A MEMO OF PARTIES listing petitioner and respondent names and addresses. May carry a sub-heading such as MEMO OF PARTIES BEFORE THE HIGH COURT when the paper book reuses a lower court's memo of parties as a required attachment. If it appears within the contiguous page range of an Annexure P-n, immediately after that annexure's other pages and before any new heading, keep it as that Annexure instead of Memo of Parties."
       },
       {
         "name": "Memo of Appearance",
-        "description": "A MEMO OF APPEARANCE to the Registrar asking to enter appearance, often filed with the vakalatnama."
+        "description": "A MEMO OF APPEARANCE to the Registrar asking to enter appearance, often filed with the vakalatnama. May share one physical page with the Vakalatnama -- see the shared-page rule in splitting_strategy."
       },
       {
         "name": "Impugned Order",
-        "description": "The High Court or other court judgment or order under challenge."
+        "description": "The High Court or other court judgment or order under challenge -- specifically the standalone copy of the order being appealed against, placed in its own section of the paper book (commonly right after Office Report on Limitation and before the Synopsis or Main Petition, per the paper-book Index). A different, earlier order or judgment that is reproduced inside an Annexure P-n (for example, an interim order attached as an exhibit) stays that Annexure, not Impugned Order, even though it is also a court order."
       },
       {
         "name": "Vakalatnama",
-        "description": "A vakalatnama (V/A) appointing an advocate-on-record to act for a party, headed VAKALATNAMA."
+        "description": "A vakalatnama (V/A) appointing an advocate-on-record to act for a party, headed VAKALATNAMA. May share one physical page with the Memo of Appearance -- see the shared-page rule in splitting_strategy."
       },
       {
         "name": "PoA/BR",
@@ -1146,7 +1146,7 @@
     ],
     "splitting_strategy": {
       "allow_uncategorized": "include",
-      "custom_instructions": "Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. Typical Supreme Court paper-book order: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexure P-1, Appendix, Application 1, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit. CERTIFICATE is always printed on that page. Cause title without the word CERTIFICATE is Cover Page or Main Petition. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. Assign Annexure P-1 through Annexure P-15 from the printed mark (ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Stop at P-15. Do not invent a number and do not use a generic Annexures category. A High Court petition inside an exhibit stays that Annexure P-n, not Main Petition. Assign Application 1 through Application 15 in filing order, one category per APPLICATION headed RESPECTFULLY SHOWETH. Stop at 15. A page headed Annexure P-n is that annexure, not an Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
+      "custom_instructions": "GENERAL RULE -- CONTINUATION PAGES: when a page continues the prose, numbered list, or table from the page immediately before it, and does not itself open with a new heading, cause title, ANNEXURE/APPENDIX/APPLICATION marker, or form title, keep it in the SAME category as the previous page -- even if its text contains words that resemble another category's name (CHECK LIST, CERTIFICATE, GROUNDS, PRAYER, ANNEXURE, IMPUGNED, AFFIDAVIT). This matters most inside Index, Synopsis, and List of Dates & Events, which print their heading only on the first page and then continue silently for several pages -- a mention of 'APPENDIX' or 'ANNEXURE-P/1' in an Index row, or of 'annexed as ANNEXURE-P/1' in a List of Dates entry, does not start a new segment. Near-blank scanned pages, such as blank backs or separator sheets, continue the preceding document instead of starting a new segment. TYPICAL ORDER: Advocate's Checklist, Cover Page, Record of Proceedings, Index, Office Report on Limitation, Listing Proforma, Synopsis, List of Dates & Events, Impugned Order, Main Petition, AOR's Certificate, Affidavit, then Annexure P-1, Appendix, Application 1, Memo of Parties, Memo of Appearance, Vakalatnama, Filing Memo. Some filings omit sections from this order (a missing Impugned Order or Affidavit is a common filing defect) -- do not force a page into a category just to fill a gap in this sequence. A page printed OFFICE REPORT ON LIMITATION is Office Report on Limitation, never Cover Page, even if the Supreme Court caption appears at the top. CHECKLIST/CERTIFICATE FALSE POSITIVES: a circular, government form, or registry document titled 'Check List' or 'Checklist' that is not itself verifying this filing against Supreme Court Rules (for example, a state government's list of documents required to register a cooperative society) is not Advocate's Checklist -- classify it as whichever Annexure or Appendix contains it. A page with the cause title at the top then CERTIFICATE or C E R T I F I C A T E is AOR's Certificate, not Main Petition, Cover Page, or Affidavit; CERTIFICATE is always printed on that page. The word CERTIFICATE appearing inside a government-issued certificate, a check-list circular, or any other Annexure content is NOT AOR's Certificate. Cause title without the word CERTIFICATE is Cover Page or Main Petition. NESTED PETITIONS AND ORDERS: a lower court, tribunal, or authority's order, judgment, or petition reproduced inside an Annexure P-n keeps that Annexure's category even if it independently contains its own GROUNDS, PRAYER, CERTIFICATE, or RESPECTFULLY SHOWETH/SHEWETH sections, or reads like a judgment. Only a cause title reading IN THE SUPREME COURT OF INDIA with THIS case's own SLP/petition number marks Main Petition or Impugned Order; a caption reading IN THE HIGH COURT..., or naming a different Writ/Appeal/Revision/case number, marks that content as the surrounding Annexure instead. Main Petition is Form 28 in this Court; it appears once as contiguous pages and cannot reappear after it ends. SHARED PAGES: Split assigns one category per page. If two short documents fall on the same physical page (for example a Vakalatnama followed partway down by a Memo of Appearance, or a Memo of Appearance followed by a Memo of Parties), classify that page as whichever document's heading appears first/higher on the page, and let the next page pick up the second document's category once it has a full page to itself; do not expect a segment boundary in the middle of such a page. OCR-DEGRADED PAGES: some annexure pages are poorly scanned with garbled or partly unreadable text. Do not mark these uncategorized purely for that reason -- use their position between identified pages of the same Annexure, plus any partially legible heading or page-corner numbering, to keep them with their neighbors. ANNEXURES: assign Annexure P-1 through Annexure P-15 from the printed mark (ANNEXURE-P2, ANNEXURE P-2, ANNEXURE-P-2). Stop at P-15. Do not invent a number and do not use a generic Annexures category. A High Court petition inside an exhibit stays that Annexure P-n, not Main Petition. APPLICATIONS: assign Application 1 through Application 15 in filing order, one category per APPLICATION headed RESPECTFULLY SHOWETH or MOST RESPECTFULLY SHEWETH. Stop at 15. A page headed Annexure P-n is that annexure, not an Application. INDEX OF FILING, FILING INDEX, or FILING MEMO is Filing Memo, not Index."
     }
   },
   "split_upload": {
