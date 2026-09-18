@@ -34,6 +34,7 @@ from .clients import get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
 from .extract_record import stamp_review_status
+from .job_progress import load_job_status, progress_for_status, save_job_status
 from .process_file import (
     CATALOG_JOB_TYPES,
     FileEvent,
@@ -226,6 +227,13 @@ class FilingDocumentsRequest(BaseModel):
 
 
 class IndexFilingRequest(FilingDocumentsRequest):
+    """Body for POST /v1/filings/{id}/index (vector index, then nested defects).
+
+    Runs process_file ``index_parsed`` (Pinecone first, then scrutiny). The
+    JubeeX backend records the job on ``scrutiny_jobs`` and receives a
+    SCRUTINY_* webhook when it finishes.
+    """
+
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     special_category: str | None = Field(
@@ -330,6 +338,14 @@ class JobRecordOut(BaseModel):
     workspace_id: str | None = None
     user_id: str | None = None
     agent_data_id: str | None = None
+    progress: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Approximate completion 0–100 from workflow stage events.",
+    )
+    stage: str | None = None
+    stage_message: str | None = None
     result: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -340,6 +356,7 @@ class JobRecordOut(BaseModel):
     )
     error: str | None = None
     created_at: str
+    updated_at: str | None = None
     completed_at: str | None = None
 
 
@@ -364,8 +381,16 @@ class JobState:
         self.error: str | None = None
         self.callback_url: str | None = None
         self.event_id: str = str(uuid.uuid4())
-        self.created_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC).isoformat()
+        self.created_at = now
+        self.updated_at: str | None = now
         self.completed_at: str | None = None
+        self.progress: int = 2
+        self.stage: str | None = "queued"
+        self.stage_message: str | None = "Job accepted"
+        # Webhook event family. /index runs process_file (vector + nested
+        # defects) but the JubeeX backend stores it on scrutiny_jobs.
+        self.callback_kind: JobKind = kind
 
     def as_out(self) -> JobRecordOut:
         return JobRecordOut(
@@ -376,14 +401,73 @@ class JobState:
             workspace_id=self.workspace_id,
             user_id=self.user_id,
             agent_data_id=self.agent_data_id,
+            progress=self.progress,
+            stage=self.stage,
+            stage_message=self.stage_message,
             result=self.result,
             error=self.error,
             created_at=self.created_at,
+            updated_at=self.updated_at,
             completed_at=self.completed_at,
         )
 
+    def persist(self, *, force: bool = False) -> None:
+        save_job_status(self.as_out().model_dump(mode="json"), force=force)
+
+    def bump_progress(
+        self,
+        percent: int,
+        *,
+        stage: str | None = None,
+        message: str | None = None,
+        force: bool = False,
+    ) -> None:
+        changed = False
+        if percent > self.progress:
+            self.progress = min(100, percent)
+            changed = True
+        if stage and stage != self.stage:
+            self.stage = stage
+            changed = True
+        if message:
+            cleaned = message.strip()[:240]
+            if cleaned != self.stage_message:
+                self.stage_message = cleaned
+                changed = True
+        if changed or force:
+            self.updated_at = datetime.now(UTC).isoformat()
+            self.persist(force=force)
+
 
 JOBS: dict[str, JobState] = {}
+
+
+def _apply_event_progress(job: JobState, event: Any) -> None:
+    # ScrutinyPartial carries completed/total — the only signal that moves %
+    # while dozens of defect checks run (Status text alone stays on "checking").
+    completed = getattr(event, "completed", None)
+    total = getattr(event, "total", None)
+    if (
+        (job.callback_kind or job.kind) == "scrutiny"
+        and isinstance(completed, int)
+        and isinstance(total, int)
+        and total > 0
+    ):
+        ratio = min(max(completed, 0), total) / total
+        percent = 20 + int(72 * ratio)  # 20% → 92% across checks
+        job.bump_progress(
+            percent,
+            stage="checking",
+            message=f"Checked {completed}/{total} defects",
+        )
+        return
+    message = getattr(event, "message", None)
+    if not isinstance(message, str) or not message.strip():
+        return
+    percent, stage = progress_for_status(
+        message, kind=job.callback_kind or job.kind
+    )
+    job.bump_progress(percent, stage=stage, message=message)
 
 
 def _serialize_result(result: Any) -> dict[str, Any]:
@@ -441,7 +525,12 @@ def _scrutiny_after_index_error(exc: BaseException) -> ScrutinyAfterIndexError |
 
 async def _run_workflow(job: JobState, handler: Any) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    job.bump_progress(5, stage="starting", message="Workflow started", force=True)
     try:
+        stream = getattr(handler, "stream_events", None)
+        if callable(stream):
+            async for event in stream():
+                _apply_event_progress(job, event)
         result = await handler
         payload = _serialize_result(result)
         artifacts = recorded_artifacts(job.job_id)
@@ -450,6 +539,9 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.result = payload
         job.agent_data_id = _agent_data_id_from(payload)
         job.status = "completed"
+        job.progress = 100
+        job.stage = "completed"
+        job.stage_message = "Job completed"
     except Exception as exc:
         nested = _scrutiny_after_index_error(exc)
         if nested is not None:
@@ -465,17 +557,21 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
             logger.exception("Job %s failed", job.job_id)
             job.status = "failed"
             job.error = str(exc)
+        job.stage = "failed"
+        job.stage_message = (job.error or "Job failed")[:240]
     finally:
         job.completed_at = datetime.now(UTC).isoformat()
+        job.updated_at = job.completed_at
         artifacts = recorded_artifacts(job.job_id)
         if job.result is None and artifacts:
             job.result = {"artifacts": artifacts}
         elif isinstance(job.result, dict) and artifacts:
             job.result["artifacts"] = artifacts
+        job.persist(force=True)
         await notify_job_finished(
             callback_url=job.callback_url,
             job_id=job.job_id,
-            kind=job.kind,
+            kind=job.callback_kind or job.kind,
             status=job.status,
             agent_data_id=job.agent_data_id,
             organization_id=job.organization_id,
@@ -515,6 +611,7 @@ def _accept_process_file(
     *,
     callback_url: str | None,
     background_tasks: BackgroundTasks,
+    callback_kind: JobKind | None = None,
 ) -> JobAccepted:
     job_id = str(uuid.uuid4())
     job = JobState(
@@ -525,12 +622,16 @@ def _accept_process_file(
         user_id=event.user_id,
     )
     job.callback_url = callback_url
+    if callback_kind:
+        job.callback_kind = callback_kind
     JOBS[job_id] = job
+    job.persist(force=True)
     if sqs_enabled():
         enqueue_job(
             {
                 "job_id": job_id,
                 "kind": "process_file",
+                "callback_kind": job.callback_kind,
                 "event_id": job.event_id,
                 "callback_url": job.callback_url,
                 "event": event.model_dump(exclude_none=True),
@@ -703,6 +804,13 @@ async def extract_only(
     dependencies=[Depends(require_api_key)],
 )
 async def get_job(job_id: str) -> JobRecordOut:
+    # Prefer S3 snapshot so API can poll jobs running on the SQS worker.
+    stored = load_job_status(job_id)
+    if stored:
+        try:
+            return JobRecordOut.model_validate(stored)
+        except ValidationError:
+            logger.warning("Invalid stored job status for %s", job_id, exc_info=True)
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
@@ -774,16 +882,6 @@ async def _load_filing_item(agent_data_id: str) -> Any:
         ) from exc
 
 
-@app.get(
-    "/v1/filings/{agent_data_id}",
-    tags=["filings"],
-    dependencies=[Depends(require_api_key)],
-)
-async def get_filing(agent_data_id: str) -> dict[str, Any]:
-    item = await _load_filing_item(agent_data_id)
-    return _filing_out(agent_data_id, item, _as_data_dict(getattr(item, "data", None)))
-
-
 @app.patch(
     "/v1/filings/{agent_data_id}",
     tags=["filings"],
@@ -813,11 +911,46 @@ async def update_filing(
     )
 
 
+def _accept_scrutiny(
+    *,
+    event: ScrutinyEvent,
+    callback_url: str | None,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue a defects-only scrutiny job (kind=scrutiny → SCRUTINY_* webhooks)."""
+    job_id = str(uuid.uuid4())
+    job = JobState(
+        job_id=job_id,
+        kind="scrutiny",
+        organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
+    )
+    job.callback_url = callback_url
+    job.callback_kind = "scrutiny"
+    JOBS[job_id] = job
+    job.persist(force=True)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "scrutiny",
+                "callback_kind": "scrutiny",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_scrutiny, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
 @app.post(
     "/v1/filings/{agent_data_id}/index",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
-    tags=["filings"],
+    tags=["scrutiny"],
+    summary="Index vectors then run Registry scrutiny defects",
     dependencies=[Depends(require_api_key)],
 )
 async def index_filing(
@@ -825,6 +958,11 @@ async def index_filing(
     body: IndexFilingRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
+    """Assemble→Scrutiny: Pinecone index, then nested defect checks.
+
+    Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
+    ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
+    """
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
     payload["job_type"] = "index_parsed"
@@ -835,6 +973,7 @@ async def index_filing(
         event,
         callback_url=body.callback_url,
         background_tasks=background_tasks,
+        callback_kind="scrutiny",
     )
 
 
@@ -850,6 +989,7 @@ async def create_scrutiny(
     background_tasks: BackgroundTasks,
     body: CreateScrutinyRequest | None = None,
 ) -> JobAccepted:
+    """Defects-only scrutiny (vectors already indexed)."""
     await prepare_extracted_filing_for_scrutiny(agent_data_id)
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
@@ -859,28 +999,11 @@ async def create_scrutiny(
         workspace_id=(body.workspace_id if body else None),
         special_category=(body.special_category if body else None),
     )
-    job_id = str(uuid.uuid4())
-    job = JobState(
-        job_id=job_id,
-        kind="scrutiny",
-        organization_id=event.organization_id,
-        workspace_id=event.workspace_id,
+    return _accept_scrutiny(
+        event=event,
+        callback_url=(body.callback_url if body else None),
+        background_tasks=background_tasks,
     )
-    job.callback_url = body.callback_url if body else None
-    JOBS[job_id] = job
-    if sqs_enabled():
-        enqueue_job(
-            {
-                "job_id": job_id,
-                "kind": "scrutiny",
-                "event_id": job.event_id,
-                "callback_url": job.callback_url,
-                "event": event.model_dump(exclude_none=True),
-            }
-        )
-    else:
-        background_tasks.add_task(_start_scrutiny, job, event)
-    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
 def main() -> None:

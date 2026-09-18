@@ -65,13 +65,28 @@ def set_job_context(
     job_id: str | None,
     organization_id: str | None = None,
     workspace_id: str | None = None,
+    *,
+    reset: bool = True,
 ) -> None:
-    job = _clean_id(job_id)
-    _job_id.set(job)
+    incoming = _clean_id(job_id)
+    if not reset:
+        current = _job_id.get()
+        job = current or incoming
+        _job_id.set(job)
+        org = _clean_id(organization_id)
+        workspace = _clean_id(workspace_id)
+        if org:
+            _organization_id.set(org)
+        if workspace:
+            _workspace_id.set(workspace)
+        if job is not None and job not in _ARTIFACTS_BY_JOB:
+            _ARTIFACTS_BY_JOB[job] = {}
+        return
+    _job_id.set(incoming)
     _organization_id.set(_clean_id(organization_id))
     _workspace_id.set(_clean_id(workspace_id))
-    if job is not None:
-        _ARTIFACTS_BY_JOB[job] = {}
+    if incoming is not None:
+        _ARTIFACTS_BY_JOB[incoming] = {}
 
 
 def recorded_artifacts(job_id: str | None = None) -> dict[str, dict[str, str]]:

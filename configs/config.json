@@ -989,7 +989,7 @@
       },
       {
         "name": "Affidavit",
-        "description": "A sworn affidavit headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp."
+        "description": "A sworn affidavit whose page is headed AFFIDAVIT or letter-spaced A F F I D A V I T, with a Deponent, Verification, and usually a notary stamp. Do not use when the word affidavit appears only as a checklist item or document list inside an Annexure exhibit."
       },
       {
         "name": "Annexure P-1",

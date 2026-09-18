@@ -30,11 +30,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pypdf import PdfReader
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import map_slot_pages, slice_bundle_pdf
+from .bundle_slicer import map_slot_pages, pdf_page_texts, slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
@@ -42,7 +43,11 @@ from .config import (
     dump_api_configuration,
     with_config_identity,
 )
-from .document_parts import page_parts_from_split, parts_on_page
+from .document_parts import (
+    complete_split_page_coverage,
+    page_parts_from_split,
+    parts_on_page,
+)
 from .job_timing import (
     attach_timing,
     elapsed_seconds,
@@ -1853,17 +1858,6 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=usage_status_message(usage_summary))
         )
-        parts_found = sorted(
-            {name for names in page_parts.values() for name in parts_on_page(names)}
-        )
-        ctx.write_event_to_stream(
-            Status(
-                level="info",
-                message=(
-                    f"Split {state.filename} into {len(parts_found)} document part(s)"
-                ),
-            )
-        )
 
         ctx.write_event_to_stream(
             Status(
@@ -1875,6 +1869,26 @@ class ProcessFileWorkflow(Workflow):
             llama_cloud_client,
             file_id=state.file_id,
             source_documents=state.source_documents,
+        )
+        pdf_page_count = len(PdfReader(io.BytesIO(pdf_bytes)).pages) if pdf_bytes else 0
+        if pdf_page_count:
+            page_parts = complete_split_page_coverage(
+                page_parts,
+                pdf_page_texts(pdf_bytes),
+                page_count=pdf_page_count,
+            )
+        parts_found = sorted(
+            {name for names in page_parts.values() for name in parts_on_page(names)}
+        )
+        labeled_pages = len(page_parts)
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    f"Split {state.filename} into {len(parts_found)} document part(s) "
+                    f"across {labeled_pages}/{pdf_page_count or labeled_pages} page(s)"
+                ),
+            )
         )
         slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
         ctx.write_event_to_stream(
