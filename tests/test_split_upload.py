@@ -2222,7 +2222,7 @@ def test_numbered_annexure_drops_later_disconnected_islands() -> None:
     assert exploded.get(104) != ["Annexure P-2"]
 
 
-def test_main_petition_keeps_longest_run_and_drops_later_island() -> None:
+def test_main_petition_keeps_first_run_and_drops_later_island() -> None:
     page_parts = {page: ["Main Petition"] for page in range(25, 37)}
     page_parts[50] = ["Main Petition"]
     collapsed = collapse_repeated_split_pages(page_parts)
@@ -2231,6 +2231,17 @@ def test_main_petition_keeps_longest_run_and_drops_later_island() -> None:
     assert 50 not in collapsed
     exploded = explode_repeating_split_parts(page_parts)
     assert 50 not in exploded
+
+
+def test_main_petition_first_run_wins_over_longer_high_court_island() -> None:
+    """SCI Form 28 (short) must beat a later longer HC writ mislabeled Main Petition."""
+    page_parts = {page: ["Main Petition"] for page in range(15, 24)}
+    page_parts.update({page: ["Main Petition"] for page in range(76, 100)})
+    collapsed = collapse_repeated_split_pages(page_parts)
+    assert collapsed[15] == ["Main Petition"]
+    assert collapsed[23] == ["Main Petition"]
+    assert 76 not in collapsed
+    assert 99 not in collapsed
 
 
 def test_remaining_split_descriptions_cover_user_cues() -> None:
@@ -2253,7 +2264,8 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     assert "Grounds" in petition
     assert "Prayer" in petition
     assert "questions of law" in petition
-    assert "IN THE SUPREME COURT OF INDIA" not in petition
+    # Nested HC exhibits may mention SCI captions in the guidance text.
+    assert "High Court" in petition or "Annexure" in petition
     assert "contiguous" not in petition
     affidavit = cats["Affidavit"]
     assert "A F F I D A V I T" in affidavit
@@ -2285,7 +2297,8 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
         )
     )["split"]["splitting_strategy"]["custom_instructions"]
     assert len(instructions) <= 5000
-    assert instructions.startswith("Near-blank scanned pages")
+    assert "Near-blank scanned pages" in instructions
+    assert instructions.startswith("GENERAL RULE -- CONTINUATION PAGES")
     assert "Annexure P-1 through Annexure P-15" in instructions
     assert "Application 1 through Application 15" in instructions
     assert "cannot reappear after it ends" in instructions

@@ -44,10 +44,11 @@ from .config import (
     with_config_identity,
 )
 from .document_parts import (
-    complete_split_page_coverage,
     page_parts_from_split,
     parts_on_page,
 )
+from .split_audit import audit_compiled_split
+from .split_repair import repair_compiled_split
 from .job_timing import (
     attach_timing,
     elapsed_seconds,
@@ -1871,12 +1872,47 @@ class ProcessFileWorkflow(Workflow):
             source_documents=state.source_documents,
         )
         pdf_page_count = len(PdfReader(io.BytesIO(pdf_bytes)).pages) if pdf_bytes else 0
+        split_duplicates: list[dict[str, Any]] = []
+        split_audit: dict[str, Any] = {
+            "index_rows": [],
+            "document_spans": [],
+            "flags": [],
+            "flag_counts": {"error": 0, "warning": 0, "total": 0},
+        }
         if pdf_page_count:
-            page_parts = complete_split_page_coverage(
+            page_texts = pdf_page_texts(pdf_bytes)
+            page_parts, duplicate_hits = repair_compiled_split(
                 page_parts,
-                pdf_page_texts(pdf_bytes),
+                page_texts,
                 page_count=pdf_page_count,
             )
+            split_duplicates = [hit.as_dict() for hit in duplicate_hits]
+            split_audit = audit_compiled_split(
+                page_parts,
+                page_texts,
+                page_count=pdf_page_count,
+            )
+            if split_duplicates:
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Detected {len(split_duplicates)} duplicate document "
+                            f"span(s) after split repair"
+                        ),
+                    )
+                )
+            audit_total = int((split_audit.get("flag_counts") or {}).get("total") or 0)
+            if audit_total:
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Split audit raised {audit_total} flag(s) "
+                            f"(sequence / Index consistency)"
+                        ),
+                    )
+                )
         parts_found = sorted(
             {name for names in page_parts.values() for name in parts_on_page(names)}
         )
@@ -1964,6 +2000,8 @@ class ProcessFileWorkflow(Workflow):
                             for part in prepared
                         ],
                         "slot_pages": slot_pages,
+                        "duplicate_parts": split_duplicates,
+                        "split_audit": split_audit,
                     }
                 ),
                 timing,

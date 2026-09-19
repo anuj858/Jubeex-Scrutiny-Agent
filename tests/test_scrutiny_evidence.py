@@ -72,13 +72,17 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     assert all("55" not in item for item in docs["items"])
     assert mapping[1] == ["Advocate's Checklist"]
     assert 51 not in mapping
-    assert 17 not in mapping
-    assert mapping[25] == ["Main Petition"]
-    assert mapping[26] == ["Main Petition"]
+    # First contiguous outer run wins (not the longest): page 17 is kept;
+    # later Main Petition islands at 25–26 and 35 are dropped.
+    assert mapping[17] == ["Main Petition"]
+    assert 25 not in mapping
+    assert 26 not in mapping
+    assert 35 not in mapping
     assert 4 not in mapping
     assert 54 not in mapping
     assert mapping[20] == ["Record of Proceedings"]
     assert mapping[21] == ["Record of Proceedings"]
+    assert 23 not in mapping  # singleton RoP island dropped (longest-run wins)
 
 
 def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:

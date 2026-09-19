@@ -273,11 +273,40 @@ def _format_page_span(pages: list[int]) -> str:
     return format_page_span(pages)
 
 
+# Outer SCI paper-book parts keep the *first* contiguous run. A later High Court
+# writ mislabeled as Main Petition must not replace the real Form 28 body.
+_FIRST_RUN_OUTER_PARTS = frozenset(
+    {
+        MAIN_PETITION_PART,
+        "Cover Page",
+        "Index",
+        "Advocate's Checklist",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Synopsis",
+        "List of Dates & Events",
+        "Impugned Order",
+        "AOR's Certificate",
+        "Affidavit",
+        "Appendix",
+        "Vakalatnama",
+        "Memo of Appearance",
+        "Memo of Parties",
+        "Filing Memo",
+        "Court Fees",
+        "PoA/BR",
+        # Record of Proceedings uses longest-run: a stray early page is common noise.
+    }
+)
+
+
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep one contiguous run of each Split part.
 
-    Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 25–36 is
-    kept; a later Main Petition island is dropped. Annexure P-2 at 29–30 is
+    Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 15–23 is
+    kept; a later Main Petition island (often a High Court writ) is dropped —
+    first run wins for outer paper-book parts. Record of Proceedings keeps the
+    longest run (stray early pages are common noise). Annexure P-2 at 29–30 is
     kept; later P-2 islands at 100–102 and 104 are dropped. Generic unnumbered
     Annexures stay until they are labelled P-n.
     """
@@ -297,7 +326,13 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
         groups = _contiguous_groups(unique)
         if not groups:
             continue
-        if _is_numbered_annexure(part):
+        folded = _fold(part)
+        numbered_app = bool(re.fullmatch(r"application \d{1,3}", folded))
+        if (
+            _is_numbered_annexure(part)
+            or numbered_app
+            or part in _FIRST_RUN_OUTER_PARTS
+        ):
             start, end = groups[0]
         else:
             start, end = max(
@@ -1054,78 +1089,16 @@ def complete_split_page_coverage(
     *,
     page_count: int,
 ) -> PagePartMap:
-    """Fill pages Llama left blank using printed stamps and carry-forward.
+    """Hybrid repair after LlamaSplit (anchors, nesting, first-run outer parts).
 
-    Keeps known non-annexure labels. Retags stamped exhibit pages, including
-    foot-stamped ``ANNEXURE-P/n`` scans, then continues the prior label through
-    unlabeled gaps so a 107-page PDF is not truncated mid-annexure.
+    Prefer :func:`repair_compiled_split` when duplicate metadata is needed.
     """
-    if page_count < 1:
-        return {
-            int(page): list(names)
-            for page, names in page_parts.items()
-            if parts_on_page(names)
-        }
+    from .split_repair import repair_compiled_split
 
-    updated: PagePartMap = {}
-    for page, names in page_parts.items():
-        try:
-            number = int(page)
-        except (TypeError, ValueError):
-            continue
-        kept = [name for name in parts_on_page(names) if _is_real_split_label(name)]
-        if kept:
-            updated[number] = kept
-
-    for page in range(1, page_count + 1):
-        text = page_text.get(page, "")
-        if _looks_like_index_table(text) and page in updated:
-            continue
-        mark = annexure_mark_in_heading(text)
-        if mark and _can_override_with_annexure(updated.get(page), text):
-            updated[page] = [f"Annexure P-{mark}"]
-            continue
-        if page in updated:
-            continue
-        if page_starts_application(text):
-            updated[page] = ["Application 1"]
-            continue
-        if _memo_of_parties_heading(text):
-            updated[page] = ["Memo of Parties"]
-            continue
-        if _vakalatnama_heading(text):
-            updated[page] = ["Vakalatnama"]
-
-    last_label: list[str] | None = None
-    for page in range(1, page_count + 1):
-        names = updated.get(page)
-        if names:
-            last_label = list(names)
-            continue
-        text = page_text.get(page, "")
-        if not last_label:
-            continue
-        if any(name in _CARRY_BLOCKING_PARTS for name in last_label):
-            continue
-        if _is_strong_document_start(text) or _memo_of_parties_heading(text):
-            continue
-        if _looks_like_index_table(text):
-            continue
-        updated[page] = list(last_label)
-
-    # Back-fill short internal gaps from the next labelled page.
-    for page in range(page_count, 0, -1):
-        if page in updated:
-            continue
-        nxt = updated.get(page + 1)
-        if not nxt:
-            continue
-        text = page_text.get(page, "")
-        if _looks_like_index_table(text):
-            continue
-        updated[page] = list(nxt)
-
-    return explode_repeating_split_parts(updated, page_text)
+    repaired, _duplicates = repair_compiled_split(
+        page_parts, page_text, page_count=page_count
+    )
+    return repaired
 
 
 def parts_named_in_text(text: str) -> list[str]:
