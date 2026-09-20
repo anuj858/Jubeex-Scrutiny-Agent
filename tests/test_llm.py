@@ -40,6 +40,21 @@ def test_parse_json_truncated_reasoning_is_salvaged() -> None:
     assert completed["evidence"] == []
 
 
+def test_complete_structured_fields_fills_missing_confidence_and_summary() -> None:
+    completed = _complete_structured_fields(
+        {
+            "check_id": "D-73",
+            "status": "needs_review",
+            "reasoning": "The Vakalatnama was checked on page 40.",
+            "suggested_fix": None,
+            "fix_rationale": None,
+        }
+    )
+    assert completed["confidence"] == 0.5
+    assert completed["summary"] == "The Vakalatnama was checked on page 40."
+    assert completed["evidence"] == []
+
+
 def test_parse_json_garbage_raises() -> None:
     with pytest.raises(LLMError, match="truncated or not JSON"):
         _parse_json("not json at all")

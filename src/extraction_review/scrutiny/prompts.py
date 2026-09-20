@@ -361,31 +361,34 @@ def _search_step(step: str) -> str:
 
 
 def _strip_product_language(text: str) -> str:
-    lowered = text.lower()
-    for prefix in _PRODUCT_PREFIXES:
-        if lowered.startswith(prefix):
-            text = text[len(prefix) :].strip()
-            lowered = text.lower()
-            break
+    """Remove Jubeex/UI wrappers; keep the filing substance from the catalogue."""
+    text = text.strip(" ,")
+    # Numbered catalogue rows ("1. Prompt the User to …") must lose the number
+    # before prefix matching, otherwise mid-string wipes leave only "1.".
+    text = re.sub(r"^\d+[\.)]\s*", "", text).strip()
+    changed = True
+    while changed and text:
+        changed = False
+        lowered = text.lower()
+        for prefix in _PRODUCT_PREFIXES:
+            if lowered.startswith(prefix):
+                text = text[len(prefix) :].strip()
+                changed = True
+                break
+    # Drop trailing product-only tails; do not erase the clause before them.
     text = re.sub(
-        r",?\s*(and\s+)?option for jubeex to .+$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r",?\s*(and\s+)?option for the user to .+$",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(
-        r",?\s*(and\s+)?prompt the user to .+$",
+        r",?\s*and\s+auto-fill(?:\s+the\s+same)?(?:\s+in\b.*)?$",
         "",
         text,
         flags=re.IGNORECASE,
     )
     text = re.sub(r"\s+with jubeex\.?$", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r",?\s*and\s+prompt the user to .+$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     return text.strip(" ,")
 
 
@@ -417,6 +420,8 @@ def _cure_aim(step: str) -> str:
         r"^supply missing\s+", "Include the missing ", text, flags=re.IGNORECASE
     )
     text = re.sub(r"^provide details of\s+", "State ", text, flags=re.IGNORECASE)
+    text = re.sub(r"^provide\s+", "Provide ", text, flags=re.IGNORECASE)
+    text = re.sub(r"^edit\s+", "Edit ", text, flags=re.IGNORECASE)
     text = re.sub(
         r"^review and edit the statement\.?$",
         "the required statement, complete and accurate",
@@ -430,8 +435,12 @@ def _cure_aim(step: str) -> str:
         flags=re.IGNORECASE,
     )
     text = text.strip().rstrip(".")
+    # Bare numbering leftovers from a bad strip — drop them.
+    if re.fullmatch(r"\d+", text or ""):
+        text = ""
     if text and not re.match(
-        r"^(Include|File|Re-file|Complete|State|Supply|Add|Insert|Attach)\b",
+        r"^(Include|File|Re-file|Complete|State|Supply|Add|Insert|Attach|"
+        r"Provide|Edit|Correct)\b",
         text,
         flags=re.IGNORECASE,
     ):
@@ -446,12 +455,21 @@ def _cure_aim(step: str) -> str:
 
 
 def display_cure_steps(steps: list[str] | None) -> list[str]:
-    """Catalogue how_to_cure for the UI — filing contents, not Jubeex product copy."""
+    """Catalogue how_to_cure for the finding UI — keep registry wording.
+
+    Product chrome ("with Jubeex") is dropped; numbered steps and substance
+    from sci_registry_defects stay intact. LLM prompts still use _cure_aim().
+    """
     cleaned: list[str] = []
     for step in steps or []:
-        aim = _cure_aim(step)
-        if aim and aim not in cleaned:
-            cleaned.append(aim)
+        text = _polish_registry_text(str(step))
+        text = re.sub(r"\s+with jubeex\.?$", "", text, flags=re.IGNORECASE).strip()
+        if not text:
+            continue
+        if not text.endswith("."):
+            text = text + "."
+        if text not in cleaned:
+            cleaned.append(text)
     return cleaned
 
 
