@@ -178,6 +178,52 @@ def test_repair_index_continuation_and_blank_impugned_before_petition() -> None:
     assert repaired[15] == ["Annexure P-1"]
 
 
+def test_repair_demotes_cover_tagged_as_main_and_recovers_petition_body() -> None:
+    """Llama often labels the cover as Main Petition and only that one page."""
+    cover = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (CIVIL) NO. _______OF 2026\n"
+        "(Under Article 136 of the Constitution of India)\n"
+        "PAPER BOOK\n(FOR INDEX KINDLY SEE INSIDE)\nADVOCATE FOR THE PETITIONER"
+    )
+    petition_start = (
+        "IN THE SUPREME COURT OF INDIA\nCIVL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (CIVIL) NO. ______ OF 2026\n"
+        "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH:\n1. The instant"
+    )
+    page_parts = {1: ["Main Petition"]}  # wrong Llama label; no other Main pages
+    texts = {
+        1: cover,
+        2: "INDEX\nS.No. PARTICULARS Page No.\n1. Office Report 1",
+        3: "OFFICE REPORT ON LIMITATION\n1. Within time.",
+        4: "PROFORMA FOR FIRST LISTING\nThe case pertains to",
+        5: "SYNOPSIS\nThe instant Special Leave Petition",
+        6: "LIST OF DATES AND EVENTS\n1964 event",
+        7: "1",
+        8: "2",
+        9: petition_start,
+        10: "Grounds A. Because the High Court erred",
+        11: "MAIN PRAYER:\nGrant Special Leave",
+        12: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "Certified that the Special Leave Petition is confined only to the pleadings"
+        ),
+        13: "APPENDIX – A\nCODE OF CIVIL PROCEDURE",
+        14: "ANNEXURE-P1\nexhibit",
+    }
+    for page in range(1, 15):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=14)
+    assert repaired[1] == ["Cover Page"]
+    assert repaired[9] == ["Main Petition"]
+    assert repaired[10] == ["Main Petition"]
+    assert repaired[11] == ["Main Petition"]
+    assert repaired[12] == ["AOR's Certificate"]
+    assert 1 not in {
+        p for p, names in repaired.items() if names == ["Main Petition"]
+    }
+
+
 def test_find_duplicate_vakalatnama_spans() -> None:
     page_parts = {
         40: ["Vakalatnama"],

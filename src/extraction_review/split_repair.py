@@ -515,6 +515,9 @@ def _fill_gaps(
             continue
         if any(name in _CARRY_BLOCKING_PARTS for name in last_label):
             continue
+        # Never invent labels across pages with no OCR text.
+        if not (text or "").strip():
+            continue
         # Do not extend Synopsis/LOD across OCR-blank sheets (Impugned Order scans).
         if _is_near_blank_page(text) and any(
             name in {"Synopsis", "List of Dates & Events"} for name in last_label
@@ -615,6 +618,94 @@ def _label_near_blank_impugned_gap(
     return updated
 
 
+def _demote_cover_mislabeled_as_main(
+    page_parts: PagePartMap, page_text: Mapping[int, str]
+) -> PagePartMap:
+    """Llama often tags the paper-book cover as Main Petition."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page, names in list(updated.items()):
+        if MAIN_PETITION_PART not in parts_on_page(names):
+            continue
+        text = page_text.get(page, "")
+        if _looks_like_cover_page(text):
+            updated[page] = ["Cover Page"]
+    return updated
+
+
+def _extend_main_petition_body(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Grow Main Petition from its Form-28 start through body pages."""
+    updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
+    starts = [
+        page
+        for page in range(1, page_count + 1)
+        if _looks_like_sci_main_petition(page_text.get(page, ""))
+    ]
+    if not starts:
+        starts = [
+            page
+            for page, names in updated.items()
+            if MAIN_PETITION_PART in parts_on_page(names)
+            and not _looks_like_cover_page(page_text.get(page, ""))
+        ]
+    if not starts:
+        return updated
+
+    start = min(starts)
+    updated[start] = [MAIN_PETITION_PART]
+    stop_labels = {
+        "AOR's Certificate",
+        "Affidavit",
+        "Appendix",
+        "Filing Memo",
+        "Vakalatnama",
+        "Memo of Appearance",
+        "Memo of Parties",
+        "Application 1",
+        "Cover Page",
+        "Index",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Record of Proceedings",
+        "Advocate's Checklist",
+        "Impugned Order",
+        "Synopsis",
+        "List of Dates & Events",
+    }
+    for page in range(start + 1, page_count + 1):
+        text = page_text.get(page, "")
+        if annexure_mark_in_heading(text):
+            break
+        if page_starts_application(text):
+            break
+        if _vakalatnama_heading(text) and _is_sci_caption(text):
+            break
+        label = _outer_anchor_label(text)
+        if label and label != MAIN_PETITION_PART and label in stop_labels:
+            break
+        if label and family_split_name(label) == ANNEXURE_FAMILY:
+            break
+        names = parts_on_page(updated.get(page))
+        if names and any(
+            name in stop_labels or family_split_name(name) == ANNEXURE_FAMILY
+            for name in names
+        ):
+            # Allow overwriting weak wrong labels inside the petition body.
+            if any(name == MAIN_PETITION_PART for name in names):
+                continue
+            if any(name in _NESTED_STEAL_PARTS for name in names):
+                updated[page] = [MAIN_PETITION_PART]
+                continue
+            break
+        if not (text or "").strip():
+            break
+        updated[page] = [MAIN_PETITION_PART]
+    return updated
+
+
 def _demote_false_advocate_checklist(
     page_parts: PagePartMap, page_text: Mapping[int, str]
 ) -> PagePartMap:
@@ -682,7 +773,10 @@ def repair_compiled_split(
             updated[number] = kept
 
     updated = _demote_false_advocate_checklist(updated, page_text)
+    updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _apply_outer_anchors(updated, page_text, page_count)
+    updated = _demote_cover_mislabeled_as_main(updated, page_text)
+    updated = _extend_main_petition_body(updated, page_text, page_count)
     # Capture Llama wrong-label duplicates before nesting absorbs HC exhibits.
     duplicates = find_duplicate_split_parts(updated)
     updated = _force_annexure_nesting(updated, page_text, page_count)
@@ -691,9 +785,12 @@ def repair_compiled_split(
     updated = _fill_gaps(updated, page_text, page_count)
     updated = _force_annexure_nesting(updated, page_text, page_count)
     updated = _demote_false_advocate_checklist(updated, page_text)
+    updated = _demote_cover_mislabeled_as_main(updated, page_text)
+    updated = _extend_main_petition_body(updated, page_text, page_count)
 
     exploded = explode_repeating_split_parts(updated, page_text)
     exploded = _force_annexure_nesting(exploded, page_text, page_count)
+    exploded = _demote_cover_mislabeled_as_main(exploded, page_text)
     more = find_duplicate_split_parts(exploded)
     seen = {(hit.part, hit.kept_span) for hit in duplicates}
     for hit in more:
@@ -703,5 +800,7 @@ def repair_compiled_split(
             seen.add(key)
     repaired = collapse_repeated_split_pages(exploded)
     repaired = _force_annexure_nesting(repaired, page_text, page_count)
+    repaired = _demote_cover_mislabeled_as_main(repaired, page_text)
+    repaired = _extend_main_petition_body(repaired, page_text, page_count)
     repaired = collapse_repeated_split_pages(repaired)
     return repaired, duplicates
