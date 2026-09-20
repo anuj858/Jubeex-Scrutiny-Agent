@@ -26,8 +26,14 @@ from .split_upload import (
     UNDEFINED_SLOT_ID,
     UploadSlot,
     UploadTypeCatalog,
+    _ANNEXURE_SLOT_RE,
+    _numbered_slot_sort_key,
     resolve_upload_slot,
 )
+
+
+def _is_numbered_annexure_slot(slot_id: str) -> bool:
+    return bool(_ANNEXURE_SLOT_RE.fullmatch(slot_id or ""))
 
 
 @dataclass(frozen=True)
@@ -57,7 +63,7 @@ def _slot_ids_for_labels(labels: Sequence[str], catalog: UploadTypeCatalog) -> s
         slot_id = numbered_part_slot_id(name)
         if slot_id:
             ids.add(slot_id)
-    if any(slot_id.startswith("annexure_p") for slot_id in ids):
+    if any(_is_numbered_annexure_slot(slot_id) for slot_id in ids):
         ids.discard("annexures")
     if any(
         slot_id.startswith("application_") and slot_id != "applications"
@@ -134,7 +140,7 @@ def _promote_repeatable_catchall(
     """
     promoted = dict(pages_by_slot)
     if "annexures" in promoted and not any(
-        key.startswith("annexure_p") for key in promoted
+        _is_numbered_annexure_slot(key) for key in promoted
     ):
         promoted["annexure_p1"] = promoted.pop("annexures")
     has_numbered_apps = any(
@@ -220,8 +226,8 @@ def _slice_slot_order(
     ordered: list[str] = []
     consumed: set[str] = set()
     annexure_ids = sorted(
-        (slot_id for slot_id in pages_by_slot if slot_id.startswith("annexure_p")),
-        key=lambda slot_id: int(slot_id.rsplit("p", 1)[-1]),
+        (slot_id for slot_id in pages_by_slot if _is_numbered_annexure_slot(slot_id)),
+        key=_numbered_slot_sort_key,
     )
     application_ids = sorted(
         (

@@ -13,6 +13,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -470,24 +471,55 @@ MAX_NUMBERED_PART = 999
 ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
 
+
+@dataclass(frozen=True)
+class AnnexureMark:
+    """Printed exhibit stamp: Annexure P-1 / E-2 / R-3."""
+
+    number: int
+    series: str = "P"
+
+    def __post_init__(self) -> None:
+        letter = (self.series or "P").strip().upper()[:1] or "P"
+        if not letter.isalpha():
+            letter = "P"
+        object.__setattr__(self, "series", letter)
+
+    @property
+    def label(self) -> str:
+        return f"Annexure {self.series}-{self.number}"
+
+    @property
+    def slot_id(self) -> str:
+        return f"annexure_{self.series.lower()}{self.number}"
+
+
+# OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*[-–—:]?\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
-    r"\s*[-–—/:]?\s*(\d{1,3})\b"
-    r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?[PR][-\s]?(\d{1,3})\b",
+    r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
+    r"(?P<num>\d{1,3})\b"
+    r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
+    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})\b",
     re.IGNORECASE,
 )
 # Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
 _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"^(?:\d{1,4}\s+)?"
     r"(?:"
-    r"(?:annexure|annx\.?)\s*[-–—:]?\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
-    r"\s*[-–—/:]?\s*(\d{1,3})"
-    r"|[PR][-\s]?(\d{1,3})"
+    r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
+    r"(?P<num>\d{1,3})"
+    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})"
     r")\b",
     re.IGNORECASE,
 )
 _INDEX_ROW_ANNEXURE_RE = re.compile(
     r"^\d{1,3}[.\)]\s*(?:annexure|annx\.?)\b",
+    re.IGNORECASE,
+)
+_ANNEXURE_PAGE_CITE_RE = re.compile(
+    r"^\(?\s*(?:pg|pgs?|pages?|pp)\b|^\d{1,4}\s*[-–—]\s*\d{1,4}\b",
     re.IGNORECASE,
 )
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
@@ -515,23 +547,52 @@ def family_split_name(name: str) -> str:
     return name
 
 
-_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure p-?\d{1,3}$")
+_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d{1,3}$")
 
 
 def _is_numbered_annexure(name: str) -> bool:
     return bool(_NUMBERED_ANNEXURE_RE.fullmatch(_fold(name)))
 
 
+def _normalize_annexure_series(raw: str | None) -> str:
+    token = (raw or "").strip().lower()
+    if token.startswith("pet"):
+        return "P"
+    if token.startswith("res"):
+        return "R"
+    if token and token[0].isalpha():
+        return token[0].upper()
+    return "P"
+
+
+def _annexure_mark_from_match(match: re.Match[str]) -> AnnexureMark | None:
+    groups = match.groupdict()
+    number_raw = groups.get("num") or groups.get("bare_num")
+    if not number_raw:
+        # Legacy positional groups (older callers / tests).
+        number_raw = next((g for g in match.groups() if g and str(g).isdigit()), None)
+    if not number_raw:
+        return None
+    number = int(number_raw)
+    if not (1 <= number <= MAX_NUMBERED_PART):
+        return None
+    series = _normalize_annexure_series(
+        groups.get("series") or groups.get("bare_series")
+    )
+    return AnnexureMark(number=number, series=series)
+
+
 def numbered_part_slot_id(name: str) -> str | None:
-    """Map `Annexure P-12` / `Application 7` onto a dynamic slot id."""
+    """Map `Annexure P-12` / `Annexure E-2` / `Application 7` onto a dynamic slot id."""
     folded = _fold(name)
     if folded in {"annexures", "annexure"}:
         return "annexures"
-    match = re.fullmatch(r"annexure p-?(\d{1,3})", folded)
+    match = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
     if match:
-        number = int(match.group(1))
+        series = match.group(1)
+        number = int(match.group(2))
         if 1 <= number <= MAX_NUMBERED_PART:
-            return f"annexure_p{number}"
+            return f"annexure_{series}{number}"
     if folded == "application":
         return "applications"
     match = re.fullmatch(r"application (\d{1,3})", folded)
@@ -542,59 +603,54 @@ def numbered_part_slot_id(name: str) -> str | None:
     return None
 
 
-def _annexure_mark_in_window(text: str) -> int | None:
+def _annexure_mark_in_window(text: str) -> AnnexureMark | None:
     match = _ANNEXURE_HEADING_RE.search(text or "")
     if not match:
         return None
-    number = int(match.group(1) or match.group(2) or 0)
-    if 1 <= number <= MAX_NUMBERED_PART:
-        return number
-    return None
+    return _annexure_mark_from_match(match)
 
 
-def _annexure_mark_from_title_or_stamp(text: str) -> int | None:
-    """P-n from a title line near the top or a short foot stamp line."""
+def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
+    """Series+number from a title line near the top or a short foot stamp line."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return None
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 
-    def _number_from_title_line(line: str) -> int | None:
+    def _mark_from_title_line(line: str, *, allow_body_tail: bool) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
             return None
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
             return None
-        number = int(match.group(1) or match.group(2) or 0)
-        if not (1 <= number <= MAX_NUMBERED_PART):
+        mark = _annexure_mark_from_match(match)
+        if mark is None:
             return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-")
-        if remainder and not remainder.isdigit():
-            return None
-        return number
+        if remainder:
+            if _ANNEXURE_PAGE_CITE_RE.match(remainder):
+                return None
+            if not allow_body_tail and not remainder.isdigit():
+                return None
+        return mark
 
-    for line in lines[:6]:
-        number = _number_from_title_line(line)
-        if number is not None:
-            return number
+    for line in lines[:24]:
+        mark = _mark_from_title_line(line, allow_body_tail=True)
+        if mark is not None:
+            return mark
     for line in lines[-10:]:
         if len(line) > 40:
             continue
-        number = _number_from_title_line(line)
-        if number is not None:
-            return number
+        mark = _mark_from_title_line(line, allow_body_tail=False)
+        if mark is not None:
+            return mark
     return None
 
 
-def annexure_mark_in_heading(text: str) -> int | None:
-    """Return printed P-n from a page title or annexure stamp.
-
-    Scanned paper-books often put ``ANNEXURE-P/n`` near the foot, after the
-    body OCR, so the first-lines window alone misses real exhibit starts.
-    Index table rows like ``15. ANNEXURE-P/4`` are ignored.
-    """
+def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
+    """Return printed Annexure series+number from a page title or stamp."""
     folded_head = _fold(_heading_window(text, lines=6))
     if (
         _looks_like_index_table(text)
@@ -607,6 +663,18 @@ def annexure_mark_in_heading(text: str) -> int | None:
     if re.search(r"(?m)^\s*\d{1,2}\.\s+that\s+the\b", text or "", re.I):
         return None
     return _annexure_mark_from_title_or_stamp(text)
+
+
+def annexure_mark_in_heading(text: str) -> int | None:
+    """Return printed annexure number from a page title or stamp (any series)."""
+    mark = annexure_ref_in_heading(text)
+    return mark.number if mark else None
+
+
+def annexure_label_from_text(text: str) -> str | None:
+    """Label like ``Annexure E-1`` when the page prints that stamp."""
+    mark = annexure_ref_in_heading(text)
+    return mark.label if mark else None
 
 
 def page_starts_application(text: str) -> bool:
@@ -783,7 +851,7 @@ def reclassify_pages_from_headings(
     while page <= last_page:
         names = updated.get(page)
         text = page_text.get(page, "")
-        mark = annexure_mark_in_heading(text)
+        mark = annexure_ref_in_heading(text)
         if not names:
             page += 1
             continue
@@ -797,13 +865,13 @@ def reclassify_pages_from_headings(
         if not mark or (not wrong_family and not affidavit_only):
             page += 1
             continue
-        label = f"Annexure P-{mark}"
+        label = mark.label
         updated[page] = _replace_stealable_with_annexure(updated[page], label)
         cursor = page + 1
         while cursor in updated:
             nxt_names = updated[cursor]
             nxt_text = page_text.get(cursor, "")
-            if annexure_mark_in_heading(nxt_text):
+            if annexure_ref_in_heading(nxt_text):
                 break
             if _is_strong_document_start(nxt_text):
                 break
@@ -877,9 +945,9 @@ def _contiguous_gap_pages(
 
 
 def _assign_gap_to_missing_marks(
-    pages: Sequence[int], missing: Sequence[int]
+    pages: Sequence[int], missing: Sequence[AnnexureMark]
 ) -> dict[int, str]:
-    """Split gap pages across skipped P-n marks in order.
+    """Split gap pages across skipped annexure marks in order.
 
     One skipped number gets the whole gap. Several skipped numbers share
     the pages as evenly as possible, earlier marks first.
@@ -894,7 +962,7 @@ def _assign_gap_to_missing_marks(
     for offset, mark in enumerate(missing):
         count = base + (1 if offset < extra else 0)
         for _ in range(count):
-            labels[int(pages[index])] = f"Annexure P-{mark}"
+            labels[int(pages[index])] = mark.label
             index += 1
     return labels
 
@@ -903,13 +971,14 @@ def _annexure_printed_labels(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
 ) -> dict[int, str] | None:
-    """Label annexure pages from the printed P-n heading on the page.
+    """Label annexure pages from the printed series+number heading on the page.
 
-    A page headed Annexure P-1 is Annexure P-1, even when LlamaSplit numbered
-    that segment as P-2. One heading is enough. Repeated headings keep the
-    printed number. Consecutive marks (P-2 then P-3) keep body pages with the
-    earlier mark. A skipped mark (P-2 then P-4) assigns the in-between pages
-    to P-3. A run stops at the next heading or another document.
+    A page headed Annexure E-1 is Annexure E-1 (not P-1), even when LlamaSplit
+    numbered that segment as P-2. One heading is enough. Repeated headings keep
+    the printed number. Consecutive marks (E-2 then E-3) keep body pages with
+    the earlier mark. A skipped mark (E-2 then E-4) assigns the in-between
+    pages to E-3 when the series matches. A run stops at the next heading or
+    another document.
     """
     annexure_pages = sorted(
         page
@@ -922,11 +991,11 @@ def _annexure_printed_labels(
         return None
     first = annexure_pages[0]
     last = annexure_pages[-1]
-    starts: list[tuple[int, int]] = []
+    starts: list[tuple[int, AnnexureMark]] = []
     for page in range(first, last + 1):
         if not _annexure_claimable(page_parts.get(page)):
             continue
-        mark = annexure_mark_in_heading(page_text.get(page, ""))
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
         if mark:
             starts.append((page, mark))
     if not starts:
@@ -936,25 +1005,28 @@ def _annexure_printed_labels(
     first_start, first_mark = starts[0]
     page = first_start - 1
     while page >= first and _annexure_claimable(page_parts.get(page)):
-        labels[page] = f"Annexure P-{first_mark}"
+        labels[page] = first_mark.label
         page -= 1
 
     for index, (start_page, mark) in enumerate(starts):
         if index + 1 < len(starts):
             next_page, next_mark = starts[index + 1]
-            if next_mark > mark + 1:
+            same_series = next_mark.series == mark.series
+            if same_series and next_mark.number > mark.number + 1:
                 if _annexure_claimable(page_parts.get(start_page)):
-                    labels[start_page] = f"Annexure P-{mark}"
+                    labels[start_page] = mark.label
                 gap = _contiguous_gap_pages(start_page + 1, next_page, page_parts)
-                labels.update(
-                    _assign_gap_to_missing_marks(gap, range(mark + 1, next_mark))
-                )
+                missing = [
+                    AnnexureMark(number=n, series=mark.series)
+                    for n in range(mark.number + 1, next_mark.number)
+                ]
+                labels.update(_assign_gap_to_missing_marks(gap, missing))
             else:
                 for page in _contiguous_gap_pages(start_page, next_page, page_parts):
-                    labels[page] = f"Annexure P-{mark}"
+                    labels[page] = mark.label
             continue
         for page in _contiguous_annexure_pages(start_page, last + 1, page_parts):
-            labels[page] = f"Annexure P-{mark}"
+            labels[page] = mark.label
     return labels
 
 
@@ -1038,10 +1110,10 @@ def explode_repeating_split_parts(
         for page, names in list(updated.items()):
             if _page_has_protected_part(names):
                 continue
-            mark = annexure_mark_in_heading(texts.get(page, ""))
+            mark = annexure_ref_in_heading(texts.get(page, ""))
             if not mark:
                 continue
-            label = f"Annexure P-{mark}"
+            label = mark.label
             if _stealable_family(names):
                 updated[page] = _replace_stealable_with_annexure(names, label)
             elif _annexure_claimable(names):

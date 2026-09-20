@@ -62,7 +62,7 @@ EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
-_ANNEXURE_SLOT_RE = re.compile(r"^annexure_p(\d{1,3})$")
+_ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d{1,3})$")
 _APPLICATION_SLOT_RE = re.compile(r"^application_(\d{1,3})$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
@@ -81,15 +81,16 @@ class UploadSlot:
 
 
 def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
-    """Annexure P-n / Application n slots are created when those files appear."""
+    """Annexure X-n / Application n slots are created when those files appear."""
     key = (slot_id or "").strip()
     match = _ANNEXURE_SLOT_RE.fullmatch(key)
     if match:
-        number = int(match.group(1))
+        series = match.group(1).upper()
+        number = int(match.group(2))
         return UploadSlot(
             id=key,
-            label=f"Annexure P-{number}",
-            parts=(f"Annexure P-{number}",),
+            label=f"Annexure {series}-{number}",
+            parts=(f"Annexure {series}-{number}",),
             required=False,
         )
     match = _APPLICATION_SLOT_RE.fullmatch(key)
@@ -108,14 +109,17 @@ def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot 
     return catalog.slot_by_id().get(slot_id) or dynamic_upload_slot(slot_id)
 
 
-def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int]:
+def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
     match = _ANNEXURE_SLOT_RE.fullmatch(slot_id)
     if match:
-        return (0, int(match.group(1)))
+        series = match.group(1)
+        # Keep P first, then R, then E, then other letters.
+        series_rank = {"p": 0, "r": 1, "e": 2}.get(series, 3)
+        return (0, series_rank, int(match.group(2)))
     match = _APPLICATION_SLOT_RE.fullmatch(slot_id)
     if match:
-        return (1, int(match.group(1)))
-    return (2, 0)
+        return (1, 0, int(match.group(1)))
+    return (2, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -685,7 +689,7 @@ def slot_needs_precise_parse(
 ) -> bool:
     """True when LlamaParse should keep the extract-quality (agentic) tier."""
     slot = (part.slot_id or "").strip().lower()
-    if slot in FAST_PARSE_SLOT_IDS or slot.startswith("annexure_p"):
+    if slot in FAST_PARSE_SLOT_IDS or _ANNEXURE_SLOT_RE.fullmatch(slot):
         return False
     if slot.startswith("application_") and slot != "applications":
         return False

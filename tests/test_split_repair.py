@@ -378,3 +378,50 @@ def test_ocr_noisy_listing_notice_main_and_false_impugned() -> None:
     assert repaired[23] == ["Main Petition"]
     assert repaired[25] == ["Main Petition"]
     assert repaired[32] == ["AOR's Certificate"]
+
+
+def test_ocr_annexure_e_series_not_forced_to_p() -> None:
+    """Defect_005-style: ANNEXURE - E-1…E-6 must keep E series, not P-1/P-7 jumps."""
+    from extraction_review.document_parts import annexure_ref_in_heading
+
+    assert annexure_ref_in_heading(
+        "ANNEXURE - E-1 ANDHRA BANK (A Govt of India Undertaking)"
+    ).label == "Annexure E-1"
+    assert annexure_ref_in_heading("ANNEXURE-:-- E-5\nNOTICE").label == "Annexure E-5"
+    assert (
+        annexure_ref_in_heading(
+            "noise\n·\n@\nANNEXURE - E-4\nMrs. Reema Gupta"
+        ).label
+        == "Annexure E-4"
+    )
+
+    page_parts = {
+        10: ["Annexure P-1"],
+        14: ["Annexure P-7"],
+        18: ["Annexure P-8"],
+    }
+    texts = {
+        10: "ANNEXURE - E-1\nPossession notice",
+        11: "body",
+        12: "ANNEXURE E-2\nAuction notice",
+        13: "body",
+        14: "ANNEXURE - E-3 APPENDIX VI\nform body",
+        15: "body",
+        16: "noise\n@\nANNEXURE - E-4\nGuarantor letter",
+        17: "body",
+        18: "0\nANNEXURE-:-- E-5\nE-auction",
+        19: "body",
+        20: "ANNEXURE - E-6\nBank letter",
+        21: "body",
+    }
+    for page in range(1, 22):
+        texts.setdefault(page, "")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=21)
+    assert repaired[10] == ["Annexure E-1"]
+    assert repaired[12] == ["Annexure E-2"]
+    assert repaired[14] == ["Annexure E-3"]
+    assert repaired[16] == ["Annexure E-4"]
+    assert repaired[18] == ["Annexure E-5"]
+    assert repaired[20] == ["Annexure E-6"]
+    assert "Annexure P-7" not in repaired.get(14, [])
+    assert "Annexure P-1" not in repaired.get(10, [])

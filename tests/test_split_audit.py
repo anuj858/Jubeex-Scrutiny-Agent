@@ -21,6 +21,8 @@ def test_map_index_particulars_to_common_parts() -> None:
     ) == "Synopsis"
     assert map_index_particulars_to_part("Special Leave Petition") == "Main Petition"
     assert map_index_particulars_to_part("ANNEXURE-P/4") == "Annexure P-4"
+    assert map_index_particulars_to_part("ANNEXURE-E/2") == "Annexure E-2"
+    assert map_index_particulars_to_part("Annexure E-1") == "Annexure E-1"
     assert map_index_particulars_to_part("Application for condonation") == (
         "Application 1"
     )

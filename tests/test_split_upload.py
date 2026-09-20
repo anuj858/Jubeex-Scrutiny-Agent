@@ -2121,6 +2121,8 @@ def test_annexure_mark_accepts_hyphenated_single_line_headings() -> None:
     assert annexure_mark_in_heading("P-2\nExhibit body") == 2
     assert annexure_mark_in_heading("ANNEXURE-P/2") == 2
     assert annexure_mark_in_heading("body OCR\nnoise\nANNEXURE-P/3\n63") == 3
+    assert annexure_mark_in_heading("ANNEXURE - E-1 ANDHRA BANK notice") == 1
+    assert annexure_mark_in_heading("ANNEXURE E-2\nbody") == 2
     assert (
         annexure_mark_in_heading(
             "LIST OF DATES\n28.11.2011 writ\nANNEXURE-P/4 (Pg 72-95).\nmore"

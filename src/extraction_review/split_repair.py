@@ -25,7 +25,9 @@ from .document_parts import (
     _looks_like_index_table,
     _memo_of_parties_heading,
     _vakalatnama_heading,
+    annexure_label_from_text,
     annexure_mark_in_heading,
+    annexure_ref_in_heading,
     collapse_repeated_split_pages,
     explode_repeating_split_parts,
     family_split_name,
@@ -485,7 +487,9 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Synopsis"
     if _LOD_RE.search(_heading_window(text, lines=8)):
         return "List of Dates & Events"
-    if _APPENDIX_RE.search(_heading_window(text, lines=6)):
+    if _APPENDIX_RE.search(_heading_window(text, lines=6)) and not annexure_ref_in_heading(
+        text
+    ):
         return "Appendix"
     # Filing Memo is easy to confuse with Delivery Mode notices — require memo cues.
     if _FILING_MEMO_RE.search(_heading_window(text, lines=10)) and not (
@@ -525,18 +529,18 @@ def _outer_anchor_label(text: str) -> str | None:
 
 def _annexure_run_bounds(
     page_text: Mapping[int, str], page_count: int
-) -> list[tuple[int, int, int]]:
-    """(start_page, end_page, mark) for each printed annexure run."""
-    starts: list[tuple[int, int]] = []
+) -> list[tuple[int, int, str]]:
+    """(start_page, end_page, label) for each printed annexure run."""
+    starts: list[tuple[int, str]] = []
     for page in range(1, page_count + 1):
-        mark = annexure_mark_in_heading(page_text.get(page, ""))
-        if mark:
-            starts.append((page, mark))
+        label = annexure_label_from_text(page_text.get(page, ""))
+        if label:
+            starts.append((page, label))
     if not starts:
         return []
 
-    runs: list[tuple[int, int, int]] = []
-    for index, (start, mark) in enumerate(starts):
+    runs: list[tuple[int, int, str]] = []
+    for index, (start, label) in enumerate(starts):
         if index + 1 < len(starts):
             end = starts[index + 1][0] - 1
         else:
@@ -553,7 +557,7 @@ def _annexure_run_bounds(
                     end = page - 1
                     break
         if end >= start:
-            runs.append((start, end, mark))
+            runs.append((start, end, label))
     return runs
 
 
@@ -562,24 +566,25 @@ def _force_annexure_nesting(
     page_text: Mapping[int, str],
     page_count: int,
 ) -> PagePartMap:
-    """Pages inside Annexure P-n keep that label even if they look like Main Petition."""
+    """Pages inside Annexure X-n keep that label even if they look like Main Petition."""
     updated = {page: list(names) for page, names in page_parts.items()}
-    for start, end, mark in _annexure_run_bounds(page_text, page_count):
-        label = f"Annexure P-{mark}"
+    for start, end, label in _annexure_run_bounds(page_text, page_count):
         for page in range(start, end + 1):
             text = page_text.get(page, "")
             names = parts_on_page(updated.get(page))
             # Never steal Index / OR / Listing that somehow overlaps (shouldn't).
             if names and all(name in _CARRY_BLOCKING_PARTS for name in names):
-                if not annexure_mark_in_heading(text):
+                if not annexure_ref_in_heading(text):
                     continue
-            if not names or any(name in _NESTED_STEAL_PARTS for name in names):
+            if not names or any(
+                name in _NESTED_STEAL_PARTS or name == "Appendix" for name in names
+            ):
                 updated[page] = [label]
                 continue
             if any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
                 updated[page] = [label]
                 continue
-            if _is_lower_court_caption(text) or annexure_mark_in_heading(text):
+            if _is_lower_court_caption(text) or annexure_ref_in_heading(text):
                 updated[page] = [label]
     return updated
 
@@ -592,7 +597,7 @@ def _apply_outer_anchors(
     """Stamp strong outer headings onto pages outside annexure runs."""
     updated = {page: list(names) for page, names in page_parts.items()}
     annexure_pages: set[int] = set()
-    for start, end, _mark in _annexure_run_bounds(page_text, page_count):
+    for start, end, _label in _annexure_run_bounds(page_text, page_count):
         annexure_pages.update(range(start, end + 1))
 
     for page in range(1, page_count + 1):
@@ -916,9 +921,9 @@ def _demote_false_advocate_checklist(
                 or _LISTING_RE.search(text[:900])
                 or _looks_like_court_notice_or_rop(text)
             ):
-                mark = annexure_mark_in_heading(text)
+                mark = annexure_ref_in_heading(text)
                 if mark:
-                    updated[page] = [f"Annexure P-{mark}"]
+                    updated[page] = [mark.label]
                 elif _LISTING_RE.search(text[:900]):
                     updated[page] = ["Listing Proforma"]
                 elif _looks_like_court_notice_or_rop(text):

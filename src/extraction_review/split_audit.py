@@ -76,7 +76,7 @@ _INDEX_SOFT_ROW_RE = re.compile(
 )
 
 _ANNEXURE_IN_INDEX_RE = re.compile(
-    r"annexure[\s\-]*p[\s\-/\.]*(\d{1,3})", re.IGNORECASE
+    r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d{1,3})", re.IGNORECASE
 )
 _APPLICATION_IN_INDEX_RE = re.compile(
     r"(?:application|i\.?\s*a\.?)[\s\-]*(?:no\.?\s*)?(\d{1,3})|"
@@ -150,7 +150,8 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
-        return f"Annexure P-{int(annex.group(1))}"
+        series = (annex.group(1) or "P").upper()
+        return f"Annexure {series}-{int(annex.group(2))}"
 
     if "office report" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text
@@ -312,9 +313,9 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
     if aliases:
         return (min(_SEQUENCE_RANK[name] for name in aliases), 0)
     folded = _fold(part)
-    annex = re.fullmatch(r"annexure p-?(\d{1,3})", folded)
+    annex = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
     if annex:
-        return (_SEQUENCE_RANK["Annexures"], int(annex.group(1)))
+        return (_SEQUENCE_RANK["Annexures"], int(annex.group(2)))
     app = re.fullmatch(r"application (\d{1,3})", folded)
     if app:
         return (_SEQUENCE_RANK["Applications"], int(app.group(1)))

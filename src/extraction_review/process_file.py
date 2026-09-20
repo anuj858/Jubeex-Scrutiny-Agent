@@ -168,7 +168,7 @@ CATALOG_JOB_TYPES = [
 ]
 DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
 SWAGGER_PLACEHOLDERS = frozenset({"string", "str", "none", "null"})
-_ANNEXURE_SLOT_RE = re.compile(r"annexure_p_?(\d+)")
+_ANNEXURE_SLOT_RE = re.compile(r"annexure_([a-z])_?(\d+)")
 _APPLICATION_SLOT_RE = re.compile(r"application_?(\d+)")
 _SLOT_NAME_ALIASES = {
     "list_of_dates": "synopsis_lod",
@@ -305,13 +305,15 @@ def _known_slot_ids(filing_type: str | None) -> list[str]:
 def _numbered_slot_id(stem: str, known: list[str]) -> str | None:
     annexure = _ANNEXURE_SLOT_RE.search(stem)
     if annexure:
-        number = int(annexure.group(1))
-        candidate = f"annexure_p{number}"
+        series = annexure.group(1)
+        number = int(annexure.group(2))
+        candidate = f"annexure_{series}{number}"
         if 1 <= number <= 999 and (
             not known
             or candidate in known
             or "annexures" in known
             or "annexure_p1" in known
+            or any(kid.startswith(f"annexure_{series}") for kid in known)
         ):
             return candidate
     application = _APPLICATION_SLOT_RE.search(stem)
