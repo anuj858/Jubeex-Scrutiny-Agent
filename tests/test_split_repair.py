@@ -317,3 +317,64 @@ def test_form28_party_schedule_is_main_petition_not_cover() -> None:
     assert _outer_anchor_label(party_start) == "Main Petition"
     assert _looks_like_sci_main_petition(body)
     assert _outer_anchor_label(body) == "Main Petition"
+
+
+def test_ocr_noisy_listing_notice_main_and_false_impugned() -> None:
+    """Defect_005-style OCR: LISTIN.G, S_UPRE1:IE, court notice, CERTIFICA tE."""
+    from extraction_review.split_repair import _outer_anchor_label
+
+    listing = (
+        "PROFORMA FOR FIRST LISTIN.G\nSECTION - XIV\n"
+        "The case pertains to (Please tick/ check the correct box):\n"
+        "1. Nature of matter: Civil\n"
+    )
+    notice = (
+        "Delivery_ Mode: Registered\n"
+        "IN THE SUPREME COURT OF INDIA\n"
+        "EXTRA-ORDINARY APPELLATE JURISDICTION\n"
+        "Petition for Special Leave to Appeal (Civil) No. 5253 OF 2021\n"
+        "WHEREAS the Petition for SPECIAL LEAVE PETITION was listed for hearing "
+        "before this Court on 23rd April, 2021, when the Court was pleased to pass "
+        "the following order: Issue notice\n"
+    )
+    main = (
+        "IN THE S_UPRE1:IE COURT OF INDIA\n"
+        "CIVIL APPEALLATE JURISDICTION\n"
+        "SPECIAL LEA VE PETITION\n"
+        "POSITIQN OF PARTIES\n"
+        "1. Lalit Mohan Aggarwal\tBEFORE HIGH COURT\tBEFORE THIS COURT\n"
+        "Petitioner No.1\tPetitioner No.1\n"
+    )
+    questions = (
+        "QU;gSTIONS OF LAW\n"
+        "a) Whether Notice as referred to under Rule 8(6)\n"
+        "4. DECLARATION IN TERMS OF RULES\n"
+    )
+    aor = (
+        "IN THE SUPREME COURT OF INDIA\n"
+        "CERTIFICA tE\n"
+        "Certified that the Special Leave Petition is confined only to the\n"
+        "pleadings before The Hon'ble High Court\n"
+    )
+    assert _outer_anchor_label(listing) == "Listing Proforma"
+    assert _outer_anchor_label(notice) == "Record of Proceedings"
+    assert _outer_anchor_label(main) == "Main Petition"
+    assert _outer_anchor_label(questions) == "Main Petition"
+    assert _outer_anchor_label(aor) == "AOR's Certificate"
+
+    page_parts = {
+        11: ["Advocate's Checklist"],
+        13: ["Filing Memo"],
+        23: ["Impugned Order"],
+        25: ["Impugned Order"],
+        32: ["Main Petition"],
+    }
+    texts = {11: listing, 13: notice, 23: main, 25: questions, 32: aor}
+    for page in range(1, 35):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=34)
+    assert repaired[11] == ["Listing Proforma"]
+    assert repaired[13] == ["Record of Proceedings"]
+    assert repaired[23] == ["Main Petition"]
+    assert repaired[25] == ["Main Petition"]
+    assert repaired[32] == ["AOR's Certificate"]

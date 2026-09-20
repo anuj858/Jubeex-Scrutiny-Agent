@@ -34,6 +34,12 @@ from .document_parts import (
 )
 
 _SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+# OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
+_SCI_CAPTION_OCR_RE = re.compile(
+    r"in\s+the\s+s\W*u\W*p\W*r\W*[eé0-9l:]+\W*m\W*e?\W*"
+    r"c\W*[o0]\W*u\W*r\W*t\W*[o0]\W*f\W*i\W*n\W*d\W*i\W*a",
+    re.IGNORECASE,
+)
 _HC_CAPTION_RE = re.compile(
     r"in the (?:hon'?ble\s+)?high court|"
     r"high court of judicature|"
@@ -48,16 +54,27 @@ _TRIBUNAL_CAPTION_RE = re.compile(
 )
 _OFFICE_REPORT_RE = re.compile(r"office report on limitation|o/?r on limitation", re.I)
 _LISTING_RE = re.compile(
-    r"proforma for first listing|listing proforma|listed proforma", re.I
+    r"proforma\s+for\s+first\s+listin\.?g?|"
+    r"listing\s+proforma|listed\s+proforma|"
+    r"proforma\s+for\s+first\s+listing",
+    re.I,
 )
 _SYNOPSIS_RE = re.compile(r"(?m)^\s*synopsis\b", re.I)
 _LOD_RE = re.compile(r"list of dates", re.I)
 _APPENDIX_RE = re.compile(r"(?m)^\s*appendix\b", re.I)
 _RECORD_RE = re.compile(r"record of proceedings?", re.I)
+_RECORD_NOTICE_RE = re.compile(
+    r"whereas\s+the\s+petition|"
+    r"listed\s+for\s+hearing\s+before\s+this\s+court|"
+    r"court\s+was\s+pleased\s+to\s+pass|"
+    r"delivery[_\s]*mode",
+    re.I,
+)
 _FILING_MEMO_RE = re.compile(r"filing memo|index of filing|filing index", re.I)
 _AOR_CERT_RE = re.compile(
-    r"confined only to the pleadings|"
-    r"(?:^|\n)\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|certificate)\b",
+    r"confined\s+only\s+to\s+the\s+pleadings|"
+    r"(?:^|\n)\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
+    r"certifica\s*te|certificate)\b",
     re.IGNORECASE,
 )
 _SCI_CHECKLIST_RE = re.compile(
@@ -79,15 +96,18 @@ _COVER_FOOTER_RE = re.compile(
 # Form-28 party schedule (not the one-name-per-side paper-book cover).
 _PARTY_SCHEDULE_RE = re.compile(
     r"before\s+high\s+court|before\s+supreme\s+court|"
+    r"before\s+this\s+court|"
     r"respondent\s+no\.|petitioner\s+no\.|"
+    r"positi[o0]n\s+of\s+pa|"
     r"(?:^|\n)\s*\d{1,2}\.\s*.{0,120}(?:s/?o|d/?o|w/?o|age\s+\d+)",
     re.I,
 )
 # Form-28 body cues. Do NOT use "prayer for interim relief" alone — covers print
 # "(WITH PRAYER FOR INTERIM RELIEF)" in the caption.
 _FORM28_BODY_RE = re.compile(
-    r"form\s*28|questions of law|"
-    r"most respectfully showeth|position of parties|"
+    r"form\s*28|"
+    r"qu\W{0,4}stions?\s+of\s+law|questions\s+of\s+law|"
+    r"most respectfully showeth|position of parties|positi[o0]n\s+of\s+pa|"
     r"humble petition of the|declaration in terms of rule",
     re.I,
 )
@@ -168,8 +188,17 @@ def _fold(text: str) -> str:
 
 
 def _is_sci_caption(text: str) -> bool:
-    # OCR often inserts extra spaces: "IN   THE    SUPREME   COURT".
-    return bool(_SCI_CAPTION_RE.search(_fold(_heading_window(text, lines=10))))
+    # OCR often inserts extra spaces/punctuation: "IN   THE    SUPREME", "S_UPRE1:IE".
+    head = _fold(_heading_window(text, lines=12))
+    if _SCI_CAPTION_RE.search(head):
+        return True
+    if _SCI_CAPTION_OCR_RE.search(head) or _SCI_CAPTION_OCR_RE.search(text[:900]):
+        return True
+    letters = re.sub(r"[^a-z0-9]+", "", head)
+    if "inthesupremecourtofindia" in letters:
+        return True
+    # Digits/punctuation inside "supreme" (supre1ie, s_upreme, …).
+    return bool(re.search(r"inthesupr[a-z0-9]{0,10}courtofindia", letters))
 
 
 def _is_lower_court_caption(text: str) -> bool:
@@ -177,6 +206,25 @@ def _is_lower_court_caption(text: str) -> bool:
     if _is_sci_caption(text):
         return False
     return bool(_HC_CAPTION_RE.search(head) or _TRIBUNAL_CAPTION_RE.search(head))
+
+
+def _looks_like_court_notice_or_rop(text: str) -> bool:
+    """Registry notice / RoP extract — not Cover, Filing Memo, or Main Petition."""
+    head = text[:2200]
+    folded = _fold(head)
+    if _RECORD_RE.search(_heading_window(text, lines=10)):
+        return True
+    if _RECORD_NOTICE_RE.search(head):
+        # SLP captions alone are not RoP; require notice/hearing language.
+        return bool(
+            "whereas" in folded
+            or "listed for hearing" in folded
+            or "delivery" in folded
+            or "issue notice" in folded
+            or "pid:" in folded
+        )
+    return False
+
 
 
 def _is_near_blank_page(text: str) -> bool:
@@ -190,8 +238,14 @@ def _looks_like_sci_checklist(text: str) -> bool:
     head = text[:1200]
     if _STATE_CHECKLIST_RE.search(head):
         return False
-    if _LISTING_RE.search(head) or _OFFICE_REPORT_RE.search(text[:2000]):
+    # Listing Proforma also says "tick/check the correct box" — not a checklist.
+    if _LISTING_RE.search(head) or _LISTING_RE.search(_fold(head)):
         return False
+    if _OFFICE_REPORT_RE.search(text[:2000]):
+        return False
+    if "proforma for first" in _fold(head) or "section -" in _fold(head[:400]):
+        if "nature of matter" in _fold(head):
+            return False
     if _SCI_CHECKLIST_RE.search(head):
         return True
     # OCR of ticked Advocate's Checklist is often only YES / N.A. answers.
@@ -211,21 +265,30 @@ def _looks_like_impugned_order_start(text: str) -> bool:
     if annexure_mark_in_heading(text):
         return False
     folded = _fold(text[:1800])
-    # Petition body pages often wrap a line starting with "Impugned final order".
+    # Petition body / SLP caption pages often mention the impugned judgment.
     if any(
         cue in folded
         for cue in (
             "showeth",
             "humble petition",
             "position of parties",
+            "positi",
             "questions of law",
+            "qustions of law",
             "prayer for interim relief",
+            "special leave petition",
+            "special lea ve petition",
+            "under article 136",
         )
     ):
         return False
     if "list of dates" in folded or folded.startswith("synopsis"):
         return False
     if "matter in issue" in folded or "res judicata" in folded:
+        return False
+    if _is_sci_caption(text) and (
+        "special leave" in folded or "petition for special leave" in folded
+    ):
         return False
     head = _heading_window(text, lines=12)
     if _IMPUGNED_ORDER_RE.search(head):
@@ -291,6 +354,8 @@ def _looks_like_index_continuation(text: str) -> bool:
 def _looks_like_cover_page(text: str) -> bool:
     page_head = text[:2200]
     folded = _fold(page_head)
+    if _looks_like_court_notice_or_rop(text):
+        return False
     # Multi-party Form-28 schedule is never the paper-book cover.
     if _PARTY_SCHEDULE_RE.search(page_head):
         return False
@@ -304,7 +369,7 @@ def _looks_like_cover_page(text: str) -> bool:
             return False
         if "most respectfully showeth" in folded or "humble petition" in folded:
             return False
-        if "position of parties" in folded:
+        if "position of parties" in folded or "positi" in folded:
             return False
         if _OFFICE_REPORT_RE.search(text[:2000]):
             return False
@@ -318,7 +383,7 @@ def _looks_like_cover_page(text: str) -> bool:
     # "(WITH PRAYER FOR INTERIM RELIEF)".
     if "questions of law" in folded or "form 28" in folded:
         return False
-    if "position of parties" in folded:
+    if "position of parties" in folded or "positi" in folded:
         return False
     if "most respectfully showeth" in folded or "humble petition" in folded:
         return False
@@ -332,7 +397,10 @@ def _looks_like_cover_page(text: str) -> bool:
     appellate = (
         "civil appellate jurisdiction" in head
         or "civl appellate jurisdiction" in head
+        or "civil appeallate jurisdiction" in head
         or "criminal appellate jurisdiction" in head
+        or "extra-ordinary appellate" in head
+        or "extraordinary appellate" in head
     )
     # Without PAPER BOOK / index footer, appellate + SLP caption alone is too
     # weak — that pattern also opens the Main Petition party schedule.
@@ -346,13 +414,19 @@ def _looks_like_cover_page(text: str) -> bool:
 def _looks_like_sci_main_petition(text: str) -> bool:
     if _looks_like_cover_page(text):
         return False
+    if _looks_like_court_notice_or_rop(text):
+        return False
     if page_starts_application(text):
         return False
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return False
+    if _LISTING_RE.search(text[:900]):
+        return False
     if _is_lower_court_caption(text):
         return False
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)):
+        return False
+    if _AOR_CERT_RE.search(text[:2500]):
         return False
     window = text[:3000]
     folded = _fold(window)
@@ -365,17 +439,26 @@ def _looks_like_sci_main_petition(text: str) -> bool:
             "special leave" in folded
             or "supreme court of india" in folded
             or "companion justices" in folded
+            or "declaration in terms of rule" in folded
+            or "questions of law" in folded
+            or "stions of law" in folded
         ):
             return True
         return False
     if _FORM28_BODY_RE.search(window):
         return True
     return (
-        ("special leave petition" in folded or "slp (criminal)" in folded)
+        (
+            "special leave petition" in folded
+            or "special lea ve petition" in folded
+            or "slp (criminal)" in folded
+            or "slp (civil)" in folded
+        )
         and (
             "humble petition" in folded
             or "showeth" in folded
             or "position of parties" in folded
+            or "positi" in folded
             or _PARTY_SCHEDULE_RE.search(window)
         )
     )
@@ -390,8 +473,12 @@ def _outer_anchor_label(text: str) -> str | None:
     # OR heading often sits below the cause title — search more than 12 lines.
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return "Office Report on Limitation"
-    if _LISTING_RE.search(_heading_window(text, lines=10)):
+    if _LISTING_RE.search(_heading_window(text, lines=10)) or _LISTING_RE.search(
+        text[:900]
+    ):
         return "Listing Proforma"
+    if _looks_like_court_notice_or_rop(text):
+        return "Record of Proceedings"
     if _RECORD_RE.search(_heading_window(text, lines=10)):
         return "Record of Proceedings"
     if _SYNOPSIS_RE.search(_heading_window(text, lines=8)):
@@ -400,14 +487,19 @@ def _outer_anchor_label(text: str) -> str | None:
         return "List of Dates & Events"
     if _APPENDIX_RE.search(_heading_window(text, lines=6)):
         return "Appendix"
-    if _FILING_MEMO_RE.search(_heading_window(text, lines=10)):
+    # Filing Memo is easy to confuse with Delivery Mode notices — require memo cues.
+    if _FILING_MEMO_RE.search(_heading_window(text, lines=10)) and not (
+        _looks_like_court_notice_or_rop(text) or _is_sci_caption(text)
+    ):
         return "Filing Memo"
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
-    if _AOR_CERT_RE.search(_heading_window(text, lines=16)) and _is_sci_caption(text):
+    if _AOR_CERT_RE.search(text[:2500]) and _is_sci_caption(text):
         return "AOR's Certificate"
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)) and (
-        _is_sci_caption(text) or "deponent" in _fold(text[:1200])
+        _is_sci_caption(text)
+        or "deponent" in _fold(text[:1500])
+        or "solemnly affirm" in _fold(text[:1500])
     ):
         return "Affidavit"
     if _looks_like_cover_page(text):
@@ -634,13 +726,14 @@ def _label_near_blank_impugned_gap(
     if not petition_pages:
         return updated
     petition_start = petition_pages[0]
-    # Last substantive (non-blank) page before the petition that is LOD/Synopsis.
+    # Last substantive page before the petition that is LOD/Synopsis
+    # (not Listing/OR — those sit much earlier in the paper-book).
     pre_pages = [
         page
         for page, names in updated.items()
         if page < petition_start
         and any(
-            name in {"List of Dates & Events", "Synopsis", "Listing Proforma"}
+            name in {"List of Dates & Events", "Synopsis"}
             for name in parts_on_page(names)
         )
         and not _is_near_blank_page(page_text.get(page, ""))
@@ -707,7 +800,9 @@ def _extend_main_petition_body(
         return updated
 
     start = min(starts)
-    updated[start] = [MAIN_PETITION_PART]
+    for page in starts:
+        if page >= start:
+            updated[page] = [MAIN_PETITION_PART]
     stop_labels = {
         "AOR's Certificate",
         "Affidavit",
@@ -753,7 +848,56 @@ def _extend_main_petition_body(
                 continue
             break
         if not (text or "").strip():
+            # Scanned books often have OCR-blank sheets inside Main Petition.
+            ahead_main = False
+            for ahead in range(page + 1, min(page + 8, page_count + 1)):
+                ahead_text = page_text.get(ahead, "")
+                ahead_label = _outer_anchor_label(ahead_text)
+                if ahead_label and ahead_label in stop_labels:
+                    break
+                if annexure_mark_in_heading(ahead_text):
+                    break
+                if _looks_like_sci_main_petition(ahead_text):
+                    ahead_main = True
+                    break
+                ahead_fold = _fold(ahead_text[:1200])
+                if ahead_fold and any(
+                    cue in ahead_fold
+                    for cue in (
+                        "prayer",
+                        "grounds",
+                        "showeth",
+                        "questions of law",
+                        "stions of law",
+                        "declaration in terms",
+                    )
+                ):
+                    ahead_main = True
+                    break
+            if ahead_main:
+                updated[page] = [MAIN_PETITION_PART]
+                continue
             break
+        # Weak continuation pages (prayer) without a full Form-28 heading.
+        if not _looks_like_sci_main_petition(text):
+            folded_page = _fold(text[:1200])
+            if not any(
+                cue in folded_page
+                for cue in (
+                    "prayer",
+                    "grounds",
+                    "showeth",
+                    "questions of law",
+                    "stions of law",
+                    "declaration in terms",
+                    "special leave",
+                    "position of",
+                    "positi",
+                )
+            ):
+                # Keep extending only while pages look petition-like.
+                if len((text or "").strip()) > 80:
+                    break
         updated[page] = [MAIN_PETITION_PART]
     return updated
 
@@ -763,12 +907,38 @@ def _demote_false_advocate_checklist(
 ) -> PagePartMap:
     updated = {page: list(names) for page, names in page_parts.items()}
     for page, names in list(updated.items()):
-        if "Advocate's Checklist" not in parts_on_page(names):
-            continue
+        labels = parts_on_page(names)
         text = page_text.get(page, "")
-        if _STATE_CHECKLIST_RE.search(text[:1500]) or annexure_mark_in_heading(text):
-            mark = annexure_mark_in_heading(text)
-            updated[page] = [f"Annexure P-{mark}"] if mark else ["Annexure P-1"]
+        if "Advocate's Checklist" in labels:
+            if (
+                _STATE_CHECKLIST_RE.search(text[:1500])
+                or annexure_mark_in_heading(text)
+                or _LISTING_RE.search(text[:900])
+                or _looks_like_court_notice_or_rop(text)
+            ):
+                mark = annexure_mark_in_heading(text)
+                if mark:
+                    updated[page] = [f"Annexure P-{mark}"]
+                elif _LISTING_RE.search(text[:900]):
+                    updated[page] = ["Listing Proforma"]
+                elif _looks_like_court_notice_or_rop(text):
+                    updated[page] = ["Record of Proceedings"]
+                else:
+                    updated[page] = ["Annexure P-1"]
+        if "Filing Memo" in labels and (
+            _looks_like_court_notice_or_rop(text)
+            or _LISTING_RE.search(text[:900])
+            or _looks_like_sci_main_petition(text)
+        ):
+            anchor = _outer_anchor_label(text)
+            if anchor:
+                updated[page] = [anchor]
+        if "Impugned Order" in labels and not _looks_like_impugned_order_start(text):
+            anchor = _outer_anchor_label(text)
+            if anchor and anchor != "Impugned Order":
+                updated[page] = [anchor]
+            elif _looks_like_sci_main_petition(text):
+                updated[page] = [MAIN_PETITION_PART]
     return updated
 
 
