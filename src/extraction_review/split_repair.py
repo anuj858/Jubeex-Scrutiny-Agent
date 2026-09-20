@@ -69,17 +69,26 @@ _STATE_CHECKLIST_RE = re.compile(
     r"commissioner for co-?operation",
     re.I,
 )
-# Cover pages also say "SPECIAL LEAVE PETITION" and "Under Article 136".
-# Main Petition needs Form-28 *body* cues, not the cover caption alone.
-_FORM28_BODY_RE = re.compile(
-    r"form\s*28|questions of law|prayer for interim relief|"
-    r"most respectfully showeth|position of parties|"
-    r"humble petition of the|declaration in terms of rule",
-    re.I,
-)
 _COVER_FOOTER_RE = re.compile(
     r"for index\s+(?:kindly|please)\s+see\s+inside|"
+    r"\{\s*cover\s+page\s*\}|"
+    r"cover\s+page\s+of\s+paper|"
     r"\bpaper\s+book\b",
+    re.I,
+)
+# Form-28 party schedule (not the one-name-per-side paper-book cover).
+_PARTY_SCHEDULE_RE = re.compile(
+    r"before\s+high\s+court|before\s+supreme\s+court|"
+    r"respondent\s+no\.|petitioner\s+no\.|"
+    r"(?:^|\n)\s*\d{1,2}\.\s*.{0,120}(?:s/?o|d/?o|w/?o|age\s+\d+)",
+    re.I,
+)
+# Form-28 body cues. Do NOT use "prayer for interim relief" alone — covers print
+# "(WITH PRAYER FOR INTERIM RELIEF)" in the caption.
+_FORM28_BODY_RE = re.compile(
+    r"form\s*28|questions of law|"
+    r"most respectfully showeth|position of parties|"
+    r"humble petition of the|declaration in terms of rule",
     re.I,
 )
 # Document-start only — not Synopsis/LOD phrases like "true copy of the order … ANNEXURE".
@@ -159,11 +168,12 @@ def _fold(text: str) -> str:
 
 
 def _is_sci_caption(text: str) -> bool:
-    return bool(_SCI_CAPTION_RE.search(_heading_window(text, lines=10)))
+    # OCR often inserts extra spaces: "IN   THE    SUPREME   COURT".
+    return bool(_SCI_CAPTION_RE.search(_fold(_heading_window(text, lines=10))))
 
 
 def _is_lower_court_caption(text: str) -> bool:
-    head = _heading_window(text, lines=14)
+    head = _fold(_heading_window(text, lines=14))
     if _is_sci_caption(text):
         return False
     return bool(_HC_CAPTION_RE.search(head) or _TRIBUNAL_CAPTION_RE.search(head))
@@ -279,13 +289,36 @@ def _looks_like_index_continuation(text: str) -> bool:
 
 
 def _looks_like_cover_page(text: str) -> bool:
-    if not _is_sci_caption(text):
-        return False
     page_head = text[:2200]
     folded = _fold(page_head)
-    if "questions of law" in folded or "prayer for interim relief" in folded:
+    # Multi-party Form-28 schedule is never the paper-book cover.
+    if _PARTY_SCHEDULE_RE.search(page_head):
         return False
-    if "form 28" in folded or "position of parties" in folded:
+    has_cover_footer = bool(_COVER_FOOTER_RE.search(page_head))
+    # Strong paper-book cover stamps win even when caption OCR is noisy.
+    if has_cover_footer and (
+        _is_sci_caption(text) or "supreme court of india" in folded
+    ):
+        # Still refuse real Form-28 / OR / Listing bodies.
+        if "questions of law" in folded or "form 28" in folded:
+            return False
+        if "most respectfully showeth" in folded or "humble petition" in folded:
+            return False
+        if "position of parties" in folded:
+            return False
+        if _OFFICE_REPORT_RE.search(text[:2000]):
+            return False
+        if _LISTING_RE.search(text[:900]):
+            return False
+        return True
+
+    if not _is_sci_caption(text):
+        return False
+    # Caption-only covers: reject Form-28 body, not the common cover line
+    # "(WITH PRAYER FOR INTERIM RELIEF)".
+    if "questions of law" in folded or "form 28" in folded:
+        return False
+    if "position of parties" in folded:
         return False
     if "most respectfully showeth" in folded or "humble petition" in folded:
         return False
@@ -293,8 +326,6 @@ def _looks_like_cover_page(text: str) -> bool:
         return False
     if _LISTING_RE.search(text[:900]):
         return False
-    if _COVER_FOOTER_RE.search(page_head):
-        return True
     if _is_sci_application_start(text) and "with" not in folded[:400]:
         return False
     head = _fold(_heading_window(text, lines=16))
@@ -303,12 +334,16 @@ def _looks_like_cover_page(text: str) -> bool:
         or "civl appellate jurisdiction" in head
         or "criminal appellate jurisdiction" in head
     )
-    return appellate and "questions of law" not in folded
+    # Without PAPER BOOK / index footer, appellate + SLP caption alone is too
+    # weak — that pattern also opens the Main Petition party schedule.
+    return bool(
+        appellate
+        and has_cover_footer
+        and "questions of law" not in folded
+    )
 
 
 def _looks_like_sci_main_petition(text: str) -> bool:
-    if not _is_sci_caption(text):
-        return False
     if _looks_like_cover_page(text):
         return False
     if page_starts_application(text):
@@ -320,12 +355,29 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)):
         return False
     window = text[:3000]
+    folded = _fold(window)
+    # Form-28 party schedule under SCI caption (names live here, not on Cover).
+    if _is_sci_caption(text) and _PARTY_SCHEDULE_RE.search(window):
+        return True
+    if not _is_sci_caption(text):
+        # Body pages often omit a fresh SCI caption after the party schedule.
+        if _FORM28_BODY_RE.search(window) and (
+            "special leave" in folded
+            or "supreme court of india" in folded
+            or "companion justices" in folded
+        ):
+            return True
+        return False
     if _FORM28_BODY_RE.search(window):
         return True
-    folded = _fold(window)
     return (
         ("special leave petition" in folded or "slp (criminal)" in folded)
-        and ("humble petition" in folded or "showeth" in folded or "position of parties" in folded)
+        and (
+            "humble petition" in folded
+            or "showeth" in folded
+            or "position of parties" in folded
+            or _PARTY_SCHEDULE_RE.search(window)
+        )
     )
 
 

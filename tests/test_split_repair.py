@@ -236,3 +236,84 @@ def test_find_duplicate_vakalatnama_spans() -> None:
     assert hits[0].part == "Vakalatnama"
     assert hits[0].kept_span == (40, 41)
     assert hits[0].duplicate_spans == ((90, 91),)
+
+
+def test_cover_with_spaced_ocr_prayer_and_ia_list_is_not_application() -> None:
+    """Defect_File__001-style cover: spaced SCI caption + WITH PRAYER + I.A. list."""
+    from extraction_review.split_repair import (
+        _looks_like_cover_page,
+        _outer_anchor_label,
+    )
+
+    cover = (
+        "A \n"
+        "IN   THE    SUPREME   COURT   OF   INDIA \n"
+        "[Order XXI, Rule 3, SCR, 2013] \n"
+        "CIVIL APPELLATE JURISDICTION \n"
+        "SPECIAL LEAVE PETITION \n"
+        "(Under Article 136 of the Constitution of India) \n"
+        "SPECIAL LEAVE PETITION (CIVIL) NO.  ________ OF 2025 \n"
+        "(WITH PRAYER FOR INTERIM RELIEF) \n"
+        "IN THE MATTER OF: \n"
+        "COL. PAWAN KUMAR GOPINATH SHARMA \n"
+        "…..PETITIONER \n"
+        "VERSUS \n"
+        "K.D.R. FARMS CO OP HOUSING SOCIETY LTD & ORS. \n"
+        "….RESPONDENT \n"
+        "W I T H \n"
+        "I.A. NO._____OF 2025: APPLICATION FOR EXEMPTION FROM "
+        "FILING CERTIFIED COPY OF IMPUGNED ORDER \n"
+        "PAPER BOOK \n"
+        "{COVER PAGE}\n"
+        "(FOR INDEX PLEASE SEE INSIDE) \n"
+        "ADVOCATE FOR THE PETITIONER:  Ajit Sharma \n"
+    )
+    assert _looks_like_cover_page(cover)
+    assert _outer_anchor_label(cover) == "Cover Page"
+
+    page_parts = {1: ["Main Petition"], 2: ["Index"], 9: ["Main Petition"]}
+    texts = {
+        1: cover,
+        2: "INDEX\nS.No. PARTICULARS\n1. Office Report on Limitation",
+        9: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION\nQUESTIONS OF LAW\nMOST RESPECTFULLY SHOWETH"
+        ),
+    }
+    for page in range(1, 10):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=9)
+    assert repaired[1] == ["Cover Page"]
+    assert repaired[9] == ["Main Petition"]
+
+
+def test_form28_party_schedule_is_main_petition_not_cover() -> None:
+    from extraction_review.split_repair import (
+        _looks_like_cover_page,
+        _looks_like_sci_main_petition,
+        _outer_anchor_label,
+    )
+
+    party_start = (
+        "IN THE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (Civil) NO. OF 2025\n"
+        "WITH PRAYER FOR INTERIM RELIEF\n"
+        "BEFORE HIGH COURT\tBEFORE SUPREME COURT\n"
+        "1.Col. Pawan Kumar Gopinath Sharma, s/o Gopinath Sharma\n"
+        "Respondent No.\tPetitioner\n"
+        "Versus\n"
+        "1. K.D.R. Farms Co. op Housing Society Ltd.\n"
+        "Petitioner No.\tRespondent No.\n"
+    )
+    body = (
+        "TO, THE HON'BLE THE CHIEF JUSTICE OF INDIA AND HIS COMPANION "
+        "JUSTICES OF THE HON'BLE SUPREME COURT OF INDIA.\n"
+        "MOST RESPECTFULLY SHOWETH:\n"
+        "1. This Special Leave to Appeal is being filed against the impugned order.\n"
+    )
+    assert not _looks_like_cover_page(party_start)
+    assert _looks_like_sci_main_petition(party_start)
+    assert _outer_anchor_label(party_start) == "Main Petition"
+    assert _looks_like_sci_main_petition(body)
+    assert _outer_anchor_label(body) == "Main Petition"

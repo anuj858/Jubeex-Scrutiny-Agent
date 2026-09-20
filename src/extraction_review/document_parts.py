@@ -636,6 +636,15 @@ def _is_sci_application_start(text: str) -> bool:
     window = _fold((text or "")[:2000])
     if "in the supreme court of india" not in head and "in the supreme court of india" not in window:
         return False
+    # Paper-book covers list pending I.A.s; that is not an application start.
+    if re.search(
+        r"for index\s+(?:kindly|please)\s+see\s+inside|"
+        r"\{\s*cover\s+page\s*\}|"
+        r"\bpaper\s+book\b",
+        text[:2200] or "",
+        re.I,
+    ):
+        return False
     return bool(
         re.search(r"(?m)^application\b", head)
         or re.search(r"\bi\.?\s*a\.?\b", head)
