@@ -29,6 +29,7 @@ _INDEX_OPTIONAL_PARTS = frozenset(
         "Court Fees",
         "PoA/BR",
         "Undefined",
+        "AOR's Certificate",  # often omitted from Part-I Index table
     }
 )
 
@@ -46,8 +47,8 @@ _SEQUENCE_ORDER: tuple[str, ...] = (
     "Main Petition",
     "Affidavit",
     "AOR's Certificate",
-    "Annexures",  # placeholder rank for any Annexure P-n
     "Appendix",
+    "Annexures",  # placeholder rank for any Annexure P-n
     "Applications",  # placeholder rank for any Application n
     "Memo of Parties",
     "Memo of Appearance",
@@ -59,9 +60,19 @@ _SEQUENCE_ORDER: tuple[str, ...] = (
 
 _SEQUENCE_RANK = {name: index for index, name in enumerate(_SEQUENCE_ORDER)}
 
+_COMBINED_SEQUENCE_ALIASES: dict[str, tuple[str, ...]] = {
+    "Synopsis + List of Dates & Events": ("Synopsis", "List of Dates & Events"),
+    "Memo of Appearance + Vakalatnama": ("Memo of Appearance", "Vakalatnama"),
+}
+
 _INDEX_ROW_RE = re.compile(
-    r"(?m)^\s*(?:(?P<sno>\d{1,3})[.)]\s*)?(?P<body>.+?)\s+"
+    r"(?m)^\s*(?:(?P<sno>\d{1,3})[.)]\s*)(?P<body>.+?)\s+"
     r"(?P<start>\d{1,4})(?:\s*[-–—/]\s*(?P<end>\d{1,4}))?\s*$"
+)
+# Softer row: serial + particulars, page number may be on the same line mid-OCR.
+_INDEX_SOFT_ROW_RE = re.compile(
+    r"(?m)^\s*(?P<sno>\d{1,3})[.)]\s+(?P<body>.+?)"
+    r"(?:\s+(?P<start>\d{1,4})(?:\s*[-–—/]\s*(?P<end>\d{1,4}))?)?\s*$"
 )
 
 _ANNEXURE_IN_INDEX_RE = re.compile(
@@ -164,8 +175,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         and "writ" not in text
         and "application" not in text
     ):
-        if "affidavit" in text:
-            return "Affidavit"
+        # "SLP along with Affidavit" is still the petition slot in the Index.
         return "Main Petition"
     if "affidavit" in text:
         return "Affidavit"
@@ -199,30 +209,60 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
 def parse_index_rows(index_text: str) -> list[IndexRow]:
     """Parse PARTICULARS + page span rows from Index page text."""
+    # Flatten OCR line-breaks inside a row: join lines that don't start a new serial.
+    raw_lines = (index_text or "").splitlines()
+    merged: list[str] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.match(r"^\d{1,3}[.)]\s+", stripped) or not merged:
+            merged.append(stripped)
+        else:
+            merged[-1] = f"{merged[-1]} {stripped}"
+    normalized = "\n".join(merged)
+
     rows: list[IndexRow] = []
     seen: set[tuple[str, int, int]] = set()
-    for match in _INDEX_ROW_RE.finditer(index_text or ""):
+    for match in _INDEX_SOFT_ROW_RE.finditer(normalized):
         body = (match.group("body") or "").strip()
         if not body or len(body) < 3:
             continue
-        # Drop header-ish lines without a real particular.
         folded = _fold(body)
-        if "page no" in folded or folded in {"particulars", "particulars of documents"}:
+        if "page no" in folded or folded.startswith("particulars"):
             continue
-        try:
-            start = int(match.group("start"))
-        except (TypeError, ValueError):
-            continue
-        end_raw = match.group("end")
-        end = int(end_raw) if end_raw else start
+        start_raw = match.group("start")
+        if not start_raw:
+            # Try to pull a trailing page span out of the body (OCR glue).
+            trailing = re.search(
+                r"(\d{1,4})(?:\s*[-–—/]\s*(\d{1,4}))?\s*$", body
+            )
+            if not trailing:
+                # Still keep mapped rows without pages for missing-in-file checks.
+                mapped = map_index_particulars_to_part(body)
+                if not mapped:
+                    continue
+                serial = int(match.group("sno")) if match.group("sno") else None
+                rows.append(
+                    IndexRow(
+                        particulars=body,
+                        start_page=0,
+                        end_page=0,
+                        mapped_part=mapped,
+                        serial=serial,
+                    )
+                )
+                continue
+            start = int(trailing.group(1))
+            end = int(trailing.group(2) or start)
+            body = body[: trailing.start()].strip(" -–—/")
+        else:
+            start = int(start_raw)
+            end_raw = match.group("end")
+            end = int(end_raw) if end_raw else start
         if end < start:
             start, end = end, start
-        serial = None
-        if match.group("sno"):
-            try:
-                serial = int(match.group("sno"))
-            except ValueError:
-                serial = None
+        serial = int(match.group("sno")) if match.group("sno") else None
         mapped = map_index_particulars_to_part(body)
         key = (_fold(body), start, end)
         if key in seen:
@@ -247,18 +287,30 @@ def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> 
         if "Index" in parts_on_page(names)
     )
     if not pages:
-        # Fallback: any page that looks like an index heading.
         pages = [
             page
             for page, text in page_text.items()
             if "index" in _fold(text[:400])
             and ("particulars" in _fold(text[:800]) or "page no" in _fold(text[:800]))
         ]
-    return "\n".join(page_text.get(page, "") for page in sorted(set(pages)))
+    if not pages:
+        return ""
+    # Prefer only the first contiguous Index run.
+    start = pages[0]
+    contiguous = [start]
+    for page in pages[1:]:
+        if page == contiguous[-1] + 1:
+            contiguous.append(page)
+        else:
+            break
+    return "\n".join(page_text.get(page, "") for page in contiguous)
 
 
 def _sequence_family_rank(part: str) -> tuple[int, int]:
     """Return (block_rank, sub_rank) for ordering comparisons."""
+    aliases = _COMBINED_SEQUENCE_ALIASES.get(part)
+    if aliases:
+        return (min(_SEQUENCE_RANK[name] for name in aliases), 0)
     folded = _fold(part)
     annex = re.fullmatch(r"annexure p-?(\d{1,3})", folded)
     if annex:
@@ -277,7 +329,7 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
 def check_document_sequence(
     spans: Sequence[Mapping[str, Any]],
 ) -> list[SplitAuditFlag]:
-    """Flag when found documents appear out of expected SCI paper-book order."""
+    """Flag when consecutive found documents invert expected SCI order."""
     items: list[tuple[str, int, tuple[int, int]]] = []
     for span in spans:
         name = str(span.get("name") or "").strip()
@@ -291,45 +343,30 @@ def check_document_sequence(
 
     items.sort(key=lambda row: row[1])
     flags: list[SplitAuditFlag] = []
-    for index, (name, start, rank) in enumerate(items):
-        for earlier_name, earlier_start, earlier_rank in items[:index]:
-            if earlier_start >= start:
-                continue
-            if earlier_rank <= rank:
-                continue
-            # Document that should come later in the paper book starts earlier.
-            flags.append(
-                SplitAuditFlag(
-                    code="out_of_sequence",
-                    severity="warning",
-                    part=earlier_name,
-                    message=(
-                        f"{earlier_name} (p.{earlier_start}) appears before "
-                        f"{name} (p.{start}), but expected paper-book order "
-                        f"places {name} before {earlier_name}"
-                    ),
-                    details={
-                        "out_of_order_part": earlier_name,
-                        "should_precede_part": name,
-                        "out_of_order_start_page": earlier_start,
-                        "should_precede_start_page": start,
-                    },
-                )
-            )
-    # Deduplicate noisy pairwise flags: keep one per out-of-order part pair.
-    deduped: list[SplitAuditFlag] = []
-    seen_pairs: set[tuple[str, str]] = set()
-    for flag in flags:
-        details = flag.details or {}
-        key = (
-            str(details.get("out_of_order_part") or ""),
-            str(details.get("should_precede_part") or ""),
-        )
-        if key in seen_pairs:
+    for index in range(1, len(items)):
+        earlier_name, earlier_start, earlier_rank = items[index - 1]
+        name, start, rank = items[index]
+        if earlier_rank <= rank:
             continue
-        seen_pairs.add(key)
-        deduped.append(flag)
-    return deduped
+        flags.append(
+            SplitAuditFlag(
+                code="out_of_sequence",
+                severity="warning",
+                part=earlier_name,
+                message=(
+                    f"{earlier_name} (p.{earlier_start}) appears before "
+                    f"{name} (p.{start}), but expected paper-book order "
+                    f"places {name} before {earlier_name}"
+                ),
+                details={
+                    "out_of_order_part": earlier_name,
+                    "should_precede_part": name,
+                    "out_of_order_start_page": earlier_start,
+                    "should_precede_start_page": start,
+                },
+            )
+        )
+    return flags
 
 
 def _spans_by_part(spans: Sequence[Mapping[str, Any]]) -> dict[str, tuple[int, int]]:
@@ -356,18 +393,41 @@ def check_index_consistency(
     """Compare Index rows to repaired split spans."""
     by_part = _spans_by_part(spans)
     flags: list[SplitAuditFlag] = []
-
     mentioned: set[str] = set()
+
     for row in rows:
         part = row.mapped_part
         if not part:
             continue
         mentioned.add(part)
-        # Combined Synopsis+LOD row maps to Synopsis; also credit LOD.
         if part == "Synopsis" and "list of date" in _fold(row.particulars):
             mentioned.add("List of Dates & Events")
 
-        if row.start_page > page_count or row.end_page > page_count:
+        # Part-II letter pages (A/A1) often OCR as tiny integers — skip mismatch.
+        if (
+            row.start_page > 0
+            and row.start_page <= 20
+            and part
+            in {
+                "Cover Page",
+                "Listing Proforma",
+                "Record of Proceedings",
+                "Office Report on Limitation",
+            }
+        ):
+            found_early = by_part.get(part)
+            if found_early and abs(found_early[0] - row.start_page) >= 2:
+                continue
+
+        # Absurd OCR page numbers (advocate codes, etc.).
+        if row.start_page > page_count * 2:
+            continue
+
+        if row.start_page > page_count or (
+            row.end_page > page_count and row.start_page > 0
+        ):
+            if row.start_page <= 0:
+                continue
             flags.append(
                 SplitAuditFlag(
                     code="index_page_out_of_range",
@@ -388,7 +448,6 @@ def check_index_consistency(
 
         found = by_part.get(part)
         if found is None and part == "Synopsis":
-            # Accept combined documents row.
             found = by_part.get("Synopsis + List of Dates & Events")
         if found is None and part == "List of Dates & Events":
             found = by_part.get("Synopsis + List of Dates & Events")
@@ -396,27 +455,40 @@ def check_index_consistency(
             found = by_part.get("Memo of Appearance + Vakalatnama")
 
         if found is None:
+            # Court Fee / registry Part-II rows are often not separate split docs.
+            if part in {"Court Fees", "Cover Page", "Record of Proceedings"}:
+                continue
             flags.append(
                 SplitAuditFlag(
                     code="in_index_missing_in_file",
                     severity="error",
                     part=part,
                     index_particulars=row.particulars,
-                    expected_pages={
-                        "start_page": row.start_page,
-                        "end_page": row.end_page,
-                    },
+                    expected_pages=(
+                        {
+                            "start_page": row.start_page,
+                            "end_page": row.end_page,
+                        }
+                        if row.start_page > 0
+                        else None
+                    ),
                     message=(
-                        f"Index lists {part!r} ({row.particulars}) at "
-                        f"pp. {row.start_page}–{row.end_page}, but that document "
-                        f"was not found in the split file"
+                        f"Index lists {part!r} ({row.particulars})"
+                        + (
+                            f" at pp. {row.start_page}–{row.end_page}"
+                            if row.start_page > 0
+                            else ""
+                        )
+                        + ", but that document was not found in the split file"
                     ),
                 )
             )
             continue
 
+        if row.start_page <= 0:
+            continue
+
         found_start, found_end = found
-        # Soft page mismatch: Index start not inside the found span (and not adjacent).
         if not (found_start - 1 <= row.start_page <= found_end + 1):
             flags.append(
                 SplitAuditFlag(
@@ -449,7 +521,6 @@ def check_index_consistency(
             "Vakalatnama" in mentioned or "Memo of Appearance" in mentioned
         ):
             continue
-        # Numbered annexure/application: check exact name in mentioned.
         flags.append(
             SplitAuditFlag(
                 code="in_file_missing_in_index",

@@ -603,17 +603,24 @@ def annexure_mark_in_heading(text: str) -> int | None:
         or folded_head.startswith("synopsis")
     ):
         return None
+    # Numbered pleading paragraphs ("12. That the petitioner…") are not stamps.
+    if re.search(r"(?m)^\s*\d{1,2}\.\s+that\s+the\b", text or "", re.I):
+        return None
     return _annexure_mark_from_title_or_stamp(text)
 
 
 def page_starts_application(text: str) -> bool:
     if _is_sci_application_start(text):
         return True
-    head = "\n".join((text or "").splitlines()[:12])[:1200]
+    head = "\n".join((text or "").splitlines()[:20])[:2000]
     if re.search(
         r"(?m)^(?:A\s+P\s+P\s+L\s+I\s+C\s+A\s+T\s+I\s+O\s+N|APPLICATION)\b",
         head,
     ):
+        return True
+    if re.search(r"\bcrl\.?\s*m\.?p\.?\b", head, re.I):
+        return True
+    if re.search(r"application seeking exemption", head, re.I):
         return True
     return bool(
         _APPLICATION_CAUSE_RE.search(head) and re.search(r"(?m)^APPLICATION\b", head)
@@ -625,13 +632,17 @@ def _heading_window(text: str, lines: int = 12) -> str:
 
 
 def _is_sci_application_start(text: str) -> bool:
-    head = _fold(_heading_window(text, lines=14))
-    if "in the supreme court of india" not in head:
+    head = _fold(_heading_window(text, lines=20))
+    window = _fold((text or "")[:2000])
+    if "in the supreme court of india" not in head and "in the supreme court of india" not in window:
         return False
     return bool(
         re.search(r"(?m)^application\b", head)
         or re.search(r"\bi\.?\s*a\.?\b", head)
         or "interlocutory application" in head
+        or "crl. mp" in head
+        or "crl mp" in head
+        or "application seeking" in window
     )
 
 
@@ -666,9 +677,7 @@ _CARRY_BLOCKING_PARTS = frozenset(
         "Cover Page",
         "Index",
         "Record of Proceedings",
-        "Listing Proforma",
-        "Office Report on Limitation",
-        "Advocate's Checklist",
+        # Checklist / Listing / OR may span 2 pages — allow forward carry.
     }
 )
 
