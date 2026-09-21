@@ -80,12 +80,20 @@ _AOR_CERT_RE = re.compile(
     re.IGNORECASE,
 )
 _SCI_CHECKLIST_RE = re.compile(
-    r"advocate'?s?\s+check[\s\-]*list|check[\s\-]*list.*supreme court",
+    r"(?m)advocate'?s?\s+check[\s\-]*list|check[\s\-]*list.*supreme court|"
+    r"^\s*check[\s\-]*list\b",
     re.I,
 )
 _STATE_CHECKLIST_RE = re.compile(
     r"check[\s\-]*list.*(?:housing societ|co-?operative|registration of)|"
     r"commissioner for co-?operation",
+    re.I,
+)
+# Listing Proforma page 2 (sections 8–11) is often misread as Advocate's Checklist.
+_LISTING_CONTINUATION_RE = re.compile(
+    r"land acquisition matters|tax matters|special category|"
+    r"vehicle number\b|period of sentence undergone|"
+    r"similar disposed of|not to be listed before",
     re.I,
 )
 _COVER_FOOTER_RE = re.compile(
@@ -243,6 +251,8 @@ def _looks_like_sci_checklist(text: str) -> bool:
     # Listing Proforma also says "tick/check the correct box" — not a checklist.
     if _LISTING_RE.search(head) or _LISTING_RE.search(_fold(head)):
         return False
+    if _LISTING_CONTINUATION_RE.search(text[:2000]):
+        return False
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return False
     if "proforma for first" in _fold(head) or "section -" in _fold(head[:400]):
@@ -251,10 +261,18 @@ def _looks_like_sci_checklist(text: str) -> bool:
     if _SCI_CHECKLIST_RE.search(head):
         return True
     # OCR of ticked Advocate's Checklist is often only YES / N.A. answers.
-    # Listing Proforma also prints many "NA" cells — require some YES ticks.
+    # Require a real checklist heading cue — Listing page-2 also has N.A. + AOR code.
     answers = re.findall(r"\b(?:yes|n/?a|n\.a\.?)\b", text or "", re.I)
     yes_count = sum(1 for token in answers if token.lower() == "yes")
-    folded = _fold(text[:900])
+    folded = _fold(text[:1200])
+    checklist_cue = (
+        "check list" in folded
+        or "checklist" in folded
+        or "advocate-on-record" in folded
+        or "whether the petition" in folded
+    )
+    if not checklist_cue:
+        return False
     if yes_count >= 4 and len(answers) >= 8:
         return True
     return yes_count >= 2 and len(answers) >= 3 and (
@@ -530,7 +548,12 @@ def _outer_anchor_label(text: str) -> str | None:
 def _annexure_run_bounds(
     page_text: Mapping[int, str], page_count: int
 ) -> list[tuple[int, int, str]]:
-    """(start_page, end_page, label) for each printed annexure run."""
+    """(start_page, end_page, label) for each printed annexure run.
+
+    The last run must not swallow the rest of the PDF — later Annexure P-7+
+    pages are often image-only with no E/P stamp, and Llama already numbered
+    them. Cap trailing blank sheets so those later P-n labels survive.
+    """
     starts: list[tuple[int, str]] = []
     for page in range(1, page_count + 1):
         label = annexure_label_from_text(page_text.get(page, ""))
@@ -544,21 +567,39 @@ def _annexure_run_bounds(
         if index + 1 < len(starts):
             end = starts[index + 1][0] - 1
         else:
-            end = page_count
+            end = start
+            blank_streak = 0
             for page in range(start + 1, page_count + 1):
                 text = page_text.get(page, "")
                 if page_starts_application(text):
-                    end = page - 1
                     break
                 if _vakalatnama_heading(text) and _is_sci_caption(text):
-                    end = page - 1
                     break
                 if _FILING_MEMO_RE.search(_heading_window(text, lines=8)):
-                    end = page - 1
                     break
+                if annexure_label_from_text(text):
+                    break
+                stripped = (text or "").strip()
+                if len(stripped) < 40:
+                    blank_streak += 1
+                    # Keep at most one OCR-blank sheet inside an exhibit.
+                    if blank_streak > 1:
+                        break
+                    end = page
+                    continue
+                blank_streak = 0
+                end = page
         if end >= start:
             runs.append((start, end, label))
     return runs
+
+
+def _annexure_number_from_label(name: str) -> int | None:
+    match = re.fullmatch(r"annexure [a-z]-?(\d{1,3})", _fold(name))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if 1 <= number <= 999 else None
 
 
 def _force_annexure_nesting(
@@ -566,12 +607,64 @@ def _force_annexure_nesting(
     page_text: Mapping[int, str],
     page_count: int,
 ) -> PagePartMap:
-    """Pages inside Annexure X-n keep that label even if they look like Main Petition."""
+    """Pages inside Annexure X-n keep that label even if they look like Main Petition.
+
+    Image-only Llama Annexure P-7+ pages after the last printed stamp are kept.
+    Blank sheets between earlier stamps (P-3 body) are not treated as P-7.
+    """
     updated = {page: list(names) for page, names in page_parts.items()}
-    for start, end, label in _annexure_run_bounds(page_text, page_count):
+    runs = _annexure_run_bounds(page_text, page_count)
+    last_stamp_page = max((start for start, _end, _label in runs), default=0)
+    for start, end, label in runs:
+        run_number = _annexure_number_from_label(label)
         for page in range(start, end + 1):
             text = page_text.get(page, "")
+            # Never nest over a real SCI Form-28 / AOR / Affidavit start.
+            if (
+                _looks_like_sci_main_petition(text)
+                or (
+                    _AOR_CERT_RE.search(text[:2500])
+                    and _is_sci_caption(text)
+                )
+                or (
+                    _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20))
+                    and _is_sci_caption(text)
+                )
+            ):
+                continue
             names = parts_on_page(updated.get(page))
+            # Keep SCI petition / certificate / affidavit body pages unless this
+            # sheet itself prints an Annexure stamp.
+            if names and not annexure_ref_in_heading(text):
+                if any(
+                    name
+                    in {
+                        MAIN_PETITION_PART,
+                        "AOR's Certificate",
+                        "Affidavit",
+                        "Appendix",
+                    }
+                    for name in names
+                ):
+                    continue
+            existing_annex = next(
+                (
+                    name
+                    for name in names
+                    if family_split_name(name) == ANNEXURE_FAMILY
+                ),
+                None,
+            )
+            if existing_annex:
+                existing_number = _annexure_number_from_label(existing_annex)
+                if (
+                    existing_number is not None
+                    and run_number is not None
+                    and existing_number > run_number
+                    and len((text or "").strip()) < 40
+                    and page > last_stamp_page
+                ):
+                    continue
             # Never steal Index / OR / Listing that somehow overlaps (shouldn't).
             if names and all(name in _CARRY_BLOCKING_PARTS for name in names):
                 if not annexure_ref_in_heading(text):
@@ -875,6 +968,8 @@ def _extend_main_petition_body(
                         "questions of law",
                         "stions of law",
                         "declaration in terms",
+                        "because the",
+                        "because,",
                     )
                 ):
                     ahead_main = True
@@ -883,26 +978,9 @@ def _extend_main_petition_body(
                 updated[page] = [MAIN_PETITION_PART]
                 continue
             break
-        # Weak continuation pages (prayer) without a full Form-28 heading.
-        if not _looks_like_sci_main_petition(text):
-            folded_page = _fold(text[:1200])
-            if not any(
-                cue in folded_page
-                for cue in (
-                    "prayer",
-                    "grounds",
-                    "showeth",
-                    "questions of law",
-                    "stions of law",
-                    "declaration in terms",
-                    "special leave",
-                    "position of",
-                    "positi",
-                )
-            ):
-                # Keep extending only while pages look petition-like.
-                if len((text or "").strip()) > 80:
-                    break
+        # After a Form-28 start, body pages (GROUNDS A/B/C, prayers) often omit
+        # another caption. Keep extending until a hard stop above — do not
+        # require "grounds"/"prayer" on every sheet.
         updated[page] = [MAIN_PETITION_PART]
     return updated
 
@@ -919,17 +997,35 @@ def _demote_false_advocate_checklist(
                 _STATE_CHECKLIST_RE.search(text[:1500])
                 or annexure_mark_in_heading(text)
                 or _LISTING_RE.search(text[:900])
+                or _LISTING_CONTINUATION_RE.search(text[:2000])
                 or _looks_like_court_notice_or_rop(text)
             ):
                 mark = annexure_ref_in_heading(text)
                 if mark:
                     updated[page] = [mark.label]
-                elif _LISTING_RE.search(text[:900]):
+                elif _LISTING_RE.search(text[:900]) or _LISTING_CONTINUATION_RE.search(
+                    text[:2000]
+                ):
                     updated[page] = ["Listing Proforma"]
                 elif _looks_like_court_notice_or_rop(text):
                     updated[page] = ["Record of Proceedings"]
                 else:
                     updated[page] = ["Annexure P-1"]
+            elif not _looks_like_sci_checklist(text):
+                # Blank / OCR-empty sheets are not the SCI Advocate's Check List.
+                # Listing Proforma often continues on the next (image-only) page.
+                if _is_near_blank_page(text) or not (text or "").strip():
+                    prev = parts_on_page(updated.get(page - 1))
+                    nxt = parts_on_page(updated.get(page + 1))
+                    if "Listing Proforma" in prev or "Listing Proforma" in nxt:
+                        updated[page] = ["Listing Proforma"]
+                    else:
+                        updated.pop(page, None)
+                    continue
+                # Llama invented Checklist on a page that is not one.
+                anchor = _outer_anchor_label(text)
+                if anchor and anchor != "Advocate's Checklist":
+                    updated[page] = [anchor]
         if "Filing Memo" in labels and (
             _looks_like_court_notice_or_rop(text)
             or _LISTING_RE.search(text[:900])
@@ -944,6 +1040,75 @@ def _demote_false_advocate_checklist(
                 updated[page] = [anchor]
             elif _looks_like_sci_main_petition(text):
                 updated[page] = [MAIN_PETITION_PART]
+    return updated
+
+
+def _preserve_later_llama_annexures(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep Llama Annexure P-n that sit after the last printed stamp.
+
+    Printed ANNEXURE-E-1…E-6 become P-1…P-6. Image-only later exhibits are
+    often only numbered by Llama (P-7, P-8, …). Extend each such island across
+    adjacent near-blank sheets so multi-page P-7 is not reduced to one page.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    last_stamp = 0
+    last_stamp_number = 0
+    for page in range(1, page_count + 1):
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
+        if mark:
+            last_stamp = page
+            last_stamp_number = max(last_stamp_number, mark.number)
+
+    seeds: list[tuple[int, str, int]] = []
+    for page, names in updated.items():
+        if page <= last_stamp:
+            continue
+        for name in parts_on_page(names):
+            number = _annexure_number_from_label(name)
+            if number is not None and number > last_stamp_number:
+                seeds.append((page, name, number))
+                break
+
+    for start, label, _number in seeds:
+        updated[start] = [label]
+        for page in range(start - 1, last_stamp, -1):
+            text = page_text.get(page, "")
+            names = parts_on_page(updated.get(page))
+            if names and family_split_name(names[0]) == ANNEXURE_FAMILY:
+                existing = _annexure_number_from_label(names[0])
+                if existing is not None and existing <= last_stamp_number:
+                    break
+            if names and family_split_name(names[0]) != ANNEXURE_FAMILY:
+                break
+            if names and names[0] == label:
+                continue
+            if not names and (
+                _is_near_blank_page(text) or not (text or "").strip()
+            ):
+                # Do not walk forever into the gap before this annexure.
+                break
+            break
+        for page in range(start + 1, page_count + 1):
+            text = page_text.get(page, "")
+            names = parts_on_page(updated.get(page))
+            if names:
+                if names[0] == label:
+                    continue
+                other = _annexure_number_from_label(names[0])
+                if other is not None:
+                    break
+                if family_split_name(names[0]) != ANNEXURE_FAMILY:
+                    break
+                break
+            if _is_near_blank_page(text) or not (text or "").strip():
+                updated[page] = [label]
+                continue
+            # Text on the next sheet stops this annexure body.
+            break
     return updated
 
 

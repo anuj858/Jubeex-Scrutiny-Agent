@@ -151,6 +151,8 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
         series = (annex.group(1) or "P").upper()
+        if series == "E":
+            series = "P"
         return f"Annexure {series}-{int(annex.group(2))}"
 
     if "office report" in text or "o/r on limitation" in text or (

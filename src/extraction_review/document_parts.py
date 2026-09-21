@@ -474,7 +474,12 @@ APPLICATION_FAMILY = "Application"
 
 @dataclass(frozen=True)
 class AnnexureMark:
-    """Printed exhibit stamp: Annexure P-1 / E-2 / R-3."""
+    """Printed exhibit stamp: Annexure P-1 / E-2 / R-3.
+
+    On SCI paper-books, bank/HC exhibits often still print ``ANNEXURE-E-n``.
+    The Index and filing profile use petitioner series ``P-n`` for those same
+    pages, so ``E`` is normalized to ``P`` for labels/slots.
+    """
 
     number: int
     series: str = "P"
@@ -482,6 +487,9 @@ class AnnexureMark:
     def __post_init__(self) -> None:
         letter = (self.series or "P").strip().upper()[:1] or "P"
         if not letter.isalpha():
+            letter = "P"
+        # Underlying exhibit stamps use E-n; paper-book Index uses P-n.
+        if letter == "E":
             letter = "P"
         object.__setattr__(self, "series", letter)
 
@@ -519,7 +527,14 @@ _INDEX_ROW_ANNEXURE_RE = re.compile(
     re.IGNORECASE,
 )
 _ANNEXURE_PAGE_CITE_RE = re.compile(
-    r"^\(?\s*(?:pg|pgs?|pages?|pp)\b|^\d{1,4}\s*[-–—]\s*\d{1,4}\b",
+    r"^[\[\(]?\s*(?:pg|pgs?|pages?|pp)\b|"
+    r"^\d{1,4}\s*[-–—]\s*\d{1,4}\b|"
+    r"\[?\s*pg\s*[_\.\-–—\s]*to\b|"
+    r"\ba\s+true\b|\btrue\s+cop",
+    re.IGNORECASE,
+)
+_ANNEXURE_CITATION_PREV_RE = re.compile(
+    r"annexed\s+herewith|marked\s+as|true\s+cop(?:y|ies)\s+of",
     re.IGNORECASE,
 )
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
@@ -618,7 +633,9 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 
-    def _mark_from_title_line(line: str, *, allow_body_tail: bool) -> AnnexureMark | None:
+    def _mark_from_title_line(
+        line: str, *, allow_body_tail: bool, prev_line: str = ""
+    ) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
             return None
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
@@ -627,17 +644,21 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
         mark = _annexure_mark_from_match(match)
         if mark is None:
             return None
+        # LOD narrative: "... marked as" / "annexed herewith" then ANNEXURE P-n [Pg].
+        if _ANNEXURE_CITATION_PREV_RE.search(prev_line):
+            return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-")
         if remainder:
-            if _ANNEXURE_PAGE_CITE_RE.match(remainder):
+            if _ANNEXURE_PAGE_CITE_RE.search(remainder):
                 return None
             if not allow_body_tail and not remainder.isdigit():
                 return None
         return mark
 
-    for line in lines[:24]:
-        mark = _mark_from_title_line(line, allow_body_tail=True)
+    for index, line in enumerate(lines[:24]):
+        prev = lines[index - 1] if index else ""
+        mark = _mark_from_title_line(line, allow_body_tail=True, prev_line=prev)
         if mark is not None:
             return mark
     for line in lines[-10:]:
@@ -913,18 +934,48 @@ def _annexure_claimable(names: Sequence[str] | None) -> bool:
     return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
 
 
+def _annexure_number_from_label(name: str) -> int | None:
+    match = re.fullmatch(r"annexure [a-z]-?(\d{1,3})", _fold(name))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if 1 <= number <= MAX_NUMBERED_PART else None
+
+
+def _page_annexure_number(names: Sequence[str] | None) -> int | None:
+    for name in parts_on_page(names):
+        number = _annexure_number_from_label(name)
+        if number is not None:
+            return number
+    return None
+
+
 def _contiguous_annexure_pages(
     start: int,
     stop_before: int,
     page_parts: PagePartMap,
+    page_text: Mapping[int, str] | None = None,
+    *,
+    keep_number: int | None = None,
 ) -> list[int]:
     """Already-labelled annexure pages from start. Stops at a gap or other document."""
+    texts = page_text or {}
     pages: list[int] = []
     for page in range(start, stop_before):
         names = page_parts.get(page)
         if names is None:
             break
         if not _annexure_claimable(names):
+            break
+        existing = _page_annexure_number(names)
+        if (
+            keep_number is not None
+            and existing is not None
+            and existing > keep_number
+            and len((texts.get(page) or "").strip()) < 40
+            and page > start
+        ):
+            # Image-only later Llama P-n after this stamp — stop extending.
             break
         pages.append(page)
     return pages
@@ -934,11 +985,25 @@ def _contiguous_gap_pages(
     start: int,
     stop_before: int,
     page_parts: PagePartMap,
+    page_text: Mapping[int, str] | None = None,
+    *,
+    keep_number: int | None = None,
 ) -> list[int]:
     """Claimable pages in a bounded heading gap, including unlabeled leaves."""
+    texts = page_text or {}
     pages: list[int] = []
     for page in range(start, stop_before):
-        if not _annexure_claimable(page_parts.get(page)):
+        names = page_parts.get(page)
+        if not _annexure_claimable(names):
+            break
+        existing = _page_annexure_number(names)
+        if (
+            keep_number is not None
+            and existing is not None
+            and existing > keep_number
+            and len((texts.get(page) or "").strip()) < 40
+            and page > start
+        ):
             break
         pages.append(page)
     return pages
@@ -973,12 +1038,11 @@ def _annexure_printed_labels(
 ) -> dict[int, str] | None:
     """Label annexure pages from the printed series+number heading on the page.
 
-    A page headed Annexure E-1 is Annexure E-1 (not P-1), even when LlamaSplit
-    numbered that segment as P-2. One heading is enough. Repeated headings keep
-    the printed number. Consecutive marks (E-2 then E-3) keep body pages with
-    the earlier mark. A skipped mark (E-2 then E-4) assigns the in-between
-    pages to E-3 when the series matches. A run stops at the next heading or
-    another document.
+    Printed ``ANNEXURE-E-n`` stamps normalize to paper-book ``Annexure P-n``.
+    Consecutive marks keep body pages with the earlier mark. A short skipped
+    heading gap (P-2 then P-4 over a few sheets) invents the missing P-3. A
+    long body between P-1 and P-4 keeps P-1. Never overwrite a differently
+    numbered Llama annexure (P-7) with an earlier stamp run (P-6).
     """
     annexure_pages = sorted(
         page
@@ -1005,6 +1069,9 @@ def _annexure_printed_labels(
     first_start, first_mark = starts[0]
     page = first_start - 1
     while page >= first and _annexure_claimable(page_parts.get(page)):
+        existing = _page_annexure_number(page_parts.get(page))
+        if existing is not None and existing > first_mark.number:
+            break
         labels[page] = first_mark.label
         page -= 1
 
@@ -1012,20 +1079,44 @@ def _annexure_printed_labels(
         if index + 1 < len(starts):
             next_page, next_mark = starts[index + 1]
             same_series = next_mark.series == mark.series
+            # Between two printed stamps, the gap belongs to this run (or short
+            # invented missing marks). Do not preserve stray Llama P-7 mid-gap.
             if same_series and next_mark.number > mark.number + 1:
                 if _annexure_claimable(page_parts.get(start_page)):
                     labels[start_page] = mark.label
-                gap = _contiguous_gap_pages(start_page + 1, next_page, page_parts)
+                gap = _contiguous_gap_pages(
+                    start_page + 1,
+                    next_page,
+                    page_parts,
+                    page_text,
+                )
                 missing = [
                     AnnexureMark(number=n, series=mark.series)
                     for n in range(mark.number + 1, next_mark.number)
                 ]
-                labels.update(_assign_gap_to_missing_marks(gap, missing))
+                # Short heading skips invent missing P-n; long exhibit bodies
+                # between distant stamps keep the earlier mark.
+                if len(gap) <= max(3, len(missing) * 2):
+                    labels.update(_assign_gap_to_missing_marks(gap, missing))
+                else:
+                    for page in gap:
+                        labels[page] = mark.label
             else:
-                for page in _contiguous_gap_pages(start_page, next_page, page_parts):
+                for page in _contiguous_gap_pages(
+                    start_page,
+                    next_page,
+                    page_parts,
+                    page_text,
+                ):
                     labels[page] = mark.label
             continue
-        for page in _contiguous_annexure_pages(start_page, last + 1, page_parts):
+        for page in _contiguous_annexure_pages(
+            start_page,
+            last + 1,
+            page_parts,
+            page_text,
+            keep_number=mark.number,
+        ):
             labels[page] = mark.label
     return labels
 

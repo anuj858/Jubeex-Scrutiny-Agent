@@ -380,27 +380,93 @@ def test_ocr_noisy_listing_notice_main_and_false_impugned() -> None:
     assert repaired[32] == ["AOR's Certificate"]
 
 
-def test_ocr_annexure_e_series_not_forced_to_p() -> None:
-    """Defect_005-style: ANNEXURE - E-1…E-6 must keep E series, not P-1/P-7 jumps."""
+def test_main_petition_extends_through_grounds_not_one_page() -> None:
+    """Form-28 start + GROUNDS A/B/C body must stay Main until AOR Certificate."""
+    page_parts = {9: ["Main Petition"]}
+    texts = {
+        9: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "CIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\n"
+            "1. Petitioner\tBEFORE HIGH COURT\tBEFORE THIS COURT\n"
+        ),
+        10: "3. DECLARATION IN TERMS OF RULE 3 (2):\nThe impugned judgement suffers from grave error.\n",
+        11: "5. GROUNDS\nA. Because the High Court erred in law.\n",
+        12: "C. Because even by that standard the subsequent suit ought to be stayed.\n",
+        13: "D. Because the matter in issue is substantially the same.\n",
+        14: "MAIN PRAYER\nGrant special leave to appeal.\n",
+        15: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "Certified that the Special Leave Petition is confined only to the pleadings\n"
+        ),
+    }
+    # LOD narrative citations must not become annexure stamps that swallow the petition.
+    texts[7] = (
+        "LIST OF DATES AND EVENTS\n"
+        "2023 order is annexed herewith and marked as\n"
+        "ANNEXURE P-10 [Pg ____ to _____].\n"
+    )
+    for page in range(1, 16):
+        texts.setdefault(page, "")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=15)
+    assert repaired[9] == ["Main Petition"]
+    assert repaired[12] == ["Main Petition"]
+    assert repaired[14] == ["Main Petition"]
+    assert repaired[15] == ["AOR's Certificate"]
+    assert all(
+        repaired.get(page) == ["Main Petition"] for page in range(9, 15)
+    )
+
+
+def test_lod_annexure_page_cites_are_not_stamps() -> None:
+    from extraction_review.document_parts import annexure_ref_in_heading
+
+    assert (
+        annexure_ref_in_heading(
+            "order is annexed herewith and marked as\n"
+            "ANNEXURE P-6 [Pg ____ to _____]. A true\n"
+        )
+        is None
+    )
+    assert annexure_ref_in_heading("ANNEXURE-P1\nPossession notice") is not None
+
+    """Stamped ANNEXURE-E-n is Index Annexure P-n; later Llama P-7+ must survive."""
     from extraction_review.document_parts import annexure_ref_in_heading
 
     assert annexure_ref_in_heading(
         "ANNEXURE - E-1 ANDHRA BANK (A Govt of India Undertaking)"
-    ).label == "Annexure E-1"
-    assert annexure_ref_in_heading("ANNEXURE-:-- E-5\nNOTICE").label == "Annexure E-5"
+    ).label == "Annexure P-1"
+    assert annexure_ref_in_heading("ANNEXURE-:-- E-5\nNOTICE").label == "Annexure P-5"
     assert (
         annexure_ref_in_heading(
             "noise\n·\n@\nANNEXURE - E-4\nMrs. Reema Gupta"
         ).label
-        == "Annexure E-4"
+        == "Annexure P-4"
     )
 
     page_parts = {
         10: ["Annexure P-1"],
-        14: ["Annexure P-7"],
-        18: ["Annexure P-8"],
+        14: ["Annexure P-3"],
+        18: ["Annexure P-5"],
+        22: ["Annexure P-7"],
+        24: ["Annexure P-8"],
+        5: ["Advocate's Checklist"],
+        6: ["Advocate's Checklist"],
     }
     texts = {
+        5: (
+            "PROFORMA FOR FIRST LISTIN.G\nSECTION - XIV\n"
+            "The case pertains to (Please tick/ check the correct box):\n"
+            "1. Nature of matter: Civil\n"
+        ),
+        6: (
+            "8. Land Acquisition Matters: N.A.\n"
+            "9. Tax Matters: N.A.\n"
+            "10. Special Category: N.A.\n"
+            "11. Vehicle Number: N.A.\n"
+            "ADVOCATE FOR THE PETITIONERS\nCODE: 399\n"
+        ),
         10: "ANNEXURE - E-1\nPossession notice",
         11: "body",
         12: "ANNEXURE E-2\nAuction notice",
@@ -412,16 +478,24 @@ def test_ocr_annexure_e_series_not_forced_to_p() -> None:
         18: "0\nANNEXURE-:-- E-5\nE-auction",
         19: "body",
         20: "ANNEXURE - E-6\nBank letter",
-        21: "body",
+        21: "",
+        22: "",  # image-only P-7 start (Llama)
+        23: "",
+        24: "",  # image-only P-8
+        25: "",
     }
-    for page in range(1, 22):
+    for page in range(1, 26):
         texts.setdefault(page, "")
-    repaired, _ = repair_compiled_split(page_parts, texts, page_count=21)
-    assert repaired[10] == ["Annexure E-1"]
-    assert repaired[12] == ["Annexure E-2"]
-    assert repaired[14] == ["Annexure E-3"]
-    assert repaired[16] == ["Annexure E-4"]
-    assert repaired[18] == ["Annexure E-5"]
-    assert repaired[20] == ["Annexure E-6"]
-    assert "Annexure P-7" not in repaired.get(14, [])
-    assert "Annexure P-1" not in repaired.get(10, [])
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=25)
+    assert repaired[5] == ["Listing Proforma"]
+    assert repaired[6] == ["Listing Proforma"]
+    assert repaired[10] == ["Annexure P-1"]
+    assert repaired[12] == ["Annexure P-2"]
+    assert repaired[14] == ["Annexure P-3"]
+    assert repaired[16] == ["Annexure P-4"]
+    assert repaired[18] == ["Annexure P-5"]
+    assert repaired[20] == ["Annexure P-6"]
+    assert repaired[22] == ["Annexure P-7"]
+    assert repaired[24] == ["Annexure P-8"]
+    assert "Annexure E-1" not in repaired.get(10, [])
+    assert repaired[20] != ["Annexure P-7"]

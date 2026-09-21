@@ -2,7 +2,7 @@
   "containerDefinitions": [
     {
       "name": "jubeex-scrutiny-worker",
-      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-1dd0379-amd64",
+      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-5112285-amd64",
       "cpu": 0,
       "portMappings": [],
       "essential": true,
