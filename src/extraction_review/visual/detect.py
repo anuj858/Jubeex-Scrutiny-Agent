@@ -47,7 +47,7 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_CONCURRENCY = 4
-DEFAULT_VISION_MAX_TOKENS = 4096
+DEFAULT_VISION_MAX_TOKENS = 2800
 ADVOCATE_LABELS = re.compile(
     r"\b(advocate(?:-on-record)?|aor|counsel|drawn\s*&\s*filed|filed\s+by)\b",
     re.IGNORECASE,

@@ -28,7 +28,7 @@ DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
 # Gemini thinking models spend this budget on hidden reasoning first.
 # 4096 often truncates the JSON mid-string (see D007 on gemini-3.8-flash).
-DEFAULT_MAX_TOKENS = 16384
+DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
 
 
