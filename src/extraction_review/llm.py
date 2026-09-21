@@ -13,6 +13,8 @@ import json
 import logging
 import os
 import random
+import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -30,6 +32,9 @@ DEFAULT_TIMEOUT_S = 180.0
 # 4096 often truncates the JSON mid-string (see D007 on gemini-3.8-flash).
 DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
+# 0 = unlimited. Set OPENROUTER_REQUESTS_PER_MINUTE=20 to match key RPM.
+DEFAULT_REQUESTS_PER_MINUTE = 0
+_RATE_WINDOW_S = 60.0
 
 
 class LLMError(RuntimeError):
@@ -64,6 +69,54 @@ def openrouter_model() -> str:
 
 def openrouter_enabled() -> bool:
     return bool(openrouter_api_key())
+
+
+def openrouter_requests_per_minute() -> int:
+    """Max OpenRouter /chat/completions calls per rolling 60s (0 = unlimited)."""
+    raw = os.getenv("OPENROUTER_REQUESTS_PER_MINUTE", str(DEFAULT_REQUESTS_PER_MINUTE))
+    try:
+        return max(0, int(str(raw).strip() or "0"))
+    except (TypeError, ValueError):
+        return DEFAULT_REQUESTS_PER_MINUTE
+
+
+class _OpenRouterRateLimiter:
+    """Process-wide sliding window for one OpenRouter API key."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._timestamps: deque[float] = deque()
+
+    async def acquire(self) -> None:
+        rpm = openrouter_requests_per_minute()
+        if rpm <= 0:
+            return
+        while True:
+            wait_s = 0.0
+            async with self._lock:
+                now = time.monotonic()
+                while (
+                    self._timestamps and now - self._timestamps[0] >= _RATE_WINDOW_S
+                ):
+                    self._timestamps.popleft()
+                if len(self._timestamps) < rpm:
+                    self._timestamps.append(now)
+                    return
+                wait_s = _RATE_WINDOW_S - (now - self._timestamps[0]) + 0.05
+            logger.info(
+                "[OpenRouter] rate limit %s req/min reached; waiting %.1fs",
+                rpm,
+                wait_s,
+            )
+            await asyncio.sleep(max(wait_s, 0.05))
+
+
+_openrouter_rate_limiter = _OpenRouterRateLimiter()
+
+
+async def acquire_openrouter_slot() -> None:
+    """Wait until this process may fire another OpenRouter completion request."""
+    await _openrouter_rate_limiter.acquire()
 
 
 def _headers() -> dict[str, str]:
@@ -331,6 +384,7 @@ async def call_structured[T: BaseModel](
     try:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
+                await acquire_openrouter_slot()
                 response = await http.post(
                     f"{base_url}/chat/completions",
                     headers=_headers(),

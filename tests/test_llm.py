@@ -1,6 +1,12 @@
 import pytest
 
-from extraction_review.llm import LLMError, _complete_structured_fields, _parse_json
+from extraction_review.llm import (
+    LLMError,
+    _OpenRouterRateLimiter,
+    _complete_structured_fields,
+    _parse_json,
+    openrouter_requests_per_minute,
+)
 
 
 def test_parse_json_object() -> None:
@@ -58,3 +64,34 @@ def test_complete_structured_fields_fills_missing_confidence_and_summary() -> No
 def test_parse_json_garbage_raises() -> None:
     with pytest.raises(LLMError, match="truncated or not JSON"):
         _parse_json("not json at all")
+
+
+def test_openrouter_requests_per_minute_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "20")
+    assert openrouter_requests_per_minute() == 20
+    monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "0")
+    assert openrouter_requests_per_minute() == 0
+    monkeypatch.delenv("OPENROUTER_REQUESTS_PER_MINUTE", raising=False)
+    assert openrouter_requests_per_minute() == 0
+
+
+@pytest.mark.asyncio
+async def test_openrouter_rate_limiter_paces_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "2")
+    limiter = _OpenRouterRateLimiter()
+    await limiter.acquire()
+    await limiter.acquire()
+    # Third acquire must wait — patch sleep to avoid a real 60s pause.
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        # Expire the oldest stamp so the next loop can proceed.
+        if limiter._timestamps:
+            limiter._timestamps.popleft()
+
+    monkeypatch.setattr("extraction_review.llm.asyncio.sleep", fake_sleep)
+    await limiter.acquire()
+    assert slept and slept[0] > 0

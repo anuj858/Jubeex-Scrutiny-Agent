@@ -23,6 +23,7 @@ from ..llm import (
     _close_truncated_json,
     _extract_content,
     _headers,
+    acquire_openrouter_slot,
     mask_openrouter_api_key,
     openrouter_api_key,
     openrouter_model,
@@ -498,6 +499,7 @@ async def analyze_page_image(
         "response_format": {"type": "json_object"},
     }
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    await acquire_openrouter_slot()
     response = await http.post(
         f"{base_url}/chat/completions",
         headers=_headers(),
@@ -528,6 +530,7 @@ async def analyze_page_image(
 
             await asyncio.sleep(retry_after_s)
 
+            await acquire_openrouter_slot()
             response = await http.post(
                 f"{base_url}/chat/completions",
                 headers=_headers(),

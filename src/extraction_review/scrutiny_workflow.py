@@ -44,6 +44,7 @@ from .llm import (
     mask_openrouter_api_key,
     openrouter_enabled,
     openrouter_model,
+    openrouter_requests_per_minute,
 )
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -405,9 +406,10 @@ class ScrutinyWorkflow(Workflow):
                 "OPENROUTER_API_KEY is not set, so defect checks cannot run"
             )
         logger.info(
-            "OpenRouter key=%s model=%s",
+            "OpenRouter key=%s model=%s rpm=%s",
             mask_openrouter_api_key(),
             openrouter_model(),
+            openrouter_requests_per_minute() or "unlimited",
         )
 
         async with ctx.store.edit_state() as state:
