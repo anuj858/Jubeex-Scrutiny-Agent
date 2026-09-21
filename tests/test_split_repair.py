@@ -853,3 +853,123 @@ def test_impugned_order_does_not_expand_backward_into_writ_body() -> None:
     assert repaired[10] == ["Impugned Order"]
     assert repaired.get(8) != ["Impugned Order"]
     assert repaired.get(9) != ["Impugned Order"]
+
+
+def test_front_matter_multi_page_index_listing_synopsis_not_one_page_islands() -> None:
+    """Index / Listing / Synopsis continuations must not collapse to page 1 only."""
+    page_parts: dict[int, list[str]] = {}
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. _______OF 2024\n"
+            "PAPER BOOK\n(FOR INDEX KINDLY SEE INSIDE)\nADVOCATE FOR THE PETITIONER"
+        ),
+        2: (
+            "RECORD OF PROCEEDINGS\n"
+            "SI.No Date of Records of Proceedings Page\n1\n2\n3\n"
+        ),
+        3: (
+            "INDEX\nSl. No. Particulars of documents Page No.\n"
+            "1. Court fees\n2. Office Report on Limitation\n"
+            "9. Synopsis and List of Dates B – L\n"
+            "11. Special Leave Petition with affidavit.\n"
+        ),
+        4: (
+            "Court No. 1, Shimla, H.P. in Rent Petition No. 4-2 of 2013.\n"
+            "13. ANNEXURE P-2: A copy of the application dated 30.08.2021\n"
+            "14. ANNEXURE P-3: A copy of the reply dated Nil\n"
+            "15. ANNEXURE P-4: A copy of the judgment and order\n"
+        ),
+        5: (
+            "17. I.A. No. _____ of 2024 :\n"
+            "Application for permission to file Special Leave Petition.\n"
+            "19. Filing Memo 89\n"
+            "20. Vakalatnama 90\n"
+            "21. Memo of Parties. 91\n"
+        ),
+        6: (
+            "PROFORMA FOR FIRST LISTING\nSECTION: XIV (H.P.)\n"
+            "The case pertains to (Please tick/check the correct box):\n"
+        ),
+        7: (
+            "6. (a) Similar disposed of matter with citation: No\n"
+            "8. Land Acquisition Matters:\n"
+            "9. Tax Matters: State the tax effect: N/A\n"
+            "10. Special Category: N.A.\n"
+            "E-28, Second Floor,\nLajpat Nagar-I,\nNew Delhi-110024\n"
+        ),
+        8: (
+            "SYNOPSIS\n"
+            "A. The present Special Leave Petition arises out of the impugned "
+            "final Judgment and Order dated 12.07.2024\n"
+        ),
+        9: (
+            "C. That inter alia the following questions of law arise for "
+            "consideration of this Hon'ble Court:\n"
+            "- Whether the High Court gravely erred\n"
+            "Therefore filing the present Special Leave Petition\n"
+        ),
+        10: "LIST OF DATES AND EVENTS\n30.10.2020 The Rent Controller passed an order",
+        11: "31.08.2022 The Appellate Authority passed judgment",
+        12: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "[Order XXI, Rule 3 (1) (a) of S.C.R., 2013]\n"
+            "CIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. OF 2024\n"
+            "POSITION OF PARTIES\n"
+            "1. Ajay Rawat ... Petitioner\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. The petitioners\n"
+        ),
+        13: "Grounds A. Because the High Court erred",
+        14: "MAIN PRAYER:\nGrant Special Leave",
+    }
+    for page in range(1, 15):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=14)
+    assert repaired[3] == ["Index"]
+    assert repaired[4] == ["Index"]
+    assert repaired[5] == ["Index"]
+    assert repaired[6] == ["Listing Proforma"]
+    assert repaired[7] == ["Listing Proforma"]
+    assert repaired[7] != ["Annexure P-28"]
+    assert repaired[8] == ["Synopsis"]
+    assert repaired[9] == ["Synopsis"]
+    assert repaired[10] == ["List of Dates & Events"]
+    assert repaired[12] == ["Main Petition"]
+    assert repaired[13] == ["Main Petition"]
+    assert repaired.get(9) != ["Main Petition"]
+
+
+def test_repair_demotes_annexures_not_mentioned_in_index_or_main() -> None:
+    """Stamped annexure absent from Index/LOD/Main → unlabeled (Unidentified)."""
+    page_parts = {
+        1: ["Index"],
+        2: ["Main Petition"],
+        10: ["Annexure P-1"],
+        11: ["Annexure P-1"],
+        20: ["Annexure P-9"],
+        21: ["Annexure P-9"],
+    }
+    texts = {
+        1: (
+            "INDEX\nSL. NO. PARTICULARS PAGE NO.\n"
+            "1. Special Leave Petition\n"
+            "2. ANNEXURE P-1: Writ Petition copy\n"
+        ),
+        2: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "annexed herewith and marked as ANNEXURE P-1\n"
+        ),
+        10: "ANNEXURE P-1\nIN THE HIGH COURT",
+        11: "writ body",
+        20: "ANNEXURE P-9\nstray exhibit not in Index",
+        21: "stray body",
+    }
+    for page in range(1, 22):
+        texts.setdefault(page, "body")
+
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=21)
+    assert repaired[10] == ["Annexure P-1"]
+    assert repaired[11] == ["Annexure P-1"]
+    assert 20 not in repaired
+    assert 21 not in repaired

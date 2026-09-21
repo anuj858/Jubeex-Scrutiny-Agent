@@ -589,7 +589,14 @@ def structure_aware_split(
     source_pdf: str = "bundle.pdf",
     run_hybrid_repair: bool = True,
 ) -> StructureSplitResult:
-    """Full structure-aware split. Physical slicing stays outside this function."""
+    """Full structure-aware split. Physical slicing stays outside this function.
+
+    Classification + boundaries are recorded for audit. Label authority is:
+    LlamaSplit warm-start (if any) → strong local anchors on empty pages →
+    hybrid repair (fill gaps / demote / nest). Do not paint every classified
+    page into ``page_parts`` before repair — that created one-page Index /
+    Listing / Synopsis islands when a continuation page was mis-typed.
+    """
     units = extract_page_units(
         pdf_bytes, source_pdf=source_pdf, page_texts=page_texts
     )
@@ -601,24 +608,30 @@ def structure_aware_split(
 
     classifications = classify_pages(units, llama_page_parts=llama_page_parts)
     boundaries = detect_boundaries(classifications, units)
-    page_labels = _resolve_page_labels(classifications, boundaries)
-    logical_docs = build_logical_documents(page_labels, classifications)
-    page_parts = logical_documents_to_page_parts(logical_docs)
 
-    # Fuse Llama labels on OCR-needed pages where local cues are weak.
+    # Seed: Llama first, then only high-confidence anchors on still-empty pages.
+    page_parts: PagePartMap = {}
     if llama_page_parts:
         for page, names in llama_page_parts.items():
-            number = int(page)
             parts = parts_on_page(names)
-            if not parts:
-                continue
-            unit = next((u for u in units if u.pdf_page == number), None)
-            local = page_parts.get(number)
-            if unit and unit.requires_ocr and not local:
-                page_parts[number] = [parts[0]]
-            elif not local and parts:
-                # Keep Llama only when we have no local label.
-                page_parts[number] = list(parts)
+            if parts:
+                page_parts[int(page)] = list(parts)
+
+    strong_signals = {
+        "annexure_stamp",
+        "outer_anchor",
+        "form28_lookalike",
+        "centered_title",
+        "application_start",
+    }
+    for c in classifications:
+        if c.page in page_parts:
+            continue
+        if c.document_type == "other" or c.confidence < 0.88:
+            continue
+        if not (set(c.signals) & strong_signals):
+            continue
+        page_parts[c.page] = [c.document_type]
 
     duplicates: list[Any] = []
     if run_hybrid_repair and units:
@@ -627,13 +640,19 @@ def structure_aware_split(
             texts,
             page_count=len(units),
         )
-        # Rebuild logical docs from repaired labels for auditability.
-        repaired_labels = {
-            page: parts_on_page(names)[0]
-            for page, names in page_parts.items()
-            if parts_on_page(names)
-        }
-        logical_docs = build_logical_documents(repaired_labels, classifications)
+    elif not run_hybrid_repair:
+        # Offline path: resolve carries without hybrid repair.
+        page_labels = _resolve_page_labels(classifications, boundaries)
+        page_parts = logical_documents_to_page_parts(
+            build_logical_documents(page_labels, classifications)
+        )
+
+    repaired_labels = {
+        page: parts_on_page(names)[0]
+        for page, names in page_parts.items()
+        if parts_on_page(names)
+    }
+    logical_docs = build_logical_documents(repaired_labels, classifications)
 
     ocr_pages = [unit.pdf_page for unit in units if unit.requires_ocr]
     return StructureSplitResult(

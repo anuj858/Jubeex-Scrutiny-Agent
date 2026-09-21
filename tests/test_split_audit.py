@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from extraction_review.split_audit import (
+    annexure_labels_from_text,
     audit_compiled_split,
     check_document_sequence,
     check_index_consistency,
+    collect_expected_annexures,
     map_index_particulars_to_part,
     parse_index_rows,
 )
@@ -135,5 +137,38 @@ def test_audit_compiled_split_end_to_end() -> None:
     audit = audit_compiled_split(page_parts, texts, page_count=49)
     codes = {flag["code"] for flag in audit["flags"]}
     assert "in_index_missing_in_file" in codes  # Annexure P-9 listed, absent
+    assert "annexure_mentioned_not_attached" in codes
     assert any(row["mapped_part"] == "Main Petition" for row in audit["index_rows"])
+    inv = audit["annexure_inventory"]
+    assert inv["mentioned_count"] == 2
+    assert "Annexure P-1" in inv["mentioned"]
+    assert "Annexure P-9" in inv["mentioned_not_attached"]
+    assert inv["attached"] == ["Annexure P-1"]
     assert audit["flag_counts"]["total"] >= 1
+
+
+def test_collect_expected_annexures_from_index_and_main() -> None:
+    page_parts = {
+        2: ["Index"],
+        10: ["Main Petition"],
+        11: ["Main Petition"],
+    }
+    texts = {
+        2: (
+            "INDEX\n1. List of dates\n"
+            "2. Curative Petition\n"
+            "3. ANNEXURE P-1: Writ Petition\n"
+            "4. ANNEXURE P-3: High Court order\n"
+        ),
+        10: "body",
+        11: (
+            "A copy is annexed and marked as ANNEXURE P-2 "
+            "(At page …). Further ANNEXURE P-3 follows."
+        ),
+    }
+    expected = collect_expected_annexures(page_parts, texts)
+    assert expected == {"Annexure P-1", "Annexure P-2", "Annexure P-3"}
+    # Bare "Annexure 5" inside annexed HC prose must not invent SCI inventory.
+    assert "Annexure P-5" not in annexure_labels_from_text(
+        "stated that allocable area in Annexure 5 to IPS-1"
+    )

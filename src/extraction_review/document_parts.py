@@ -638,6 +638,14 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
     ) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
             return None
+        # AOR address lines ("E-28, Second Floor, Lajpat Nagar") are not stamps.
+        if re.search(
+            r"\bfloor\b|\bnagar\b|\bdelhi\b|\bmumbai\b|\broad\b|\bstreet\b|"
+            r"\bph\.?:|\bemail\b|@",
+            line,
+            re.I,
+        ):
+            return None
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
             return None
@@ -649,6 +657,10 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
             return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-")
+        bare = bool(match.groupdict().get("bare_num"))
+        if bare and remainder and not remainder.isdigit():
+            # Bare "E-28, Second Floor" / "P-1 continued text" without ANNEXURE word.
+            return None
         if remainder:
             if _ANNEXURE_PAGE_CITE_RE.search(remainder):
                 return None
@@ -681,7 +693,12 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     ):
         return None
     # Numbered pleading paragraphs ("12. That the petitioner…") are not stamps.
-    if re.search(r"(?m)^\s*\d{1,2}\.\s+that\s+the\b", text or "", re.I):
+    # Only inspect the heading — annexed HC bodies often contain that pattern.
+    if re.search(
+        r"(?m)^\s*\d{1,2}\.\s+that\s+the\b",
+        _heading_window(text, lines=8),
+        re.I,
+    ):
         return None
     return _annexure_mark_from_title_or_stamp(text)
 
@@ -809,8 +826,11 @@ def _looks_like_sci_interlocutory(text: str) -> bool:
 
 
 def _memo_of_parties_heading(text: str) -> bool:
-    head = _fold(_heading_window(text, lines=8))
-    return "memo of part" in head
+    """True for a Memo of Parties title — not Index row '21. Memo of Parties'."""
+    head = _heading_window(text, lines=12)
+    if re.search(r"(?m)^\s*\d{1,3}[.\)]\s*memo of part", head, re.I):
+        return False
+    return bool(re.search(r"(?m)^\s*memo of part(?:ies)?\b", head, re.I))
 
 
 def _vakalatnama_heading(text: str) -> bool:

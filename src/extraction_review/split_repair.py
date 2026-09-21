@@ -34,6 +34,7 @@ from .document_parts import (
     page_starts_application,
     parts_on_page,
 )
+from .split_audit import collect_expected_annexures
 
 _SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
 # OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
@@ -80,15 +81,19 @@ _ROP_INDEX_FORM_RE = re.compile(
     re.I,
 )
 # Registry-issued SCI order sheet (often annexed as P-n after the petition).
+# Do NOT match bare "Court No. 1, Shimla" inside Index rows — require ITEM NO /
+# spaced SCI caption / petition(s) for SLP, optionally with Court No.
 _SCI_COURT_ROP_RE = re.compile(
     r"item\s*n[o0]\.?\s*\d|"
-    r"court\s*n[o0]\.?\s*\d|"
     r"petition\(s\)\s+for\s+special\s+leave|"
     r"s\s+u\s+p\s+r\s+e\s+m\s+e\s+c\s+o\s+u\s+r\s+t\s+o\s+f\s+i\s+n\s+d\s+i\s+a|"
     r"chamber\s+matter\s+section",
     re.I,
 )
-_FILING_MEMO_RE = re.compile(r"filing memo|index of filing|filing index", re.I)
+_FILING_MEMO_RE = re.compile(
+    r"(?m)^\s*(?:filing memo|index of filing|filing index)\b",
+    re.I,
+)
 _AOR_CERT_RE = re.compile(
     r"confined\s+only\s+to\s+the\s+pleadings|"
     r"(?:^|\n)\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
@@ -203,6 +208,11 @@ _NO_BACKWARD_CARRY_PARTS = frozenset(
         "Filing Memo",
         "Memo of Parties",
         "Appendix",
+        "Listing Proforma",
+        "Synopsis",
+        "List of Dates & Events",
+        "Main Petition",
+        "Office Report on Limitation",
     }
 )
 
@@ -418,6 +428,22 @@ def _looks_like_index_continuation(text: str) -> bool:
     hits = _INDEX_CONTINUATION_RE.findall(head)
     if len(hits) >= 3:
         return True
+    # Trailing Index rows often list I.A.s / Filing Memo / Vakalatnama.
+    if (
+        len(
+            re.findall(
+                r"(?mi)^\s*\d{1,2}\.\s+.*\b(?:i\.?\s*a\.?|filing memo|vakalat|"
+                r"memo of parties|application for)\b",
+                head,
+            )
+        )
+        >= 2
+    ):
+        return True
+    if re.search(r"(?mi)^\s*\d{1,2}\.\s+i\.?\s*a\.?\b", head) and (
+        "application" in folded or "vakalat" in folded or "filing memo" in folded
+    ):
+        return True
     range_lines = re.findall(r"(?m)^\s*\d{1,3}\s*[-–—]\s*\d{1,3}\s*$", head)
     if len(range_lines) >= 4 and "annexure-p" not in _fold(head[:200]):
         return True
@@ -515,15 +541,29 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return True
     if not _is_sci_caption(text):
         # Body pages often omit a fresh SCI caption after the party schedule.
-        if _FORM28_BODY_RE.search(window) and (
+        # Synopsis often has "questions of law" + "special leave" + "Petitioner
+        # No." — that must NOT count as Form-28. Require hard Form-28 cues.
+        # HC writs also say "showeth" — require an SCI signal with showeth.
+        strong_body = (
+            "most respectfully showeth" in folded
+            or "humble petition of the" in folded
+            or "position of parties" in folded
+            or "declaration in terms of rule" in folded
+            or "form 28" in folded
+        )
+        sci_signal = (
             "special leave" in folded
             or "supreme court of india" in folded
             or "companion justices" in folded
-            or "declaration in terms of rule" in folded
-            or "questions of law" in folded
-            or "stions of law" in folded
-        ):
-            return True
+            or "slp (" in folded
+            or "slp(civil)" in folded
+            or "slp(criminal)" in folded
+        )
+        if _FORM28_BODY_RE.search(window) and strong_body:
+            if sci_signal:
+                return True
+            if "declaration in terms of rule" in folded or "form 28" in folded:
+                return True
         return False
     if _FORM28_BODY_RE.search(window):
         return True
@@ -553,8 +593,10 @@ def _outer_anchor_label(text: str) -> str | None:
     # OR heading often sits below the cause title — search more than 12 lines.
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return "Office Report on Limitation"
-    if _LISTING_RE.search(_heading_window(text, lines=10)) or _LISTING_RE.search(
-        text[:900]
+    if (
+        _LISTING_RE.search(_heading_window(text, lines=10))
+        or _LISTING_RE.search(text[:900])
+        or _LISTING_CONTINUATION_RE.search(text[:2000])
     ):
         return "Listing Proforma"
     if _looks_like_court_notice_or_rop(text):
@@ -1520,6 +1562,31 @@ def find_duplicate_split_parts(page_parts: PagePartMap) -> list[DuplicateSplitHi
     return hits
 
 
+def _demote_unmentioned_annexures(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Drop annexure labels not cited in Index / LOD / Main → Unidentified.
+
+    When those source docs name no annexures at all, leave stamped labels alone
+    (cannot inventory-gate without a mention list).
+    """
+    expected = collect_expected_annexures(page_parts, page_text)
+    if not expected:
+        return page_parts
+
+    updated: PagePartMap = {}
+    for page, names in page_parts.items():
+        kept: list[str] = []
+        for name in parts_on_page(names):
+            if family_split_name(name) == ANNEXURE_FAMILY and name not in expected:
+                continue
+            kept.append(name)
+        if kept:
+            updated[int(page)] = kept
+    return updated
+
+
 def repair_compiled_split(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -1583,4 +1650,7 @@ def repair_compiled_split(
     repaired = _extend_main_petition_body(repaired, page_text, page_count)
     repaired = _prefer_form28_main_island(repaired, page_text)
     repaired = collapse_repeated_split_pages(repaired)
+    # After all stamp/nest work: annexures not cited in Index/LOD/Main become
+    # unlabeled leftovers → Undefined / Unidentified at slice time.
+    repaired = _demote_unmentioned_annexures(repaired, page_text)
     return repaired, duplicates

@@ -78,10 +78,26 @@ _INDEX_SOFT_ROW_RE = re.compile(
 _ANNEXURE_IN_INDEX_RE = re.compile(
     r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d{1,3})", re.IGNORECASE
 )
+# SCI paper-book cites use a letter series (P/E). Bare "Annexure 5" inside an
+# annexed HC writ is not an inventory row for the outer petition.
+_SCI_ANNEXURE_MENTION_RE = re.compile(
+    r"\bannexure\s*[-–—:/\s]*([pe])\s*[-–—./\s]*(\d{1,3})\b",
+    re.IGNORECASE,
+)
 _APPLICATION_IN_INDEX_RE = re.compile(
     r"(?:application|i\.?\s*a\.?)[\s\-]*(?:no\.?\s*)?(\d{1,3})|"
     r"\bi\.?\s*a\.?\b",
     re.IGNORECASE,
+)
+
+# Parts whose body text is trusted for annexure inventory (plus Index rows).
+_ANNEXURE_INVENTORY_PARTS = frozenset(
+    {
+        "Index",
+        "List of Dates & Events",
+        "Synopsis + List of Dates & Events",
+        "Main Petition",
+    }
 )
 
 
@@ -281,6 +297,67 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
             )
         )
     return rows
+
+
+def normalize_annexure_part_label(series: str | None, number: int) -> str:
+    """Normalize Index/body annexure cites to ``Annexure P-n`` (E → P)."""
+    letter = (series or "P").upper()
+    if letter == "E":
+        letter = "P"
+    return f"Annexure {letter}-{int(number)}"
+
+
+def annexure_labels_from_text(text: str) -> set[str]:
+    """Extract SCI ``Annexure P-n`` labels from Index / LOD / Main prose."""
+    found: set[str] = set()
+    for match in _SCI_ANNEXURE_MENTION_RE.finditer(text or ""):
+        found.add(normalize_annexure_part_label(match.group(1), int(match.group(2))))
+    return found
+
+
+def collect_expected_annexures(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> set[str]:
+    """Annexures mentioned in Index, List of Dates, and/or Main Petition.
+
+    Used to decide which stamped annexures belong to the paper-book versus
+    stray / nested exhibits that should fall through to Unidentified.
+    """
+    expected: set[str] = set()
+
+    index_text = _index_pages_text(page_parts, page_text)
+    if index_text.strip():
+        for row in parse_index_rows(index_text):
+            part = row.mapped_part
+            if part and family_split_name(part) == "Annexures":
+                expected.add(part)
+            expected.update(annexure_labels_from_text(row.particulars))
+        expected.update(annexure_labels_from_text(index_text))
+
+    for page, names in page_parts.items():
+        labels = parts_on_page(names)
+        # Index free-text is handled above; only LOD + Main add more cites.
+        inventory_labels = [
+            label
+            for label in labels
+            if label in _ANNEXURE_INVENTORY_PARTS and label != "Index"
+        ]
+        if not inventory_labels:
+            continue
+        expected.update(annexure_labels_from_text(page_text.get(int(page), "")))
+
+    return expected
+
+
+def attached_annexures(page_parts: PagePartMap) -> set[str]:
+    """Annexure part labels currently present in the split map."""
+    found: set[str] = set()
+    for names in page_parts.values():
+        for part in parts_on_page(names):
+            if family_split_name(part) == "Annexures":
+                found.add(part)
+    return found
 
 
 def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> str:
@@ -580,9 +657,47 @@ def audit_compiled_split(
             check_index_consistency(rows, spans, page_count=page_count)
         )
 
+    expected = collect_expected_annexures(page_parts, page_text)
+    attached = attached_annexures(page_parts)
+    missing_attached = sorted(expected - attached, key=_annexure_sort_key)
+    extra_attached = sorted(attached - expected, key=_annexure_sort_key)
+    for part in missing_attached:
+        flags.append(
+            SplitAuditFlag(
+                code="annexure_mentioned_not_attached",
+                severity="error",
+                part=part,
+                message=(
+                    f"{part} is listed in Index / List of Dates / Main Petition "
+                    "but was not found as an attached annexure in the split"
+                ),
+            )
+        )
+    for part in extra_attached:
+        flags.append(
+            SplitAuditFlag(
+                code="annexure_attached_not_mentioned",
+                severity="warning",
+                part=part,
+                message=(
+                    f"{part} is attached in the PDF but is not mentioned in "
+                    "Index, List of Dates, or Main Petition "
+                    "(should move to Unidentified)"
+                ),
+            )
+        )
+
     return {
         "index_rows": [row.as_dict() for row in rows],
         "document_spans": list(spans),
+        "annexure_inventory": {
+            "mentioned": sorted(expected, key=_annexure_sort_key),
+            "attached": sorted(attached, key=_annexure_sort_key),
+            "mentioned_count": len(expected),
+            "attached_count": len(attached),
+            "mentioned_not_attached": missing_attached,
+            "attached_not_mentioned": extra_attached,
+        },
         "flags": [flag.as_dict() for flag in flags],
         "flag_counts": {
             "error": sum(1 for flag in flags if flag.severity == "error"),
@@ -590,3 +705,10 @@ def audit_compiled_split(
             "total": len(flags),
         },
     }
+
+
+def _annexure_sort_key(label: str) -> tuple[str, int]:
+    match = re.fullmatch(r"(?i)annexure ([a-z])-?(\d{1,3})", label.strip())
+    if match:
+        return (match.group(1).upper(), int(match.group(2)))
+    return (label, 0)
