@@ -506,15 +506,59 @@ async def analyze_page_image(
         raise LLMError(
             f"Retryable vision status {response.status_code}: {response.text[:300]}"
         )
-    if response.status_code in (401, 402, 403):
+    if response.status_code == 402:
+        body_text = response.text[:2000]
+
+        if "in_flight_budget_exhausted" in body_text:
+            retry_after = response.headers.get("Retry-After", "30")
+
+            try:
+                retry_after_s = max(1, min(int(retry_after), 180))
+            except (TypeError, ValueError):
+                retry_after_s = 30
+
+            logger.warning(
+                "[VISION] OpenRouter in-flight budget exhausted "
+                "page=%s model=%s; retrying after %ss",
+                target.page,
+                model,
+                retry_after_s,
+            )
+
+            await asyncio.sleep(retry_after_s)
+
+            response = await http.post(
+                f"{base_url}/chat/completions",
+                headers=_headers(),
+                json=payload,
+            )
+
+            if response.status_code == 402:
+                body_text = response.text[:2000]
+
+                if "in_flight_budget_exhausted" in body_text:
+                    raise LLMError(
+                        "OpenRouter in-flight budget still exhausted "
+                        f"after retry: {body_text[:300]}"
+                    )
+
+        else:
+            logger.error(
+                "[VISION] OpenRouter 402 body=%s",
+                body_text,
+            )
+            raise LLMFatalError(
+                f"OpenRouter 402 (billing): {body_text[:300]}"
+            )
+
+    if response.status_code in (401, 403):
         logger.error(
             "[VISION] OpenRouter error status=%s body=%s",
             response.status_code,
             response.text[:2000],
         )
         raise LLMFatalError(
-            f"OpenRouter {response.status_code} "
-            f"(auth/billing — not retried): {response.text[:300]}"
+            f"OpenRouter {response.status_code}: {response.text[:300]}"
         )
     response.raise_for_status()
     body = response.json()
