@@ -19,6 +19,7 @@ from ..llm import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_S,
     LLMError,
+    LLMFatalError,
     _close_truncated_json,
     _extract_content,
     _headers,
@@ -505,6 +506,16 @@ async def analyze_page_image(
         raise LLMError(
             f"Retryable vision status {response.status_code}: {response.text[:300]}"
         )
+    if response.status_code in (401, 402, 403):
+        logger.error(
+            "[VISION] OpenRouter error status=%s body=%s",
+            response.status_code,
+            response.text[:2000],
+        )
+        raise LLMFatalError(
+            f"OpenRouter {response.status_code} "
+            f"(auth/billing — not retried): {response.text[:300]}"
+        )
     response.raise_for_status()
     body = response.json()
     if not isinstance(body, dict):
@@ -555,6 +566,16 @@ async def _analyze_with_fallback(
                 http=http,
             )
             return found, None, combined.plus(usage)
+        except LLMFatalError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.error(
+                "Vision billing/auth failure page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
+            break
         except LLMError as exc:
             last_error = exc
             combined = combined.plus(exc.usage)

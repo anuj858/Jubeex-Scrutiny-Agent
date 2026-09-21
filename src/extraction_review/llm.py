@@ -40,6 +40,10 @@ class LLMError(RuntimeError):
         self.usage = usage or LlmUsage()
 
 
+class LLMFatalError(LLMError):
+    """Auth / billing / permission failures that must not be retried."""
+
+
 def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
 
@@ -344,6 +348,17 @@ async def call_structured[T: BaseModel](
                         response=response,
                     )
 
+                if response.status_code in (401, 402, 403):
+                    logger.error(
+                        "[LLM] OpenRouter fatal %s body=%s",
+                        response.status_code,
+                        response.text[:2000],
+                    )
+                    raise LLMFatalError(
+                        f"OpenRouter {response.status_code} "
+                        f"(auth/billing — not retried): {response.text[:300]}"
+                    )
+
                 if response.status_code >= 400:
                     logger.error(
                         "[LLM] OpenRouter error body: %s",
@@ -389,6 +404,10 @@ async def call_structured[T: BaseModel](
                             ),
                         }
                     )
+            except LLMFatalError as e:
+                last_error = e
+                logger.error("[LLM] Fatal OpenRouter error (no retry): %s", str(e)[:300])
+                break
             except (httpx.HTTPError, LLMError) as e:
                 last_error = e
                 logger.warning(
@@ -416,7 +435,10 @@ async def call_structured[T: BaseModel](
         if owns_client:
             await http.aclose()
 
+    if isinstance(last_error, LLMFatalError):
+        raise last_error
     raise LLMError(
         f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
         usage=usage,
     ) from last_error
+
