@@ -344,7 +344,12 @@ async def call_structured[T: BaseModel](
                         response=response,
                     )
 
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    logger.error(
+                        "[LLM] OpenRouter error body: %s",
+                        response.text,
+                    )
+                    raise LLMError(f"OpenRouter error: {response.text[:300]}")
                 payload = response.json()
                 if isinstance(payload, dict):
                     usage = usage.plus(
