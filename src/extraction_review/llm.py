@@ -48,6 +48,16 @@ def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
 
 
+def mask_openrouter_api_key(key: str | None = None) -> str:
+    """Safe console fingerprint — never log the full secret."""
+    value = key if key is not None else openrouter_api_key()
+    if not value:
+        return "(unset)"
+    if len(value) <= 16:
+        return f"{value[:4]}…(len={len(value)})"
+    return f"{value[:12]}…{value[-4:]} (len={len(value)})"
+
+
 def openrouter_model() -> str:
     return os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
 

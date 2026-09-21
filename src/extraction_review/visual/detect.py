@@ -23,6 +23,7 @@ from ..llm import (
     _close_truncated_json,
     _extract_content,
     _headers,
+    mask_openrouter_api_key,
     openrouter_api_key,
     openrouter_model,
     parse_openrouter_usage,
@@ -744,7 +745,7 @@ async def detect_visual_marks(
         on_log,
         (
             f"Visual detection enabled={enabled} model={vision_model() or '-'} "
-            f"api_key={'yes' if openrouter_api_key() else 'no'}"
+            f"api_key={mask_openrouter_api_key()}"
         ),
     )
     if not enabled:
