@@ -148,7 +148,7 @@ _INDEX_CONTINUATION_RE = re.compile(
     r"(?:special leave|petition|annexure|appendix|affidavit|"
     r"vakalat|application|memo of|office report|listing|synopsis)",
 )
-_APPEARANCE_RE = re.compile(r"memo of appearance", re.I)
+_APPEARANCE_RE = re.compile(r"(?m)^\s*memo of appearance\b", re.I)
 _NEAR_BLANK_RE = re.compile(r"^[\s\d\.]*$")
 
 # Outer SCI paper-book parts: keep the first contiguous run, not the longest.
@@ -188,6 +188,21 @@ _NESTED_STEAL_PARTS = frozenset(
         "Advocate's Checklist",
         "Impugned Order",
         "Cover Page",
+    }
+)
+
+# These slots must not expand backward into unlabeled gaps (would swallow Main /
+# annexure body into Impugned / Vakalatnama / AOR).
+_NO_BACKWARD_CARRY_PARTS = frozenset(
+    {
+        "Impugned Order",
+        "AOR's Certificate",
+        "Affidavit",
+        "Vakalatnama",
+        "Memo of Appearance",
+        "Filing Memo",
+        "Memo of Parties",
+        "Appendix",
     }
 )
 
@@ -480,6 +495,13 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return False
     if _LISTING_RE.search(text[:900]):
         return False
+    # Synopsis / List of Dates narrative repeats "Special Leave Petition" — never
+    # treat those headings as Form-28, or demote/collapse keep the wrong island.
+    head8 = _heading_window(text, lines=8)
+    if _SYNOPSIS_RE.search(head8) or _LOD_RE.search(head8):
+        return False
+    if _FILING_MEMO_RE.search(_heading_window(text, lines=6)):
+        return False
     if _is_lower_court_caption(text):
         return False
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)):
@@ -547,21 +569,35 @@ def _outer_anchor_label(text: str) -> str | None:
         text
     ):
         return "Appendix"
-    # Filing Memo is easy to confuse with Delivery Mode notices — require memo cues.
-    if _FILING_MEMO_RE.search(_heading_window(text, lines=10)) and not (
-        _looks_like_court_notice_or_rop(text) or _is_sci_caption(text)
+    # Filing Memo often shares a sheet with a trailing SCI caption — trust the
+    # top-of-page heading, not a later caption on the same page.
+    if _FILING_MEMO_RE.search(_heading_window(text, lines=6)) and not (
+        _looks_like_court_notice_or_rop(text)
     ):
         return "Filing Memo"
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
-    if _AOR_CERT_RE.search(text[:2500]) and _is_sci_caption(text):
-        return "AOR's Certificate"
+    # Affidavit before AOR: curative affidavits often say "confined only to the
+    # pleadings" and would otherwise steal the AOR Certificate slot.
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)) and (
         _is_sci_caption(text)
         or "deponent" in _fold(text[:1500])
         or "solemnly affirm" in _fold(text[:1500])
     ):
         return "Affidavit"
+    if _AOR_CERT_RE.search(text[:2500]) and _is_sci_caption(text):
+        # Require a Certificate title when the page is affidavit-like prose.
+        cert_title = re.search(
+            r"(?m)^\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
+            r"certifica\s*te|certificate)\b",
+            _heading_window(text, lines=16),
+            re.I,
+        )
+        if cert_title or "confined only to the pleadings" in _fold(text[:2500]):
+            if cert_title or not _AFFIDAVIT_HEADING_RE.search(
+                _heading_window(text, lines=20)
+            ):
+                return "AOR's Certificate"
     if _looks_like_cover_page(text):
         return "Cover Page"
     if page_starts_application(text) and not _looks_like_cover_page(text):
@@ -790,6 +826,56 @@ def _apply_outer_anchors(
     return updated
 
 
+def _first_outer_form28_page(
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> int | None:
+    """Earliest Form-28 lookalike in the outer paper-book, not annexed copies.
+
+    Annexed SLP / review order sheets later in the book often reprint a full
+    SCI caption and would otherwise become ``form28_start``, causing demote to
+    clear the real Main Petition body into Unidentified.
+    """
+    candidates = [
+        page
+        for page in range(1, page_count + 1)
+        if _looks_like_sci_main_petition(page_text.get(page, ""))
+    ]
+    if not candidates:
+        return None
+    front = next(
+        (
+            page
+            for page in range(1, page_count + 1)
+            if _outer_anchor_label(page_text.get(page, ""))
+            in {"Synopsis", "List of Dates & Events"}
+        ),
+        None,
+    )
+    annex_start = next(
+        (
+            page
+            for page in range(1, page_count + 1)
+            if annexure_mark_in_heading(page_text.get(page, ""))
+        ),
+        None,
+    )
+    scoped = candidates
+    if front is not None:
+        after_front = [page for page in scoped if page > front]
+        if after_front:
+            scoped = after_front
+    if annex_start is not None:
+        before_annex = [page for page in scoped if page < annex_start]
+        if before_annex:
+            scoped = before_annex
+        else:
+            # Only annexed SLP/order reprints look like Form-28 — ignore them so
+            # demote does not wipe the real petition body before the annexures.
+            return None
+    return scoped[0] if scoped else None
+
+
 def _demote_front_matter_mislabeled_as_main(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -799,19 +885,75 @@ def _demote_front_matter_mislabeled_as_main(
 
     Synopsis narrative often repeats \"Special Leave Petition\". LlamaSplit then
     tags those continuation pages as Main Petition. The false early island wins
-    first-run collapse and erases the real Form-28 body later in the book.
+    first-run collapse and erases the real Form-28 body later in the book
+    (those pages then land in Unidentified / undefined).
     """
     updated = {page: list(names) for page, names in page_parts.items()}
-    form28_start = next(
-        (
-            page
-            for page in range(1, page_count + 1)
-            if _looks_like_sci_main_petition(page_text.get(page, ""))
-        ),
-        None,
-    )
+    # Always peel strong Synopsis / LOD headings off Main, even when Form-28
+    # OCR cues are missing — otherwise demote is a no-op and first-run collapse
+    # keeps the synopsis island.
+    for page in range(1, page_count + 1):
+        names = parts_on_page(updated.get(page))
+        if MAIN_PETITION_PART not in names:
+            continue
+        text = page_text.get(page, "")
+        anchor = _outer_anchor_label(text)
+        if anchor in {"Synopsis", "List of Dates & Events"}:
+            updated[page] = [anchor]
+
+    form28_start = _first_outer_form28_page(page_text, page_count)
     if form28_start is None:
+        # No Form-28 cue: clear Main only on the first contiguous island that
+        # overlaps Synopsis/LOD. Do not walk through Impugned blanks into a
+        # later Main island (that drops the real petition into Unidentified).
+        front_start = next(
+            (
+                page
+                for page in range(1, page_count + 1)
+                if _outer_anchor_label(page_text.get(page, ""))
+                in {"Synopsis", "List of Dates & Events"}
+            ),
+            None,
+        )
+        if front_start is None:
+            return updated
+        main_pages = sorted(
+            page
+            for page in range(front_start, page_count + 1)
+            if MAIN_PETITION_PART in parts_on_page(updated.get(page))
+        )
+        groups = _contiguous_groups(main_pages)
+        if not groups:
+            return updated
+        start, end = groups[0]
+        for page in range(start, end + 1):
+            text = page_text.get(page, "")
+            if _looks_like_sci_main_petition(text):
+                break
+            folded = _fold(text[:2500])
+            if any(
+                cue in folded
+                for cue in (
+                    "most respectfully showeth",
+                    "position of parties",
+                    "questions of law",
+                    "declaration in terms",
+                    "main prayer",
+                    "interim prayer",
+                    "humble petition",
+                )
+            ) and "synopsis" not in folded[:200]:
+                break
+            names = parts_on_page(updated.get(page))
+            if MAIN_PETITION_PART not in names:
+                continue
+            anchor = _outer_anchor_label(text)
+            if anchor and anchor != MAIN_PETITION_PART:
+                updated[page] = [anchor]
+            else:
+                updated.pop(page, None)
         return updated
+
     for page in range(1, form28_start):
         names = parts_on_page(updated.get(page))
         if MAIN_PETITION_PART not in names:
@@ -825,6 +967,81 @@ def _demote_front_matter_mislabeled_as_main(
             continue
         # Leave unlabeled so _fill_gaps can carry Synopsis / LOD / Impugned Order.
         updated.pop(page, None)
+    return updated
+
+
+def _prefer_form28_main_island(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Keep the Main Petition island that contains Form-28; drop Synopsis islands.
+
+    First-run collapse keeps the earliest Main island. When Llama tags Synopsis
+    as Main before the real Form-28, that early island wins and the petition
+    pages become unlabeled → Unidentified. Prefer any island with a Form-28
+    lookalike; otherwise prefer a later island that is not Synopsis/LOD-led.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    main_pages = sorted(
+        page
+        for page, names in updated.items()
+        if MAIN_PETITION_PART in parts_on_page(names)
+    )
+    groups = _contiguous_groups(main_pages)
+    if len(groups) < 2:
+        return updated
+
+    annex_start = next(
+        (
+            page
+            for page in sorted(page_text)
+            if annexure_mark_in_heading(page_text.get(page, ""))
+        ),
+        None,
+    )
+
+    def _score(group: tuple[int, int]) -> tuple[int, int, int, int, int]:
+        start, end = group
+        form28 = 0
+        syn = 0
+        for page in range(start, end + 1):
+            text = page_text.get(page, "")
+            if _looks_like_sci_main_petition(text):
+                form28 += 1
+            anchor = _outer_anchor_label(text)
+            if anchor in {"Synopsis", "List of Dates & Events"}:
+                syn += 1
+        after_annex = bool(annex_start is not None and start >= annex_start)
+        if form28 and not after_annex:
+            # Earliest outer Form-28 island (later HC / annexed SLP copies lose).
+            return (3, form28, -syn, -start, end - start)
+        if form28 and after_annex:
+            return (1, form28, -syn, -start, end - start)
+        if syn:
+            return (0, -syn, 0, start, end - start)
+        # No cue: prefer later islands before annexures (front-matter false Main is early).
+        if after_annex:
+            return (0, 0, 0, start, end - start)
+        return (2, 0, 0, start, end - start)
+
+    keep_start, keep_end = max(groups, key=_score)
+    for start, end in groups:
+        if start == keep_start and end == keep_end:
+            continue
+        for page in range(start, end + 1):
+            names = parts_on_page(updated.get(page))
+            if MAIN_PETITION_PART not in names:
+                continue
+            text = page_text.get(page, "")
+            anchor = _outer_anchor_label(text)
+            if anchor and anchor != MAIN_PETITION_PART:
+                updated[page] = [anchor]
+                continue
+            remaining = [name for name in names if name != MAIN_PETITION_PART]
+            if remaining:
+                updated[page] = remaining
+            else:
+                updated.pop(page, None)
     return updated
 
 
@@ -902,6 +1119,42 @@ def _fill_gaps(
             continue
         if _outer_anchor_label(text):
             continue
+        # Short slots must not absorb petition / HC / annexure body pages.
+        if any(
+            name in {"AOR's Certificate", "Affidavit", "Filing Memo"}
+            for name in last_label
+        ):
+            folded = _fold(text[:1800])
+            if (
+                _is_lower_court_caption(text)
+                or _looks_like_sci_court_rop_extract(text)
+                or "curative petition" in folded
+                or "review petition" in folded
+                or "because this" in folded
+                or "most respectfully showeth" in folded
+                or annexure_mark_in_heading(text)
+            ):
+                continue
+        if any(
+            name in {"Vakalatnama", "Memo of Appearance"} for name in last_label
+        ):
+            folded = _fold(text[:1800])
+            if (
+                "because this" in folded
+                or "most respectfully showeth" in folded
+                or _is_lower_court_caption(text)
+                or _looks_like_sci_main_petition(text)
+            ):
+                continue
+        if "Impugned Order" in last_label:
+            if _looks_like_sci_court_rop_extract(text) or (
+                _is_sci_caption(text)
+                and any(
+                    cue in _fold(text[:1200])
+                    for cue in ("review petition", "curative petition", "special leave")
+                )
+            ):
+                continue
         # Do not bridge two islands of the same outer part (e.g. two Vakalatnamas).
         next_labeled: list[str] | None = None
         for ahead in range(page + 1, page_count + 1):
@@ -921,6 +1174,8 @@ def _fill_gaps(
             continue
         # Front-matter slots must not expand backward into unlabeled gaps.
         if any(name in _CARRY_BLOCKING_PARTS for name in nxt):
+            continue
+        if any(name in _NO_BACKWARD_CARRY_PARTS for name in nxt):
             continue
         text = page_text.get(page, "")
         # Near-blank sheets between LOD and petition are Impugned Order scans.
@@ -1013,25 +1268,20 @@ def _extend_main_petition_body(
 ) -> PagePartMap:
     """Grow Main Petition from its Form-28 start through body pages."""
     updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
-    starts = [
-        page
-        for page in range(1, page_count + 1)
-        if _looks_like_sci_main_petition(page_text.get(page, ""))
-    ]
-    if not starts:
+    start = _first_outer_form28_page(page_text, page_count)
+    if start is None:
         starts = [
             page
             for page, names in updated.items()
             if MAIN_PETITION_PART in parts_on_page(names)
             and not _looks_like_cover_page(page_text.get(page, ""))
+            and _outer_anchor_label(page_text.get(page, ""))
+            not in {"Synopsis", "List of Dates & Events"}
         ]
-    if not starts:
-        return updated
-
-    start = min(starts)
-    for page in starts:
-        if page >= start:
-            updated[page] = [MAIN_PETITION_PART]
+        if not starts:
+            return updated
+        start = min(starts)
+    updated[start] = [MAIN_PETITION_PART]
     stop_labels = {
         "AOR's Certificate",
         "Affidavit",
@@ -1319,6 +1569,7 @@ def repair_compiled_split(
     exploded = _force_annexure_nesting(exploded, page_text, page_count)
     exploded = _demote_cover_mislabeled_as_main(exploded, page_text)
     exploded = _demote_annexed_sci_rop(exploded, page_text, page_count)
+    exploded = _prefer_form28_main_island(exploded, page_text)
     more = find_duplicate_split_parts(exploded)
     seen = {(hit.part, hit.kept_span) for hit in duplicates}
     for hit in more:
@@ -1330,5 +1581,6 @@ def repair_compiled_split(
     repaired = _force_annexure_nesting(repaired, page_text, page_count)
     repaired = _demote_cover_mislabeled_as_main(repaired, page_text)
     repaired = _extend_main_petition_body(repaired, page_text, page_count)
+    repaired = _prefer_form28_main_island(repaired, page_text)
     repaired = collapse_repeated_split_pages(repaired)
     return repaired, duplicates

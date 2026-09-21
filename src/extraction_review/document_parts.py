@@ -814,9 +814,18 @@ def _memo_of_parties_heading(text: str) -> bool:
 
 
 def _vakalatnama_heading(text: str) -> bool:
-    head = _fold(_heading_window(text, lines=12))
-    compact = re.sub(r"[^a-z]", "", head)
-    return "vakalatnama" in compact
+    """True only for a Vakalatnama title line — not narrative 'filing Vakalatnama'."""
+    head = _heading_window(text, lines=12)
+    if re.search(r"(?m)^\s*v\W*a\W*k\W*a\W*l\W*a\W*t\W*n\W*a\W*m\W*a\b", head, re.I):
+        return True
+    # Spaced OCR title on its own line.
+    if re.search(
+        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a\s*t\s*n\s*a\s*m\s*a\s*$",
+        head,
+        re.I,
+    ):
+        return True
+    return False
 
 
 def _can_override_with_annexure(names: Sequence[str] | None, text: str) -> bool:
