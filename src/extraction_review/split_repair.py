@@ -72,6 +72,22 @@ _RECORD_NOTICE_RE = re.compile(
     r"delivery[_\s]*mode",
     re.I,
 )
+# Paper-book "Index of Record of Proceedings" blank form (dates/pages table).
+_ROP_INDEX_FORM_RE = re.compile(
+    r"date of record of proceedings|"
+    r"dates?\s+of\s+(?:the\s+)?proceedings?\s+pages?|"
+    r"sl\s*no\.?\s*.{0,40}date of record",
+    re.I,
+)
+# Registry-issued SCI order sheet (often annexed as P-n after the petition).
+_SCI_COURT_ROP_RE = re.compile(
+    r"item\s*n[o0]\.?\s*\d|"
+    r"court\s*n[o0]\.?\s*\d|"
+    r"petition\(s\)\s+for\s+special\s+leave|"
+    r"s\s+u\s+p\s+r\s+e\s+m\s+e\s+c\s+o\s+u\s+r\s+t\s+o\s+f\s+i\s+n\s+d\s+i\s+a|"
+    r"chamber\s+matter\s+section",
+    re.I,
+)
 _FILING_MEMO_RE = re.compile(r"filing memo|index of filing|filing index", re.I)
 _AOR_CERT_RE = re.compile(
     r"confined\s+only\s+to\s+the\s+pleadings|"
@@ -218,10 +234,32 @@ def _is_lower_court_caption(text: str) -> bool:
     return bool(_HC_CAPTION_RE.search(head) or _TRIBUNAL_CAPTION_RE.search(head))
 
 
+def _looks_like_rop_index_form(text: str) -> bool:
+    """Blank Index of Record of Proceedings table in the paper-book front matter."""
+    head = _heading_window(text, lines=12)
+    if not _RECORD_RE.search(head):
+        return False
+    return bool(_ROP_INDEX_FORM_RE.search(text[:1800]))
+
+
+def _looks_like_sci_court_rop_extract(text: str) -> bool:
+    """Registry SCI order sheet headed RECORD OF PROCEEDINGS (often an Annexure)."""
+    head = text[:2200]
+    if not (_RECORD_RE.search(head) or _SCI_COURT_ROP_RE.search(head)):
+        return False
+    if _looks_like_rop_index_form(text):
+        return False
+    return bool(_SCI_COURT_ROP_RE.search(head))
+
+
 def _looks_like_court_notice_or_rop(text: str) -> bool:
     """Registry notice / RoP extract — not Cover, Filing Memo, or Main Petition."""
     head = text[:2200]
     folded = _fold(head)
+    if _looks_like_rop_index_form(text):
+        return True
+    if _looks_like_sci_court_rop_extract(text):
+        return True
     if _RECORD_RE.search(_heading_window(text, lines=10)):
         return True
     if _RECORD_NOTICE_RE.search(head):
@@ -700,6 +738,16 @@ def _apply_outer_anchors(
         label = _outer_anchor_label(text)
         if not label:
             continue
+        # Annexed SCI order sheets after Form-28 are not the paper-book ROP slot.
+        if (
+            label == "Record of Proceedings"
+            and _looks_like_sci_court_rop_extract(text)
+            and any(
+                MAIN_PETITION_PART in parts_on_page(updated.get(prior))
+                for prior in range(1, page)
+            )
+        ):
+            continue
         # High Court memo of parties after annexures: keep as Memo of Parties
         # but do not treat HC caption pages as Main Petition (handled by nesting).
         if label == MAIN_PETITION_PART and _is_lower_court_caption(text):
@@ -730,6 +778,8 @@ def _apply_outer_anchors(
             "Index",
             "Appendix",
             "Record of Proceedings",
+            "Synopsis",
+            "List of Dates & Events",
             MAIN_PETITION_PART,
             "Cover Page",
         }:
@@ -737,6 +787,87 @@ def _apply_outer_anchors(
                 if not _looks_like_sci_main_petition(text):
                     continue
             updated[page] = [label]
+    return updated
+
+
+def _demote_front_matter_mislabeled_as_main(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Clear Llama Main Petition tags on Synopsis/LOD pages before Form-28.
+
+    Synopsis narrative often repeats \"Special Leave Petition\". LlamaSplit then
+    tags those continuation pages as Main Petition. The false early island wins
+    first-run collapse and erases the real Form-28 body later in the book.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    form28_start = next(
+        (
+            page
+            for page in range(1, page_count + 1)
+            if _looks_like_sci_main_petition(page_text.get(page, ""))
+        ),
+        None,
+    )
+    if form28_start is None:
+        return updated
+    for page in range(1, form28_start):
+        names = parts_on_page(updated.get(page))
+        if MAIN_PETITION_PART not in names:
+            continue
+        text = page_text.get(page, "")
+        if _looks_like_sci_main_petition(text):
+            continue
+        anchor = _outer_anchor_label(text)
+        if anchor and anchor != MAIN_PETITION_PART:
+            updated[page] = [anchor]
+            continue
+        # Leave unlabeled so _fill_gaps can carry Synopsis / LOD / Impugned Order.
+        updated.pop(page, None)
+    return updated
+
+
+def _demote_annexed_sci_rop(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Drop outer ROP labels on annexed SCI order sheets after Main Petition.
+
+    Paper-book Index of RoP is an early blank form. Later ``RECORD OF
+    PROCEEDINGS`` / ITEM NO sheets are usually Annexure P-n copies of prior
+    SLP/Review orders. Longest-run collapse otherwise puts those exhibits into
+    the Record of Proceedings slot.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    main_pages = sorted(
+        page
+        for page, names in updated.items()
+        if MAIN_PETITION_PART in parts_on_page(names)
+    )
+    if not main_pages:
+        return updated
+    cutoff = max(main_pages)
+    for page in range(cutoff + 1, page_count + 1):
+        text = page_text.get(page, "")
+        names = parts_on_page(updated.get(page))
+        is_rop_label = "Record of Proceedings" in names
+        is_court_extract = _looks_like_sci_court_rop_extract(text)
+        if not is_rop_label and not is_court_extract:
+            continue
+        if _looks_like_rop_index_form(text):
+            continue
+        if is_rop_label:
+            remaining = [name for name in names if name != "Record of Proceedings"]
+            if remaining:
+                updated[page] = remaining
+            else:
+                updated.pop(page, None)
+            continue
+        # Fresh SCI court RoP heading after the petition: do not stamp outer ROP.
+        if is_court_extract and not names:
+            continue
     return updated
 
 
@@ -1167,8 +1298,10 @@ def repair_compiled_split(
     updated = _demote_false_advocate_checklist(updated, page_text)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _apply_outer_anchors(updated, page_text, page_count)
+    updated = _demote_front_matter_mislabeled_as_main(updated, page_text, page_count)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _extend_main_petition_body(updated, page_text, page_count)
+    updated = _demote_annexed_sci_rop(updated, page_text, page_count)
     # Capture Llama wrong-label duplicates before nesting absorbs HC exhibits.
     duplicates = find_duplicate_split_parts(updated)
     updated = _force_annexure_nesting(updated, page_text, page_count)
@@ -1177,12 +1310,15 @@ def repair_compiled_split(
     updated = _fill_gaps(updated, page_text, page_count)
     updated = _force_annexure_nesting(updated, page_text, page_count)
     updated = _demote_false_advocate_checklist(updated, page_text)
+    updated = _demote_front_matter_mislabeled_as_main(updated, page_text, page_count)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _extend_main_petition_body(updated, page_text, page_count)
+    updated = _demote_annexed_sci_rop(updated, page_text, page_count)
 
     exploded = explode_repeating_split_parts(updated, page_text)
     exploded = _force_annexure_nesting(exploded, page_text, page_count)
     exploded = _demote_cover_mislabeled_as_main(exploded, page_text)
+    exploded = _demote_annexed_sci_rop(exploded, page_text, page_count)
     more = find_duplicate_split_parts(exploded)
     seen = {(hit.part, hit.kept_span) for hit in duplicates}
     for hit in more:
