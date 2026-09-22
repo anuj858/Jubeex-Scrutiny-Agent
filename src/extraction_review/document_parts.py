@@ -476,9 +476,11 @@ APPLICATION_FAMILY = "Application"
 class AnnexureMark:
     """Printed exhibit stamp: Annexure P-1 / E-2 / R-3.
 
-    On SCI paper-books, bank/HC exhibits often still print ``ANNEXURE-E-n``.
-    The Index and filing profile use petitioner series ``P-n`` for those same
-    pages, so ``E`` is normalized to ``P`` for labels/slots.
+    Series letters:
+    - ``P`` — Petitioner
+    - ``R`` — Respondent
+    - ``E`` — exhibit alias on many bank/HC sheets; normalized to ``P``
+      (paper-book Index uses petitioner ``P-n`` for those same pages)
     """
 
     number: int
@@ -570,13 +572,23 @@ def _is_numbered_annexure(name: str) -> bool:
 
 
 def _normalize_annexure_series(raw: str | None) -> str:
+    """Map stamp/Index series tokens to P (Petitioner) or R (Respondent).
+
+    ``E`` / exhibit aliases become ``P``. Other single letters are kept as-is
+    (uppercase) so unusual series are not silently forced to P.
+    """
     token = (raw or "").strip().lower()
     if token.startswith("pet"):
         return "P"
     if token.startswith("res"):
         return "R"
+    if token.startswith("exh") or token == "e":
+        return "P"
     if token and token[0].isalpha():
-        return token[0].upper()
+        letter = token[0].upper()
+        if letter == "E":
+            return "P"
+        return letter
     return "P"
 
 

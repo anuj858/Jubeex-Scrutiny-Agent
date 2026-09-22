@@ -78,10 +78,11 @@ _INDEX_SOFT_ROW_RE = re.compile(
 _ANNEXURE_IN_INDEX_RE = re.compile(
     r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d{1,3})", re.IGNORECASE
 )
-# SCI paper-book cites use a letter series (P/E). Bare "Annexure 5" inside an
-# annexed HC writ is not an inventory row for the outer petition.
+# SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
+# E (exhibit → P). Bare "Annexure 5" inside an annexed HC writ is not an
+# inventory row for the outer petition.
 _SCI_ANNEXURE_MENTION_RE = re.compile(
-    r"\bannexure\s*[-–—:/\s]*([pe])\s*[-–—./\s]*(\d{1,3})\b",
+    r"\bannexure\s*[-–—:/\s]*(petitioner|respondent|[per])\s*[-–—./\s]*(\d{1,3})\b",
     re.IGNORECASE,
 )
 _APPLICATION_IN_INDEX_RE = re.compile(
@@ -166,10 +167,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
-        series = (annex.group(1) or "P").upper()
-        if series == "E":
-            series = "P"
-        return f"Annexure {series}-{int(annex.group(2))}"
+        return normalize_annexure_part_label(annex.group(1), int(annex.group(2)))
 
     if "office report" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text
@@ -300,19 +298,79 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
 
 
 def normalize_annexure_part_label(series: str | None, number: int) -> str:
-    """Normalize Index/body annexure cites to ``Annexure P-n`` (E → P)."""
-    letter = (series or "P").upper()
-    if letter == "E":
+    """Normalize Index/body annexure cites to ``Annexure P-n`` / ``Annexure R-n``.
+
+    - ``P`` / petitioner → Petitioner series
+    - ``R`` / respondent → Respondent series
+    - ``E`` / exhibit → ``P`` (paper-book alias)
+    """
+    raw = (series or "P").strip().lower()
+    if raw.startswith("pet") or raw in {"p", "e"} or raw.startswith("exh"):
         letter = "P"
+    elif raw.startswith("res") or raw == "r":
+        letter = "R"
+    else:
+        letter = raw[:1].upper() if raw else "P"
+        if letter == "E":
+            letter = "P"
+        if not letter.isalpha():
+            letter = "P"
     return f"Annexure {letter}-{int(number)}"
 
 
 def annexure_labels_from_text(text: str) -> set[str]:
-    """Extract SCI ``Annexure P-n`` labels from Index / LOD / Main prose."""
+    """Extract SCI ``Annexure P-n`` / ``Annexure R-n`` labels from prose."""
     found: set[str] = set()
     for match in _SCI_ANNEXURE_MENTION_RE.finditer(text or ""):
         found.add(normalize_annexure_part_label(match.group(1), int(match.group(2))))
     return found
+
+
+def collect_index_annexure_entries(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> list[tuple[str, str]]:
+    """Ordered ``(Annexure P-n, particulars)`` rows from the Index only.
+
+    Used to place unstamped exhibit islands after Affidavit / Certificate.
+    Prefers Index serial order; falls back to annexure number.
+    """
+    index_text = _index_pages_text(page_parts, page_text)
+    if not index_text.strip():
+        return []
+
+    entries: list[tuple[int, int, str, str]] = []
+    seen: set[str] = set()
+    for row_index, row in enumerate(parse_index_rows(index_text)):
+        labels: set[str] = set()
+        part = row.mapped_part
+        if part and family_split_name(part) == "Annexures":
+            labels.add(part)
+        labels.update(annexure_labels_from_text(row.particulars))
+        for label in sorted(labels, key=_annexure_sort_key):
+            if label in seen:
+                continue
+            seen.add(label)
+            serial = row.serial if row.serial is not None else 10_000 + row_index
+            entries.append((serial, _annexure_sort_key(label), label, row.particulars))
+
+    if not entries:
+        # Free-text Index without parseable rows — keep number order.
+        for label in sorted(annexure_labels_from_text(index_text), key=_annexure_sort_key):
+            entries.append((10_000, _annexure_sort_key(label), label, ""))
+
+    entries.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [(label, particulars) for _serial, _num, label, particulars in entries]
+
+
+def _annexure_sort_key(label: str) -> tuple[int, int]:
+    """Sort Petitioner (P) before Respondent (R), then by number."""
+    match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d{1,3})", (label or "").strip())
+    if not match:
+        return (99, 9999)
+    series = match.group(1).upper()
+    series_rank = 0 if series == "P" else (1 if series == "R" else 2)
+    return (series_rank, int(match.group(2)))
 
 
 def collect_expected_annexures(
@@ -326,13 +384,11 @@ def collect_expected_annexures(
     """
     expected: set[str] = set()
 
+    for label, _particulars in collect_index_annexure_entries(page_parts, page_text):
+        expected.add(label)
+
     index_text = _index_pages_text(page_parts, page_text)
     if index_text.strip():
-        for row in parse_index_rows(index_text):
-            part = row.mapped_part
-            if part and family_split_name(part) == "Annexures":
-                expected.add(part)
-            expected.update(annexure_labels_from_text(row.particulars))
         expected.update(annexure_labels_from_text(index_text))
 
     for page, names in page_parts.items():
@@ -394,7 +450,11 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
     folded = _fold(part)
     annex = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
     if annex:
-        return (_SEQUENCE_RANK["Annexures"], int(annex.group(2)))
+        series = annex.group(1)
+        number = int(annex.group(2))
+        # Petitioner (P) before Respondent (R) before other series.
+        series_rank = 0 if series == "p" else (1 if series == "r" else 2)
+        return (_SEQUENCE_RANK["Annexures"], series_rank * 1000 + number)
     app = re.fullmatch(r"application (\d{1,3})", folded)
     if app:
         return (_SEQUENCE_RANK["Applications"], int(app.group(1)))
@@ -705,10 +765,3 @@ def audit_compiled_split(
             "total": len(flags),
         },
     }
-
-
-def _annexure_sort_key(label: str) -> tuple[str, int]:
-    match = re.fullmatch(r"(?i)annexure ([a-z])-?(\d{1,3})", label.strip())
-    if match:
-        return (match.group(1).upper(), int(match.group(2)))
-    return (label, 0)

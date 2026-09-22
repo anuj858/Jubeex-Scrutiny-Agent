@@ -262,15 +262,24 @@ def _ui_slot_dict(slot: UploadSlot) -> dict[str, Any]:
     }
 
 
-def _repeatable_ui_slot(group: str, number: int = 1) -> dict[str, Any]:
+def _repeatable_ui_slot(
+    group: str, number: int = 1, *, series: str = "P"
+) -> dict[str, Any]:
     if group == "annexures":
+        letter = (series or "P").strip().upper()[:1] or "P"
+        if letter == "E":
+            letter = "P"
         return {
-            "id": f"annexure_p{number}",
-            "label": f"Annexure P-{number}",
-            "parts": [f"Annexure P-{number}"],
+            "id": f"annexure_{letter.lower()}{number}",
+            "label": f"Annexure {letter}-{number}",
+            "parts": [f"Annexure {letter}-{number}"],
             "required": False,
             "repeatable": True,
             "repeat_group": "annexures",
+            "series": letter,
+            "series_label": (
+                "Petitioner" if letter == "P" else ("Respondent" if letter == "R" else letter)
+            ),
         }
     return {
         "id": f"application_{number}",
@@ -286,7 +295,9 @@ def ui_catalog(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Filing-type labels and slots for the UI. No extract internals.
 
     Catch-all Annexures / Applications slots become the first numbered upload
-    (P-1 / Application 1) with ``repeatable`` so the form can Add P-2, P-3, …
+    (Annexure P-1 / Application 1) with ``repeatable`` so the form can Add
+    P-2, P-3, … and Respondent series Annexure R-1, R-2, ….
+    ``P`` = Petitioner, ``R`` = Respondent.
     """
     block = load_split_upload_config(payload)
     types = block.get("types") if isinstance(block.get("types"), Mapping) else {}

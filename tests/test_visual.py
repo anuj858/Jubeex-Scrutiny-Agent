@@ -1019,6 +1019,8 @@ def _stub_openrouter_post(monkeypatch: pytest.MonkeyPatch, bodies: list[dict]) -
             raise_for_status=lambda: None,
         )
 
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(
         "extraction_review.visual.detect.visual_detection_enabled",
         lambda: True,

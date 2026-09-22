@@ -25,16 +25,19 @@ from .scrutiny.schema import LlmUsage
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-# DEFAULT_MODEL = "openai/gpt-5.5"
+DEFAULT_VERTEX_PROJECT = "scrutiny-jubeex"
+DEFAULT_VERTEX_LOCATION = "global"
+DEFAULT_VERTEX_MODEL = "gemini-3.8-flash"
+# DEFAULT_MODEL kept for OpenRouter ids.
 DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
-# Gemini thinking models spend this budget on hidden reasoning first.
-# 4096 often truncates the JSON mid-string (see D007 on gemini-3.8-flash).
 DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
-# 0 = unlimited. Set OPENROUTER_REQUESTS_PER_MINUTE=20 to match key RPM.
 DEFAULT_REQUESTS_PER_MINUTE = 0
 _RATE_WINDOW_S = 60.0
+
+_genai_client: Any = None
+_genai_client_lock = asyncio.Lock()
 
 
 class LLMError(RuntimeError):
@@ -49,12 +52,42 @@ class LLMFatalError(LLMError):
     """Auth / billing / permission failures that must not be retried."""
 
 
+def llm_provider() -> str:
+    """Active backend: ``vertex`` (GCP Gen AI SDK) or ``openrouter``."""
+    raw = (os.getenv("LLM_PROVIDER") or "vertex").strip().casefold()
+    if raw in {"openrouter", "or"}:
+        return "openrouter"
+    if raw in {"google", "gemini", "google_ai", "ai_studio"}:
+        # Treat AI Studio key mode as openrouter-incompatible; use vertex enterprise.
+        return "vertex"
+    return "vertex"
+
+
 def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
 
 
+def google_cloud_project() -> str:
+    return (
+        os.getenv("GOOGLE_CLOUD_PROJECT")
+        or os.getenv("GCP_PROJECT")
+        or os.getenv("GCLOUD_PROJECT")
+        or DEFAULT_VERTEX_PROJECT
+    ).strip()
+
+
+def google_cloud_location() -> str:
+    return (
+        os.getenv("GOOGLE_CLOUD_LOCATION")
+        or os.getenv("VERTEX_LOCATION")
+        or DEFAULT_VERTEX_LOCATION
+    ).strip() or DEFAULT_VERTEX_LOCATION
+
+
 def mask_openrouter_api_key(key: str | None = None) -> str:
     """Safe console fingerprint — never log the full secret."""
+    if llm_provider() == "vertex":
+        return f"vertex:{google_cloud_project()}/{google_cloud_location()}"
     value = key if key is not None else openrouter_api_key()
     if not value:
         return "(unset)"
@@ -63,16 +96,34 @@ def mask_openrouter_api_key(key: str | None = None) -> str:
     return f"{value[:12]}…{value[-4:]} (len={len(value)})"
 
 
+def _strip_google_model_prefix(model: str) -> str:
+    raw = (model or "").strip()
+    if raw.startswith("google/"):
+        return raw[len("google/") :]
+    return raw
+
+
 def openrouter_model() -> str:
+    """Resolved model id for the active provider."""
+    if llm_provider() == "vertex":
+        raw = (
+            os.getenv("VERTEX_MODEL")
+            or os.getenv("GOOGLE_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or DEFAULT_VERTEX_MODEL
+        )
+        return _strip_google_model_prefix(raw)
     return os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
 
 
 def openrouter_enabled() -> bool:
+    if llm_provider() == "vertex":
+        return bool(google_cloud_project())
     return bool(openrouter_api_key())
 
 
 def openrouter_requests_per_minute() -> int:
-    """Max OpenRouter /chat/completions calls per rolling 60s (0 = unlimited)."""
+    """Max LLM calls per rolling 60s (0 = unlimited)."""
     raw = os.getenv("OPENROUTER_REQUESTS_PER_MINUTE", str(DEFAULT_REQUESTS_PER_MINUTE))
     try:
         return max(0, int(str(raw).strip() or "0"))
@@ -81,7 +132,7 @@ def openrouter_requests_per_minute() -> int:
 
 
 class _OpenRouterRateLimiter:
-    """Process-wide sliding window for one OpenRouter API key."""
+    """Process-wide sliding window for LLM completion calls."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -104,7 +155,7 @@ class _OpenRouterRateLimiter:
                     return
                 wait_s = _RATE_WINDOW_S - (now - self._timestamps[0]) + 0.05
             logger.info(
-                "[OpenRouter] rate limit %s req/min reached; waiting %.1fs",
+                "[LLM] rate limit %s req/min reached; waiting %.1fs",
                 rpm,
                 wait_s,
             )
@@ -115,8 +166,57 @@ _openrouter_rate_limiter = _OpenRouterRateLimiter()
 
 
 async def acquire_openrouter_slot() -> None:
-    """Wait until this process may fire another OpenRouter completion request."""
+    """Wait until this process may fire another LLM request."""
     await _openrouter_rate_limiter.acquire()
+
+
+def get_genai_client() -> Any:
+    """Lazy Google Gen AI client (Vertex / Agent Platform, ADC or WIF)."""
+    global _genai_client
+    if _genai_client is not None:
+        return _genai_client
+    try:
+        from google import genai
+    except ImportError as exc:
+        raise LLMError(
+            "google-genai is required for LLM_PROVIDER=vertex "
+            "(pip install google-genai)"
+        ) from exc
+    project = google_cloud_project()
+    location = google_cloud_location()
+    _genai_client = genai.Client(
+        enterprise=True,
+        project=project,
+        location=location,
+    )
+    logger.info(
+        "[LLM] GenAI client ready provider=vertex project=%s location=%s",
+        project,
+        location,
+    )
+    return _genai_client
+
+
+def parse_genai_usage(response: Any, *, model: str | None = None) -> LlmUsage:
+    """Map google-genai usage_metadata onto LlmUsage (cost usually unset)."""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return LlmUsage(model=model, calls=1)
+    prompt = int(getattr(meta, "prompt_token_count", None) or 0)
+    completion = int(getattr(meta, "candidates_token_count", None) or 0)
+    total = int(getattr(meta, "total_token_count", None) or 0) or (prompt + completion)
+    reasoning = int(getattr(meta, "thoughts_token_count", None) or 0)
+    cached = int(getattr(meta, "cached_content_token_count", None) or 0)
+    return LlmUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_tokens=cached,
+        reasoning_tokens=reasoning,
+        calls=1,
+        cost_usd=None,
+        model=model,
+    )
 
 
 def _headers() -> dict[str, str]:
@@ -132,6 +232,7 @@ def _headers() -> dict[str, str]:
     if referer:
         headers["HTTP-Referer"] = referer
     return headers
+
 
 
 def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -325,6 +426,147 @@ def _parse_json(content: str) -> dict[str, Any]:
     ) from last_error
 
 
+async def _call_structured_vertex[T: BaseModel](
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    response_model: type[T],
+    model_name: str,
+    temperature: float,
+    token_limit: int | None,
+) -> tuple[T, LlmUsage]:
+    """Vertex / Agent Platform via google-genai (ADC locally, WIF on ECS)."""
+    from google.genai import types
+
+    client = get_genai_client()
+    schema = strict_json_schema(response_model)
+    usage = LlmUsage(model=model_name)
+    last_error: Exception | None = None
+    contents = user_prompt
+    use_schema = True
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            await acquire_openrouter_slot()
+            config: dict[str, Any] = {
+                "temperature": temperature,
+                "system_instruction": system_prompt,
+                "response_mime_type": "application/json",
+            }
+            if token_limit:
+                config["max_output_tokens"] = token_limit
+            if use_schema:
+                config["response_json_schema"] = schema
+
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(**config),
+            )
+            usage = usage.plus(parse_genai_usage(response, model=model_name))
+            content = (getattr(response, "text", None) or "").strip()
+            if not content and getattr(response, "parsed", None) is not None:
+                parsed_obj = response.parsed
+                if isinstance(parsed_obj, dict):
+                    parsed = _complete_structured_fields(parsed_obj)
+                    return response_model.model_validate(parsed), usage
+                if isinstance(parsed_obj, BaseModel):
+                    return response_model.model_validate(
+                        parsed_obj.model_dump()
+                    ), usage
+            if not content:
+                raise LLMError("Vertex response had empty text")
+            parsed = _complete_structured_fields(_parse_json(content))
+            return response_model.model_validate(parsed), usage
+        except ValidationError as e:
+            last_error = e
+            logger.warning(
+                "[LLM] Vertex attempt %s/%s malformed: %s",
+                attempt,
+                MAX_ATTEMPTS,
+                str(e)[:300],
+            )
+            if attempt < MAX_ATTEMPTS:
+                contents = (
+                    f"{user_prompt}\n\nYour previous response did not match the "
+                    f"required schema:\n{str(e)[:1500]}\n\nReturn corrected JSON "
+                    "matching the schema exactly. No prose, no markdown."
+                )
+        except Exception as e:
+            last_error = e
+            msg = str(e)
+            lower = msg.casefold()
+            if any(
+                token in lower
+                for token in ("permission", "unauthenticated", "403", "401", "billing")
+            ):
+                raise LLMFatalError(f"Vertex auth/billing: {msg[:300]}") from e
+            logger.warning(
+                "[LLM] Vertex attempt %s/%s failed: %s",
+                attempt,
+                MAX_ATTEMPTS,
+                msg[:300],
+            )
+            if "schema" in lower and use_schema:
+                use_schema = False
+                logger.warning("[LLM] Falling back to JSON mime without schema")
+            if attempt < MAX_ATTEMPTS:
+                await asyncio.sleep(min(2**attempt, 8) + random.uniform(0, 0.5))
+
+    if isinstance(last_error, LLMFatalError):
+        raise last_error
+    raise LLMError(
+        f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+        usage=usage,
+    ) from last_error
+
+
+async def generate_vision_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    images: list[tuple[bytes, str]],
+    model: str | None = None,
+    max_tokens: int | None = None,
+) -> tuple[str, LlmUsage]:
+    """Multimodal JSON generation for visual marks (Vertex Gen AI SDK).
+
+    ``images`` is a list of ``(jpeg_bytes, mime_type)`` including the page and
+    optional reference sheets.
+    """
+    if llm_provider() != "vertex":
+        raise LLMError("generate_vision_json requires LLM_PROVIDER=vertex")
+    from google.genai import types
+
+    model_name = _strip_google_model_prefix(model or openrouter_model())
+    token_limit = max_tokens
+    if token_limit is None:
+        raw_limit = os.getenv("VISION_MAX_OUTPUT_TOKENS", "").strip()
+        token_limit = int(raw_limit) if raw_limit else 4096
+
+    parts: list[Any] = [types.Part.from_text(text=user_prompt)]
+    for data, mime in images:
+        parts.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
+
+    client = get_genai_client()
+    await acquire_openrouter_slot()
+    response = await client.aio.models.generate_content(
+        model=model_name,
+        contents=parts,
+        config=types.GenerateContentConfig(
+            temperature=0.0,
+            system_instruction=system_prompt,
+            max_output_tokens=token_limit,
+            response_mime_type="application/json",
+        ),
+    )
+    usage = parse_genai_usage(response, model=model_name)
+    content = (getattr(response, "text", None) or "").strip()
+    if not content:
+        raise LLMError("Vertex vision response had empty text", usage=usage)
+    return content, usage
+
+
 async def call_structured[T: BaseModel](
     *,
     system_prompt: str,
@@ -335,12 +577,23 @@ async def call_structured[T: BaseModel](
     max_tokens: int | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> tuple[T, LlmUsage]:
-    """Call OpenRouter and return the model JSON plus OpenRouter's own usage.
-
-    Cost is copied from the same /chat/completions JSON: `usage.cost`.
-    No extra prompt, no extra completion, no GET /generation.
-    """
+    """Call Vertex (default) or OpenRouter and return validated JSON + usage."""
     model_name = model or openrouter_model()
+    if llm_provider() == "vertex":
+        model_name = _strip_google_model_prefix(model_name)
+        token_limit = max_tokens
+        if token_limit is None:
+            raw_limit = os.getenv("OPENROUTER_MAX_TOKENS", "").strip()
+            token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
+        return await _call_structured_vertex(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_model=response_model,
+            model_name=model_name,
+            temperature=temperature,
+            token_limit=token_limit,
+        )
+
     schema = strict_json_schema(response_model)
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
@@ -505,4 +758,3 @@ async def call_structured[T: BaseModel](
         f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
         usage=usage,
     ) from last_error
-

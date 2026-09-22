@@ -21,6 +21,8 @@ dependencies = [
     "boto3>=1.35,<2.0",
     "awscrt>=0.23,<1.0",
     "botocore[crt]>=1.43.89",
+    "google-auth>=2.35,<3",
+    "google-genai>=1.0,<3",
 ]
 
 [dependency-groups]
@@ -72,7 +74,6 @@ env_files = [".env"]
 llama_cloud = true
 required_env_vars = [
     "PINECONE_API_KEY",
-    "OPENROUTER_API_KEY",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
 ]
@@ -86,12 +87,16 @@ PINECONE_REGION = "us-east-1"
 PINECONE_EMBED_MODEL = "llama-text-embed-v2"
 PINECONE_TEXT_FIELD = "normalized_text"
 PINECONE_NAMESPACE = "jubeex-filings"
-OPENROUTER_MODEL = "google/gemini-3.8-flash"
+LLM_PROVIDER = "vertex"
+GOOGLE_CLOUD_PROJECT = "scrutiny-jubeex"
+GOOGLE_CLOUD_LOCATION = "global"
+VERTEX_MODEL = "gemini-3.8-flash"
+OPENROUTER_MODEL = "gemini-3.8-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_TIMEOUT_S = "180"
 OPENROUTER_APP_TITLE = "JubeeX Scrutiny"
 OPENROUTER_VISION_ENABLED = "true"
-OPENROUTER_VISION_MODEL = "google/gemini-3.8-flash"
+OPENROUTER_VISION_MODEL = "gemini-3.8-flash"
 VISION_PREVIEW_DPI = "160"
 VISION_CONCURRENCY = "4"
 SCRUTINY_ENABLED = "true"
