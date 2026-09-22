@@ -499,3 +499,135 @@ def test_lod_annexure_page_cites_are_not_stamps() -> None:
     assert repaired[24] == ["Annexure P-8"]
     assert "Annexure E-1" not in repaired.get(10, [])
     assert repaired[20] != ["Annexure P-7"]
+
+
+def test_repair_keeps_synopsis_out_of_main_petition_when_llama_mislabels() -> None:
+    """Synopsis continuation pages often say 'Special Leave Petition'; Llama tags Main."""
+    petition_start = (
+        "IN THE SUPREME COURT OF INDIA\nCIVL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (CIVIL) NO. ______ OF 2026\n"
+        "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH:\n1. The instant"
+    )
+    page_parts = {page: ["Main Petition"] for page in range(5, 16)}
+    page_parts[1] = ["Cover Page"]
+    page_parts[14] = ["Main Petition"]
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. _______OF 2026\n"
+            "PAPER BOOK\n(FOR INDEX KINDLY SEE INSIDE)\nADVOCATE FOR THE PETITIONER"
+        ),
+        2: "INDEX\n1. Office Report 1\n2. Listing Proforma 2\n3. Synopsis 3",
+        3: "OFFICE REPORT ON LIMITATION\n1. Within time.",
+        4: "PROFORMA FOR FIRST LISTING\nThe case pertains to",
+        5: (
+            "SYNOPSIS\nThe instant Special Leave Petition under Article 136 of the "
+            "Constitution of India is filed being aggrieved by the impugned judgement"
+        ),
+        6: (
+            "and the petitioner herein by virtue of HUF to the exclusion of all "
+            "others including respondent herein"
+        ),
+        7: (
+            "Findings of Hon'ble High court as to matter in issue in previously "
+            "instituted suit to be upheld"
+        ),
+        8: "LIST OF DATES AND EVENTS\n1964 On or about the year 1956, the great grandfather",
+        9: "27.01.1968 Shri Brij Mohan Sharma separated from his wife",
+        10: "1",
+        11: "2",
+        12: petition_start,
+        13: "Grounds A. Because the High Court erred",
+        14: "MAIN PRAYER:\nGrant Special Leave",
+        15: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "Certified that the Special Leave Petition is confined only to the pleadings"
+        ),
+    }
+    for page in range(1, 16):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=15)
+    assert repaired[5] == ["Synopsis"]
+    assert repaired[6] == ["Synopsis"]
+    assert repaired[7] == ["Synopsis"]
+    assert repaired[8] == ["List of Dates & Events"]
+    assert repaired[9] == ["List of Dates & Events"]
+    assert repaired[12] == ["Main Petition"]
+    assert repaired[13] == ["Main Petition"]
+    assert repaired[14] == ["Main Petition"]
+    assert repaired[15] == ["AOR's Certificate"]
+    assert all(
+        repaired.get(page) != ["Main Petition"] for page in range(5, 12)
+    )
+
+
+def test_repair_keeps_annexed_sci_rop_out_of_record_of_proceedings_slot() -> None:
+    """SCI ITEM-NO RoP sheets after Form-28 are Annexure copies, not paper-book RoP."""
+    rop_form = (
+        "RECORD OF PROCEEDINGS\n"
+        "SL No. Date of record of proceedings Pages\n"
+        "1.\n2.\n3.\n"
+    )
+    petition = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "CURATIVE PETITION UNDER ARTICLES 137, 142\n"
+        "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH:\n1. The petitioner"
+    )
+    annexed_rop = (
+        "ITEM NO.37 COURT NO.5 SECTION IIIA\n"
+        "S U P R E M E C O U R T O F I N D I A\n"
+        "RECORD OF PROCEEDINGS\n"
+        "Petition(s) for Special Leave to Appeal (C) No.7595/2015\n"
+        "(Arising out of impugned final judgment)\n"
+    )
+    annexed_rop_2 = (
+        "ITEM NO.205 COURT NO.5 SECTION IIIA\n"
+        "SUPREME COURT OF INDIA\n"
+        "RECORD OF PROCEEDINGS\n"
+        "Petition(s) for Special Leave to Appeal (C) No.7595/2015\n"
+    )
+    # Llama puts the annexed SCI orders into the RoP slot (longest island).
+    page_parts = {
+        2: ["Record of Proceedings"],
+        8: ["Main Petition"],
+        20: ["Record of Proceedings"],
+        21: ["Record of Proceedings"],
+        22: ["Record of Proceedings"],
+        23: ["Record of Proceedings"],
+        24: ["Record of Proceedings"],
+    }
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "CURATIVE PETITION (CIVIL) NO. ___ OF 2016\nPAPER BOOK\n"
+            "(FOR INDEX KINDLY SEE INSIDE)\nADVOCATE FOR THE PETITIONER"
+        ),
+        2: rop_form,
+        3: "INDEX\n1. List of dates\n2. Curative Petition\n4. ANNEXURE P-1",
+        4: "LIST OF DATES\n2007 Development Agreement",
+        8: petition,
+        9: "Grounds A. Because",
+        10: "MAIN PRAYER:\nAllow the curative petition",
+        15: "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\nWRIT PETITION NO.60 OF 2015",
+        20: annexed_rop,
+        21: "Let Rs.10 lacs be deposited within three days before the Registry",
+        22: annexed_rop_2,
+        23: "Central Board of Direct Taxes (CBDT) and directed for fresh hearing",
+        24: (
+            "Chamber matter SECTION IIIA\n"
+            "S U P R E M E C O U R T O F I N D I A\n"
+            "RECORD OF PROCEEDINGS\n"
+            "R. P. (C) No. 1512/2016 In SLP (C) No. 7595/2015\n"
+        ),
+    }
+    for page in range(1, 25):
+        texts.setdefault(page, "body")
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=24)
+    assert repaired[2] == ["Record of Proceedings"]
+    assert repaired[8] == ["Main Petition"]
+    for page in range(20, 25):
+        assert repaired.get(page) != ["Record of Proceedings"], page
+    assert all(
+        "Record of Proceedings" not in (repaired.get(page) or [])
+        for page in range(20, 25)
+    )
