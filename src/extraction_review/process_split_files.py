@@ -594,7 +594,6 @@ class ProcessSplitFilesWorkflow(Workflow):
         del extract_jubeex
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
-        visual_task = asyncio.create_task(_detect_visual_for_state(state, ctx))
 
         await llama_cloud_client.extract.wait_for_completion(
             state.extract_job_id,
@@ -617,7 +616,6 @@ class ProcessSplitFilesWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=usage_status_message(usage_summary))
         )
-        visual_index = await _await_visual_index(visual_task)
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
@@ -697,24 +695,6 @@ class ProcessSplitFilesWorkflow(Workflow):
             if layout_record:
                 data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
                 data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
-            visual_record = upload_visual_index(
-                visual_index,
-                organization_id=state.organization_id or state.org_id,
-                workspace_id=state.workspace_id,
-                job_id=state.extract_job_id or state.file_hash,
-            )
-            _persist_visual_metadata(data.metadata, visual_index, visual_record)
-            if visual_record:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            "Visual marks JSON saved to S3. Open the filing "
-                            "to download the link and verify signatures, "
-                            "seals, and stamps."
-                        ),
-                    )
-                )
             if state.parse_artifact_url:
                 data.metadata[PARSE_ARTIFACT_URL_KEY] = state.parse_artifact_url
             if state.parse_artifact_key:
@@ -1265,14 +1245,6 @@ async def _detect_visual_for_state(
         )
     )
     return index
-
-
-async def _await_visual_index(task: asyncio.Task[dict[str, Any]]) -> dict[str, Any]:
-    try:
-        return await task
-    except Exception:
-        logger.exception("Visual ink detection task failed")
-        return empty_visual_index(status="error", error="visual_detection_failed")
 
 
 def _upload_parse_artifact(

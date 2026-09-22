@@ -781,8 +781,39 @@ def test_visual_index_error_is_structured() -> None:
     summary = visual_summary(coerced)
     assert summary["target_count"] == 0
     assert summary["failures"][0]["reason"] == "missing_pdf"
+    assert summary["marks"] == []
     missing = empty_visual_index(status="missing")
     assert missing["status"] == "skipped"
+
+
+def test_visual_summary_includes_compact_marks() -> None:
+    summary = visual_summary(
+        {
+            "status": "ok",
+            "marks": [
+                {
+                    "page": 20,
+                    "document_type": "Main Petition",
+                    "marking_type": "signature_like_mark",
+                    "signature_role": "advocate",
+                    "bbox": {"x": 0.62, "y": 0.81, "width": 0.28, "height": 0.08},
+                    "confidence": 0.86,
+                    "visible_text": "AOR",
+                }
+            ],
+        }
+    )
+    assert summary["mark_count"] == 1
+    assert summary["marks"] == [
+        {
+            "page": 20,
+            "document_type": "Main Petition",
+            "marking_type": "signature_like_mark",
+            "signature_role": "advocate",
+            "bbox": {"x": 0.62, "y": 0.81, "width": 0.28, "height": 0.08},
+            "confidence": 0.86,
+        }
+    ]
 
 
 def test_missing_listing_proforma_omitted_from_targets() -> None:

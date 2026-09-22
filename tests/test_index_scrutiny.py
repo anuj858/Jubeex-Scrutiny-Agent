@@ -212,6 +212,97 @@ def test_extract_path_does_not_nest_scrutiny() -> None:
     )
 
 
+def test_extract_path_does_not_detect_visual() -> None:
+    assert "_detect_visual_for_state" not in inspect.getsource(
+        ProcessSplitFilesWorkflow.complete_extraction
+    )
+    assert "_detect_visual_for_state" in inspect.getsource(_complete_index_only)
+
+
+@pytest.mark.asyncio
+async def test_complete_index_only_writes_visual_marks_before_scrutiny(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+    stored: dict[str, object] = {"data": {}, "metadata": {}}
+    mark = {
+        "page": 20,
+        "document_type": "Main Petition",
+        "marking_type": "signature_like_mark",
+        "signature_role": "advocate",
+        "bbox": {"x": 0.62, "y": 0.81, "width": 0.28, "height": 0.08},
+        "confidence": 0.86,
+    }
+
+    async def fake_detect(_state: object, _ctx: object) -> dict[str, object]:
+        order.append("visual")
+        return {
+            "status": "ok",
+            "marks": [mark],
+            "targets": [{"page": 20, "document_types": ["Main Petition"]}],
+        }
+
+    def fake_upload(_payload: object, **_kwargs: object) -> dict[str, str]:
+        order.append("upload")
+        return {"url": "https://s3.example/visual.json", "key": "visualfiles/v.json"}
+
+    async def fake_index(**_kwargs: object) -> None:
+        order.append("pinecone")
+
+    async def fake_scrutiny(_ctx: object, *, agent_data_id: str) -> dict[str, str]:
+        order.append("scrutiny")
+        metadata = stored.get("metadata")
+        assert isinstance(metadata, dict)
+        summary = metadata["visual_summary"]
+        assert summary["marks"][0]["page"] == 20
+        assert summary["marks"][0]["marking_type"] == "signature_like_mark"
+        assert summary["marks"][0]["bbox"]["x"] == 0.62
+        assert metadata["visual_artifact_url"] == "https://s3.example/visual.json"
+        return {"schema_name": "scrutiny_finding_v1", "agent_data_id": agent_data_id}
+
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._detect_visual_for_state",
+        fake_detect,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.upload_visual_index",
+        fake_upload,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.pinecone_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._index_split_upload",
+        fake_index,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._run_nested_scrutiny",
+        fake_scrutiny,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+
+    state = _index_state()
+    ctx = SimpleNamespace(store=_Store(state), write_event_to_stream=lambda _ev: None)
+    payload = await _complete_index_only(
+        _fake_client(stored),
+        ctx=ctx,  # type: ignore[arg-type]
+        catalog=None,
+        parts=[],
+        pages_by_slot={},
+        parse_job_ids={"petition": "job-1"},
+        layouts_by_slot={},
+        page_markdown={1: "hello"},
+        page_parts={},
+        page_layout={},
+    )
+    assert order == ["visual", "upload", "pinecone", "scrutiny"]
+    assert payload["agent_data_id"] == "agd-index"
+
+
 @pytest.mark.asyncio
 async def test_run_workflow_fails_with_retry_message(
     monkeypatch: pytest.MonkeyPatch,
