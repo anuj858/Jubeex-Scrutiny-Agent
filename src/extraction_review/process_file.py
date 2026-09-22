@@ -48,7 +48,7 @@ from .document_parts import (
     parts_on_page,
 )
 from .split_audit import audit_compiled_split
-from .split_repair import repair_compiled_split
+from .structure_split import structure_aware_split
 from .job_timing import (
     attach_timing,
     elapsed_seconds,
@@ -1883,17 +1883,53 @@ class ProcessFileWorkflow(Workflow):
         }
         if pdf_page_count:
             page_texts = pdf_page_texts(pdf_bytes)
-            page_parts, duplicate_hits = repair_compiled_split(
-                page_parts,
-                page_texts,
-                page_count=pdf_page_count,
+            # Structure-aware path: page units → classify → boundaries →
+            # logical docs → hybrid repair. LlamaSplit is a warm-start hint.
+            # Physical slot PDFs are created only after boundaries are final.
+            structured = structure_aware_split(
+                pdf_bytes,
+                llama_page_parts=page_parts,
+                page_texts=page_texts,
+                source_pdf=state.filename or "bundle.pdf",
+                run_hybrid_repair=True,
             )
-            split_duplicates = [hit.as_dict() for hit in duplicate_hits]
+            page_parts = structured.page_parts
+            duplicate_hits = structured.duplicates
+            split_duplicates = [
+                hit.as_dict() if hasattr(hit, "as_dict") else hit
+                for hit in duplicate_hits
+            ]
             split_audit = audit_compiled_split(
                 page_parts,
                 page_texts,
                 page_count=pdf_page_count,
             )
+            split_audit["structure"] = structured.report()
+            if structured.ocr_needed_pages:
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Marked {len(structured.ocr_needed_pages)} page(s) "
+                            f"as OCR-needed (sparse text layer)"
+                        ),
+                    )
+                )
+            logical_n = len(structured.logical_documents)
+            if logical_n:
+                structure_meta = split_audit["structure"]
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Structure-aware split found {logical_n} logical "
+                            f"document(s) "
+                            f"({structure_meta.get('auto_boundaries', 0)} auto / "
+                            f"{structure_meta.get('verify_boundaries', 0)} "
+                            f"verify boundaries)"
+                        ),
+                    )
+                )
             if split_duplicates:
                 ctx.write_event_to_stream(
                     Status(

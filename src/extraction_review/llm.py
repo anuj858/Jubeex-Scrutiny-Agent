@@ -13,6 +13,8 @@ import json
 import logging
 import os
 import random
+import time
+from collections import deque
 from typing import Any
 
 import httpx
@@ -28,8 +30,11 @@ DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
 # Gemini thinking models spend this budget on hidden reasoning first.
 # 4096 often truncates the JSON mid-string (see D007 on gemini-3.8-flash).
-DEFAULT_MAX_TOKENS = 16384
+DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
+# 0 = unlimited. Set OPENROUTER_REQUESTS_PER_MINUTE=20 to match key RPM.
+DEFAULT_REQUESTS_PER_MINUTE = 0
+_RATE_WINDOW_S = 60.0
 
 
 class LLMError(RuntimeError):
@@ -40,8 +45,22 @@ class LLMError(RuntimeError):
         self.usage = usage or LlmUsage()
 
 
+class LLMFatalError(LLMError):
+    """Auth / billing / permission failures that must not be retried."""
+
+
 def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
+
+
+def mask_openrouter_api_key(key: str | None = None) -> str:
+    """Safe console fingerprint — never log the full secret."""
+    value = key if key is not None else openrouter_api_key()
+    if not value:
+        return "(unset)"
+    if len(value) <= 16:
+        return f"{value[:4]}…(len={len(value)})"
+    return f"{value[:12]}…{value[-4:]} (len={len(value)})"
 
 
 def openrouter_model() -> str:
@@ -50,6 +69,54 @@ def openrouter_model() -> str:
 
 def openrouter_enabled() -> bool:
     return bool(openrouter_api_key())
+
+
+def openrouter_requests_per_minute() -> int:
+    """Max OpenRouter /chat/completions calls per rolling 60s (0 = unlimited)."""
+    raw = os.getenv("OPENROUTER_REQUESTS_PER_MINUTE", str(DEFAULT_REQUESTS_PER_MINUTE))
+    try:
+        return max(0, int(str(raw).strip() or "0"))
+    except (TypeError, ValueError):
+        return DEFAULT_REQUESTS_PER_MINUTE
+
+
+class _OpenRouterRateLimiter:
+    """Process-wide sliding window for one OpenRouter API key."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._timestamps: deque[float] = deque()
+
+    async def acquire(self) -> None:
+        rpm = openrouter_requests_per_minute()
+        if rpm <= 0:
+            return
+        while True:
+            wait_s = 0.0
+            async with self._lock:
+                now = time.monotonic()
+                while (
+                    self._timestamps and now - self._timestamps[0] >= _RATE_WINDOW_S
+                ):
+                    self._timestamps.popleft()
+                if len(self._timestamps) < rpm:
+                    self._timestamps.append(now)
+                    return
+                wait_s = _RATE_WINDOW_S - (now - self._timestamps[0]) + 0.05
+            logger.info(
+                "[OpenRouter] rate limit %s req/min reached; waiting %.1fs",
+                rpm,
+                wait_s,
+            )
+            await asyncio.sleep(max(wait_s, 0.05))
+
+
+_openrouter_rate_limiter = _OpenRouterRateLimiter()
+
+
+async def acquire_openrouter_slot() -> None:
+    """Wait until this process may fire another OpenRouter completion request."""
+    await _openrouter_rate_limiter.acquire()
 
 
 def _headers() -> dict[str, str]:
@@ -317,6 +384,7 @@ async def call_structured[T: BaseModel](
     try:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
+                await acquire_openrouter_slot()
                 response = await http.post(
                     f"{base_url}/chat/completions",
                     headers=_headers(),
@@ -344,7 +412,23 @@ async def call_structured[T: BaseModel](
                         response=response,
                     )
 
-                response.raise_for_status()
+                if response.status_code in (401, 402, 403):
+                    logger.error(
+                        "[LLM] OpenRouter fatal %s body=%s",
+                        response.status_code,
+                        response.text[:2000],
+                    )
+                    raise LLMFatalError(
+                        f"OpenRouter {response.status_code} "
+                        f"(auth/billing — not retried): {response.text[:300]}"
+                    )
+
+                if response.status_code >= 400:
+                    logger.error(
+                        "[LLM] OpenRouter error body: %s",
+                        response.text,
+                    )
+                    raise LLMError(f"OpenRouter error: {response.text[:300]}")
                 payload = response.json()
                 if isinstance(payload, dict):
                     usage = usage.plus(
@@ -384,6 +468,10 @@ async def call_structured[T: BaseModel](
                             ),
                         }
                     )
+            except LLMFatalError as e:
+                last_error = e
+                logger.error("[LLM] Fatal OpenRouter error (no retry): %s", str(e)[:300])
+                break
             except (httpx.HTTPError, LLMError) as e:
                 last_error = e
                 logger.warning(
@@ -411,7 +499,10 @@ async def call_structured[T: BaseModel](
         if owns_client:
             await http.aclose()
 
+    if isinstance(last_error, LLMFatalError):
+        raise last_error
     raise LLMError(
         f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
         usage=usage,
     ) from last_error
+

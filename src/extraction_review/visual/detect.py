@@ -19,9 +19,12 @@ from ..llm import (
     DEFAULT_BASE_URL,
     DEFAULT_TIMEOUT_S,
     LLMError,
+    LLMFatalError,
     _close_truncated_json,
     _extract_content,
     _headers,
+    acquire_openrouter_slot,
+    mask_openrouter_api_key,
     openrouter_api_key,
     openrouter_model,
     parse_openrouter_usage,
@@ -46,7 +49,7 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_CONCURRENCY = 4
-DEFAULT_VISION_MAX_TOKENS = 4096
+DEFAULT_VISION_MAX_TOKENS = 2800
 ADVOCATE_LABELS = re.compile(
     r"\b(advocate(?:-on-record)?|aor|counsel|drawn\s*&\s*filed|filed\s+by)\b",
     re.IGNORECASE,
@@ -496,6 +499,7 @@ async def analyze_page_image(
         "response_format": {"type": "json_object"},
     }
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    await acquire_openrouter_slot()
     response = await http.post(
         f"{base_url}/chat/completions",
         headers=_headers(),
@@ -504,6 +508,61 @@ async def analyze_page_image(
     if response.status_code in (408, 409, 429) or response.status_code >= 500:
         raise LLMError(
             f"Retryable vision status {response.status_code}: {response.text[:300]}"
+        )
+    if response.status_code == 402:
+        body_text = response.text[:2000]
+
+        if "in_flight_budget_exhausted" in body_text:
+            retry_after = response.headers.get("Retry-After", "30")
+
+            try:
+                retry_after_s = max(1, min(int(retry_after), 180))
+            except (TypeError, ValueError):
+                retry_after_s = 30
+
+            logger.warning(
+                "[VISION] OpenRouter in-flight budget exhausted "
+                "page=%s model=%s; retrying after %ss",
+                target.page,
+                model,
+                retry_after_s,
+            )
+
+            await asyncio.sleep(retry_after_s)
+
+            await acquire_openrouter_slot()
+            response = await http.post(
+                f"{base_url}/chat/completions",
+                headers=_headers(),
+                json=payload,
+            )
+
+            if response.status_code == 402:
+                body_text = response.text[:2000]
+
+                if "in_flight_budget_exhausted" in body_text:
+                    raise LLMError(
+                        "OpenRouter in-flight budget still exhausted "
+                        f"after retry: {body_text[:300]}"
+                    )
+
+        else:
+            logger.error(
+                "[VISION] OpenRouter 402 body=%s",
+                body_text,
+            )
+            raise LLMFatalError(
+                f"OpenRouter 402 (billing): {body_text[:300]}"
+            )
+
+    if response.status_code in (401, 403):
+        logger.error(
+            "[VISION] OpenRouter error status=%s body=%s",
+            response.status_code,
+            response.text[:2000],
+        )
+        raise LLMFatalError(
+            f"OpenRouter {response.status_code}: {response.text[:300]}"
         )
     response.raise_for_status()
     body = response.json()
@@ -555,6 +614,16 @@ async def _analyze_with_fallback(
                 http=http,
             )
             return found, None, combined.plus(usage)
+        except LLMFatalError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.error(
+                "Vision billing/auth failure page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
+            break
         except LLMError as exc:
             last_error = exc
             combined = combined.plus(exc.usage)
@@ -679,7 +748,7 @@ async def detect_visual_marks(
         on_log,
         (
             f"Visual detection enabled={enabled} model={vision_model() or '-'} "
-            f"api_key={'yes' if openrouter_api_key() else 'no'}"
+            f"api_key={mask_openrouter_api_key()}"
         ),
     )
     if not enabled:
