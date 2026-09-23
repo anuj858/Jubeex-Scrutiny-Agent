@@ -210,3 +210,34 @@ def test_annexure_series_p_petitioner_r_respondent() -> None:
     assert "Annexure R-2" in expected
     entries = collect_index_annexure_entries(page_parts, texts)
     assert [label for label, _ in entries] == ["Annexure P-1", "Annexure R-1"]
+
+
+def test_detached_index_page_column_zips_onto_rows() -> None:
+    """Page numbers printed in their own column still attach to each document."""
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = """
+INDEX
+1. Arbitration Petition with Affidavit
+2. Annexure A-1 Board Resolution
+3. Annexure A-4 Reminder Notice
+4. FILING INDEX
+5. V AKALATNAMA
+6. Payment receipt for sum of Rs. 15000/-
+1-21B
+22-24B
+36
+60
+61-63B
+64
+"""
+    rows = index_rows_with_printed_pages(text)
+    by_part = {row.mapped_part: row for row in rows}
+    assert by_part["Main Petition"].start == 1
+    assert by_part["Main Petition"].end == 21
+    assert by_part["Main Petition"].end_suffix == "B"
+    assert by_part["Annexure A-1"].start == 22
+    assert by_part["Annexure A-4"].start == 36
+    assert by_part["Filing Memo"].start == 60
+    assert by_part["Vakalatnama"].end_suffix == "B"
+    assert by_part["Court Fees"].start == 64

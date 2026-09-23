@@ -34,7 +34,12 @@ from .document_parts import (
     page_starts_application,
     parts_on_page,
 )
-from .split_audit import collect_expected_annexures, collect_index_annexure_entries
+from .split_audit import (
+    IndexPrintedRow,
+    aligned_index_printed_rows,
+    collect_expected_annexures,
+    collect_index_annexure_entries,
+)
 
 _SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
 # OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
@@ -63,7 +68,9 @@ _LISTING_RE = re.compile(
     re.I,
 )
 _SYNOPSIS_RE = re.compile(r"(?m)^\s*synopsis\b", re.I)
-_LOD_RE = re.compile(r"list of dates", re.I)
+# Heading only. Affidavit verification and checklists mention "list of dates"
+# in a sentence; that must not open the List of Dates slot.
+_LOD_RE = re.compile(r"(?m)^\s*list of dates\b", re.I)
 _APPENDIX_RE = re.compile(r"(?m)^\s*appendix\b", re.I)
 _RECORD_RE = re.compile(
     # OCR: RECORD OF PROCE.J:o:DINGS / PROCEED1NGS
@@ -625,6 +632,10 @@ def _outer_anchor_label(text: str) -> str | None:
         _looks_like_court_notice_or_rop(text)
     ):
         return "Filing Memo"
+    # Advocate's Check List tables say "index" and "particulars" in the rows.
+    # That is not the paper-book Index — classify the checklist first.
+    if _looks_like_sci_checklist(text):
+        return "Advocate's Checklist"
     if _looks_like_index_table(text):
         return "Index"
     # OR heading often sits below the cause title — search more than 12 lines.
@@ -648,8 +659,6 @@ def _outer_anchor_label(text: str) -> str | None:
         text
     ):
         return "Appendix"
-    if _looks_like_sci_checklist(text):
-        return "Advocate's Checklist"
     # Affidavit before AOR: curative affidavits often say "confined only to the
     # pleadings" and would otherwise steal the AOR Certificate slot.
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)) and (
@@ -911,6 +920,7 @@ def _apply_outer_anchors(
             "Office Report on Limitation",
             "Listing Proforma",
             "Index",
+            "Advocate's Checklist",
             "Appendix",
             "Record of Proceedings",
             "Synopsis",
@@ -1315,8 +1325,94 @@ def _looks_like_lod_or_synopsis_continuation(text: str) -> bool:
         head,
     ):
         return True
-    folded = _fold(head)
-    return "list of dates" in folded or folded.lstrip().startswith("synopsis")
+    if _LOD_RE.search(head) or _SYNOPSIS_RE.search(head):
+        return True
+    return False
+
+
+_AFFIDAVIT_BODY_RE = re.compile(
+    r"deponent|verification|solemnly affirm|solemnly declare",
+    re.I,
+)
+
+
+def _restore_split_preface(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep Synopsis, List of Dates, and Affidavit off the Impugned Order slot.
+
+    LlamaSplit tags that preface as Impugned Order on arbitration and other
+    filings that have no judgment under challenge. A near-blank scan between
+    List of Dates and the petition can still be the impugned order. Affidavit
+    verification that only mentions the List of Dates stays an affidavit.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    petition_at = page_count + 1
+    for page in range(1, page_count + 1):
+        if _looks_like_sci_main_petition(page_text.get(page, "")):
+            petition_at = page
+            break
+
+    preface: str | None = None
+    for page in range(1, petition_at):
+        text = page_text.get(page, "")
+        anchor = _outer_anchor_label(text)
+        if anchor in {"Synopsis", "List of Dates & Events"}:
+            preface = anchor
+            updated[page] = [anchor]
+            continue
+        if _looks_like_impugned_order_start(text) or _is_lower_court_caption(text):
+            preface = None
+            continue
+        if anchor in {
+            MAIN_PETITION_PART,
+            "Affidavit",
+            "Cover Page",
+            "Index",
+            "Advocate's Checklist",
+            "Office Report on Limitation",
+            "Listing Proforma",
+            "Record of Proceedings",
+            "AOR's Certificate",
+            "Filing Memo",
+            "Vakalatnama",
+            "Memo of Parties",
+            "Appendix",
+        }:
+            preface = None
+            continue
+        if annexure_ref_in_heading(text) or page_starts_application(text):
+            preface = None
+            continue
+        if not preface:
+            continue
+        if _is_near_blank_page(text) or _looks_like_garbled_scan_ocr(text):
+            continue
+        names = parts_on_page(updated.get(page))
+        if "Impugned Order" in names:
+            updated[page] = [preface]
+
+    for page in range(2, page_count + 1):
+        text = page_text.get(page, "")
+        if annexure_ref_in_heading(text) or _looks_like_sci_main_petition(text):
+            continue
+        prev = parts_on_page(updated.get(page - 1))
+        if "Affidavit" not in prev:
+            continue
+        names = parts_on_page(updated.get(page))
+        heading_lod = bool(_LOD_RE.search(_heading_window(text, lines=8)))
+        false_lod = "List of Dates & Events" in names and not heading_lod
+        affidavit_body = bool(_AFFIDAVIT_BODY_RE.search(text[:2500] or ""))
+        anchor = _outer_anchor_label(text)
+        if anchor not in {None, "List of Dates & Events"}:
+            continue
+        if false_lod or (not names and affidavit_body) or (
+            names == ["List of Dates & Events"] and affidavit_body
+        ):
+            updated[page] = ["Affidavit"]
+    return updated
 
 
 def _looks_like_garbled_scan_ocr(text: str) -> bool:
@@ -2367,6 +2463,7 @@ def repair_compiled_split(
     updated = _demote_false_advocate_checklist(updated, page_text)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _apply_outer_anchors(updated, page_text, page_count)
+    updated = _restore_split_preface(updated, page_text, page_count)
     updated = _demote_front_matter_mislabeled_as_main(updated, page_text, page_count)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _extend_main_petition_body(updated, page_text, page_count)
@@ -2417,7 +2514,156 @@ def repair_compiled_split(
     # After all stamp/nest work: annexures not cited in Index/LOD/Main become
     # unlabeled leftovers → Undefined / Unidentified at slice time.
     repaired = _demote_unmentioned_annexures(repaired, page_text)
+    repaired = _apply_index_printed_pages(repaired, page_text, page_count)
     return repaired, duplicates
+
+
+_FOLIO_NUM_RE = re.compile(r"^(?P<n>\d{1,4})(?P<suffix>[A-Za-z])?$")
+_FOLIO_LETTER_RE = re.compile(r"^[A-Za-z]$")
+_COURT_FEE_PAGE_RE = re.compile(r"cash\s*&?\s*accounts|bank draft|payment receipt", re.I)
+
+
+def _printed_folio(text: str) -> tuple[str, int, str] | None:
+    """Corner folio such as ``36``, ``63B``, or ``B``.
+
+    Only the bottom line counts. A page number cited in the paragraph above
+    it (``36`` then ``37 to 48``) is not the folio of this sheet.
+    """
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    skipped_word = False
+    for line in reversed(lines):
+        if re.fullmatch(r"[\W_]+", line):
+            continue
+        numbered = _FOLIO_NUM_RE.fullmatch(line)
+        if numbered:
+            number = int(numbered.group("n"))
+            if 1900 <= number <= 2099:
+                return None
+            return ("number", number, (numbered.group("suffix") or "").upper())
+        if _FOLIO_LETTER_RE.fullmatch(line):
+            return ("letter", ord(line.upper()), "")
+        # "61" then "December": the folio sits just above a one-word signature.
+        if not skipped_word and re.fullmatch(r"[A-Za-z]{3,}", line):
+            skipped_word = True
+            continue
+        return None
+    return None
+
+
+def _folio_in_printed_row(
+    folio: tuple[str, int, str], row: IndexPrintedRow
+) -> bool:
+    kind, number, suffix = folio
+    if kind != row.kind or number < row.start or number > row.end:
+        return False
+    if number < row.end:
+        return True
+    if not row.end_suffix:
+        return suffix == ""
+    if not suffix:
+        return True
+    return suffix <= row.end_suffix
+
+
+def _index_heading_part(text: str) -> str | None:
+    stamped = annexure_label_from_text(text)
+    if stamped:
+        return stamped
+    return _outer_anchor_label(text)
+
+
+def _index_row_confirmed(text: str, part: str | None) -> bool:
+    if not part:
+        return False
+    if _index_heading_part(text) == part:
+        return True
+    if part == "Court Fees" and _COURT_FEE_PAGE_RE.search(text or ""):
+        return True
+    return False
+
+
+def _apply_index_printed_pages(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Open the pages the Index lists, and use them when the heading agrees.
+
+    The Index page column is the folio printed on the sheet (36, 61–63B), not
+    the PDF page index. A span is used only after one of those sheets shows
+    the same document. A different printed heading on a sheet is left as-is.
+    """
+    rows = aligned_index_printed_rows(page_parts, page_text)
+    if not rows:
+        return page_parts
+    folios = {
+        page: _printed_folio(page_text.get(page, ""))
+        for page in range(1, page_count + 1)
+    }
+    confirmed: list[IndexPrintedRow] = []
+    for row in rows:
+        if not row.mapped_part:
+            continue
+        if any(
+            folio
+            and _folio_in_printed_row(folio, row)
+            and _index_row_confirmed(page_text.get(page, ""), row.mapped_part)
+            for page, folio in folios.items()
+        ):
+            confirmed.append(row)
+    if not confirmed:
+        return page_parts
+
+    def _in_part(part: str, folio: tuple[str, int, str]) -> bool:
+        return any(
+            row.mapped_part == part and _folio_in_printed_row(folio, row)
+            for row in confirmed
+        )
+
+    anchored: set[str] = set()
+    for page, names in page_parts.items():
+        folio = folios.get(page)
+        current = parts_on_page(names)
+        if not folio or not current:
+            continue
+        if _in_part(current[0], folio):
+            anchored.add(current[0])
+
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in range(1, page_count + 1):
+        folio = folios.get(page)
+        if not folio:
+            continue
+        text = page_text.get(page, "")
+        heading = _index_heading_part(text)
+        if heading == "Index":
+            continue
+        owner = next(
+            (
+                row.mapped_part
+                for row in confirmed
+                if row.mapped_part and _folio_in_printed_row(folio, row)
+            ),
+            None,
+        )
+        if heading and owner and heading != owner:
+            continue
+        names = parts_on_page(updated.get(page))
+        current = names[0] if names else None
+        leaked = bool(
+            current
+            and current in anchored
+            and not _in_part(current, folio)
+        )
+        weak = current in {"PoA/BR"} or (
+            current == "Impugned Order" and not _looks_like_impugned_order_start(text)
+        )
+        if owner and (not current or weak or leaked or current == owner):
+            updated[page] = [owner]
+            continue
+        if leaked and not owner:
+            updated.pop(page, None)
+    return updated
 
 
 def _fill_application_gaps(

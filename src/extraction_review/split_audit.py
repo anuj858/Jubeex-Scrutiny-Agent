@@ -198,7 +198,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Affidavit"
     if "appendix" in text:
         return "Appendix"
-    if "vakalatnama" in text:
+    if "vakalatnama" in text or "vakalatnama" in re.sub(r"\s+", "", text):
         return "Vakalatnama"
     if "memo of appearance" in text or "memorandum of appearance" in text:
         return "Memo of Appearance"
@@ -214,7 +214,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Record of Proceedings"
     if "filing memo" in text or "index of filing" in text or "filing index" in text:
         return "Filing Memo"
-    if "court fee" in text:
+    if "court fee" in text or "payment receipt" in text:
         return "Court Fees"
     if "application" in text or re.search(r"\bi\.?\s*a\.?\b", text):
         match = _APPLICATION_IN_INDEX_RE.search(particulars)
@@ -295,6 +295,209 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
             )
         )
     return rows
+
+
+@dataclass(frozen=True)
+class IndexPrintedRow:
+    """Index document tied to the printed folio numbers on the sheets.
+
+    ``kind="number"`` is 36 or 61–63B. ``kind="letter"`` is B–I.
+    ``end_suffix`` is the letter on the last folio (63B → ``B``).
+    """
+
+    mapped_part: str | None
+    particulars: str
+    kind: str
+    start: int
+    end: int
+    end_suffix: str = ""
+
+
+_SPAN_TOKEN_RE = re.compile(
+    r"^(?:"
+    r"(?P<n1>\d{1,4})(?:(?P<s1>[A-Za-z])?(?:\s*[-–—]\s*(?P<n2>\d{1,4})(?P<s2>[A-Za-z])?)?)?"
+    r"|(?P<L1>[A-Za-z])\s*[-–—]\s*(?P<L2>[A-Za-z])"
+    r"|A\s*(?P<a1>\d{1,2})\s*[-–—]\s*A\s*-?\s*(?P<a2>\d{1,2})"
+    r"|A(?P<aonly>\d{1,2})"
+    r")$",
+    re.IGNORECASE,
+)
+_LEADING_SPAN_RE = re.compile(
+    r"^(?P<n1>\d{1,4})(?:\s*[-–—]\s*(?P<n2>\d{1,4}))?(?P<s2>[A-Za-z])?(?P<rest>\D.+)$"
+)
+
+
+def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
+    match = _SPAN_TOKEN_RE.fullmatch(token.strip())
+    if not match:
+        return None
+    if match.group("a1") or match.group("aonly"):
+        start = int(match.group("a1") or match.group("aonly"))
+        end = int(match.group("a2") or start)
+        return IndexPrintedRow(
+            mapped_part=None,
+            particulars=token,
+            kind="letter",
+            start=start,
+            end=end,
+        )
+    if match.group("L1"):
+        return IndexPrintedRow(
+            mapped_part=None,
+            particulars=token,
+            kind="letter",
+            start=ord(match.group("L1").upper()),
+            end=ord(match.group("L2").upper()),
+        )
+    start = int(match.group("n1"))
+    end = int(match.group("n2") or start)
+    if end < start:
+        start, end = end, start
+    suffix = (match.group("s2") or "").upper()
+    return IndexPrintedRow(
+        mapped_part=None,
+        particulars=token,
+        kind="number",
+        start=start,
+        end=end,
+        end_suffix=suffix,
+    )
+
+
+def _span_only_line(line: str) -> list[IndexPrintedRow]:
+    tokens = [token for token in line.split() if token]
+    if not tokens:
+        return []
+    spans: list[IndexPrintedRow] = []
+    for token in tokens:
+        span = _printed_span_from_token(token.strip(".,"))
+        if span is None:
+            return []
+        spans.append(span)
+    return spans
+
+
+def _dedupe_spans(spans: Sequence[IndexPrintedRow]) -> list[IndexPrintedRow]:
+    seen: set[tuple[str, int, int, str]] = set()
+    unique: list[IndexPrintedRow] = []
+    for span in spans:
+        key = (span.kind, span.start, span.end, span.end_suffix)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(span)
+    return unique
+
+
+def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
+    """Attach Index page numbers, including a column the OCR split off the rows.
+
+    SCI indexes print the page span in its own column. Those spans come out as
+    lines like ``37-48`` and ``61-63B``. They are zipped onto the rows that
+    lost their page numbers, from the bottom, and only when the counts match.
+    """
+    kept: list[str] = []
+    orphans: list[IndexPrintedRow] = []
+    for line in (index_text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        spans = _span_only_line(stripped)
+        if spans:
+            orphans.extend(spans)
+            continue
+        kept.append(stripped)
+    rows = parse_index_rows("\n".join(kept))
+    if not rows:
+        return []
+
+    printed: list[IndexPrintedRow | None] = [None] * len(rows)
+    unassigned: list[int] = []
+    for index, row in enumerate(rows):
+        start, end, suffix = row.start_page, row.end_page, ""
+        if start <= 0:
+            lead = _LEADING_SPAN_RE.match(row.particulars.strip())
+            if lead:
+                start = int(lead.group("n1"))
+                end = int(lead.group("n2") or start)
+                suffix = (lead.group("s2") or "").upper()
+                if end < start:
+                    start, end = end, start
+        if start > 0:
+            printed[index] = IndexPrintedRow(
+                mapped_part=row.mapped_part,
+                particulars=row.particulars,
+                kind="number",
+                start=start,
+                end=end,
+                end_suffix=suffix,
+            )
+        else:
+            unassigned.append(index)
+
+    orphans = _dedupe_spans(orphans)
+    numeric = [span for span in orphans if span.kind == "number"]
+    if numeric and len(numeric) <= len(unassigned):
+        targets = unassigned[-len(numeric) :]
+        # Only the trailing rows. Leave a gap of unassigned rows in front
+        # when the letter-page column is a different list.
+        if targets == unassigned[-len(targets) :]:
+            for index, span in zip(targets, numeric, strict=True):
+                row = rows[index]
+                printed[index] = IndexPrintedRow(
+                    mapped_part=row.mapped_part,
+                    particulars=row.particulars,
+                    kind="number",
+                    start=span.start,
+                    end=span.end,
+                    end_suffix=span.end_suffix,
+                )
+                unassigned.remove(index)
+
+    aligned = [row for row in printed if row is not None and row.start > 0]
+    seen_serials = {row.serial for row in rows if row.serial is not None}
+    for line in kept:
+        serial_match = re.match(r"^(\d{1,3})[.)]\s+(.*)$", line)
+        if not serial_match:
+            continue
+        serial = int(serial_match.group(1))
+        if serial in seen_serials:
+            continue
+        lead = _LEADING_SPAN_RE.match(serial_match.group(2).strip())
+        if not lead:
+            continue
+        start = int(lead.group("n1"))
+        end = int(lead.group("n2") or start)
+        if end < start:
+            start, end = end, start
+        suffix = (lead.group("s2") or "").upper()
+        rest = lead.group("rest") or ""
+        # "67Undertaking" is a word, not folio suffix 67U.
+        if suffix and rest[:1].isalpha():
+            suffix = ""
+            rest = f"{lead.group('s2')}{rest}"
+        aligned.append(
+            IndexPrintedRow(
+                mapped_part=map_index_particulars_to_part(rest),
+                particulars=line,
+                kind="number",
+                start=start,
+                end=end,
+                end_suffix=suffix,
+            )
+        )
+    return aligned
+
+
+def aligned_index_printed_rows(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> list[IndexPrintedRow]:
+    """Printed-folio rows from the paper-book Index, when that Index is present."""
+    index_text = _index_pages_text(page_parts, page_text)
+    if not index_text.strip():
+        return []
+    return index_rows_with_printed_pages(index_text)
 
 
 def normalize_annexure_part_label(series: str | None, number: int) -> str:

@@ -1246,3 +1246,119 @@ def test_contiguous_stamped_annexures_survive_incomplete_index() -> None:
     assert repaired[9] == ["Annexure P-12"]
     assert repaired[5] == ["Application 1"]
     assert repaired[6] == ["Application 1"]
+
+
+def test_arbitration_preface_is_not_impugned_and_a_series_stamps_stick() -> None:
+    """Defect-style book: Synopsis/LOD tagged Impugned Order, A-n tagged P-n / PoA."""
+    page_parts = {
+        1: ["Index"],
+        2: ["Impugned Order"],
+        3: ["Impugned Order"],
+        4: ["Impugned Order"],
+        5: ["Impugned Order"],
+        6: ["Impugned Order"],
+        7: ["Main Petition"],
+        8: ["Affidavit"],
+        9: ["List of Dates & Events"],
+        10: ["PoA/BR"],
+        11: ["Annexure P-4"],
+        12: ["Filing Memo"],
+    }
+    texts = {
+        1: (
+            "ANNEXURE D\n"
+            "PROPOSED ADVOCATE'S CHECK LIST (TO BE CERTIFIED BY ADVOCATE-ON-RECORD)\n"
+            "1 SLP (C) has been filed in Form No. 28 with certificate. N/A\n"
+            "2 The Petition is as per the provision of Order XV Rule 1. Yes\n"
+            "7. List of Dates\n"
+            "particulars page no"
+        ),
+        2: (
+            "SYNOPSIS\nThe Petitioner seeks appointment of an Arbitral Tribunal "
+            "under Section 11(6) of the Arbitration and Conciliation Act, 1996."
+        ),
+        3: (
+            "end customers and caters to a global clientele. The Respondent "
+            "failed to operate the agreed rotations."
+        ),
+        4: "LIST OF DATES AND EVENTS\n08.03.2024 The parties executed the Agreement.",
+        5: (
+            "in breach of its obligations; and the Respondent failed to remedy "
+            "the breach despite multiple intimations by the Petitioner."
+        ),
+        6: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL ORIGINAL JURISDICTION\n"
+            "ARBITRATION PETITION NO. OF 2025\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. The Petitioner is a company."
+        ),
+        7: "2. The Respondent is a company. Grounds. PRAYER.",
+        8: (
+            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\n"
+            "I, Koba Lakia, do hereby solemnly affirm and declare as under."
+        ),
+        9: (
+            "contents of the List of Dates and the present Arbitration petition "
+            "which are true and correct.\nDEPONENT\nVERIFICATION\n"
+            "Verified at on this day of November, 2025."
+        ),
+        10: (
+            "ANNEXURE A-1\nCERTIFIED TRUE COPY OF THE RESOLUTION PASSED "
+            "AT THE MEETING OF THE PARTNERS\nRESOLVED THAT Mr. Koba Lakia "
+            "is authorised to sign pleadings."
+        ),
+        11: (
+            "ANNEXURE A-4\nTERMINATION and REFUND NOTICE\n"
+            "To: Nipun ANAND\nPRADHAAN AIR EXPRESS PVT LTD"
+        ),
+        12: (
+            "IN THE SUPREME COURT OF INDIA\nFILING INDEX\n"
+            "1. Arbitration Petition with affidavit 5000\n"
+            "2. Vakalatnama And Memo 10"
+        ),
+    }
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=12)
+    assert repaired[1] == ["Advocate's Checklist"]
+    assert repaired[2] == ["Synopsis"]
+    assert repaired[3] == ["Synopsis"]
+    assert repaired[4] == ["List of Dates & Events"]
+    assert repaired[5] == ["List of Dates & Events"]
+    assert "Impugned Order" not in {name for names in repaired.values() for name in names}
+    assert repaired[8] == ["Affidavit"]
+    assert repaired[9] == ["Affidavit"]
+    assert repaired[10] == ["Annexure A-1"]
+    assert repaired[11] == ["Annexure A-4"]
+    assert repaired[12] == ["Filing Memo"]
+
+
+def test_index_folio_is_checked_and_body_citation_is_not_a_folio() -> None:
+    """Index page 36 is the sheet numbered 36, not a 'page 36' cite in the petition."""
+    page_parts = {
+        1: ["Index"],
+        2: ["Main Petition"],
+        3: ["Annexure P-4"],
+        4: ["Vakalatnama"],
+        5: ["Vakalatnama"],
+    }
+    texts = {
+        1: (
+            "INDEX\n"
+            "1. Annexure A-4 Reminder Notice\n"
+            "2. V AKALATNAMA\n"
+            "3. Payment receipt for sum of Rs. 15000/-\n"
+            "36\n61-63B\n64\n"
+        ),
+        2: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "MOST RESPECTFULLY SHOWETH:\n"
+            "marked as Annexure A-4 (page 36).\n"
+            "2"
+        ),
+        3: "ANNEXURE A-4\nReminder Notice\n36",
+        4: "VAKALATNAMA\nIN THE SUPREME COURT OF INDIA\n61",
+        5: "SUPREME COURT OF INDIA\nCASH & ACCOUNTS\nReceived from the advocate\n64",
+    }
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=5)
+    assert repaired[2] == ["Main Petition"]
+    assert repaired[3] == ["Annexure A-4"]
+    assert repaired[4] == ["Vakalatnama"]
+    assert repaired[5] == ["Court Fees"]
