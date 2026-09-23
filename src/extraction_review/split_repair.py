@@ -1720,6 +1720,69 @@ def _extract_date_keys(text: str) -> set[tuple[int, int, int]]:
         year = int(match.group("y"))
         if 1 <= day <= 31:
             found.add((year, month, day))
+    # OCR ordinals: "20 th", "201h", "20lh" February.
+    for match in _DATE_SPOKEN_OCR_RE.finditer(text or ""):
+        month = _MONTH_NUM.get(match.group("month").lower())
+        if not month:
+            continue
+        day = int(match.group("d"))
+        year = int(match.group("y"))
+        if 1 <= day <= 31:
+            found.add((year, month, day))
+    return found
+
+
+# Adjournment / listing phrasing — dates here are not the order's pronouncement date.
+_ADJOURNMENT_DATE_RE = re.compile(
+    r"(?:stand\s+over\s+to|(?:stand\s+)?over\s+to|adjourned\s+to|"
+    r"listed\s+(?:on|for)|"
+    r"next\s+date(?:\s+of\s+hearing)?\s*(?:is|:)?|"
+    r"come\s+up\s+(?:on|for)|posted\s+(?:to|on))\s*"
+    r"(?P<body>"
+    r"\d{1,2}[\s./\-]+\d{1,2}[\s./\-]+\d{2,4}|"
+    r"\d{1,2}\s*(?:st|nd|rd|th|h)?\s*"
+    r"(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s*,?\s*\d{4}"
+    r")",
+    re.IGNORECASE,
+)
+# Pronounced / caption date on HC / tribunal orders (DATE: 20th FEBRUARY, 2015).
+# OCR often yields "201h", "20 th", "20lh" for "20th".
+_PRONOUNCED_DATE_RE = re.compile(
+    r"(?m)^\s*date\s*[:.\-–—]?\s*"
+    r"(?P<body>"
+    r"\d{1,2}[\s./\-]+\d{1,2}[\s./\-]+\d{2,4}|"
+    r"\d{1,2}\s*(?:st|nd|rd|th|h|lh|1h)?\s*"
+    r"(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s*,?\s*\d{4}"
+    r")",
+    re.IGNORECASE,
+)
+_DATE_SPOKEN_OCR_RE = re.compile(
+    r"\b(?P<d>\d{1,2})\s*(?:st|nd|rd|th|h|lh|1h)?\s+"
+    r"(?P<month>january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s*,?\s*(?P<y>\d{4})\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_adjournment_date_phrases(text: str) -> str:
+    """Remove stand-over / listed-on phrases so Index dates do not false-match."""
+    if not text:
+        return ""
+    return _ADJOURNMENT_DATE_RE.sub(" ", text)
+
+
+def _extract_island_match_date_keys(text: str) -> set[tuple[int, int, int]]:
+    """Dates useful for Index matching — exclude adjournment / next-listing dates."""
+    return _extract_date_keys(_strip_adjournment_date_phrases(text or ""))
+
+
+def _extract_pronounced_date_keys(text: str) -> set[tuple[int, int, int]]:
+    """Order date from a DATE: / Date caption line (strongest Index match signal)."""
+    found: set[tuple[int, int, int]] = set()
+    for match in _PRONOUNCED_DATE_RE.finditer(text or ""):
+        found |= _extract_date_keys(match.group("body") or "")
     return found
 
 
@@ -1803,9 +1866,14 @@ def _score_island_for_index_annexure(
         return 0
 
     part_dates = _extract_date_keys(particulars or "")
-    island_dates = _extract_date_keys(island_text)
-    if part_dates and island_dates and part_dates & island_dates:
-        score += 12
+    pronounced = _extract_pronounced_date_keys(island_text)
+    island_dates = _extract_island_match_date_keys(island_text)
+    # Prefer the order's DATE:/caption line over incidental body dates
+    # (e.g. interim order "stand over to 20th February" must not win P-3).
+    if part_dates and pronounced and part_dates & pronounced:
+        score += 18
+    elif part_dates and island_dates and part_dates & island_dates:
+        score += 10
     if "writ petition" in folded_part or "w.p" in folded_part:
         if is_hc and ("writ petition" in folded_island or "w.p" in folded_island):
             score += 6
@@ -1814,12 +1882,37 @@ def _score_island_for_index_annexure(
             "coram" in folded_island or "p.c" in folded_island or "pc" in folded_island
         ):
             score += 5
+        # Interim / adjournment sheets are not the "judgment and final order".
+        if is_hc and re.search(
+            r"stand\s+over|adjourned\s+to|listed\s+on\s+the\s+next",
+            folded_island,
+        ):
+            score -= 8
+        if is_hc and re.search(
+            r"petition\s+(?:is\s+)?dismissed|dismissed\.|final\s+order|"
+            r"accordingly,?\s+the\s+petition\s+dismissed",
+            folded_island,
+        ):
+            score += 4
     if "special leave" in folded_part or "s.l.p" in folded_part or "slp" in folded_part:
         if is_rop:
             score += 6
     if "review" in folded_part:
-        if is_review or (is_rop and "1512" in folded_island):
+        if is_review or (is_rop and re.search(r"\b1512\b|\breview\b", folded_island)):
             score += 6
+        # Prefer the Review Petition ORDER sheet over its RoP twin.
+        if (
+            is_review
+            and _is_sci_caption(island_text)
+            and re.search(r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", island_text[:1200])
+            and not is_rop
+        ):
+            score += 12
+        # Shared review petition number from Index particulars.
+        for num in re.findall(r"\breview\s+petition[^0-9]{0,40}(\d{2,6})", folded_part):
+            if re.search(rf"\b{re.escape(num)}\b", folded_island):
+                score += 8
+                break
     # Letter / communication / FIR cues from Index particulars.
     for token in (
         "sub-divisional",
@@ -1846,6 +1939,28 @@ def _score_island_for_index_annexure(
     ):
         score += 8
     return score
+
+
+def _annexure_island_may_continue(
+    start_text: str, next_text: str
+) -> bool:
+    """True when next island is a same-matter RoP twin of a Review/SLP order."""
+    if not _looks_like_sci_court_rop_extract(next_text):
+        return False
+    start_fold = _fold(start_text[:1800])
+    is_order_sheet = bool(
+        ("review petition" in start_fold or "special leave" in start_fold)
+        and re.search(r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", start_text[:1200])
+    ) or (
+        _is_sci_caption(start_text)
+        and re.search(r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", start_text[:1200])
+        and not _looks_like_sci_court_rop_extract(start_text)
+    )
+    if not is_order_sheet:
+        return False
+    start_nums = set(re.findall(r"\b\d{3,6}\b", start_text[:1500]))
+    next_nums = set(re.findall(r"\b\d{3,6}\b", next_text[:1500]))
+    return bool(start_nums & next_nums)
 
 
 def _place_index_expected_annexures(
@@ -1982,6 +2097,7 @@ def _place_index_expected_annexures(
         return updated
 
     ordered_starts = sorted(assignments)
+    candidate_set = set(candidates)
     for index, start in enumerate(ordered_starts):
         label = assignments[start]
         end = (
@@ -1994,6 +2110,14 @@ def _place_index_expected_annexures(
                 break
             text = page_text.get(page, "")
             names = parts_on_page(updated.get(page))
+            # A later unstamped island (new HC caption / RoP) is its own exhibit —
+            # do not let an earlier Index assignment swallow it (interim→final).
+            # Exception: RoP twin of a Review/SLP order sheet for the same matter.
+            if page > start and page in candidate_set and page not in assignments:
+                if not _annexure_island_may_continue(
+                    page_text.get(start, ""), text
+                ):
+                    break
             if page_starts_application(text):
                 break
             if _vakalatnama_heading(text) and _is_sci_caption(text):
@@ -2019,9 +2143,6 @@ def _place_index_expected_annexures(
                 for name in names
             ):
                 break
-            # Stop before the next unmatched island only when it looks like a
-            # stronger new exhibit *and* we already painted at least one page —
-            # assigned starts already bound the run.
             updated[page] = [label]
     return updated
 
