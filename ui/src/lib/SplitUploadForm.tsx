@@ -181,6 +181,26 @@ async function downloadCloudPdf(
   }
 }
 
+function formatPageRanges(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  let total = 0;
+  const bits: string[] = [];
+  for (const item of value) {
+    const row = asRecord(item);
+    if (!row || typeof row.start !== "number" || typeof row.end !== "number") {
+      continue;
+    }
+    total += row.end - row.start + 1;
+    bits.push(row.start === row.end ? `${row.start}` : `${row.start}–${row.end}`);
+  }
+  if (bits.length === 0) {
+    return "";
+  }
+  return `${total === 1 ? "p." : "pp."} ${bits.join(", ")}`;
+}
+
 function asSlotPages(value: unknown): Record<string, string> {
   const raw = asRecord(value);
   if (!raw) {
@@ -188,8 +208,9 @@ function asSlotPages(value: unknown): Record<string, string> {
   }
   const pages: Record<string, string> = {};
   for (const [key, item] of Object.entries(raw)) {
-    if (typeof item === "string" && item) {
-      pages[key] = item;
+    const label = typeof item === "string" ? item : formatPageRanges(item);
+    if (label) {
+      pages[key] = label;
     }
   }
   return pages;

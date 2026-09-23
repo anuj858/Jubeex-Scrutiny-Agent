@@ -32,6 +32,7 @@ from extraction_review.document_parts import (
     normalize_part_name,
     overlay_split_documents,
     page_parts_from_split,
+    page_ranges,
     parts_named_in_text,
 )
 from extraction_review.extract_record import (
@@ -1734,7 +1735,7 @@ def test_leftover_pages_go_to_undefined_slot() -> None:
     assert slices["cover_page"].pages == (1,)
     assert slices["undefined"].pages == (2, 3, 4, 5)
     assert slices["undefined"].filename == "Undefined.pdf"
-    assert slices["undefined"].page_span == "pp. 2–5"
+    assert slices["undefined"].page_span == ({"start": 2, "end": 5},)
     assert len(PdfReader(BytesIO(slices["undefined"].pdf_bytes)).pages) == 4
     assert leftover_pages(5, {"cover_page": [1]}) == [2, 3, 4, 5]
 
@@ -1971,7 +1972,7 @@ def test_consecutive_annexure_headings_keep_body_pages_with_earlier_mark() -> No
         for item in slice_bundle_pdf(_blank_pdf(30), catalog, exploded)
     }
     assert slices["annexure_p2"].pages == (26, 27, 28, 29)
-    assert slices["annexure_p2"].page_span == "pp. 26–29"
+    assert slices["annexure_p2"].page_span == ({"start": 26, "end": 29},)
     assert slices["annexure_p3"].pages == (30,)
     assert 27 not in slices["undefined"].pages
     assert 28 not in slices["undefined"].pages
@@ -2013,7 +2014,7 @@ def test_skipped_annexure_heading_fills_gap_as_missing_p_n() -> None:
     }
     assert slices["annexure_p2"].pages == (26,)
     assert slices["annexure_p3"].pages == (27, 28, 29)
-    assert slices["annexure_p3"].page_span == "pp. 27–29"
+    assert slices["annexure_p3"].page_span == ({"start": 27, "end": 29},)
     assert slices["annexure_p4"].pages == tuple(range(30, 41))
     assert 27 not in slices["undefined"].pages
     assert 28 not in slices["undefined"].pages
@@ -2218,6 +2219,12 @@ def test_numbered_annexure_drops_later_disconnected_islands() -> None:
     assert format_page_span([29, 30, 100, 101, 102, 104]) == (
         "pp. 29–30, 100–102, 104"
     )
+    assert page_ranges([29, 30, 100, 101, 102, 104]) == [
+        {"start": 29, "end": 30},
+        {"start": 100, "end": 102},
+        {"start": 104, "end": 104},
+    ]
+    assert page_ranges([]) == []
 
     labeled = {page: ["Annexures"] for page in range(20, 31)}
     labeled.update({page: ["Annexures"] for page in (100, 101, 102, 104)})
@@ -2337,7 +2344,7 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
     )
     by_id = {item.slot_id: item for item in slices}
     assert by_id["cover_page"].filename == "Cover Page.pdf"
-    assert by_id["cover_page"].page_span == "p. 2"
+    assert by_id["cover_page"].page_span == ({"start": 2, "end": 2},)
     assert by_id["cover_page"].file_hash
     required = _required_parts("SLP_CIVIL")
     payload = []

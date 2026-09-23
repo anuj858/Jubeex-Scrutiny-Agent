@@ -44,6 +44,7 @@ from .config import (
     with_config_identity,
 )
 from .document_parts import (
+    format_page_span,
     page_parts_from_split,
     parts_on_page,
 )
@@ -748,7 +749,7 @@ class PreparedPart(BaseModel):
     download_url: str | None = None
     name: str | None = None
     label: str | None = None
-    page_span: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 class SourceDocument(BaseModel):
@@ -769,7 +770,7 @@ class BundlePrepared(StopEvent):
     filing_type: str
     parts: list[PreparedPart] = Field(default_factory=list)
     documents: list[SourceDocument] = Field(default_factory=list)
-    slot_pages: dict[str, str] = Field(default_factory=dict)
+    slot_pages: dict[str, list[dict[str, int]]] = Field(default_factory=dict)
     agent_data_id: str | None = None
     job_type: str | None = None
     organization_id: str | None = None
@@ -1982,7 +1983,7 @@ class ProcessFileWorkflow(Workflow):
             original_filename=state.filename,
         )
         prepared: list[PreparedPart] = []
-        slot_pages: dict[str, str] = {}
+        slot_pages: dict[str, list[dict[str, int]]] = {}
         for item, file_id in zip(slices, file_ids, strict=True):
             filename = (
                 prefixed_slot_filename(item.filename, state.filename)
@@ -1996,15 +1997,16 @@ class ProcessFileWorkflow(Workflow):
                     file_hash=item.file_hash,
                     filename=filename,
                     label=item.label,
-                    page_span=item.page_span,
+                    page_span=list(item.page_span),
                 )
             )
             if item.page_span:
-                slot_pages[item.slot_id] = item.page_span
+                slot_pages[item.slot_id] = list(item.page_span)
+            readable_span = format_page_span(list(item.pages))
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Ready {item.label} ({item.page_span or 'pages unknown'})",
+                    message=f"Ready {item.label} ({readable_span or 'pages unknown'})",
                 )
             )
 

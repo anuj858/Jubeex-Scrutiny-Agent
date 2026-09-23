@@ -270,6 +270,11 @@ def format_page_span(pages: list[int]) -> str:
     return prefix + ", ".join(bits)
 
 
+def page_ranges(pages: list[int]) -> list[dict[str, int]]:
+    """Contiguous page runs, e.g. [{'start': 3, 'end': 5}, {'start': 9, 'end': 9}]."""
+    return [{"start": a, "end": b} for a, b in _contiguous_groups(pages)]
+
+
 def _format_page_span(pages: list[int]) -> str:
     return format_page_span(pages)
 
