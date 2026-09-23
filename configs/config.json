@@ -104,7 +104,7 @@
     "data_schema": {
       "$defs": {
         "AdvocateOnRecord": {
-          "description": "AOR identity. Fill from Vakalatnama first. If Vakalatnama is missing or prints no AOR, fill from the last page of the Main Petition (Drawn By, Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent). Listing Proforma and Advocate's Checklist may fill blanks only; never override Vakalatnama. Then the signature or DRAWN & FILED BY block on AOR's Certificate (cause title at the top, then CERTIFICATE or C E R T I F I C A T E, then confined-to-pleadings text). Code and mobile only if printed.",
+          "description": "Printed AOR footer only. Leave null if not printed. Do not invent.",
           "properties": {
             "name": {
               "anyOf": [
@@ -116,7 +116,7 @@
                 }
               ],
               "default": null,
-              "description": "AOR name",
+              "description": "AOR name as printed in the AOR footer. Not a party name. Leave null if not printed.",
               "title": "Name"
             },
             "registration_number": {
@@ -129,7 +129,7 @@
                 }
               ],
               "default": null,
-              "description": "AOR code / registration number. Extract verbatim.",
+              "description": "AOR code / CC No. as printed. Leave null if not printed. Do not invent.",
               "title": "Registration Number"
             },
             "email": {
@@ -142,7 +142,7 @@
                 }
               ],
               "default": null,
-              "description": "AOR email ONLY if printed",
+              "description": "AOR email ONLY if printed. Leave null otherwise. Do not invent.",
               "title": "Email"
             },
             "mobile": {
@@ -155,7 +155,7 @@
                 }
               ],
               "default": null,
-              "description": "AOR mobile ONLY if printed",
+              "description": "AOR mobile ONLY if printed. Leave null otherwise. Do not invent. Ph. on the Chamber line may stay in office_address.",
               "title": "Mobile"
             },
             "firm": {
@@ -168,7 +168,7 @@
                 }
               ],
               "default": null,
-              "description": "Firm name, if any",
+              "description": "Firm name if printed in the AOR footer. Leave null otherwise.",
               "title": "Firm"
             },
             "office_address": {
@@ -181,7 +181,7 @@
                 }
               ],
               "default": null,
-              "description": "Office address as printed",
+              "description": "Printed Chamber/office lines under the AOR name. Copy exactly. Often labelled Chamber: not Address. Include PIN if printed. Leave null if those lines are not printed. Never invent a chamber number, block, or PIN. Never use a party address from Cover Page, Memo of Parties, or Main Petition opening pages. On Main Petition this footer is at the very end of the last page after Drawn By / Filed on / DRAWN & FILED BY.",
               "title": "Office Address"
             },
             "source_part": {
@@ -194,7 +194,7 @@
                 }
               ],
               "default": null,
-              "description": "Vakalatnama if present. If Vakalatnama is missing or prints no AOR, Main Petition (last page only). Listing Proforma, Advocate's Checklist, or AOR's Certificate may fill blanks only; never override Vakalatnama.",
+              "description": "Split label of the footer used. Vakalatnama if it prints the AOR. Else Memo of Appearance. Else Main Petition last page. Else Listing Proforma last page for office_address. Else AOR's Certificate or Advocate's Checklist for remaining blanks.",
               "title": "Source Part"
             },
             "raw_text": {
@@ -207,7 +207,7 @@
                 }
               ],
               "default": null,
-              "description": "Verbatim AOR block as printed, including name, address, email, and contact.",
+              "description": "Verbatim printed AOR footer (name, chamber, email, contact). Do not reconstruct.",
               "title": "Raw Text"
             },
             "source_pages": {
@@ -881,7 +881,7 @@
           "type": "array"
         },
         "advocates_on_record": {
-          "description": "Advocates-on-Record. Fill from Vakalatnama first. If Vakalatnama is not in this pack or prints no AOR, fill from the last page of the Main Petition (Drawn By, Filed on, DRAWN & FILED BY, or Advocate for Petitioner/Respondent: name and any printed code, mobile, firm, or address). Do not use Main Petition opening or party-list pages. Listing Proforma and Advocate's Checklist may fill blanks only; never override Vakalatnama. Then the signature or DRAWN & FILED BY block on AOR's Certificate. That page always has the cause title at the top, then the word CERTIFICATE or C E R T I F I C A T E, then the confined-to-pleadings text. Code and mobile only if printed.",
+          "description": "Printed AOR footer only. Leave a field null if it is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. Do not copy petitioner or respondent names or addresses. Prefer Vakalatnama. If Vakalatnama is not in this pack or prints no AOR, use the Memo of Appearance footer, then the last page of the Main Petition (very end: Drawn By, Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent, Chamber lines under the name). Do not use Main Petition opening or party-list pages. If office_address is still blank, last page of Listing Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate signature / DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama.",
           "items": {
             "$ref": "#/$defs/AdvocateOnRecord"
           },
@@ -919,7 +919,7 @@
             }
           ],
           "default": null,
-          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cause Title main petitioner or main respondent versus petitioner 1 / respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Also flag when that Cause Title person is missing on those pages, is a different person than petitioner 1 / respondent 1, or is listed on the other side. Extra parties are not a mismatch against Cover Page And Anr/Ors. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Party-name items[].raw_text is Cause Title: \"Name\"; Main Petition: \"Name\". items[].id is '1', '2', …."
+          "description": "Spelling mismatches between fill and verify sources, plus an ORGANIZATION party with no acting_through. Always include a letter-level mismatch of the Cause Title main petitioner or main respondent versus petitioner 1 / respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Also flag when that Cause Title person is missing on those pages, is a different person than petitioner 1 / respondent 1, or is listed on the other side. Extra parties are not a mismatch against Cover Page And Anr/Ors. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Also record printed AOR chamber/office address mismatches across Vakalatnama, Memo of Appearance, Main Petition last page, Listing Proforma last page, and AOR's Certificate. Quote both printed strings. Do not invent an address. Ignore extra Ph. on the same chamber line. Party-name items[].raw_text is Cause Title: \"Name\"; Main Petition: \"Name\". items[].id is '1', '2', …."
         }
       },
       "title": "LegalExtractRecord",
@@ -1202,9 +1202,10 @@
       "advocates_on_record": {
         "fill": [
           "Vakalatnama",
+          "Memo of Appearance",
           "Main Petition",
-          "AOR's Certificate",
           "Listing Proforma",
+          "AOR's Certificate",
           "Advocate's Checklist"
         ]
       },

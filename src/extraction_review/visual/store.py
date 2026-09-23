@@ -139,13 +139,30 @@ def coerce_visual_index(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     return blob
 
 
+def _compact_mark(mark: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "page": mark.get("page"),
+        "document_type": mark.get("document_type"),
+        "marking_type": mark.get("marking_type"),
+        "signature_role": mark.get("signature_role"),
+        "bbox": mark.get("bbox"),
+        "confidence": mark.get("confidence"),
+    }
+
+
 def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Compact Agent Data metadata so the UI can explain vision without fetching S3."""
+    """Compact Agent Data metadata so the filing shows marks without fetching S3."""
     coerced = coerce_visual_index(payload)
+    marks = [
+        _compact_mark(mark)
+        for mark in (coerced.get("marks") or [])
+        if isinstance(mark, Mapping)
+    ]
     summary = {
         "status": coerced.get("status"),
         "error": coerced.get("error"),
-        "mark_count": len(coerced.get("marks") or []),
+        "mark_count": len(marks),
+        "marks": marks,
         "target_count": len(coerced.get("targets") or []),
         "failures": list(coerced.get("failures") or []),
         "targets": list(coerced.get("targets") or []),

@@ -608,7 +608,7 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert PETITION_PACK_LAST_PAGES == 3
     assert "memo of parties ram lal address" not in pack
     assert "Fill advocates_on_record" in pack
-    assert "only when Vakalatnama is not in this pack" in pack
+    assert "very last page" in pack
     assert "Prefer Vakalatnama" in pack
     assert "Do not copy petitioner or respondent names" in pack
     assert (
@@ -622,6 +622,7 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "[Listing Proforma]" in pack
     assert "listing columns" in pack
     assert "Never override Vakalatnama" in pack
+    assert "Chamber" in pack
     assert "bracketed particulars" in pack
     assert "annexure p-1" not in pack
     assert "appendix text" not in pack
@@ -692,7 +693,7 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "synopsis of the case" not in pack
     assert "list of dates events" not in pack
     assert "filing memo index" not in pack
-    assert "memo of appearance advocates" not in pack
+    assert "memo of appearance advocates" in pack
 
 
 def test_party_fields_prefer_petition_then_cover_page() -> None:
@@ -725,9 +726,10 @@ def test_party_fields_prefer_petition_then_cover_page() -> None:
     assert catalog.extract_field_sources["advocates_on_record"] == FieldSources(
         fill=(
             "Vakalatnama",
+            "Memo of Appearance",
             "Main Petition",
-            "AOR's Certificate",
             "Listing Proforma",
+            "AOR's Certificate",
             "Advocate's Checklist",
         ),
     )
@@ -755,6 +757,7 @@ def test_extract_source_parts_include_petition_and_index() -> None:
         "Affidavit",
         "Listing Proforma",
         "Advocate's Checklist",
+        "Memo of Appearance",
     }
     assert "Memo of Parties" not in parts
     assert "Office Report on Limitation" not in parts
@@ -845,9 +848,10 @@ def test_inject_where_to_look_falls_back_to_petition_last_page_for_aor() -> None
             "advocates_on_record": FieldSources(
                 fill=(
                     "Vakalatnama",
+                    "Memo of Appearance",
                     "Main Petition",
-                    "AOR's Certificate",
                     "Listing Proforma",
+                    "AOR's Certificate",
                     "Advocate's Checklist",
                 ),
             ),
@@ -855,13 +859,17 @@ def test_inject_where_to_look_falls_back_to_petition_last_page_for_aor() -> None
     )
     text = updated["properties"]["advocates_on_record"]["description"]
     assert (
-        "Fill only from Vakalatnama, Main Petition, AOR's Certificate, Listing Proforma, Advocate's Checklist"
+        "Fill only from Vakalatnama, Memo of Appearance, Main Petition, Listing Proforma, AOR's Certificate, Advocate's Checklist"
         in text
     )
     assert "If Vakalatnama is not in this pack or prints no AOR" in text
+    assert "Memo of Appearance footer" in text
     assert "last page of the Main Petition" in text
     assert "Do not use Main Petition opening or party-list pages" in text
-    assert "Listing Proforma and Advocate's Checklist may fill blanks only" in text
+    assert "last page of Listing Proforma / Proforma for First Listing" in text
+    assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in text
+    assert "Advocate's Checklist" in text
+    assert "Never override Vakalatnama" in text
 
 
 def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
@@ -925,18 +933,19 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
         in prompt
     )
     assert (
-        "advocates_on_record: fill Vakalatnama, Main Petition, AOR's Certificate, Listing Proforma, Advocate's Checklist"
+        "advocates_on_record: fill Vakalatnama, Memo of Appearance, Main Petition, Listing Proforma, AOR's Certificate, Advocate's Checklist"
         in prompt
     )
     assert (
-        "If Vakalatnama is missing or prints no AOR, last page of the Main Petition"
+        "If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition"
         in prompt
     )
     assert (
         "impugned_orders: fill Impugned Order, Main Petition, Cover Page, AOR's Certificate, Affidavit"
         in prompt
     )
-    assert "Listing Proforma and Advocate's Checklist fill blanks only" in prompt
+    assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
+    assert "printed AOR chamber/office address mismatches" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:

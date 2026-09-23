@@ -33,7 +33,6 @@ EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
         "Record of Proceedings",
         "Court Fees",
         "Office Report on Limitation",
-        "Memo of Appearance",
     }
 )
 
@@ -60,6 +59,19 @@ EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
     "Vakalatnama": (VAKALATNAMA_PACK_FIRST_PAGES, VAKALATNAMA_PACK_LAST_PAGES),
 }
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
+AOR_EXTRACT_RULES = (
+    "Copy the printed AOR footer only. Leave a field null if it is not printed; "
+    "do not invent name, code, email, mobile, firm, chamber, or PIN. "
+    "Do not copy petitioner or respondent names or addresses. "
+    "Prefer Vakalatnama. If Vakalatnama is not in this pack or prints no AOR, "
+    "use the Memo of Appearance footer, then the last page of the Main Petition "
+    "(very end: Drawn By, Filed on, DRAWN & FILED BY, Advocate for "
+    "Petitioner/Respondent, Chamber lines under the name). "
+    "Do not use Main Petition opening or party-list pages. "
+    "If office_address is still blank, last page of Listing Proforma / "
+    "Proforma for First Listing. Remaining blanks: AOR's Certificate signature "
+    "/ DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama."
+)
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
 _ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d{1,3})$")
@@ -778,7 +790,8 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         notes[part] = (notes.get(part) or "").rstrip() + extra
     notes.setdefault(
         "Memo of Appearance",
-        "Use only for advocates_on_record.",
+        "Use only for advocates_on_record. AOR footer under the name: Chamber "
+        "lines, often not labelled Address. Copy printed text only; do not invent.",
     )
     notes.setdefault(
         "Vakalatnama",
@@ -796,7 +809,10 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     for part, extra in (
         (
             "Listing Proforma",
-            " Use only to fill blank advocates_on_record fields. Never override Vakalatnama.",
+            " Use only to fill blank advocates_on_record fields. Never override "
+            "Vakalatnama. office_address is the Chamber lines on the last page, "
+            "under the AOR name / (ADVOCATE-ON-RECORD). Copy printed text only; "
+            "do not invent.",
         ),
         (
             "Advocate's Checklist",
@@ -818,6 +834,12 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
             "Vakalatnama",
             " Prefer this over Main Petition last page. Never override Vakalatnama "
             "values from later sections.",
+        ),
+        (
+            "Memo of Appearance",
+            " Prefer this over Main Petition last page when Vakalatnama is missing "
+            "or prints no AOR. Fill blank office_address from Chamber lines under "
+            "the name. Copy printed text only; never override Vakalatnama.",
         ),
     ):
         current = notes.get(part) or ""
@@ -844,10 +866,12 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     petition_fill = fill_of.get("Main Petition", [])
     if "advocates_on_record" in petition_fill:
         extras.append(
-            " For advocates_on_record, use only the last page (Drawn By, Filed on, "
-            "DRAWN & FILED BY, Advocate for Petitioner/Respondent) and only when "
-            "Vakalatnama is not in this pack or prints no AOR. Do not take advocate "
-            "names from the opening party-list pages."
+            " For advocates_on_record, use only the very last page: Drawn By, "
+            "Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent, then "
+            "Chamber lines under the name. Copy printed text only; do not invent. "
+            "Fill blanks if Vakalatnama is missing, prints no AOR, or leaves that "
+            "field blank. Do not take advocate names or addresses from the opening "
+            "party-list pages."
         )
     if "cause_title" in petition_fill:
         extras.append(
@@ -932,14 +956,7 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
                 "Cover Page cause title"
             )
         if field_name == "advocates_on_record":
-            bit += (
-                ". Prefer Vakalatnama. If Vakalatnama is not in this pack or prints "
-                "no AOR, use only the last page of the Main Petition (Drawn By, Filed "
-                "on, DRAWN & FILED BY, Advocate for Petitioner/Respondent). Copy name "
-                "and any printed code, mobile, firm, or address. Do not use Main Petition "
-                "opening pages for advocates. Listing Proforma and Advocate's Checklist "
-                "may fill blanks only; never override Vakalatnama"
-            )
+            bit += f". {AOR_EXTRACT_RULES.rstrip('.')}"
         if field_name == "impugned_orders":
             bit += (
                 ". Prefer the Impugned Order document. If it is not in this pack, use "
@@ -995,7 +1012,11 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "AOR's Certificate as party-name sources. "
             "Also record Impugned Order case number, date, or forum mismatches "
             "across Impugned Order, Main Petition, Cover Page, AOR's Certificate, "
-            "and Affidavit. "
+            "and Affidavit. Also record printed AOR chamber/office address "
+            "mismatches across Vakalatnama, Memo of Appearance, Main Petition last "
+            "page, Listing Proforma last page, and AOR's Certificate. Quote both "
+            "printed strings. Do not invent an address. Ignore extra Ph. on the "
+            "same chamber line. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -1092,24 +1113,7 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "there, use the Cover Page cause title."
         )
     if field_name == "advocates_on_record":
-        extra += (
-            " Fill from Vakalatnama first. If Vakalatnama is not in this pack or "
-            "prints no AOR, fill from the last page of the Main Petition only: the "
-            "Drawn By, Filed on, DRAWN & FILED BY, or Advocate for Petitioner/Respondent "
-            "block. Copy name and any printed code, mobile, firm, or address. Do not "
-            "use Main Petition opening or party-list pages. Listing Proforma and "
-            "Advocate's Checklist may fill blanks only; never override Vakalatnama. "
-            "AOR's Certificate always has the cause title at the top, then the word "
-            "CERTIFICATE (one word or letter-spaced C E R T I F I C A T E). Both are "
-            "required. Under CERTIFICATE the body starts Certified that or CERTIFIED "
-            "that the Special Leave Petition is confined only to the pleadings before "
-            "the High Court, Court, or Tribunal whose order is challenged. Extra facts "
-            "or grounds with an application may or may not be mentioned. Take AOR name "
-            "from the signature block or DRAWN & FILED BY to fill blanks only; take "
-            "code (CC No.) and mobile only if printed. Do not copy petitioner or "
-            "respondent names from the cause title on this page. Cause title without "
-            "CERTIFICATE is not this page. This is not Cover Page."
-        )
+        extra += f" {AOR_EXTRACT_RULES}"
     if field_name == "impugned_orders":
         extra += (
             " If the Impugned Order document is in this pack, fill from it. If it is "
@@ -1175,11 +1179,11 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- petition_type: Main Petition cause title first; Cover Page cause title if not printed there.",
-            "- advocates_on_record: Vakalatnama first. If Vakalatnama is missing or prints no AOR, last page of the Main Petition (Drawn By / Filed on / DRAWN & FILED BY / Advocate for Petitioner). Listing Proforma and Advocate's Checklist fill blanks only. Do not use petition opening pages.",
+            "- advocates_on_record: Vakalatnama first. Copy the printed AOR footer only; leave a field null if it is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition (very end: Drawn By / Filed on / DRAWN & FILED BY / Advocate for Petitioner / Chamber). Do not use petition opening pages. If office_address is still blank, last page of Listing Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate signature / DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama.",
             "- impugned_orders: Impugned Order PDF first. If missing, bracketed particulars on Main Petition, Cover Page, AOR's Certificate, and Affidavit. Keep one consistent set.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cause Title main petitioner/respondent letter mismatch versus petitioner 1 / respondent 1 on the Main Petition starting pages (Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Flag a different person, a missing name, or a side swap. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. id is '1', '2', …; use raw_text as Cause Title: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition starting pages are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cause Title main petitioner/respondent letter mismatch versus petitioner 1 / respondent 1 on the Main Petition starting pages (Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Flag a different person, a missing name, or a side swap. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Also record printed AOR chamber/office address mismatches across Vakalatnama, Memo of Appearance, Main Petition last page, Listing Proforma last page, and AOR's Certificate. Quote both printed strings. Do not invent an address. Ignore extra Ph. on the same chamber line. id is '1', '2', …; use raw_text as Cause Title: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition starting pages are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()

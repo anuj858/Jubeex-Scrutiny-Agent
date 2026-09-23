@@ -222,27 +222,51 @@ class Party(BaseModel):
 
 
 class AdvocateOnRecord(BaseModel):
-    """AOR identity. Fill from Vakalatnama; if none, Main Petition last page."""
-    name: str | None = Field(default=None, description="AOR name")
-    registration_number: str | None = Field(default=None, description="AOR code / registration number. Extract verbatim.")
-    email: str | None = Field(default=None, description="AOR email ONLY if printed")
-    mobile: str | None = Field(default=None, description="AOR mobile ONLY if printed")
-    firm: str | None = Field(default=None, description="Firm name, if any")
-    office_address: str | None = Field(default=None, description="Office address as printed")
+    """Printed AOR footer only. Leave null if not printed. Do not invent."""
+    name: str | None = Field(
+        default=None,
+        description="AOR name as printed in the AOR footer. Not a party name. Leave null if not printed.",
+    )
+    registration_number: str | None = Field(
+        default=None,
+        description="AOR code / CC No. as printed. Leave null if not printed. Do not invent.",
+    )
+    email: str | None = Field(
+        default=None,
+        description="AOR email ONLY if printed. Leave null otherwise. Do not invent.",
+    )
+    mobile: str | None = Field(
+        default=None,
+        description="AOR mobile ONLY if printed. Leave null otherwise. Do not invent. Ph. on the Chamber line may stay in office_address.",
+    )
+    firm: str | None = Field(
+        default=None,
+        description="Firm name if printed in the AOR footer. Leave null otherwise.",
+    )
+    office_address: str | None = Field(
+        default=None,
+        description=(
+            "Printed Chamber/office lines under the AOR name. Copy exactly. Often "
+            "labelled Chamber: not Address. Include PIN if printed. Leave null if "
+            "those lines are not printed. Never invent a chamber number, block, or PIN. "
+            "Never use a party address from Cover Page, Memo of Parties, or Main "
+            "Petition opening pages. On Main Petition this footer is at the very end "
+            "of the last page after Drawn By / Filed on / DRAWN & FILED BY."
+        ),
+    )
     source_part: str | None = Field(
         default=None,
         description=(
-            "Vakalatnama if present. If Vakalatnama is missing or prints no AOR, "
-            "Main Petition (last page only). Listing Proforma, Advocate's Checklist, "
-            "or AOR's Certificate may fill blanks only; never override Vakalatnama. "
-            "AOR's Certificate always has the cause title at the top, then the word "
-            "CERTIFICATE (or C E R T I F I C A T E), then Certified that / CERTIFIED "
-            "that the petition is confined only to the pleadings below. Take name from "
-            "the signature or DRAWN & FILED BY block; take code (CC No.) and mobile "
-            "only if printed."
+            "Split label of the footer used. Vakalatnama if it prints the AOR. Else "
+            "Memo of Appearance. Else Main Petition last page. Else Listing Proforma "
+            "last page for office_address. Else AOR's Certificate or Advocate's "
+            "Checklist for remaining blanks."
         ),
     )
-    raw_text: str | None = Field(default=None, description="Verbatim AOR block as printed, including name, address, email, and contact.")
+    raw_text: str | None = Field(
+        default=None,
+        description="Verbatim printed AOR footer (name, chamber, email, contact). Do not reconstruct.",
+    )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -363,15 +387,17 @@ class LegalExtractRecord(BaseModel):
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocates-on-Record. Fill from Vakalatnama first. If Vakalatnama is not "
-            "in this pack or prints no AOR, fill from the last page of the Main Petition "
-            "(Drawn By, Filed on, DRAWN & FILED BY, or Advocate for Petitioner/Respondent: "
-            "name and any printed code, mobile, firm, or address). Do not use Main Petition "
-            "opening or party-list pages. Listing Proforma and Advocate's Checklist may "
-            "fill blanks only; never override Vakalatnama. AOR's Certificate signature "
-            "or DRAWN & FILED BY may also fill blanks. That page always has the cause "
-            "title at the top, then the word CERTIFICATE (or C E R T I F I C A T E), "
-            "then the confined-to-pleadings text. Code and mobile only if printed."
+            "Printed AOR footer only. Leave a field null if it is not printed; do "
+            "not invent name, code, email, mobile, firm, chamber, or PIN. Do not "
+            "copy petitioner or respondent names or addresses. Prefer Vakalatnama. "
+            "If Vakalatnama is not in this pack or prints no AOR, use the Memo of "
+            "Appearance footer, then the last page of the Main Petition (very end: "
+            "Drawn By, Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent, "
+            "Chamber lines under the name). Do not use Main Petition opening or "
+            "party-list pages. If office_address is still blank, last page of Listing "
+            "Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate "
+            "signature / DRAWN & FILED BY and Advocate's Checklist. Never override "
+            "Vakalatnama."
         ),
     )
     impugned_orders: list[ImpugnedOrder] = Field(
@@ -409,7 +435,11 @@ class LegalExtractRecord(BaseModel):
             "on the other side. Extra parties are not a mismatch against Cover Page "
             "And Anr/Ors. Also record Impugned Order case number, date, or forum "
             "mismatches across Impugned Order, Main Petition, Cover Page, AOR's "
-            "Certificate, and Affidavit. Party-name items[].raw_text "
+            "Certificate, and Affidavit. Also record printed AOR chamber/office "
+            "address mismatches across Vakalatnama, Memo of Appearance, Main Petition "
+            "last page, Listing Proforma last page, and AOR's Certificate. Quote both "
+            "printed strings. Do not invent an address. Ignore extra Ph. on the same "
+            "chamber line. Party-name items[].raw_text "
             'is Cause Title: "Name"; Main Petition: "Name". '
             "items[].id is '1', '2', …."
         ),
