@@ -909,6 +909,19 @@
           "description": "Main prayer body only from the Main Petition last 2-3 pages. Copy the text under the heading Main Prayer or Prayer. Do not include the heading, clause number, markdown, or HTML (for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). Start at the prayer sentence, e.g. 'In the circumstances stated above…'. Leave null if that heading is not printed.",
           "title": "Relief Sort"
         },
+        "petition_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Date of this petition from the last page of the Main Petition, after the heading Main Prayer or Prayer. Use the date printed next to Date, Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on are printed, use only the Date Drafted date. Return the date as printed, without the label. Do not use a date inside the prayer, an impugned-order date, or a date from any other document. Leave null if none of those labels is printed after the prayer.",
+          "title": "Petition Date"
+        },
         "inconsistencies": {
           "anyOf": [
             {
@@ -1219,6 +1232,11 @@
         ]
       },
       "relief_sort": {
+        "fill": [
+          "Main Petition"
+        ]
+      },
+      "petition_date": {
         "fill": [
           "Main Petition"
         ]

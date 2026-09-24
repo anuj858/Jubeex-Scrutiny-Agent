@@ -37,7 +37,9 @@ from extraction_review.document_parts import (
 from extraction_review.extract_record import (
     apply_extract_envelope,
     build_formatted_title,
+    clean_petition_date,
     clean_relief_sort,
+    petition_date_from_closing,
     confidence_percent_string,
     format_side_title,
     is_extra_party_caption_mismatch,
@@ -722,6 +724,9 @@ def test_party_fields_prefer_petition_then_cover_page() -> None:
     assert catalog.extract_field_sources["relief_sort"] == FieldSources(
         fill=("Main Petition",),
     )
+    assert catalog.extract_field_sources["petition_date"] == FieldSources(
+        fill=("Main Petition",),
+    )
     assert catalog.extract_field_sources["advocates_on_record"] == FieldSources(
         fill=(
             "Vakalatnama",
@@ -945,6 +950,8 @@ def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     )
     assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
     assert "printed AOR chamber/office address mismatches" in prompt
+    assert "petition_date: fill Main Petition" in prompt
+    assert "If both Date Drafted and Date Filed on are printed, use only Date Drafted" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -1108,6 +1115,88 @@ def test_relief_sort_drops_main_prayer_heading() -> None:
     assert cleaned.startswith("In the circumstances stated above")
     wrapped = apply_extract_envelope({"relief_sort": raw})
     assert wrapped["relief_sort"] == cleaned
+
+
+def test_petition_date_after_main_prayer() -> None:
+    closing = (
+        "7. MAIN PRAYER:\n"
+        "In the circumstances stated above, grant special leave against the "
+        "judgement dated 09.02.2026 passed by the High Court.\n"
+        "\n"
+        "Place: New Delhi\n"
+        "Date: 04.09.2026\n"
+        "DRAWN & FILED BY\n"
+    )
+    assert petition_date_from_closing(closing) == "04.09.2026"
+    assert clean_petition_date("Date: 04.09.2026") == "04.09.2026"
+    assert clean_petition_date("N/A") is None
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\nGrant leave against the judgement dated 09.02.2026."
+        )
+        is None
+    )
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\nDated at New Delhi on 12th day of March, 2024"
+        )
+        == "12th day of March, 2024"
+    )
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\nGrant leave.\nDate: 04.09.2026\nPrayer is thus submitted."
+        )
+        == "04.09.2026"
+    )
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\n"
+            "The petition was filed on 01.01.2020.\n"
+            "Date Filed on: 15.03.2024\n"
+            "Date Drafted: 10.03.2024\n"
+        )
+        == "10.03.2024"
+    )
+
+
+def test_petition_date_prefers_date_drafted_over_date_filed_on() -> None:
+    closing = (
+        "**MAIN PRAYER**\n"
+        "The petitioner was constrained to file this petition.\n"
+        "Date Drafted: 10th March, 2024\n"
+        "Date Filed on: 15/03/2024\n"
+    )
+    assert petition_date_from_closing(closing) == "10th March, 2024"
+    assert (
+        clean_petition_date(
+            "Date Drafted: 10.03.2024\nDate Filed on: 15.03.2024"
+        )
+        == "10.03.2024"
+    )
+    assert petition_date_from_closing(
+        "MAIN PRAYER:\n\nDate Filed on: 15.03.2024\nAdvocate for the Petitioner"
+    ) == "15.03.2024"
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\nDate Drafted\n10.03.2024\nDate Filed on\n15.03.2024\n"
+        )
+        == "10.03.2024"
+    )
+
+
+def test_envelope_petition_date_uses_main_petition_last_page() -> None:
+    closing = (
+        "MAIN PRAYER:\n"
+        "Grant leave against the order dated 09.02.2026.\n"
+        "Date Drafted: 10.03.2024\n"
+        "Date Filed on: 15.03.2024\n"
+    )
+    wrapped = apply_extract_envelope(
+        {"petition_date": "15.03.2024"},
+        page_markdown={4: "cause title", 18: closing},
+        page_parts={4: "Main Petition", 18: "Main Petition"},
+    )
+    assert wrapped["petition_date"] == "10.03.2024"
 
 
 def test_envelope_strips_cover_anr_before_formatting() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any
@@ -10,7 +11,9 @@ from zoneinfo import ZoneInfo
 
 from .document_parts import (
     FILING_TYPE_LABELS,
+    MAIN_PETITION_PART,
     document_spans_from_page_parts,
+    parts_on_page,
 )
 from .scrutiny.rules import normalize_filing_type
 
@@ -26,6 +29,7 @@ LEGAL_EXTRACT_FIELDS = (
     "advocates_on_record",
     "impugned_orders",
     "relief_sort",
+    "petition_date",
     "inconsistencies",
 )
 
@@ -110,6 +114,50 @@ _PRAYER_HEADING_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _PRAYER_MARKUP = re.compile(r"</?[^>]+>|\*{1,3}|_{2}")
+_PRAYER_HEADING_ANY = re.compile(
+    r"(?:^|\n)\s*(?:\d+\s*[.)]\s*)?(?:</?[^>]+>|\*{1,3}|_{1,3}|`+|#+\s*)*"
+    r"(?:main\s+)?prayer"
+    r"(?:</?[^>]+>|\*{1,3}|_{1,3}|`+)*\s*:?\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+_MONTH_NAME = (
+    r"(?:January|February|March|April|May|June|July|August|September|October|"
+    r"November|December|Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+)
+_DAY_MONTH_DATE = (
+    rf"\d{{1,2}}(?:st|nd|rd|th)?(?:\s+day)?(?:\s+of)?\s+{_MONTH_NAME},?\s+\d{{4}}"
+)
+_MONTH_DAY_DATE = rf"{_MONTH_NAME}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}"
+_NUMERIC_DATE = r"\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}"
+_DATE_VALUE = rf"(?:{_DAY_MONTH_DATE}|{_MONTH_DAY_DATE}|{_NUMERIC_DATE})"
+_AFTER_DATE_LABEL = (
+    r"\s*[:.\-]?\s*"
+    r"(?:(?:at|this)\s+[A-Za-z][A-Za-z. ]{0,40}?\s+on\s+)?"
+    r"(?:new\s+delhi\s*,?\s*(?:on\s+)?)?"
+)
+_DATE_DRAFTED = re.compile(
+    rf"\bdate\s+(?:of\s+)?draft(?:ed|ing)\b{_AFTER_DATE_LABEL}({_DATE_VALUE})",
+    re.IGNORECASE,
+)
+_DATE_FILED = re.compile(
+    rf"(?:"
+    rf"(?:^|\n)\s*(?:date\s+(?:of\s+)?fil(?:ed|ing)(?:\s+on)?|filed\s+on)"
+    rf"|\bdate\s+(?:of\s+)?fil(?:ed|ing)(?:\s+on)?"
+    rf"){_AFTER_DATE_LABEL}({_DATE_VALUE})",
+    re.IGNORECASE,
+)
+_DATE_PLAIN = re.compile(
+    rf"(?:"
+    rf"(?:^|\n)\s*date{_AFTER_DATE_LABEL}"
+    rf"|dated\s*:{_AFTER_DATE_LABEL}"
+    rf"|\bdate\s*:{_AFTER_DATE_LABEL}"
+    rf"|\bdated\s+at\s+[A-Za-z][A-Za-z. ]{{0,40}}?\s+on\s+"
+    rf")({_DATE_VALUE})",
+    re.IGNORECASE,
+)
+_BARE_DATE = re.compile(rf"({_DATE_VALUE})", re.IGNORECASE)
+_PETITION_CLOSING_PAGES = 3
+_EMPTY_DATE = frozenset({"n/a", "na", "none", "null", "-", "—"})
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -259,6 +307,70 @@ def clean_relief_sort(text: str | None) -> str | None:
     blob = _PRAYER_MARKUP.sub("", blob)
     blob = re.sub(r"\n{3,}", "\n\n", blob).strip()
     return blob or None
+
+
+def _normalize_printed_date(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip(" .,:;-")
+    return re.sub(r"\s*([./-])\s*", r"\1", cleaned)
+
+
+def _last_printed_date(pattern: re.Pattern[str], text: str) -> str | None:
+    found = list(pattern.finditer(text))
+    if not found:
+        return None
+    return _normalize_printed_date(found[-1].group(1))
+
+
+def _pick_petition_date(text: str) -> str | None:
+    """Date Drafted wins when Date Filed on is also printed."""
+    drafted = _last_printed_date(_DATE_DRAFTED, text)
+    if drafted:
+        return drafted
+    plain = _last_printed_date(_DATE_PLAIN, text)
+    if plain:
+        return plain
+    return _last_printed_date(_DATE_FILED, text)
+
+
+def clean_petition_date(text: str | None) -> str | None:
+    """Keep the petition date. Prefer Date Drafted over Date Filed on."""
+    if not isinstance(text, str):
+        return None
+    blob = text.strip()
+    if not blob or blob.casefold() in _EMPTY_DATE:
+        return None
+    picked = _pick_petition_date(blob)
+    if picked:
+        return picked
+    bare = _BARE_DATE.fullmatch(blob)
+    if bare:
+        return _normalize_printed_date(bare.group(1))
+    return None
+
+
+def petition_date_from_closing(text: str | None) -> str | None:
+    """Read the date after Main Prayer on the main petition's last page."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    matches = list(_PRAYER_HEADING_ANY.finditer(text))
+    scope = text[matches[-1].end() :] if matches else text
+    return _pick_petition_date(scope)
+
+
+def main_petition_closing_text(
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> str:
+    """Last pages of the Main Petition, where the prayer and date are printed."""
+    if not page_markdown:
+        return ""
+    pages = [
+        page
+        for page in sorted(page_markdown)
+        if MAIN_PETITION_PART in parts_on_page((page_parts or {}).get(page))
+    ]
+    chosen = pages[-_PETITION_CLOSING_PAGES:]
+    return "\n".join((page_markdown.get(page) or "") for page in chosen)
 
 
 def strip_anr_ors_suffix(text: str | None) -> str:
@@ -809,6 +921,11 @@ def _normalize_legacy_keys(payload: dict[str, Any]) -> None:
         payload["relief_sort"] = clean_relief_sort(
             payload.get("relief_sort") if isinstance(payload.get("relief_sort"), str) else None
         )
+    if "petition_date" in payload:
+        raw_date = payload.get("petition_date")
+        payload["petition_date"] = clean_petition_date(
+            raw_date if isinstance(raw_date, str) else None
+        )
     for aor in payload.get("advocates_on_record") or []:
         if isinstance(aor, dict) and not aor.get("office_address") and aor.get("office"):
             aor["office_address"] = aor.get("office")
@@ -1019,6 +1136,7 @@ def apply_extract_envelope(
     overall_confidence: float | str | None = None,
     field_confidence: dict[str, Any] | None = None,
     generated_at: str | None = None,
+    page_markdown: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Add envelope keys, stitch documents, and normalize legal fields."""
     payload = dict(record or {})
@@ -1031,6 +1149,11 @@ def apply_extract_envelope(
         payload["court"] = court_name
 
     _normalize_legacy_keys(payload)
+    printed_date = petition_date_from_closing(
+        main_petition_closing_text(page_markdown, page_parts)
+    )
+    if printed_date:
+        payload["petition_date"] = printed_date
     _normalize_parties(payload)
     _append_missing_acting_through(payload)
     _drop_role_label_inconsistencies(payload)

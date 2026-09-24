@@ -768,6 +768,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         inner = apply_extract_envelope(
             inner,
             page_parts=page_parts,
+            page_markdown=page_markdown,
             filing_type=filing_type,
             overall_confidence=confidence,
             field_confidence=(meta.get("extract_confidence") or {}).get("fields"),
