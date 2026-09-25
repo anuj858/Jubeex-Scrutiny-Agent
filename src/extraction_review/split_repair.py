@@ -69,10 +69,13 @@ _LISTING_RE = re.compile(
     r"(?m:^\s*(?:proforma|performa)\s*$)",
     re.I,
 )
-_SYNOPSIS_RE = re.compile(r"(?m)^\s*synopsis\b", re.I)
+# Printed folio letters (B, M, etc.) often occupy the line immediately before
+# the section heading. Accept those prefixes so the heading remains an anchor.
+_FOLIO_PREFIX = r"(?:(?:[A-Z]{1,2}|[IVX]{1,4})\s*\n\s*){0,2}"
+_SYNOPSIS_RE = re.compile(rf"(?m)^\s*{_FOLIO_PREFIX}synopsis\b", re.I)
 # Heading only. Affidavit verification and checklists mention "list of dates"
 # in a sentence; that must not open the List of Dates slot.
-_LOD_RE = re.compile(r"(?m)^\s*list of dates\b", re.I)
+_LOD_RE = re.compile(rf"(?m)^\s*{_FOLIO_PREFIX}list of dates\b", re.I)
 _APPENDIX_RE = re.compile(r"(?m)^\s*appendix\b", re.I)
 _RECORD_RE = re.compile(
     # OCR: RECORD OF PROCE.J:o:DINGS / PROCEED1NGS
@@ -244,6 +247,10 @@ _NESTED_STEAL_PARTS = frozenset(
         "Advocate's Checklist",
         "Impugned Order",
         "Cover Page",
+        # These labels commonly recur inside reproduced lower-court records.
+        "Index",
+        "Synopsis",
+        "List of Dates & Events",
     }
 )
 
@@ -876,8 +883,9 @@ def _force_annexure_nesting(
                     and page > last_stamp_page
                 ):
                     continue
-            # Never steal Index / OR / Listing that somehow overlaps (shouldn't).
-            if names and all(name in _CARRY_BLOCKING_PARTS for name in names):
+            # The outer paper-book Index is before any annexure run. An Index
+            # encountered within this run is a reproduced lower-court index.
+            if names and all(name in _CARRY_BLOCKING_PARTS for name in names) and "Index" not in names:
                 if not annexure_ref_in_heading(text):
                     continue
             if not names or any(
@@ -1007,6 +1015,58 @@ def _apply_outer_anchors(
         )
         if active_front_matter and is_continuation:
             updated[page] = [active_front_matter]
+    # The standalone challenged judgment often has no printed heading saying
+    # "Impugned Order". In the Supreme Court paper-book sequence it follows
+    # the SLP's List of Dates and precedes Form 28. Recognize the first
+    # identifiable lower-court judgment in that outer interval, while never
+    # considering pages already bounded inside an Annexure.
+    first_petition = next(
+        (
+            page
+            for page in range(1, page_count + 1)
+            if page not in annexure_pages
+            and _looks_like_sci_main_petition(page_text.get(page, ""))
+        ),
+        page_count + 1,
+    )
+    lod_pages = [
+        page
+        for page in range(1, first_petition)
+        if page not in annexure_pages
+        and _outer_anchor_label(page_text.get(page, "")) == "List of Dates & Events"
+    ]
+    if lod_pages:
+        chronology_end = max(lod_pages)
+        for page in range(chronology_end + 1, first_petition):
+            if page in annexure_pages:
+                continue
+            text = page_text.get(page, "")
+            head = _heading_window(text, lines=20)
+            folded = _fold(text[:2500])
+            is_judgment_title = bool(
+                _is_lower_court_caption(text)
+                and re.search(r"\b(judg(?:e)?ment|order|decree)\b", folded)
+                and (
+                    "date of decision" in folded
+                    or "reserved on" in folded
+                    or "pronounced on" in folded
+                    or re.search(r"\b(?:fa[o]?|lpa|w\.p\.|writ petition|civil appeal)\b", folded)
+                )
+            )
+            if not is_judgment_title:
+                continue
+            updated[page] = ["Impugned Order"]
+            total_pages = None
+            footer = re.search(r"\bpage\s*1\s+of\s*(\d{1,3})\b", folded)
+            if footer:
+                total_pages = int(footer.group(1))
+            if total_pages:
+                last_page = min(first_petition - 1, page + total_pages - 1)
+                for order_page in range(page + 1, last_page + 1):
+                    if order_page in annexure_pages:
+                        break
+                    updated[order_page] = ["Impugned Order"]
+            break
     return updated
 
 
@@ -2315,6 +2375,7 @@ def _place_index_expected_annexures(
             ):
                 break
             updated[page] = [label]
+
     return updated
 
 
