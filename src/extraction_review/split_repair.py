@@ -743,7 +743,11 @@ def _outer_anchor_label(text: str) -> str | None:
         and not _is_lower_court_caption(text)
     ):
         return "Memo of Appearance"
-    if _memo_of_parties_heading(text) and not _is_lower_court_caption(text):
+    if (
+        _memo_of_parties_heading(text)
+        and _is_sci_caption(text)
+        and not _is_lower_court_caption(text)
+    ):
         return "Memo of Parties"
     if _looks_like_impugned_order_start(text):
         return "Impugned Order"
@@ -799,7 +803,12 @@ def _annexure_run_bounds(
                 if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _outer_anchor_label(text) == "Vakalatnama":
+                if _outer_anchor_label(text) in {
+                    "Vakalatnama",
+                    "Memo of Appearance",
+                    "Memo of Parties",
+                    "Filing Memo",
+                }:
                     end = page - 1
                     break
                 if (
@@ -816,7 +825,12 @@ def _annexure_run_bounds(
                 text = page_text.get(page, "")
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _outer_anchor_label(text) == "Vakalatnama":
+                if _outer_anchor_label(text) in {
+                    "Vakalatnama",
+                    "Memo of Appearance",
+                    "Memo of Parties",
+                    "Filing Memo",
+                }:
                     break
                 if (
                     _FILING_MEMO_RE.search(_heading_window(text, lines=8))
@@ -1158,6 +1172,30 @@ def _keep_application_party_lists_nested(
         # handled above so attached exhibits remain independently classified.
         if anchor and anchor != "Application 1":
             active_application = None
+    return updated
+
+
+def _demote_unverified_representation_parts(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """A representation heading without this Court's caption is not an outer slot."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    representation_parts = {
+        "Vakalatnama",
+        "Memo of Appearance",
+        "Memo of Parties",
+    }
+    for page, names in list(updated.items()):
+        text = page_text.get(page, "")
+        trusted = _is_sci_caption(text) and not _is_lower_court_caption(text)
+        if trusted:
+            continue
+        remaining = [name for name in names if name not in representation_parts]
+        if remaining:
+            updated[page] = remaining
+        else:
+            updated.pop(page, None)
     return updated
 
 
@@ -2749,6 +2787,7 @@ def repair_compiled_split(
     # exhibit even if a later Index-folio reconciliation assigned a top-level
     # heading such as List of Dates & Events.
     repaired = _force_annexure_nesting(repaired, page_text, page_count)
+    repaired = _demote_unverified_representation_parts(repaired, page_text)
     return repaired, duplicates
 
 
