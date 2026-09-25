@@ -66,6 +66,14 @@
           "value": "JubeeX Scrutiny"
         },
         {
+          "name": "CATALOGUE_SOURCE",
+          "value": "file"
+        },
+        {
+          "name": "CATALOGUE_DATABASE_URL",
+          "value": ""
+        },
+        {
           "name": "SCRUTINY_ENABLED",
           "value": "true"
         },

@@ -287,6 +287,7 @@ class DefectFinding(BaseModel):
     coverage: Coverage = Field(default_factory=Coverage)
     usage: LlmUsage | None = None
     error: str | None = None
+    defect_version: int = 1
 
 
 DEFAULT_REVIEW_CONFIDENCE = 0.6
@@ -766,6 +767,7 @@ def build_finding(
         visual_localizations=visual_localizations,
         coverage=coverage,
         usage=usage,
+        defect_version=defect.defect_version,
     )
 
 
@@ -809,6 +811,7 @@ def failed_finding(
         location_source=readable_location_source(defect, catalogue),
         error=error,
         usage=usage,
+        defect_version=defect.defect_version,
     )
 
 

@@ -228,6 +228,8 @@ _SPECIAL_ALIASES = {
     "advocates act 1961": "advocates_act",
     "consumer protection act, 1986": "consumer_protection_act",
     "consumer protection act 1986": "consumer_protection_act",
+    "consumer protection act, 2019": "consumer_protection_act",
+    "consumer protection act 2019": "consumer_protection_act",
     "caveat": "caveat",
     "tax matters": "tax_matters",
     "transfer petition": "transfer_petition",
@@ -312,6 +314,21 @@ class Defect(_Strict):
     applicable_rule: str | None = None
     location_source: str
     notes: str | None = None
+    ivan_comment: str | None = None
+    notes_2: str | None = None
+    # Spreadsheet Location/Source before filenames are rewritten to source ids.
+    location_text: str = ""
+    # Set by the database loader. The JSON catalogue leaves these at defaults
+    # and selection derives them from main_category / special_category.
+    applies_to_all_petition_types: bool = False
+    agent_filing_types: list[str] = Field(default_factory=list)
+    special_category_mode: str | None = None
+    is_enabled: bool = True
+    defect_version: int = 1
+    use_explicit_applicability: bool = False
+    # Normalized special key (refiling_defect, miscellaneous_application).
+    # Kept separate so overlay defects can keep their original special_category text.
+    special_category_key: str = ""
 
     @field_validator(
         "special_category",
@@ -320,6 +337,8 @@ class Defect(_Strict):
         "overlap_note",
         "applicable_rule",
         "notes",
+        "ivan_comment",
+        "notes_2",
         mode="before",
     )
     @classmethod
@@ -365,9 +384,8 @@ class Defect(_Strict):
 def split_main_categories(main_category: str | list[str] | None) -> tuple[str, ...]:
     """Split a catalogue Main Category into one or more petition-type labels.
 
-    Accepts a JSON list, or a string split on commas and on slashes that follow
-    a closing parenthesis (e.g. "SLP (Civil)/SLP (Criminal)"). Leaves
-    "General/Global" as a single label.
+    Accepts a JSON list, or a string split on commas and slashes
+    (e.g. "Civil Appeal/SLP (Criminal)"). Leaves "General/Global" as one label.
     """
     if main_category is None:
         return ()
@@ -380,11 +398,18 @@ def split_main_categories(main_category: str | list[str] | None) -> tuple[str, .
             str(main_category).strip(),
             flags=re.IGNORECASE,
         )
-        parts = [
-            part.strip()
-            for part in re.split(r"\s*,\s*|(?<=\))\s*/\s*", cleaned)
-            if part.strip()
-        ]
+        # "General/Global" is one label. Every other slash separates petition types,
+        # including "Civil Appeal/SLP (Criminal)" where the slash does not follow ")".
+        if re.fullmatch(
+            r"general\s*/\s*global|global\s*/\s*general", cleaned, flags=re.IGNORECASE
+        ):
+            parts = [cleaned]
+        else:
+            parts = [
+                part.strip()
+                for part in re.split(r"\s*,\s*|\s*/\s*", cleaned)
+                if part.strip()
+            ]
     return tuple(part for part in parts if part)
 
 
@@ -397,6 +422,8 @@ class Catalogue(_Strict):
     sources: list[CatalogueSource] = Field(default_factory=list)
     categories: list[DefectCategory] = Field(default_factory=list)
     defects: list[Defect] = Field(default_factory=list)
+    # Filing-type key -> special-category labels. Empty means use sci_case_types.
+    petition_specials: dict[str, list[str]] = Field(default_factory=dict)
 
     @property
     def defect_order(self) -> list[str]:
@@ -494,18 +521,122 @@ def get_case_types() -> dict[str, dict[str, object]]:
     return by_key
 
 
-@lru_cache(maxsize=1)
-def get_catalogue() -> Catalogue:
+class _CatalogueCache:
+    def __init__(self) -> None:
+        self.value: Catalogue | None = None
+        self.revision: int | None = None
+        self.source: str | None = None
+
+    def clear(self) -> None:
+        self.value = None
+        self.revision = None
+        self.source = None
+
+
+_catalogue_cache = _CatalogueCache()
+
+
+def _stamp_explicit_applicability(catalogue: Catalogue) -> Catalogue:
+    """Turn main_category text into the same fields the database stores."""
+    from .applicability import derive_applicability
+
+    stamped: list[Defect] = []
+    for defect in catalogue.defects:
+        if defect.use_explicit_applicability:
+            stamped.append(defect)
+            continue
+        resolved = derive_applicability(defect)
+        original_location = defect.location_text or defect.location_source
+        stamped.append(
+            defect.model_copy(
+                update={
+                    "applies_to_all_petition_types": resolved.applies_to_all,
+                    "agent_filing_types": sorted(resolved.filing_types),
+                    "special_category_mode": resolved.special_mode,
+                    "special_category_key": resolved.special_key,
+                    "use_explicit_applicability": True,
+                    "location_text": original_location,
+                    "location_source": rewrite_location_source(
+                        original_location, catalogue.sources
+                    ),
+                }
+            )
+        )
+    return catalogue.model_copy(update={"defects": stamped})
+
+
+def _load_file_catalogue() -> Catalogue:
     path = catalogue_path()
     with path.open(encoding="utf-8") as fh:
         raw = json.load(fh)
-    catalogue = Catalogue.model_validate(raw)
+    catalogue = _stamp_explicit_applicability(Catalogue.model_validate(raw))
     logger.info(
         "[Scrutiny] Loaded catalogue %s v%s (%s defects) from %s",
         catalogue.catalogue_id,
         catalogue.catalogue_version,
         len(catalogue.defects),
         path,
+    )
+    return catalogue
+
+
+def get_catalogue() -> Catalogue:
+    if _catalogue_cache.value is None:
+        return refresh_catalogue()
+    return _catalogue_cache.value
+
+
+get_catalogue.cache_clear = _catalogue_cache.clear  # type: ignore[attr-defined]
+
+
+def _store_file_catalogue() -> Catalogue:
+    catalogue = _load_file_catalogue()
+    _catalogue_cache.value = catalogue
+    _catalogue_cache.source = "file"
+    _catalogue_cache.revision = None
+    return catalogue
+
+
+def refresh_catalogue() -> Catalogue:
+    """Reload the catalogue. In database mode, skip the reload when the revision is unchanged.
+
+    If the database cannot be reached or read, use sci_registry_defects.v1.json.
+    The next refresh tries the database again.
+    """
+    from .catalogue_db import (
+        catalogue_uses_database,
+        fetch_catalogue_revision,
+        load_catalogue_from_db,
+    )
+
+    if not catalogue_uses_database():
+        return _store_file_catalogue()
+
+    try:
+        revision = fetch_catalogue_revision()
+        if (
+            _catalogue_cache.value is not None
+            and _catalogue_cache.source == "db"
+            and _catalogue_cache.revision == revision
+        ):
+            return _catalogue_cache.value
+        catalogue = load_catalogue_from_db(revision)
+    except Exception:
+        logger.warning(
+            "[Scrutiny] Database catalogue unavailable; using %s",
+            catalogue_path(),
+            exc_info=True,
+        )
+        return _store_file_catalogue()
+
+    _catalogue_cache.value = catalogue
+    _catalogue_cache.source = "db"
+    _catalogue_cache.revision = revision
+    logger.info(
+        "[Scrutiny] Loaded catalogue %s %s (%s defects) from the database",
+        catalogue.catalogue_id,
+        catalogue.catalogue_version,
+        len(catalogue.defects),
     )
     return catalogue
 
@@ -715,27 +846,51 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
     return ordered
 
 
+def _allowed_check_ids(catalogue: Catalogue) -> set[str]:
+    """File mode uses SCRUTINY_DEFECTS. Database mode uses is_enabled, narrowed by that list."""
+    from .catalogue_db import catalogue_uses_database
+
+    if catalogue_uses_database():
+        enabled = {defect.check_id.upper() for defect in catalogue.defects if defect.is_enabled}
+        raw = (os.getenv("SCRUTINY_DEFECTS") or "").strip()
+        if not raw or raw.lower() == "all":
+            return enabled
+        listed = {part.strip().upper() for part in raw.split(",") if part.strip()}
+        return enabled & listed
+    return {check_id.upper() for check_id in enabled_defect_ids()}
+
+
+def _specials_allowed(catalogue: Catalogue, filing_type: str | None) -> frozenset[str]:
+    if catalogue.petition_specials:
+        labels = catalogue.petition_specials.get(normalize_filing_type(filing_type), [])
+        return frozenset(
+            key
+            for key in (normalize_special_category(label) for label in labels)
+            if key
+        )
+    return allowed_special_keys(filing_type)
+
+
 def defects_for_filing_type(
     filing_type: str | None,
     special_category: str | None = None,
 ) -> list[Defect]:
+    from .applicability import defect_applies, derive_applicability
+
     catalogue = get_catalogue()
-    normalized = normalize_filing_type(filing_type)
-    allowed = set(enabled_defect_ids())
-    overlay_requested = normalize_special_category(special_category)
+    allowed = _allowed_check_ids(catalogue)
+    specials = _specials_allowed(catalogue, filing_type)
 
     selected = [
         defect
         for defect in catalogue.defects
-        if defect.check_id in allowed
-        and (
-            _applies_to_filing(defect, normalized)
-            or (
-                overlay_requested
-                and _overlay_special_key(defect) == overlay_requested
-            )
+        if defect.check_id.upper() in allowed
+        and defect_applies(
+            derive_applicability(defect),
+            filing_type,
+            special_category,
+            specials,
         )
-        and _applies_to_special(defect, filing_type, special_category)
     ]
     selected = order_parent_then_children(selected)
 

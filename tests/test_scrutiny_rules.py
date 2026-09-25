@@ -324,8 +324,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
 
     catalogue = rules_mod.get_catalogue()
-    assert catalogue.catalogue_version == "2.8.0"
-    assert len(catalogue.defects) == 327
+    assert catalogue.catalogue_version == "3.0.1"
+    assert len(catalogue.defects) == 321
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
         json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
@@ -393,7 +393,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     motor = [
         d.check_id
         for d in catalogue.defects
-        if d.special_category == "Motor Vehical Act"
+        if d.special_category == "Motor Vehicle Act"
     ]
     assert motor
     assert not (set(motor) & civil)
@@ -525,7 +525,7 @@ def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
     motor_ids = {
         d.check_id
         for d in catalogue.defects
-        if d.special_category == "Motor Vehical Act"
+        if d.special_category == "Motor Vehicle Act"
     }
     armed = {
         d.check_id

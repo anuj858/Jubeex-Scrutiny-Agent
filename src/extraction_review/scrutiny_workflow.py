@@ -59,7 +59,7 @@ from .scrutiny.rules import (
     check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
-    get_catalogue,
+    refresh_catalogue,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -507,7 +507,12 @@ class ScrutinyWorkflow(Workflow):
 
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
-        catalogue = get_catalogue()
+        catalogue = refresh_catalogue()
+        logger.info(
+            "[Scrutiny] Using catalogue %s for %s",
+            catalogue.catalogue_version,
+            event.agent_data_id,
+        )
         defects = defects_for_filing_type(
             filing_type,
             special_category=event.special_category,

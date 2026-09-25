@@ -834,6 +834,10 @@ def build_defect_prompt(
     )
     if getattr(defect, "notes", None):
         sections.extend(["", "## Notes", defect.notes.strip()])
+    if getattr(defect, "ivan_comment", None):
+        sections.extend(["", "## Review comment", defect.ivan_comment.strip()])
+    if getattr(defect, "notes_2", None):
+        sections.extend(["", "## Further notes", defect.notes_2.strip()])
     if parent:
         sections.extend(["", "## Scope", parent])
     sections.extend(
