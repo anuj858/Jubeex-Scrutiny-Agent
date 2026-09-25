@@ -886,6 +886,11 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
             " For impugned_orders, use bracketed particulars only when Impugned Order "
             "is not in this pack."
         )
+    if "petition_date" in petition_fill:
+        extras.append(
+            " For petition_date, use only the last page after Main Prayer or Prayer. "
+            "If Date Drafted and Date Filed on are both printed, use Date Drafted only."
+        )
     for extra in extras:
         if extra.strip() not in petition_note:
             petition_note = petition_note.rstrip() + extra
@@ -985,6 +990,10 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "- relief_sort: copy only the prayer body under Main Prayer / Prayer on the "
             "last 2-3 pages of the Main Petition. Do not include the heading, number, "
             "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
+            "- petition_date: on the last page of the Main Petition, after Main Prayer "
+            "/ Prayer, copy the date next to Date, Date Drafted, or Date Filed on. "
+            "If both Date Drafted and Date Filed on are printed, use only Date Drafted. "
+            "Return the date only, without the label.",
             "- confidence: percentage string such as 95% or 65% on each object.",
             "- inconsistencies: record spelling or value mismatches between fill and "
             "verify sources. Always record a letter-level mismatch of the Cause Title "
@@ -1127,6 +1136,14 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             " Copy only the prayer body under Main Prayer or Prayer on the last 2-3 pages "
             "of the Main Petition. Omit the heading, clause number, HTML, and markdown."
         )
+    if field_name == "petition_date":
+        extra += (
+            " Read the last page of the Main Petition, after Main Prayer or Prayer. "
+            "Use the date next to Date, Date Drafted, or Date Filed on. If both "
+            "Date Drafted and Date Filed on are printed, use only the Date Drafted "
+            "date. Return the date only, without the label. Do not use a date inside "
+            "the prayer or from any other document."
+        )
     return f"{extra}{LOOK_ONLY_SUFFIX}"
 
 
@@ -1182,6 +1199,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
             "- advocates_on_record: Vakalatnama first. Copy the printed AOR footer only; leave a field null if it is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition (very end: Drawn By / Filed on / DRAWN & FILED BY / Advocate for Petitioner / Chamber). Do not use petition opening pages. If office_address is still blank, last page of Listing Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate signature / DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama.",
             "- impugned_orders: Impugned Order PDF first. If missing, bracketed particulars on Main Petition, Cover Page, AOR's Certificate, and Affidavit. Keep one consistent set.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
+            "- petition_date: last page of the Main Petition, after Main Prayer / Prayer. Use Date, Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on are printed, use only Date Drafted. Return the date only.",
             "- confidence: percentage strings such as 95% or 65%.",
             "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cause Title main petitioner/respondent letter mismatch versus petitioner 1 / respondent 1 on the Main Petition starting pages (Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Flag a different person, a missing name, or a side swap. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Also record printed AOR chamber/office address mismatches across Vakalatnama, Memo of Appearance, Main Petition last page, Listing Proforma last page, and AOR's Certificate. Quote both printed strings. Do not invent an address. Ignore extra Ph. on the same chamber line. id is '1', '2', …; use raw_text as Cause Title: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition starting pages are not spelling errors against Cover Page And Anr/Ors.",
         ]

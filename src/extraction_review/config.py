@@ -422,6 +422,18 @@ class LegalExtractRecord(BaseModel):
             "Leave null if that heading is not printed."
         ),
     )
+    petition_date: str | None = Field(
+        default=None,
+        description=(
+            "Date of this petition from the last page of the Main Petition, after "
+            "the heading Main Prayer or Prayer. Use the date printed next to Date, "
+            "Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on "
+            "are printed, use only the Date Drafted date. Return the date as printed, "
+            "without the label. Do not use a date inside the prayer, an impugned-order "
+            "date, or a date from any other document. Leave null if none of those "
+            "labels is printed after the prayer."
+        ),
+    )
     inconsistencies: Inconsistencies | None = Field(
         default=None,
         description=(
