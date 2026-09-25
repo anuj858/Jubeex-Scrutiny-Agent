@@ -63,8 +63,10 @@ _TRIBUNAL_CAPTION_RE = re.compile(
 _OFFICE_REPORT_RE = re.compile(r"office report on limitation|o/?r on limitation", re.I)
 _LISTING_RE = re.compile(
     r"proforma\s+for\s+first\s+listin\.?g?|"
-    r"listing\s+proforma|listed\s+proforma|"
-    r"proforma\s+for\s+first\s+listing",
+    r"proforma\s+of\s+first\s+listing|"
+    r"listing\s+proforma|listed\s+proforma|first\s+proforma|"
+    r"performa\s+for\s+first\s+listing|"
+    r"(?m:^\s*(?:proforma|performa)\s*$)",
     re.I,
 )
 _SYNOPSIS_RE = re.compile(r"(?m)^\s*synopsis\b", re.I)
@@ -153,6 +155,18 @@ _LISTING_CONTINUATION_RE = re.compile(
     r"vehicle number\b|period of sentence undergone|"
     r"similar disposed of|not to be listed before",
     re.I,
+)
+_LISTING_FIELD_CUES = (
+    r"\bcentral act\b|\bstate act\b|\bcentral rule\b|\bstate rule\b",
+    r"impugned order dated|names of judges|tribunal\s*/\s*authority",
+    r"nature of matter",
+    r"name\s*\(?s\)? of petitioner|name\s*\(?s\)? of respondent",
+    r"main category classification|sub classification",
+    r"not to be listed before",
+    r"similar disposed|similar pending",
+    r"criminal matter|fir no\.?|police station|sentence awarded|sentence undergone",
+    r"land acquisition matters|section 4 notification|tax matters|state the tax effect",
+    r"special category|vehicle number|litigation on the same point of law",
 )
 _COVER_FOOTER_RE = re.compile(
     r"for index\s+(?:kindly|please)\s+see\s+inside|"
@@ -344,14 +358,26 @@ def _is_near_blank_page(text: str) -> bool:
     return len(stripped) < 8
 
 
+def _looks_like_listing_proforma(text: str) -> bool:
+    """Recognize the first-listing form by its heading or repeated field layout."""
+    if _LISTING_RE.search(_heading_window(text, lines=10)) or _LISTING_RE.search(
+        text[:900]
+    ):
+        return True
+    folded = _fold(text[:4000])
+    return sum(
+        bool(re.search(pattern, folded, re.I)) for pattern in _LISTING_FIELD_CUES
+    ) >= 3
+
+
 def _looks_like_sci_checklist(text: str) -> bool:
     head = text[:1200]
     if _STATE_CHECKLIST_RE.search(head):
         return False
     # Listing Proforma also says "tick/check the correct box" — not a checklist.
-    if _LISTING_RE.search(head) or _LISTING_RE.search(_fold(head)):
-        return False
-    if _LISTING_CONTINUATION_RE.search(text[:2000]):
+    if _looks_like_listing_proforma(head) or _LISTING_CONTINUATION_RE.search(
+        text[:2000]
+    ):
         return False
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return False
@@ -626,25 +652,28 @@ def _outer_anchor_label(text: str) -> str | None:
     """Return a strong outer-document label from page text, or None."""
     if not (text or "").strip():
         return None
-    # Filing Memo often shares a sheet with a trailing SCI caption — trust the
-    # heading even below the cause title ("INDEX OF DOCUMENTS" + Court Fees).
-    if _FILING_MEMO_RE.search(text[:1800]) and not (
-        _looks_like_court_notice_or_rop(text)
-    ):
-        return "Filing Memo"
     # Advocate's Check List tables say "index" and "particulars" in the rows.
     # That is not the paper-book Index — classify the checklist first.
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
+    # A paper-book Index can list Filing Memo, Annexures, and other sections.
+    # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
         return "Index"
-    # OR heading often sits below the cause title — search more than 12 lines.
+    # Filing Memo can share a sheet with a trailing SCI caption; only recognize
+    # its standalone heading after ruling out a paper-book Index table.
+    if _FILING_MEMO_RE.search(text[:1800]) and not (
+        _looks_like_court_notice_or_rop(text)
+    ):
+        return "Filing Memo"
+    # A lower-court report reproduced in an exhibit is not the Supreme Court
+    # paper-book's Office Report on Limitation.
     if _OFFICE_REPORT_RE.search(text[:2000]):
+        if _is_lower_court_caption(text):
+            return None
         return "Office Report on Limitation"
-    if (
-        _LISTING_RE.search(_heading_window(text, lines=10))
-        or _LISTING_RE.search(text[:900])
-        or _LISTING_CONTINUATION_RE.search(text[:2000])
+    if _looks_like_listing_proforma(text) or _LISTING_CONTINUATION_RE.search(
+        text[:2000]
     ):
         return "Listing Proforma"
     if _looks_like_court_notice_or_rop(text):
@@ -777,7 +806,7 @@ def _annexure_run_bounds(
 
 
 def _annexure_number_from_label(name: str) -> int | None:
-    match = re.fullmatch(r"annexure [a-z]-?(\d{1,3})", _fold(name))
+    match = re.fullmatch(r"annexure [a-z]-?(\d+)", _fold(name))
     if not match:
         return None
     number = int(match.group(1))
@@ -879,6 +908,18 @@ def _apply_outer_anchors(
         if page in annexure_pages:
             continue
         text = page_text.get(page, "")
+        if _OFFICE_REPORT_RE.search(text[:2000]) and _is_lower_court_caption(text):
+            # Remove a mistaken outer Office Report label. Gap filling can then
+            # inherit the surrounding Annexure label when the exhibit is unstamped.
+            names = parts_on_page(updated.get(page))
+            remaining = [
+                name for name in names if name != "Office Report on Limitation"
+            ]
+            if remaining:
+                updated[page] = remaining
+            elif page in updated:
+                updated.pop(page)
+            continue
         label = _outer_anchor_label(text)
         if not label:
             continue
@@ -932,6 +973,40 @@ def _apply_outer_anchors(
                 if not _looks_like_sci_main_petition(text):
                     continue
             updated[page] = [label]
+
+    # Carry a Synopsis or List of Dates label across its lettered folios. The
+    # explicit List of Dates heading switches the active section; this keeps a
+    # B-L narrative Synopsis separate from an M-V date/event table even when
+    # LlamaSplit assigns both runs the same label.
+    active_front_matter: str | None = None
+    for page in range(1, page_count + 1):
+        if page in annexure_pages:
+            active_front_matter = None
+            continue
+        text = page_text.get(page, "")
+        anchor = _outer_anchor_label(text)
+        if anchor in {"Synopsis", "List of Dates & Events"}:
+            active_front_matter = anchor
+            updated[page] = [anchor]
+            continue
+        if anchor is not None:
+            active_front_matter = None
+            continue
+        if _is_lower_court_caption(text) or _looks_like_impugned_order_start(text):
+            active_front_matter = None
+            continue
+        folio = re.match(r"(?is)^\s*([b-v])\b", text[:500])
+        dated_row = bool(
+            re.match(
+                r"(?m)^\s*\d{1,2}[\s./\-]+\d{1,2}[\s./\-]+\d{2,4}\b",
+                text[:500],
+            )
+        )
+        is_continuation = bool(folio) or (
+            active_front_matter == "List of Dates & Events" and dated_row
+        )
+        if active_front_matter and is_continuation:
+            updated[page] = [active_front_matter]
     return updated
 
 
@@ -1781,7 +1856,7 @@ def find_duplicate_split_parts(page_parts: PagePartMap) -> list[DuplicateSplitHi
         if len(groups) < 2:
             continue
         if part not in _FIRST_RUN_PARTS and not re.fullmatch(
-            r"(?i)annexure p-?\d{1,3}|application \d{1,3}", part
+            r"(?i)annexure p-?\d+|application \d+", part
         ):
             continue
         kept = groups[0]
@@ -2262,7 +2337,7 @@ def _demote_unmentioned_annexures(
     expected = set(expected)
     max_by_series: dict[str, int] = {}
     for label in expected:
-        match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d{1,3})", label.strip())
+        match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d+)", label.strip())
         if not match:
             continue
         series = match.group(1).upper()
@@ -2682,7 +2757,7 @@ def _fill_application_gaps(
                     name
                     for name in names
                     if family_split_name(name) == "Application"
-                    or re.fullmatch(r"(?i)application\s+\d{1,3}", name)
+                    or re.fullmatch(r"(?i)application\s+\d+", name)
                 ),
                 None,
             )

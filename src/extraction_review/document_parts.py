@@ -337,7 +337,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
         if not groups:
             continue
         folded = _fold(part)
-        numbered_app = bool(re.fullmatch(r"application \d{1,3}", folded))
+        numbered_app = bool(re.fullmatch(r"application \d+", folded))
         if (
             _is_numbered_annexure(part)
             or numbered_app
@@ -476,7 +476,6 @@ def filing_type_label(filing_type: str | None) -> str:
     return raw or "this filing"
 
 
-MAX_NUMBERED_PART = 999
 ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
 
@@ -517,9 +516,9 @@ class AnnexureMark:
 _ANNEXURE_HEADING_RE = re.compile(
     r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
-    r"(?P<num>\d{1,3})\b"
+    r"(?P<num>\d+)\b"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
-    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})\b",
+    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
     re.IGNORECASE,
 )
 # Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
@@ -528,8 +527,8 @@ _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"(?:"
     r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
-    r"(?P<num>\d{1,3})"
-    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})"
+    r"(?P<num>\d+)"
+    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
     r")\b",
     re.IGNORECASE,
 )
@@ -573,7 +572,7 @@ def family_split_name(name: str) -> str:
     return name
 
 
-_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d{1,3}$")
+_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d+$")
 
 
 def _is_numbered_annexure(name: str) -> bool:
@@ -610,7 +609,7 @@ def _annexure_mark_from_match(match: re.Match[str]) -> AnnexureMark | None:
     if not number_raw:
         return None
     number = int(number_raw)
-    if not (1 <= number <= MAX_NUMBERED_PART):
+    if number < 1:
         return None
     series = _normalize_annexure_series(
         groups.get("series") or groups.get("bare_series")
@@ -623,18 +622,18 @@ def numbered_part_slot_id(name: str) -> str | None:
     folded = _fold(name)
     if folded in {"annexures", "annexure"}:
         return "annexures"
-    match = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
+    match = re.fullmatch(r"annexure ([a-z])-?(\d+)", folded)
     if match:
         series = match.group(1)
         number = int(match.group(2))
-        if 1 <= number <= MAX_NUMBERED_PART:
+        if number >= 1:
             return f"annexure_{series}{number}"
     if folded == "application":
         return "applications"
-    match = re.fullmatch(r"application (\d{1,3})", folded)
+    match = re.fullmatch(r"application (\d+)", folded)
     if match:
         number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
+        if number >= 1:
             return f"application_{number}"
     return None
 
@@ -985,11 +984,11 @@ def _annexure_claimable(names: Sequence[str] | None) -> bool:
 
 
 def _annexure_number_from_label(name: str) -> int | None:
-    match = re.fullmatch(r"annexure [a-z]-?(\d{1,3})", _fold(name))
+    match = re.fullmatch(r"annexure [a-z]-?(\d+)", _fold(name))
     if not match:
         return None
     number = int(match.group(1))
-    return number if 1 <= number <= MAX_NUMBERED_PART else None
+    return number if number >= 1 else None
 
 
 def _page_annexure_number(names: Sequence[str] | None) -> int | None:

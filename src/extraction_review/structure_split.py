@@ -70,7 +70,7 @@ _VERIFY_THRESHOLD = 0.55
 _OCR_TEXT_MIN = 50
 
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d{1,3}\b",
+    r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d+\b",
     re.I,
 )
 _CENTERED_TITLE_RE = re.compile(

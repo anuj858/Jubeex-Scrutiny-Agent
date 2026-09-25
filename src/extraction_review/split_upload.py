@@ -74,8 +74,8 @@ AOR_EXTRACT_RULES = (
 )
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
-_ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d{1,3})$")
-_APPLICATION_SLOT_RE = re.compile(r"^application_(\d{1,3})$")
+_ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d+)$")
+_APPLICATION_SLOT_RE = re.compile(r"^application_(\d+)$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
 

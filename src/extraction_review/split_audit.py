@@ -76,17 +76,17 @@ _INDEX_SOFT_ROW_RE = re.compile(
 )
 
 _ANNEXURE_IN_INDEX_RE = re.compile(
-    r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d{1,3})", re.IGNORECASE
+    r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d+)", re.IGNORECASE
 )
 # SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
 # E (exhibit → P). Bare "Annexure 5" inside an annexed HC writ is not an
 # inventory row for the outer petition.
 _SCI_ANNEXURE_MENTION_RE = re.compile(
-    r"\bannexure\s*[-–—:/\s]*(petitioner|respondent|[per])\s*[-–—./\s]*(\d{1,3})\b",
+    r"\bannexure\s*[-–—:/\s]*(petitioner|respondent|[per])\s*[-–—./\s]*(\d+)\b",
     re.IGNORECASE,
 )
 _APPLICATION_IN_INDEX_RE = re.compile(
-    r"(?:application|i\.?\s*a\.?)[\s\-]*(?:no\.?\s*)?(\d{1,3})|"
+    r"(?:application|i\.?\s*a\.?)[\s\-]*(?:no\.?\s*)?(\d+)|"
     r"\bi\.?\s*a\.?\b",
     re.IGNORECASE,
 )
@@ -568,7 +568,7 @@ def collect_index_annexure_entries(
 
 def _annexure_sort_key(label: str) -> tuple[int, int]:
     """Sort Petitioner (P) before Respondent (R), then by number."""
-    match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d{1,3})", (label or "").strip())
+    match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d+)", (label or "").strip())
     if not match:
         return (99, 9999)
     series = match.group(1).upper()
@@ -651,14 +651,14 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
     if aliases:
         return (min(_SEQUENCE_RANK[name] for name in aliases), 0)
     folded = _fold(part)
-    annex = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
+    annex = re.fullmatch(r"annexure ([a-z])-?(\d+)", folded)
     if annex:
         series = annex.group(1)
         number = int(annex.group(2))
         # Petitioner (P) before Respondent (R) before other series.
         series_rank = 0 if series == "p" else (1 if series == "r" else 2)
         return (_SEQUENCE_RANK["Annexures"], series_rank * 1000 + number)
-    app = re.fullmatch(r"application (\d{1,3})", folded)
+    app = re.fullmatch(r"application (\d+)", folded)
     if app:
         return (_SEQUENCE_RANK["Applications"], int(app.group(1)))
     if part in _SEQUENCE_RANK:
