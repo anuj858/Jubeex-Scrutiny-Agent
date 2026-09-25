@@ -856,11 +856,14 @@ def _memo_of_parties_heading(text: str) -> bool:
 def _vakalatnama_heading(text: str) -> bool:
     """True only for a Vakalatnama title line — not narrative 'filing Vakalatnama'."""
     head = _heading_window(text, lines=12)
-    if re.search(r"(?m)^\s*v\W*a\W*k\W*a\W*l\W*a\W*t\W*n\W*a\W*m\W*a\b", head, re.I):
+    # Accept common spelling and OCR variants: Vakalatnama, Vakalat Name,
+    # Vakaltnama (missing the second "a"), and punctuated letter spacing.
+    title = r"v\W*a\W*k\W*a\W*l\W*a?\W*t\W*n\W*a\W*m\W*a"
+    if re.search(rf"(?m)^\s*{title}\b", head, re.I):
         return True
     # Spaced OCR title on its own line.
     if re.search(
-        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a\s*t\s*n\s*a\s*m\s*a\s*$",
+        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a?\s*t\s*n\s*a\s*m\s*a\s*$",
         head,
         re.I,
     ):

@@ -75,7 +75,10 @@ _FOLIO_PREFIX = r"(?:(?:[A-Z]{1,2}|[IVX]{1,4})\s*\n\s*){0,2}"
 _SYNOPSIS_RE = re.compile(rf"(?m)^\s*{_FOLIO_PREFIX}synopsis\b", re.I)
 # Heading only. Affidavit verification and checklists mention "list of dates"
 # in a sentence; that must not open the List of Dates slot.
-_LOD_RE = re.compile(rf"(?m)^\s*{_FOLIO_PREFIX}list of dates\b", re.I)
+_LOD_RE = re.compile(
+    rf"(?m)^\s*{_FOLIO_PREFIX}(?:list of dates(?:\s*(?:and|&)\s*events)?|list of events)\b",
+    re.I,
+)
 _APPENDIX_RE = re.compile(r"(?m)^\s*appendix\b", re.I)
 _RECORD_RE = re.compile(
     # OCR: RECORD OF PROCE.J:o:DINGS / PROCEED1NGS
@@ -207,7 +210,9 @@ _INDEX_CONTINUATION_RE = re.compile(
     r"(?:special leave|petition|annexure|appendix|affidavit|"
     r"vakalat|application|memo of|office report|listing|synopsis)",
 )
-_APPEARANCE_RE = re.compile(r"(?m)^\s*memo of appearance\b", re.I)
+_APPEARANCE_RE = re.compile(
+    r"(?mi)^\s*memo(?:randum)?\s+of\s+app.{0,4}rance\b", re.I
+)
 _NEAR_BLANK_RE = re.compile(r"^[\s\d\.]*$")
 
 # Outer SCI paper-book parts: keep the first contiguous run, not the longest.
@@ -243,6 +248,7 @@ _NESTED_STEAL_PARTS = frozenset(
         "Vakalatnama",
         "Memo of Appearance",
         "Memo of Parties",
+        "Filing Memo",
         "AOR's Certificate",
         "Advocate's Checklist",
         "Impugned Order",
@@ -667,11 +673,12 @@ def _outer_anchor_label(text: str) -> str | None:
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
         return "Index"
-    # Filing Memo can share a sheet with a trailing SCI caption; only recognize
-    # its standalone heading after ruling out a paper-book Index table.
+    # A Filing Memo is an outer section only when it belongs to the current
+    # Supreme Court filing. A lower-court filing memo reproduced in an exhibit
+    # must stay with that record.
     if _FILING_MEMO_RE.search(text[:1800]) and not (
         _looks_like_court_notice_or_rop(text)
-    ):
+    ) and _is_sci_caption(text) and not _is_lower_court_caption(text):
         return "Filing Memo"
     # A lower-court report reproduced in an exhibit is not the Supreme Court
     # paper-book's Office Report on Limitation.
@@ -687,9 +694,13 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Record of Proceedings"
     if _RECORD_RE.search(_heading_window(text, lines=10)):
         return "Record of Proceedings"
-    if _SYNOPSIS_RE.search(_heading_window(text, lines=8)):
+    if _SYNOPSIS_RE.search(
+        _heading_window(text, lines=8)
+    ) and not _is_lower_court_caption(text):
         return "Synopsis"
-    if _LOD_RE.search(_heading_window(text, lines=8)):
+    if _LOD_RE.search(
+        _heading_window(text, lines=8)
+    ) and not _is_lower_court_caption(text):
         return "List of Dates & Events"
     if _APPENDIX_RE.search(_heading_window(text, lines=6)) and not annexure_ref_in_heading(
         text
@@ -720,13 +731,19 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Cover Page"
     if page_starts_application(text) and not _looks_like_cover_page(text):
         return "Application 1"
-    if _vakalatnama_heading(text) and (
-        _is_sci_caption(text) or not _is_lower_court_caption(text)
+    if (
+        _vakalatnama_heading(text)
+        and _is_sci_caption(text)
+        and not _is_lower_court_caption(text)
     ):
         return "Vakalatnama"
-    if _APPEARANCE_RE.search(_heading_window(text, lines=10)):
+    if (
+        _APPEARANCE_RE.search(_heading_window(text, lines=10))
+        and _is_sci_caption(text)
+        and not _is_lower_court_caption(text)
+    ):
         return "Memo of Appearance"
-    if _memo_of_parties_heading(text):
+    if _memo_of_parties_heading(text) and not _is_lower_court_caption(text):
         return "Memo of Parties"
     if _looks_like_impugned_order_start(text):
         return "Impugned Order"
@@ -775,13 +792,21 @@ def _annexure_run_bounds(
             # Filing Memo between P-n and P-(n+1) must close the earlier run.
             for page in range(start + 1, end + 1):
                 text = page_text.get(page, "")
-                if page_starts_application(text):
+                # Applications reproduced in a High Court record (e.g.
+                # Order XXXIX / Section 151 CPC applications) are part of the
+                # enclosing annexure. Only a current Supreme Court application
+                # can terminate an outer annexure run.
+                if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _vakalatnama_heading(text) and _is_sci_caption(text):
+                if _outer_anchor_label(text) == "Vakalatnama":
                     end = page - 1
                     break
-                if _FILING_MEMO_RE.search(_heading_window(text, lines=8)):
+                if (
+                    _FILING_MEMO_RE.search(_heading_window(text, lines=8))
+                    and _is_sci_caption(text)
+                    and not _is_lower_court_caption(text)
+                ):
                     end = page - 1
                     break
         else:
@@ -789,11 +814,15 @@ def _annexure_run_bounds(
             blank_streak = 0
             for page in range(start + 1, page_count + 1):
                 text = page_text.get(page, "")
-                if page_starts_application(text):
+                if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _vakalatnama_heading(text) and _is_sci_caption(text):
+                if _outer_anchor_label(text) == "Vakalatnama":
                     break
-                if _FILING_MEMO_RE.search(_heading_window(text, lines=8)):
+                if (
+                    _FILING_MEMO_RE.search(_heading_window(text, lines=8))
+                    and _is_sci_caption(text)
+                    and not _is_lower_court_caption(text)
+                ):
                     break
                 if annexure_label_from_text(text):
                     break
@@ -885,7 +914,11 @@ def _force_annexure_nesting(
                     continue
             # The outer paper-book Index is before any annexure run. An Index
             # encountered within this run is a reproduced lower-court index.
-            if names and all(name in _CARRY_BLOCKING_PARTS for name in names) and "Index" not in names:
+            if (
+                names
+                and all(name in _CARRY_BLOCKING_PARTS for name in names)
+                and "Index" not in names
+            ):
                 if not annexure_ref_in_heading(text):
                     continue
             if not names or any(
@@ -1067,6 +1100,64 @@ def _apply_outer_anchors(
                         break
                     updated[order_page] = ["Impugned Order"]
             break
+    return updated
+
+
+def _keep_application_party_lists_nested(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep party lists and filing slips inside their enclosing application."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages: set[int] = set()
+    for start, end, _label in _annexure_run_bounds(page_text, page_count):
+        annexure_pages.update(range(start, end + 1))
+
+    active_application: str | None = None
+    for page in range(1, page_count + 1):
+        if page in annexure_pages:
+            active_application = None
+            continue
+        text = page_text.get(page, "")
+        names = parts_on_page(updated.get(page))
+        app_name = next(
+            (
+                name
+                for name in names
+                if family_split_name(name) == "Application"
+                or re.fullmatch(r"(?i)application\s+\d+", name)
+            ),
+            None,
+        )
+        if page_starts_application(text) and not _is_lower_court_caption(text):
+            active_application = app_name or "Application 1"
+            continue
+        if app_name:
+            active_application = app_name
+            continue
+        if not active_application:
+            continue
+
+        anchor = _outer_anchor_label(text)
+        if anchor == "Memo of Parties" and _memo_of_parties_heading(text):
+            updated[page] = [active_application]
+            continue
+        if anchor == "Vakalatnama" and _vakalatnama_heading(text):
+            updated[page] = [active_application]
+            continue
+        if anchor == "Memo of Appearance" and _APPEARANCE_RE.search(
+            _heading_window(text, lines=10)
+        ):
+            updated[page] = [active_application]
+            continue
+        if anchor == "Filing Memo" and _FILING_MEMO_RE.search(text[:1800]):
+            updated[page] = [active_application]
+            continue
+        # A new outer paper-book section ends the IA run. Annexures were
+        # handled above so attached exhibits remain independently classified.
+        if anchor and anchor != "Application 1":
+            active_application = None
     return updated
 
 
@@ -2651,6 +2742,13 @@ def repair_compiled_split(
     # unlabeled leftovers → Undefined / Unidentified at slice time.
     repaired = _demote_unmentioned_annexures(repaired, page_text)
     repaired = _apply_index_printed_pages(repaired, page_text, page_count)
+    repaired = _keep_application_party_lists_nested(
+        repaired, page_text, page_count
+    )
+    # Keep reproduced High Court documents inside their printed enclosing
+    # exhibit even if a later Index-folio reconciliation assigned a top-level
+    # heading such as List of Dates & Events.
+    repaired = _force_annexure_nesting(repaired, page_text, page_count)
     return repaired, duplicates
 
 
