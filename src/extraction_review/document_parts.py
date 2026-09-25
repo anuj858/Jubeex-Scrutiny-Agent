@@ -280,12 +280,12 @@ def _format_page_span(pages: list[int]) -> str:
 
 
 # Outer SCI paper-book parts keep the *first* contiguous run. A later High Court
-# writ mislabeled as Main Petition must not replace the real Form 28 body.
+# writ mislabeled as Main Petition must not replace the real Form 28 body. Index
+# is the exception: master and volume indexes can be separate legitimate runs.
 _FIRST_RUN_OUTER_PARTS = frozenset(
     {
         MAIN_PETITION_PART,
         "Cover Page",
-        "Index",
         "Advocate's Checklist",
         "Office Report on Limitation",
         "Listing Proforma",
@@ -309,7 +309,8 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep one contiguous run of each Split part.
 
-    Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 15–23 is
+    All Index runs are kept because master and volume indexes are distinct valid
+    sections. Main Petition at 15–23 is
     kept; a later Main Petition island (often a High Court writ) is dropped —
     first run wins for outer paper-book parts. Record of Proceedings keeps the
     longest run (stray early pages are common noise). Annexure P-2 at 29–30 is
@@ -324,6 +325,9 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     keep: set[tuple[int, str]] = set()
     for part, pages in pages_by_part.items():
         unique = sorted(set(pages))
+        if part == "Index":
+            keep.update((page, part) for page in unique)
+            continue
         if family_split_name(part) == ANNEXURE_FAMILY and not _is_numbered_annexure(
             part
         ):

@@ -195,12 +195,12 @@ _NEAR_BLANK_RE = re.compile(r"^[\s\d\.]*$")
 
 # Outer SCI paper-book parts: keep the first contiguous run, not the longest.
 # (A later High Court writ mislabeled Main Petition must not win.)
-# Mirrored in document_parts.collapse_repeated_split_pages.
+# Index is omitted because multiple volume indexes are valid; mirrored in
+# document_parts.collapse_repeated_split_pages.
 _FIRST_RUN_PARTS = frozenset(
     {
         MAIN_PETITION_PART,
         "Cover Page",
-        "Index",
         "Advocate's Checklist",
         "Office Report on Limitation",
         "Listing Proforma",
