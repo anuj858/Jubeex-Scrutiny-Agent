@@ -78,6 +78,13 @@ _INDEX_SOFT_ROW_RE = re.compile(
 _ANNEXURE_IN_INDEX_RE = re.compile(
     r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d+)", re.IGNORECASE
 )
+# Some outer Index tables put the exhibit identifier in its own column, so a
+# row may read ``Copy of order ... P-6 65-92`` without the word Annexure.
+# This is applied only to Index particulars, never to body prose.
+_SERIES_LABEL_IN_INDEX_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z])\s*[-/]\s*(\d+)\b"
+)
+
 # SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
 # E (exhibit → P). Bare "Annexure 5" inside an annexed HC writ is not an
 # inventory row for the outer petition.
@@ -168,6 +175,11 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
         return normalize_annexure_part_label(annex.group(1), int(annex.group(2)))
+    series_label = _SERIES_LABEL_IN_INDEX_RE.search(particulars or "")
+    if series_label:
+        return normalize_annexure_part_label(
+            series_label.group(1), int(series_label.group(2))
+        )
 
     if "office report" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text

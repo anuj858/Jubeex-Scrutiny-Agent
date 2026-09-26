@@ -22,6 +22,7 @@ from .document_parts import (
     _heading_window,
     _is_real_split_label,
     _is_sci_application_start,
+    _looks_like_sci_interlocutory,
     _looks_like_index_table,
     _memo_of_parties_heading,
     _vakalatnama_heading,
@@ -505,6 +506,11 @@ def _looks_like_index_continuation(text: str) -> bool:
         return False
     if _is_lower_court_caption(text):
         return False
+    # A numbered IA body may mention "application", "petition", and
+    # "annexure" on several lines. Those are pleading paragraphs, not Index
+    # entries (for example, a translation-exemption IA continuation page).
+    if _looks_like_indexed_application_body(text):
+        return False
     if _is_sci_caption(text) and _FORM28_BODY_RE.search(text[:3000]):
         return False
     folded = _fold(text[:1000])
@@ -536,6 +542,23 @@ def _looks_like_index_continuation(text: str) -> bool:
     if len(range_lines) >= 4 and "annexure-p" not in _fold(head[:200]):
         return True
     return False
+
+
+def _looks_like_indexed_application_body(text: str) -> bool:
+    """Recognize IA prose continuations that resemble numbered Index rows."""
+    if not _looks_like_sci_interlocutory(text):
+        return False
+    folded = _fold(text[:3000])
+    return any(
+        cue in folded
+        for cue in (
+            "this application is made bona fide",
+            "no prejudice will be caused",
+            "most respectfully prayed",
+            "applicant appellant therefore would pray",
+            "therefore most respectfully prayed",
+        )
+    )
 
 
 def _looks_like_lod_continuation(text: str) -> bool:
@@ -733,6 +756,11 @@ def _outer_anchor_label(text: str) -> str | None:
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
         return "Index"
+    # Prose continuing an indexed IA can resemble trailing Index rows because
+    # it cites annexures and applications. Require actual IA-body language;
+    # application descriptions inside an Index table remain Index rows.
+    if _looks_like_indexed_application_body(text):
+        return "Application 1"
     # A Filing Memo is an outer section only when it belongs to the current
     # Supreme Court filing. A lower-court filing memo reproduced in an exhibit
     # must stay with that record.
@@ -1080,6 +1108,7 @@ def _apply_outer_anchors(
             "Office Report on Limitation",
             "Listing Proforma",
             "Index",
+            "Application 1",
             "Advocate's Checklist",
             "Appendix",
             "Record of Proceedings",
@@ -3179,6 +3208,10 @@ def repair_compiled_split(
     repaired = _demote_unmatched_local_exhibit_runs(
         repaired, page_text, page_count
     )
+    # The outer Index range wins over conflicting local High Court stamps and
+    # over labels assigned from visual/document cues. Apply it after repairs
+    # that can split or demote those local exhibit runs.
+    repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
     repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
@@ -3248,6 +3281,53 @@ def _index_row_confirmed(text: str, part: str | None) -> bool:
     if part == "Court Fees" and _COURT_FEE_PAGE_RE.search(text or ""):
         return True
     return False
+
+
+def _apply_indexed_annexure_ranges(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Assign outer Annexure labels from unambiguous Supreme Court Index folios.
+
+    Annexure pages rarely repeat their paper-book label after the cover sheet;
+    reproduced High Court records may instead print unrelated local exhibit
+    numbers. A parsed Index folio range therefore labels the complete outer
+    exhibit span without requiring every scanned page to repeat its label.
+    """
+    rows = [
+        row
+        for row in aligned_index_printed_rows(page_parts, page_text)
+        if row.mapped_part
+        and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+        and row.kind == "number"
+        and row.start > 0
+        and row.end >= row.start
+    ]
+    if not rows:
+        return page_parts
+
+    # If OCR produced overlapping Annexure rows, leave those folios alone
+    # rather than picking an arbitrary owner.
+    zone_start = _post_petition_zone_start(page_parts, page_count) or 1
+    owners: dict[int, str] = {}
+    for page in range(zone_start, page_count + 1):
+        folio = _printed_folio(page_text.get(page, ""))
+        if not folio:
+            continue
+        matches = [row for row in rows if _folio_in_printed_row(folio, row)]
+        labels = {row.mapped_part for row in matches if row.mapped_part}
+        if len(labels) == 1:
+            owners[page] = next(iter(labels))
+    if not owners:
+        return page_parts
+
+    updated = {int(page): list(names) for page, names in page_parts.items()}
+    for page, owner in owners.items():
+        # Index row spans assign the outer exhibit identity to the complete
+        # physical page, including an exhibit cover and poorly OCR'd sheets.
+        updated[page] = [owner]
+    return updated
 
 
 def _apply_index_printed_pages(
