@@ -2341,6 +2341,12 @@ def _score_island_for_index_annexure(
     if "writ petition" in folded_part or "w.p" in folded_part:
         if is_hc and ("writ petition" in folded_island or "w.p" in folded_island):
             score += 6
+        if (
+            "copy of the writ petition" in folded_part
+            and is_hc
+            and re.search(r"humble\s+petition|most\s+respectfully\s+showeth", folded_island)
+        ):
+            score += 12
     if any(word in folded_part for word in ("judgment", "judgement", "final order")):
         if is_hc and (
             "coram" in folded_island or "p.c" in folded_island or "pc" in folded_island
@@ -2392,6 +2398,21 @@ def _score_island_for_index_annexure(
     ):
         if token in folded_part and token in folded_island:
             score += 5
+    # Several index entries describe short records by their document type and
+    # party name rather than a unique date (for example, a witness statement).
+    # These title cues distinguish adjacent exhibits that share the same HC
+    # caption and case number.
+    title_cues = (
+        ("compromise deed", r"\bcompromise\b.{0,80}\bdeed\b"),
+        ("statement", r"\bstatement\s+of\s+ram\s+bachan\s+singh\b"),
+        ("counter-affidavit", r"\bcounter\W+affidavit\b"),
+        ("rejoinder", r"\brejoinder\b"),
+        ("medical records", r"\bmedical\s+records?\b"),
+        ("will", r"\bwill\s+of\b"),
+    )
+    for cue, pattern in title_cues:
+        if cue in folded_part and re.search(pattern, island_text[:1800], re.I):
+            score += 9
     # Shared case / document numbers (FIR 177, CRM-M 16067, etc.).
     for num in re.findall(r"\b\d{2,6}\b", particulars or ""):
         if len(num) >= 3 and re.search(rf"\b{re.escape(num)}\b", island_text or ""):
@@ -2756,6 +2777,173 @@ def _realign_stamped_annexures_to_index(
     return updated
 
 
+def _realign_annexure_boundaries_to_index_content(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Split merged exhibit runs where a new Index-described record starts.
+
+    A reproduced High Court record can carry its own ``Annexure No. 1`` or
+    ``Annexure No. 2`` stamp. Those are local exhibit numbers and may not match
+    the Supreme Court paper-book's P-n sequence. Use the outer Index
+    particulars (date, record type and case details) to anchor each new
+    document inside an already identified Annexure run.
+    """
+    entries = collect_index_annexure_entries(page_parts, page_text)
+    if len(entries) < 2:
+        return page_parts
+
+    annexure_pages = {
+        page
+        for page, names in page_parts.items()
+        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+    }
+    if not annexure_pages:
+        return page_parts
+
+    candidates: list[int] = []
+    for page in sorted(annexure_pages):
+        text = page_text.get(page, "")
+        # A new record normally opens with its own lower-court caption. Also
+        # allow an explicit exhibit heading when OCR omitted the caption.
+        if _is_lower_court_caption(text) or annexure_ref_in_heading(text):
+            candidates.append(page)
+    if len(candidates) < 2:
+        return page_parts
+
+    scored: list[tuple[int, int, str]] = []
+    for index, start in enumerate(candidates):
+        next_candidate = (
+            candidates[index + 1]
+            if index + 1 < len(candidates)
+            else page_count + 1
+        )
+        # Include the full short record where possible, but don't let a later
+        # exhibit's date/title contaminate the match for this one.
+        window_end = min(next_candidate, start + 25, page_count + 1)
+        window = "\n".join(
+            page_text.get(offset, "")
+            for offset in range(start, window_end)
+        )
+        for label, particulars in entries:
+            score = _score_island_for_index_annexure(window, particulars, label)
+            scored.append((score, start, label))
+
+    assignments: dict[int, str] = {}
+    used_starts: set[int] = set()
+    used_labels: set[str] = set()
+    for score, start, label in sorted(scored, key=lambda row: (-row[0], row[1], row[2])):
+        if score < 9 or start in used_starts or label in used_labels:
+            continue
+        assignments[start] = label
+        used_starts.add(start)
+        used_labels.add(label)
+    if len(assignments) < 2:
+        return page_parts
+
+    updated = {page: list(names) for page, names in page_parts.items()}
+    starts = sorted(assignments)
+    for index, start in enumerate(starts):
+        stop = starts[index + 1] if index + 1 < len(starts) else page_count + 1
+        for page in range(start, stop):
+            names = parts_on_page(updated.get(page))
+            if not any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
+                continue
+            text = page_text.get(page, "")
+            if page_starts_application(text):
+                break
+            updated[page] = [assignments[start]]
+    return updated
+
+
+def _restore_indexed_back_matter_parts(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Recover scan-only Vakalatnama and separately indexed High Court memo.
+
+    Some compiled paper books place these standalone back-matter items after
+    the Filing Memo. A Vakalatnama page may yield only its printed folio in text
+    extraction; an outer-Index-listed High Court Memo of Parties is likewise
+    distinct from a memo reproduced inside an Annexure.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    index_text = "\n".join(
+        page_text.get(page, "")
+        for page, names in page_parts.items()
+        if "Index" in parts_on_page(names)
+    )
+    indexed_hc_memo = bool(
+        re.search(r"memo\s+of\s+parties\s+in\s+(?:the\s+)?high\s+court", index_text, re.I)
+    )
+    filing_pages = [
+        page
+        for page in range(1, page_count + 1)
+        if "Filing Memo" in parts_on_page(updated.get(page))
+        or _outer_anchor_label(page_text.get(page, "")) == "Filing Memo"
+        or _looks_like_filing_memo_continuation(page_text.get(page, ""))
+    ]
+    if not filing_pages:
+        return updated
+    filing_end = max(filing_pages)
+
+    def prior_filing_context(page: int) -> bool:
+        start = max(1, page - 4)
+        return any(
+            "Filing Memo" in parts_on_page(updated.get(prior))
+            or _outer_anchor_label(page_text.get(prior, "")) == "Filing Memo"
+            or _looks_like_filing_memo_continuation(page_text.get(prior, ""))
+            for prior in range(start, page)
+        )
+
+    # Index row plus sequential folio is strong evidence for a scanned
+    # Vakalatnama sheet immediately after the filing list.
+    for page in range(filing_end + 1, min(page_count, filing_end + 5) + 1):
+        text = (page_text.get(page, "") or "").strip()
+        if not re.fullmatch(r"\d{1,4}", text):
+            continue
+        previous = page_text.get(page - 1, "")
+        if (
+            re.search(r"vakalatnama", previous, re.I)
+            and re.search(r"power\s+of\s+attorney|1\s*\+\s*1", previous, re.I)
+            and prior_filing_context(page)
+        ):
+            updated[page] = ["Vakalatnama"]
+
+    if not indexed_hc_memo:
+        return updated
+
+    # The memo may have no heading of its own: its first page is a High Court
+    # cause title and party list, followed by one or more continuation pages.
+    start = next(
+        (
+            page
+            for page in range(filing_end + 1, page_count + 1)
+            if _is_lower_court_caption(page_text.get(page, ""))
+            and re.search(r"\b(?:petitioner|opposite\s+parties)\b", page_text.get(page, ""), re.I)
+            and not annexure_ref_in_heading(page_text.get(page, ""))
+        ),
+        None,
+    )
+    if start is None:
+        return updated
+    for page in range(start, page_count + 1):
+        text = page_text.get(page, "")
+        if page > start and (
+            _is_sci_caption(text)
+            or annexure_ref_in_heading(text)
+            or _outer_anchor_label(text) in {"Filing Memo", "Vakalatnama", "Memo of Appearance"}
+        ):
+            break
+        if page == start or re.search(r"\b(?:opposite\s+parties|respondents?)\b", text, re.I):
+            updated[page] = ["Memo of Parties"]
+        else:
+            break
+    return updated
+
+
 def _demote_false_affidavit_between_annexures(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -2892,6 +3080,13 @@ def repair_compiled_split(
     # heading such as List of Dates & Events.
     repaired = _force_annexure_nesting(repaired, page_text, page_count)
     repaired = _demote_unverified_representation_parts(repaired, page_text)
+    # The outer Index describes the Supreme Court paper-book's P-n sequence;
+    # local High Court exhibit numbers can differ and must not merge adjacent
+    # paper-book annexures into one output.
+    repaired = _realign_annexure_boundaries_to_index_content(
+        repaired, page_text, page_count
+    )
+    repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
     return repaired, duplicates
 
 

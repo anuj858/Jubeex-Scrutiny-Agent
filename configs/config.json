@@ -1018,7 +1018,7 @@
       },
       {
         "name": "Memo of Parties",
-        "description": "A distinct MEMO OF PARTIES or MEMORANDUM OF PARTIES section for the current Supreme Court proceeding. Require the Supreme Court case identity and parties to match the current petition; a cause title or party list alone is not enough. Only the standalone memo in the outer paper-book is a top-level section. A High Court/tribunal Memo of Parties, one reproduced within an Annexure, or a party list embedded in an Application stays with its enclosing document. Distinguish this standalone section from the Main Petition cause title."
+        "description": "A distinct MEMO OF PARTIES or MEMORANDUM OF PARTIES section in the outer paper-book. Normally require the Supreme Court case identity and parties to match the current petition; a cause title or party list alone is not enough. A separate High Court Memo of Parties may be included in this section only when the outer paper-book Index lists it as a standalone back-matter document (for example, 'Memo of Parties in High Court') after the Filing Memo. A High Court/tribunal memo reproduced within an Annexure, or a party list embedded in an Application, stays with its enclosing document. Distinguish a standalone memo from the Main Petition cause title."
       },
       {
         "name": "Memo of Appearance",
