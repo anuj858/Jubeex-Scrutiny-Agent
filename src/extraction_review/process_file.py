@@ -750,6 +750,7 @@ class PreparedPart(BaseModel):
     name: str | None = None
     label: str | None = None
     page_span: list[dict[str, int]] | None = None
+    reason: str | None = None
 
 
 class SourceDocument(BaseModel):
@@ -1990,6 +1991,27 @@ class ProcessFileWorkflow(Workflow):
                 if upload_slots
                 else item.filename
             )
+            unidentified_reason = None
+            if item.slot_id == "undefined":
+                reasons = split_audit.get("unidentified_reasons") or []
+                item_pages = set(item.pages)
+                matching = [
+                    row.get("reason")
+                    for row in reasons
+                    if isinstance(row, dict)
+                    and isinstance(row.get("page_span"), dict)
+                    and item_pages.intersection(
+                        range(
+                            int(row["page_span"].get("start", 0)),
+                            int(row["page_span"].get("end", -1)) + 1,
+                        )
+                    )
+                    and row.get("reason")
+                ]
+                unidentified_reason = " ".join(dict.fromkeys(matching)) or (
+                    "These pages did not match a document section with enough confidence "
+                    "to assign them safely."
+                )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
@@ -1998,6 +2020,7 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     label=item.label,
                     page_span=list(item.page_span),
+                    reason=unidentified_reason,
                 )
             )
             if item.page_span:
@@ -2034,6 +2057,7 @@ class ProcessFileWorkflow(Workflow):
                                 "label": part.label,
                                 "filename": part.filename,
                                 "page_span": part.page_span,
+                                "reason": part.reason,
                                 "file_hash": part.file_hash,
                                 "file_id": part.file_id,
                             }

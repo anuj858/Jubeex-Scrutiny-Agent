@@ -18,6 +18,7 @@ type UploadedPart = {
   fileId: string;
   fileHash: string | null;
   filename: string;
+  reason?: string;
 };
 
 export type PreparedPart = {
@@ -25,6 +26,7 @@ export type PreparedPart = {
   file_id: string;
   file_hash?: string | null;
   filename?: string | null;
+  reason?: string | null;
 };
 
 export type BundlePrepared = {
@@ -107,6 +109,7 @@ function asPreparedParts(value: unknown): PreparedPart[] {
       file_hash:
         typeof fileHash === "string" || fileHash === null ? fileHash : null,
       filename: typeof row.filename === "string" ? row.filename : null,
+      reason: typeof row.reason === "string" ? row.reason : null,
     });
   }
   return parts;
@@ -495,6 +498,7 @@ export function SplitUploadForm({
         fileId: part.file_id,
         fileHash: part.file_hash ?? null,
         filename: part.filename || `${part.slot_id}.pdf`,
+        reason: part.reason ?? undefined,
       };
     }
     const found = Object.keys(nextUploads).length;
@@ -876,6 +880,11 @@ export function SplitUploadForm({
                 {uploaded ? (
                   <span className={styles.filename} title={uploaded.filename}>
                     {uploaded.filename}
+                  </span>
+                ) : null}
+                {uploaded?.reason ? (
+                  <span className={styles.reason} title={uploaded.reason}>
+                    {uploaded.reason}
                   </span>
                 ) : null}
                 {uploaded ? (

@@ -2857,6 +2857,65 @@ def _realign_annexure_boundaries_to_index_content(
     return updated
 
 
+def _demote_unmatched_local_exhibit_runs(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Send a whole uncertain HC exhibit run to Unidentified, never split it.
+
+    A bare local "Annexure No. N" in a reproduced lower-court record is not an
+    outer paper-book number. If its continuous run cannot be matched to any
+    Supreme Court Index entry with a strong content score, remove the run's
+    annexure labels so it falls through to the Unidentified PDF.
+    """
+    entries = collect_index_annexure_entries(page_parts, page_text)
+    if not entries:
+        return page_parts
+    updated = {page: list(names) for page, names in page_parts.items()}
+    demote_pages: set[int] = set()
+    for page in sorted(updated):
+        text = page_text.get(page, "") or ""
+        local_mark = re.search(
+            r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b",
+            _heading_window(text, lines=8),
+        )
+        if not local_mark or not _is_lower_court_caption(text):
+            continue
+        names = parts_on_page(updated.get(page))
+        outer_label = next(
+            (name for name in names if family_split_name(name) == ANNEXURE_FAMILY),
+            None,
+        )
+        if not outer_label:
+            continue
+        window = "\n".join(
+            page_text.get(offset, "")
+            for offset in range(page, min(page_count + 1, page + 21))
+        )
+        scored = [
+            (_score_island_for_index_annexure(window, particulars, label), label)
+            for label, particulars in entries
+        ]
+        best_score, best_label = max(scored, default=(0, ""))
+        current_score = max(
+            (score for score, label in scored if label == outer_label),
+            default=0,
+        )
+        if best_score >= 9 and current_score >= best_score - 2:
+            continue
+        start = page
+        while start > 1 and outer_label in parts_on_page(updated.get(start - 1)):
+            start -= 1
+        end = page
+        while end < page_count and outer_label in parts_on_page(updated.get(end + 1)):
+            end += 1
+        demote_pages.update(range(start, end + 1))
+    for page in demote_pages:
+        updated.pop(page, None)
+    return updated
+
+
 def _restore_indexed_back_matter_parts(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -2941,6 +3000,37 @@ def _restore_indexed_back_matter_parts(
             updated[page] = ["Memo of Parties"]
         else:
             break
+    return updated
+
+
+def _keep_vakalatnama_with_following_appearance(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep a next-page Memo of Appearance in the combined representation PDF."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in range(1, page_count):
+        names = parts_on_page(updated.get(page))
+        if "Vakalatnama" not in names:
+            continue
+        following_text = page_text.get(page + 1, "")
+        following_names = parts_on_page(updated.get(page + 1))
+        if (
+            annexure_ref_in_heading(page_text.get(page, ""))
+            or annexure_ref_in_heading(following_text)
+            or _is_lower_court_caption(page_text.get(page, ""))
+            or _is_lower_court_caption(following_text)
+        ):
+            continue
+        if not (
+            "Memo of Appearance" in following_names
+            or _APPEARANCE_RE.search(_heading_window(following_text, lines=12))
+        ):
+            continue
+        # Preserve the actual page-level classification while ensuring that
+        # the two labels collapse into the existing combined upload document.
+        updated[page + 1] = list(dict.fromkeys([*following_names, "Memo of Appearance"]))
     return updated
 
 
@@ -3086,7 +3176,13 @@ def repair_compiled_split(
     repaired = _realign_annexure_boundaries_to_index_content(
         repaired, page_text, page_count
     )
+    repaired = _demote_unmatched_local_exhibit_runs(
+        repaired, page_text, page_count
+    )
     repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
+    repaired = _keep_vakalatnama_with_following_appearance(
+        repaired, page_text, page_count
+    )
     return repaired, duplicates
 
 

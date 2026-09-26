@@ -720,6 +720,23 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         re.I,
     ):
         return None
+    # Reproduced lower-court records often have their own local numbering
+    # ("ANNEXURE NO. 1"). It is not the Supreme Court paper-book's P/R number.
+    # Leave the outer boundary to the Supreme Court Index / repair pass.
+    lower_court_caption = bool(
+        re.search(
+            r"(?i)\bin\s+the\s+(?:high\s+court|district\s+court|"
+            r"court\s+of\s+the\s+\w+|tribunal)\b",
+            _heading_window(text, lines=12),
+        )
+    )
+    if lower_court_caption and re.search(
+        r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", _heading_window(text, lines=8)
+    ) and not re.search(
+        r"(?i)\bannexure\s*[-–—:/\s]*[pr]\s*[-–—./\s]*\d+\b",
+        _heading_window(text, lines=8),
+    ):
+        return None
     return _annexure_mark_from_title_or_stamp(text)
 
 

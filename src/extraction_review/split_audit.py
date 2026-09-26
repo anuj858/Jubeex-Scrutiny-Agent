@@ -950,9 +950,39 @@ def audit_compiled_split(
             )
         )
 
+    unidentified_reasons: list[dict[str, Any]] = []
+    unlabeled = [page for page in range(1, page_count + 1) if page not in page_parts]
+    if unlabeled:
+        starts = [unlabeled[0]]
+        ends: list[int] = []
+        for previous, current in zip(unlabeled, unlabeled[1:]):
+            if current != previous + 1:
+                ends.append(previous)
+                starts.append(current)
+        ends.append(unlabeled[-1])
+        for start, end in zip(starts, ends, strict=True):
+            excerpt = "\n".join(page_text.get(page, "") for page in range(start, end + 1))
+            if re.search(r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", excerpt) and re.search(
+                r"(?i)\b(?:high\s+court|district\s+court|tribunal|writ\s+petition)\b",
+                excerpt,
+            ):
+                unidentified_reasons.append(
+                    {
+                        "page_span": {"start": start, "end": end},
+                        "reason": (
+                            "This continuous document is Unidentified because its reproduced "
+                            "lower-court pages use a local Annexure No. label that may conflict "
+                            "with the Supreme Court paper-book Index. The full run was kept "
+                            "together because the outer exhibit boundary could not be confirmed "
+                            "without risking a split inside the document."
+                        ),
+                    }
+                )
+
     return {
         "index_rows": [row.as_dict() for row in rows],
         "document_spans": list(spans),
+        "unidentified_reasons": unidentified_reasons,
         "annexure_inventory": {
             "mentioned": sorted(expected, key=_annexure_sort_key),
             "attached": sorted(attached, key=_annexure_sort_key),
