@@ -397,7 +397,14 @@ def _looks_like_sci_checklist(text: str) -> bool:
     if "proforma for first" in _fold(head) or "section -" in _fold(head[:400]):
         if "nature of matter" in _fold(head):
             return False
-    if _SCI_CHECKLIST_RE.search(head):
+    # OCR can emit control characters in place of spaces (for example
+    # ``ADVOCATE'S\x03CHECK\x03LIST\x03TO...``). Match a compact form too,
+    # otherwise the checklist page can be mistaken for an Index continuation.
+    compact = re.sub(r"[^a-z0-9]+", "", head.casefold())
+    if _SCI_CHECKLIST_RE.search(head) or (
+        "advocateschecklist" in compact
+        and "advocateonrecord" in compact
+    ):
         return True
     # OCR of ticked Advocate's Checklist is often only YES / N.A. answers.
     # Require a real checklist heading cue — Listing page-2 also has N.A. + AOR code.
@@ -483,6 +490,10 @@ def _looks_like_index_continuation(text: str) -> bool:
     """Index pages after the heading often omit the word INDEX."""
     if _looks_like_index_table(text):
         return True
+    # List of Dates pages also use serial-numbered rows and cite Annexures.
+    # A numbered row whose first field is a date/year is chronology, not Index.
+    if _looks_like_lod_continuation(text):
+        return False
     # Numbered paragraphs on OR / petition / HC bail pleadings are not Index.
     if _OFFICE_REPORT_RE.search(text[:2000]):
         return False
@@ -525,6 +536,38 @@ def _looks_like_index_continuation(text: str) -> bool:
     if len(range_lines) >= 4 and "annexure-p" not in _fold(head[:200]):
         return True
     return False
+
+
+def _looks_like_lod_continuation(text: str) -> bool:
+    """Recognize dated serial entries on continuation pages of a chronology."""
+    return bool(
+        re.search(
+            r"(?mi)^\s*\d{1,3}[.)]?\s+(?:(?:\d{1,2}[./-]){2}\d{2,4}|\d{4})\b",
+            text or "",
+        )
+    )
+
+
+def _looks_like_checklist_closing_page(text: str) -> bool:
+    """A checklist's final page may contain only its date and AOR signature."""
+    folded = _fold(text[:1800])
+    has_aor_block = bool(
+        re.search(r"\b(?:aor|advocate(?:\s+for|\s*-on-record)?)\b", folded)
+        and re.search(r"\b(?:code\s*no\.?|aor\s*code|cc\s*no\.?|signature|date)\b", folded)
+    )
+    return has_aor_block and not _looks_like_listing_proforma(text)
+
+
+def _looks_like_filing_memo_continuation(text: str) -> bool:
+    """A filing memo may end on a numbered list row on the next page."""
+    head = text[:1800]
+    return bool(
+        re.search(r"(?mi)^\s*\d{1,3}[.)]?\s+", head)
+        and re.search(r"\b(?:1\s*\+\s*1|copies|sets)\b", head, re.I)
+        and re.search(
+            r"\b(?:petition|annexure|application|vakalatnama|memo)\b", head, re.I
+        )
+    )
 
 
 def _looks_like_cover_page(text: str) -> bool:
@@ -592,6 +635,17 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return False
     if _looks_like_court_notice_or_rop(text):
         return False
+    window = text[:3000]
+    folded = _fold(window)
+    # The SLP's opening party schedule includes the impugned High Court case
+    # number (often "CM Application No."), which can trigger the generic
+    # Application detector. Its own heading and SLP caption are decisive.
+    if (
+        _is_sci_caption(text)
+        and "position of parties" in folded
+        and re.search(r"\b(?:s\.?\s*l\.?\s*p\.?|special leave petition)\b", folded)
+    ):
+        return True
     if page_starts_application(text):
         return False
     if _OFFICE_REPORT_RE.search(text[:2000]):
@@ -605,14 +659,20 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return False
     if _FILING_MEMO_RE.search(_heading_window(text, lines=6)):
         return False
-    if _is_lower_court_caption(text):
+    # The first Form-28 page commonly says "Humble Petition" and describes
+    # the High Court order being challenged. That mention must not make this
+    # Supreme Court petition look like a High Court document.
+    sci_form28_opening = bool(
+        "companion justices" in folded
+        and ("humble petition" in folded or "most respectfully showeth" in folded)
+        and ("special leave" in folded or "article 136" in folded)
+    )
+    if _is_lower_court_caption(text) and not sci_form28_opening:
         return False
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)):
         return False
     if _AOR_CERT_RE.search(text[:2500]):
         return False
-    window = text[:3000]
-    folded = _fold(window)
     # Form-28 party schedule under SCI caption (names live here, not on Cover).
     if _is_sci_caption(text) and _PARTY_SCHEDULE_RE.search(window):
         return True
@@ -729,7 +789,11 @@ def _outer_anchor_label(text: str) -> str | None:
                 return "AOR's Certificate"
     if _looks_like_cover_page(text):
         return "Cover Page"
-    if page_starts_application(text) and not _looks_like_cover_page(text):
+    if (
+        page_starts_application(text)
+        and not _looks_like_cover_page(text)
+        and not _looks_like_sci_main_petition(text)
+    ):
         return "Application 1"
     if (
         _vakalatnama_heading(text)
@@ -1034,21 +1098,60 @@ def _apply_outer_anchors(
     # B-L narrative Synopsis separate from an M-V date/event table even when
     # LlamaSplit assigns both runs the same label.
     active_front_matter: str | None = None
+    active_checklist = False
+    active_filing_memo = False
     for page in range(1, page_count + 1):
         if page in annexure_pages:
             active_front_matter = None
+            active_checklist = False
             continue
         text = page_text.get(page, "")
         anchor = _outer_anchor_label(text)
+        # A chronology continuation can look like numbered Index rows because
+        # its events cite annexures. Once LIST OF DATES starts, dated serial
+        # entries stay with that section until a new document heading appears.
+        if (
+            active_front_matter == "List of Dates & Events"
+            and anchor == "Index"
+            and _looks_like_lod_continuation(text)
+        ):
+            anchor = "List of Dates & Events"
+        if (
+            active_filing_memo
+            and anchor in {None, "Index"}
+            and _looks_like_filing_memo_continuation(text)
+        ):
+            anchor = "Filing Memo"
         if anchor in {"Synopsis", "List of Dates & Events"}:
             active_front_matter = anchor
+            active_checklist = False
+            active_filing_memo = False
+            updated[page] = [anchor]
+            continue
+        if anchor == "Advocate's Checklist":
+            active_front_matter = None
+            active_checklist = True
+            active_filing_memo = False
+            updated[page] = [anchor]
+            continue
+        if anchor == "Filing Memo":
+            active_front_matter = None
+            active_checklist = False
+            active_filing_memo = True
             updated[page] = [anchor]
             continue
         if anchor is not None:
             active_front_matter = None
+            active_checklist = False
+            active_filing_memo = False
+            continue
+        if active_checklist and _looks_like_checklist_closing_page(text):
+            updated[page] = ["Advocate's Checklist"]
             continue
         if _is_lower_court_caption(text) or _looks_like_impugned_order_start(text):
             active_front_matter = None
+            active_checklist = False
+            active_filing_memo = False
             continue
         folio = re.match(r"(?is)^\s*([b-v])\b", text[:500])
         dated_row = bool(
@@ -1058,7 +1161,8 @@ def _apply_outer_anchors(
             )
         )
         is_continuation = bool(folio) or (
-            active_front_matter == "List of Dates & Events" and dated_row
+            active_front_matter == "List of Dates & Events"
+            and (dated_row or _looks_like_lod_continuation(text))
         )
         if active_front_matter and is_continuation:
             updated[page] = [active_front_matter]
