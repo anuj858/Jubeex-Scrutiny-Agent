@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from .document_parts import (
@@ -17,6 +17,7 @@ from .document_parts import (
     family_split_name,
     parts_on_page,
 )
+from .split_pdf_layout import printed_folio
 
 # Parts that commonly sit outside the Part-I Index table.
 _INDEX_OPTIONAL_PARTS = frozenset(
@@ -82,7 +83,7 @@ _ANNEXURE_IN_INDEX_RE = re.compile(
 # row may read ``Copy of order ... P-6 65-92`` without the word Annexure.
 # This is applied only to Index particulars, never to body prose.
 _SERIES_LABEL_IN_INDEX_RE = re.compile(
-    r"(?<![A-Za-z0-9])([A-Z])\s*[-/]\s*(\d+)\b"
+    r"(?<![A-Za-z0-9./])([A-Z])\s*[-/]\s*(\d+)\b(?!/\d)"
 )
 
 # SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
@@ -181,6 +182,11 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
             series_label.group(1), int(series_label.group(2))
         )
 
+    # An IA description can mention the SLP, its affidavit or impugned order.
+    # Its own title determines the document type, not those references.
+    if re.match(r"(?:i\.?\s*a\.?\s*(?:no\.?|\b)|(?:an?\s+)?application\b)", text):
+        return "Application 1"
+
     if "office report" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text
     ):
@@ -239,13 +245,33 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 def parse_index_rows(index_text: str) -> list[IndexRow]:
     """Parse PARTICULARS + page span rows from Index page text."""
     # Flatten OCR line-breaks inside a row: join lines that don't start a new serial.
+    # Tab-separated rows come from verified PDF table cells. Keep the page
+    # column separate from dates, case numbers and section numbers in prose.
+    if any(re.match(r"^\d+[.)]\t", line) for line in index_text.splitlines()):
+        rows = []
+        for line in index_text.splitlines():
+            cells = line.split("\t")
+            if len(cells) != 3 or not re.fullmatch(r"\d+[.)]", cells[0]):
+                continue
+            spans = _span_only_line(cells[2])
+            span = spans[0] if len(spans) == 1 and spans[0].kind == "number" else None
+            rows.append(
+                IndexRow(
+                    particulars=cells[1],
+                    start_page=span.start if span else 0,
+                    end_page=span.end if span else 0,
+                    mapped_part=map_index_particulars_to_part(cells[1]),
+                    serial=int(cells[0][:-1]),
+                )
+            )
+        return rows
     raw_lines = (index_text or "").splitlines()
     merged: list[str] = []
     for line in raw_lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if re.match(r"^\d{1,3}[.)]\s+", stripped) or not merged:
+        if re.match(r"^\d{1,3}[.)](?:\s+|$)", stripped) or not merged:
             merged.append(stripped)
         else:
             merged[-1] = f"{merged[-1]} {stripped}"
@@ -255,6 +281,7 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
     seen: set[tuple[str, int, int]] = set()
     for match in _INDEX_SOFT_ROW_RE.finditer(normalized):
         body = (match.group("body") or "").strip()
+        original_body = re.sub(r"^\s*\d+[.)]\s*", "", match.group(0)).strip()
         if not body or len(body) < 3:
             continue
         folded = _fold(body)
@@ -289,6 +316,17 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
             start = int(start_raw)
             end_raw = match.group("end")
             end = int(end_raw) if end_raw else start
+        # A final year, date component, annexure ID or case number is part of
+        # the description, not an implicit page column.
+        if start == end and (
+            1900 <= start <= 2099
+            or re.search(
+                r"(?:\bno\.?|\bsection|\bof|\d[./]|[A-Z][- /])\s*$", body, re.IGNORECASE
+            )
+            or _ANNEXURE_IN_INDEX_RE.fullmatch(original_body)
+        ):
+            body = original_body
+            start = end = 0
         if end < start:
             start, end = end, start
         serial = int(match.group("sno")) if match.group("sno") else None
@@ -340,6 +378,9 @@ _LEADING_SPAN_RE = re.compile(
 
 
 def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
+    if re.fullmatch(r"[A-Za-z]", token.strip()):
+        number = ord(token.strip().upper())
+        return IndexPrintedRow(None, token, "letter", number, number)
     match = _SPAN_TOKEN_RE.fullmatch(token.strip())
     if not match:
         return None
@@ -349,7 +390,7 @@ def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
         return IndexPrintedRow(
             mapped_part=None,
             particulars=token,
-            kind="letter",
+            kind="prefixed",
             start=start,
             end=end,
         )
@@ -365,7 +406,7 @@ def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
     end = int(match.group("n2") or start)
     if end < start:
         start, end = end, start
-    suffix = (match.group("s2") or "").upper()
+    suffix = (match.group("s2") or match.group("s1") or "").upper()
     return IndexPrintedRow(
         mapped_part=None,
         particulars=token,
@@ -377,6 +418,11 @@ def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
 
 
 def _span_only_line(line: str) -> list[IndexPrintedRow]:
+    whole = _printed_span_from_token(
+        re.sub(r"\s+to\s+", "-", line.strip(), flags=re.IGNORECASE)
+    )
+    if whole:
+        return [whole]
     tokens = [token for token in line.split() if token]
     if not tokens:
         return []
@@ -408,6 +454,26 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
     lines like ``37-48`` and ``61-63B``. They are zipped onto the rows that
     lost their page numbers, from the bottom, and only when the counts match.
     """
+    if any(re.match(r"^\d+[.)]\t", line) for line in index_text.splitlines()):
+        result = []
+        for line in index_text.splitlines():
+            cells = line.split("\t")
+            if len(cells) != 3 or not re.fullmatch(r"\d+[.)]", cells[0]):
+                continue
+            spans = _span_only_line(cells[2])
+            if len(spans) == 1:
+                span = spans[0]
+                result.append(
+                    IndexPrintedRow(
+                        mapped_part=map_index_particulars_to_part(cells[1]),
+                        particulars=cells[1],
+                        kind=span.kind,
+                        start=span.start,
+                        end=span.end,
+                        end_suffix=span.end_suffix,
+                    )
+                )
+        return result
     kept: list[str] = []
     orphans: list[IndexPrintedRow] = []
     for line in (index_text or "").splitlines():
@@ -449,7 +515,7 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
 
     orphans = _dedupe_spans(orphans)
     numeric = [span for span in orphans if span.kind == "number"]
-    if numeric and len(numeric) <= len(unassigned):
+    if numeric and len(numeric) == len(unassigned):
         targets = unassigned[-len(numeric) :]
         # Only the trailing rows. Leave a gap of unassigned rows in front
         # when the letter-page column is a different list.
@@ -554,7 +620,7 @@ def collect_index_annexure_entries(
     if not index_text.strip():
         return []
 
-    entries: list[tuple[int, int, str, str]] = []
+    entries: list[tuple[int, tuple[int, int], str, str]] = []
     seen: set[str] = set()
     for row_index, row in enumerate(parse_index_rows(index_text)):
         labels: set[str] = set()
@@ -928,8 +994,60 @@ def audit_compiled_split(
             )
         )
     else:
+        checked_rows = rows
+        if "\t" in index_text:
+            # Geometry-backed Index numbers are printed folios, while split
+            # spans use physical PDF pages. Compare in the same coordinate
+            # system; keep the original printed rows in the audit payload.
+            printed_rows = index_rows_with_printed_pages(index_text)
+            by_description = {row.particulars: row for row in printed_rows}
+            numeric_start = min(
+                (
+                    page
+                    for page, names in page_parts.items()
+                    if any(
+                        name in {"Main Petition", "Impugned Order"}
+                        or family_split_name(name) == "Annexures"
+                        for name in parts_on_page(names)
+                    )
+                ),
+                default=1,
+            )
+            checked_rows = []
+            app_number = 0
+            for row in rows:
+                part = row.mapped_part
+                if part and part.startswith("Application "):
+                    app_number += 1
+                    part = f"Application {app_number}"
+                printed_row = by_description.get(row.particulars)
+                pages = []
+                if printed_row:
+                    for page, text in page_text.items():
+                        if printed_row.kind == "number" and page < numeric_start:
+                            continue
+                        folio = printed_folio(text)
+                        if (
+                            folio
+                            and folio[0] == printed_row.kind
+                            and printed_row.start <= folio[1] <= printed_row.end
+                        ):
+                            if (
+                                folio[1] == printed_row.end
+                                and folio[2] > printed_row.end_suffix
+                            ):
+                                continue
+                            pages.append(page)
+                checked_rows.append(
+                    replace(
+                        row,
+                        mapped_part=part,
+                        start_page=min(pages) if pages else 0,
+                        end_page=max(pages) if pages else 0,
+                    )
+                )
         flags.extend(
-            check_index_consistency(rows, spans, page_count=page_count)
+            check_index_consistency(checked_rows, spans, page_count=page_count)
         )
 
     expected = collect_expected_annexures(page_parts, page_text)

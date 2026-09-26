@@ -241,3 +241,101 @@ INDEX
     assert by_part["Filing Memo"].start == 60
     assert by_part["Vakalatnama"].end_suffix == "B"
     assert by_part["Court Fees"].start == 64
+
+
+def test_case_and_application_numbers_are_not_annexure_labels() -> None:
+    assert (
+        map_index_particulars_to_part(
+            "Copy of the impugned order in CM Application No. I.A/12/2023 in WRIT-B No. 450 of 1986"
+        )
+        == "Impugned Order"
+    )
+    assert map_index_particulars_to_part("Copy of order P-6") == "Annexure P-6"
+    assert map_index_particulars_to_part("Annexure A-12") == "Annexure A-12"
+    assert (
+        map_index_particulars_to_part(
+            "I.A. NO. of 2026 Application seeking permission to file the Special Leave Petition"
+        )
+        == "Application 1"
+    )
+
+
+def test_layout_index_keeps_case_numbers_out_of_page_column() -> None:
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "9.\tCopy of impugned order in I.A/12/2023, Writ No. 450 of 1986\t1-4\n"
+        "12.\tANNEXURE P-2 Copy of order in Case No. 765\t32-41\n"
+        "13.\tANNEXURE P-3 Copy of order dated 01.02.1982\t42-47\n"
+    )
+    rows = parse_index_rows(text)
+    assert [(r.mapped_part, r.start_page, r.end_page) for r in rows] == [
+        ("Impugned Order", 1, 4),
+        ("Annexure P-2", 32, 41),
+        ("Annexure P-3", 42, 47),
+    ]
+    assert "765" in rows[1].particulars
+    assert [(r.start, r.end) for r in index_rows_with_printed_pages(text)] == [
+        (1, 4),
+        (32, 41),
+        (42, 47),
+    ]
+
+
+def test_plain_index_does_not_treat_dates_or_case_numbers_as_pages() -> None:
+    rows = parse_index_rows(
+        "1. ANNEXURE P-2 Order in Case No. 765\n"
+        "2. ANNEXURE P-3 Writ Petition No. 450 of 1986\n"
+        "3. ANNEXURE P-4 Will dated 01.02.1982\n"
+    )
+    assert len(rows) == 3
+    assert all(row.start_page == 0 for row in rows)
+    assert "01.02.1982" in rows[2].particulars
+    bare = parse_index_rows("1. ANNEXURE P-4\n2. ANNEXURE P-5")
+    assert [(r.mapped_part, r.start_page) for r in bare] == [
+        ("Annexure P-4", 0),
+        ("Annexure P-5", 0),
+    ]
+
+
+def test_layout_audit_compares_printed_folios_to_physical_pages() -> None:
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Annexure P-1"], 3: ["Annexure P-1"]},
+        {
+            1: "INDEX\nS.No. Particulars Page No.\n1.\tANNEXURE P-1 Order\t29-30",
+            2: "ANNEXURE P-1\nOrder body\n29",
+            3: "Order continuation\n30",
+        },
+        page_count=3,
+    )
+    assert not any(
+        flag["code"] in {"index_page_out_of_range", "index_page_mismatch"}
+        for flag in result["flags"]
+    )
+    assert result["index_rows"][0]["start_page"] == 29
+
+
+def test_letter_and_suffixed_folios_remain_distinct():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+    from extraction_review.split_pdf_layout import printed_folio
+
+    rows = index_rows_with_printed_pages(
+        "1.\tOffice Report\tA\n2.\tListing Proforma\tA1-A4\n"
+        "3.\tSynopsis\tB to U\n4.\tAnnexure P-1\t63B"
+    )
+    assert [(r.kind, r.start, r.end, r.end_suffix) for r in rows] == [
+        ("letter", 65, 65, ""),
+        ("prefixed", 1, 4, ""),
+        ("letter", 66, 85, ""),
+        ("number", 63, 63, "B"),
+    ]
+    assert printed_folio("Listing body\nA1") == ("prefixed", 1, "")
+
+
+def test_incomplete_detached_column_is_not_guessed_onto_last_rows():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    assert not index_rows_with_printed_pages(
+        "INDEX\n1. Annexure P-1 Order\n2. Annexure P-2 Deed\n32-41"
+    )

@@ -41,6 +41,7 @@ from .split_audit import (
     collect_expected_annexures,
     collect_index_annexure_entries,
 )
+from .split_pdf_layout import printed_folio as _printed_folio
 
 _SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
 # OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
@@ -491,6 +492,19 @@ def _looks_like_index_continuation(text: str) -> bool:
     """Index pages after the heading often omit the word INDEX."""
     if _looks_like_index_table(text):
         return True
+    folded_body = _fold(text[:2000])
+    if any(
+        phrase in folded_body
+        for phrase in (
+            "present application",
+            "grave prejudice",
+            "most respectfully showeth",
+        )
+    ) or re.search(
+        r"(?mi)^\s*\d{1,2}\.\s+(?:that\s+(?:as\s+on|it\s+is)|it\s+is\s+stated)\b",
+        text[:1200] or "",
+    ):
+        return False
     # List of Dates pages also use serial-numbered rows and cite Annexures.
     # A numbered row whose first field is a date/year is chronology, not Index.
     if _looks_like_lod_continuation(text):
@@ -728,19 +742,16 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     if _FORM28_BODY_RE.search(window):
         return True
     return (
-        (
-            "special leave petition" in folded
-            or "special lea ve petition" in folded
-            or "slp (criminal)" in folded
-            or "slp (civil)" in folded
-        )
-        and (
-            "humble petition" in folded
-            or "showeth" in folded
-            or "position of parties" in folded
-            or "positi" in folded
-            or _PARTY_SCHEDULE_RE.search(window)
-        )
+        "special leave petition" in folded
+        or "special lea ve petition" in folded
+        or "slp (criminal)" in folded
+        or "slp (civil)" in folded
+    ) and (
+        "humble petition" in folded
+        or "showeth" in folded
+        or "position of parties" in folded
+        or "positi" in folded
+        or bool(_PARTY_SCHEDULE_RE.search(window))
     )
 
 
@@ -755,6 +766,8 @@ def _outer_anchor_label(text: str) -> str | None:
     # A paper-book Index can list Filing Memo, Annexures, and other sections.
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
+        return "Index"
+    if _looks_like_index_continuation(text):
         return "Index"
     # Prose continuing an indexed IA can resemble trailing Index rows because
     # it cites annexures and applications. Require actual IA-body language;
@@ -845,21 +858,6 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Impugned Order"
     if _looks_like_sci_main_petition(text):
         return MAIN_PETITION_PART
-    if _looks_like_index_continuation(text):
-        folded_body = _fold(text[:1200])
-        # I.A. / petition paragraphs are not Index rows.
-        if (
-            "present application" in folded_body
-            or "grave prejudice" in folded_body
-            or "most respectfully showeth" in folded_body
-            or re.search(
-                r"(?mi)^\s*\d{1,2}\.\s+(?:that\s+(?:as\s+on|it\s+is)|it\s+is\s+stated)\b",
-                text[:1200] or "",
-            )
-        ):
-            pass
-        else:
-            return "Index"
     return None
 
 
@@ -1291,15 +1289,15 @@ def _keep_application_party_lists_nested(
             updated[page] = [active_application]
             continue
         if anchor == "Vakalatnama" and _vakalatnama_heading(text):
-            updated[page] = [active_application]
+            active_application = None
             continue
         if anchor == "Memo of Appearance" and _APPEARANCE_RE.search(
             _heading_window(text, lines=10)
         ):
-            updated[page] = [active_application]
+            active_application = None
             continue
         if anchor == "Filing Memo" and _FILING_MEMO_RE.search(text[:1800]):
-            updated[page] = [active_application]
+            active_application = None
             continue
         # A new outer paper-book section ends the IA run. Annexures were
         # handled above so attached exhibits remain independently classified.
@@ -1319,9 +1317,14 @@ def _demote_unverified_representation_parts(
         "Memo of Appearance",
         "Memo of Parties",
     }
-    for page, names in list(updated.items()):
+    for page in sorted(updated):
+        names = updated[page]
         text = page_text.get(page, "")
         trusted = _is_sci_caption(text) and not _is_lower_court_caption(text)
+        if not _is_lower_court_caption(text) and not _outer_anchor_label(text):
+            trusted = trusted or bool(
+                set(names) & representation_parts & set(updated.get(page - 1, []))
+            )
         if trusted:
             continue
         remaining = [name for name in names if name not in representation_parts]
@@ -2599,13 +2602,8 @@ def _place_index_expected_annexures(
         used_pages.add(page)
         used_labels.add(label)
 
-    # Sequential fallback for remaining Index annexures ↔ unused islands.
-    remaining_labels = [label for label, _ in pending if label not in used_labels]
-    remaining_pages = [page for page in candidates if page not in used_pages]
-    for label, page in zip(remaining_labels, remaining_pages, strict=False):
-        assignments[page] = label
-        used_pages.add(page)
-        used_labels.add(label)
+    # Unmatched captions are not evidence for an annexure identity. Leave
+    # them unresolved instead of pairing unrelated documents by position.
 
     if not assignments:
         return updated
@@ -2832,11 +2830,18 @@ def _realign_annexure_boundaries_to_index_content(
         return page_parts
 
     candidates: list[int] = []
+    stamped_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     for page in sorted(annexure_pages):
+        if page in stamped_pages:
+            continue
         text = page_text.get(page, "")
         # A new record normally opens with its own lower-court caption. Also
         # allow an explicit exhibit heading when OCR omitted the caption.
-        if _is_lower_court_caption(text) or annexure_ref_in_heading(text):
+        if _is_unstamped_annexure_island_start(text) or annexure_ref_in_heading(text):
             candidates.append(page)
     if len(candidates) < 2:
         return page_parts
@@ -2875,6 +2880,10 @@ def _realign_annexure_boundaries_to_index_content(
     starts = sorted(assignments)
     for index, start in enumerate(starts):
         stop = starts[index + 1] if index + 1 < len(starts) else page_count + 1
+        # An unmatched candidate may already have a correct identity (e.g.
+        # a review order followed by its RoP). Do not paint across it just
+        # because a later candidate scored higher for the same Index row.
+        stop = min(stop, next((page for page in candidates if page > start), stop))
         for page in range(start, stop):
             names = parts_on_page(updated.get(page))
             if not any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
@@ -2910,6 +2919,8 @@ def _demote_unmatched_local_exhibit_runs(
             _heading_window(text, lines=8),
         )
         if not local_mark or not _is_lower_court_caption(text):
+            continue
+        if annexure_label_from_text(text):
             continue
         names = parts_on_page(updated.get(page))
         outer_label = next(
@@ -3182,8 +3193,6 @@ def repair_compiled_split(
     # Index lists exhibits even when sheets lack ANNEXURE stamps — place those
     # islands before inventory demote so P-n land as annexures, not RoP/blank.
     repaired = _place_index_expected_annexures(repaired, page_text, page_count)
-    # Wrong stamps (P-3 content printed as P-4) → Index particulars win.
-    repaired = _realign_stamped_annexures_to_index(repaired, page_text, page_count)
     repaired = _demote_false_affidavit_between_annexures(
         repaired, page_text, page_count
     )
@@ -3198,6 +3207,10 @@ def repair_compiled_split(
     # exhibit even if a later Index-folio reconciliation assigned a top-level
     # heading such as List of Dates & Events.
     repaired = _force_annexure_nesting(repaired, page_text, page_count)
+    repaired = _demote_unmentioned_annexures(repaired, page_text)
+    # Resolve duplicated stamps after the last nesting pass, so that pass
+    # cannot silently put a corrected stamp's old identity back.
+    repaired = _realign_stamped_annexures_to_index(repaired, page_text, page_count)
     repaired = _demote_unverified_representation_parts(repaired, page_text)
     # The outer Index describes the Supreme Court paper-book's P-n sequence;
     # local High Court exhibit numbers can differ and must not merge adjacent
@@ -3216,39 +3229,25 @@ def repair_compiled_split(
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
+    # Repairs can remove false internal applications. Number the surviving
+    # outer applications in physical order, without retaining the old gaps.
+    app_labels = list(
+        dict.fromkeys(
+            name
+            for page in sorted(repaired)
+            for name in repaired[page]
+            if re.fullmatch(r"Application \d+", name)
+        )
+    )
+    renumbered = {name: f"Application {i}" for i, name in enumerate(app_labels, 1)}
+    repaired = {
+        page: [renumbered.get(name, name) for name in names]
+        for page, names in repaired.items()
+    }
     return repaired, duplicates
 
 
-_FOLIO_NUM_RE = re.compile(r"^(?P<n>\d{1,4})(?P<suffix>[A-Za-z])?$")
-_FOLIO_LETTER_RE = re.compile(r"^[A-Za-z]$")
 _COURT_FEE_PAGE_RE = re.compile(r"cash\s*&?\s*accounts|bank draft|payment receipt", re.I)
-
-
-def _printed_folio(text: str) -> tuple[str, int, str] | None:
-    """Corner folio such as ``36``, ``63B``, or ``B``.
-
-    Only the bottom line counts. A page number cited in the paragraph above
-    it (``36`` then ``37 to 48``) is not the folio of this sheet.
-    """
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    skipped_word = False
-    for line in reversed(lines):
-        if re.fullmatch(r"[\W_]+", line):
-            continue
-        numbered = _FOLIO_NUM_RE.fullmatch(line)
-        if numbered:
-            number = int(numbered.group("n"))
-            if 1900 <= number <= 2099:
-                return None
-            return ("number", number, (numbered.group("suffix") or "").upper())
-        if _FOLIO_LETTER_RE.fullmatch(line):
-            return ("letter", ord(line.upper()), "")
-        # "61" then "December": the folio sits just above a one-word signature.
-        if not skipped_word and re.fullmatch(r"[A-Za-z]{3,}", line):
-            skipped_word = True
-            continue
-        return None
-    return None
 
 
 def _folio_in_printed_row(
@@ -3295,11 +3294,31 @@ def _apply_indexed_annexure_ranges(
     numbers. A parsed Index folio range therefore labels the complete outer
     exhibit span without requiring every scanned page to repeat its label.
     """
+    # Cell-separated Index rows preserve the actual page column. For these
+    # rows we can also close the annexure section at the indexed IAs/back
+    # matter, rather than carrying the last exhibit into later documents.
+    layout_index = any(
+        "Index" in parts_on_page(names) and "\t" in page_text.get(page, "")
+        for page, names in page_parts.items()
+    )
     rows = [
         row
         for row in aligned_index_printed_rows(page_parts, page_text)
         if row.mapped_part
-        and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+        and (
+            family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+            or layout_index
+            and (
+                row.mapped_part.startswith("Application ")
+                or row.mapped_part
+                in {
+                    "Filing Memo",
+                    "Vakalatnama",
+                    "Memo of Parties",
+                    "Memo of Appearance",
+                }
+            )
+        )
         and row.kind == "number"
         and row.start > 0
         and row.end >= row.start
@@ -3311,12 +3330,27 @@ def _apply_indexed_annexure_ranges(
     # rather than picking an arbitrary owner.
     zone_start = _post_petition_zone_start(page_parts, page_count) or 1
     owners: dict[int, str] = {}
+    application_labels = {
+        id(row): f"Application {number}"
+        for number, row in enumerate(
+            (
+                row
+                for row in rows
+                if row.mapped_part and row.mapped_part.startswith("Application ")
+            ),
+            1,
+        )
+    }
     for page in range(zone_start, page_count + 1):
         folio = _printed_folio(page_text.get(page, ""))
         if not folio:
             continue
         matches = [row for row in rows if _folio_in_printed_row(folio, row)]
-        labels = {row.mapped_part for row in matches if row.mapped_part}
+        labels = {
+            application_labels.get(id(row), row.mapped_part)
+            for row in matches
+            if row.mapped_part
+        }
         if len(labels) == 1:
             owners[page] = next(iter(labels))
     if not owners:

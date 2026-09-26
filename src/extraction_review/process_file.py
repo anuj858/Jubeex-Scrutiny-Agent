@@ -1903,7 +1903,7 @@ class ProcessFileWorkflow(Workflow):
             ]
             split_audit = audit_compiled_split(
                 page_parts,
-                page_texts,
+                {unit.pdf_page: unit.text for unit in structured.page_units},
                 page_count=pdf_page_count,
             )
             split_audit["structure"] = structured.report()

@@ -645,7 +645,9 @@ def _annexure_mark_in_window(text: str) -> AnnexureMark | None:
     return _annexure_mark_from_match(match)
 
 
-def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
+def _annexure_mark_from_title_or_stamp(
+    text: str, *, require_series: bool = False
+) -> AnnexureMark | None:
     """Series+number from a title line near the top or a short foot stamp line."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
@@ -668,6 +670,10 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
             return None
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
+            return None
+        if require_series and not (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
             return None
         mark = _annexure_mark_from_match(match)
         if mark is None:
@@ -720,6 +726,11 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         re.I,
     ):
         return None
+    # A reproduced local Annexure No. 1 does not suppress an explicit outer
+    # P/R stamp at the foot of the same sheet.
+    explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
+    if explicit is not None:
+        return explicit
     # Reproduced lower-court records often have their own local numbering
     # ("ANNEXURE NO. 1"). It is not the Supreme Court paper-book's P/R number.
     # Leave the outer boundary to the Supreme Court Index / repair pass.

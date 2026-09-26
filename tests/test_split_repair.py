@@ -8,6 +8,68 @@ from extraction_review.split_repair import (
 )
 
 
+def test_trailing_index_description_is_not_an_application_start() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "Application seeking exemption\nfrom filing the death certificate\n"
+        "50.\nFiling Memo\n51.\nVakalatnama and Power of Attorney\n"
+        "52.\nMemo of Parties in High Court\n53.\nLetter/Declaration\n"
+        "440-442\n443-444\n445-465\n466-467\n468-469\n"
+    )
+    assert _outer_anchor_label(text) == "Index"
+
+
+def test_order_prose_with_application_references_is_not_index() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    assert (
+        _outer_anchor_label(
+            "The case was dismissed in default.\n"
+            "5. Accordingly the present application for recall was filed.\n"
+            "6. A perusal of the application shows delay.\n"
+            "7. The second application for recall was filed later.\n"
+            "8. Objections to the application for condonation were filed.\n2"
+        )
+        != "Index"
+    )
+
+
+def test_explicit_outer_stamp_wins_over_local_annexure_number() -> None:
+    from extraction_review.document_parts import annexure_label_from_text
+
+    text = "IN THE HIGH COURT\nWrit Petition\nAnnexure No. 1\nCopy of the order\n"
+    assert annexure_label_from_text(text) is None
+    assert annexure_label_from_text(text + "32\nANNEXURE P-2") == "Annexure P-2"
+
+
+def test_layout_ranges_keep_annexure_body_and_close_at_outer_applications() -> None:
+    texts = {
+        1: "INDEX\nS.No. Particulars Page No.\n"
+        "1.\tANNEXURE P-6 Writ Petition\t65-68\n"
+        "2.\tANNEXURE P-7 Order\t69\n"
+        "3.\tI.A. NO. Application for exemption\t70-71\n"
+        "4.\tI.A. NO. Application for condonation\t72-73\n",
+        2: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nQUESTIONS OF LAW",
+        3: "ANNEXURE P-6\nIN THE HIGH COURT\nWRIT PETITION\n65",
+        4: "IN THE HIGH COURT\nAFFIDAVIT\n66",
+        5: "APPLICATION FOR SUBSTITUTION\nIn the writ petition\n67",
+        6: "annexure continuation\n68",
+        7: "ANNEXURE P-7\nORDER\n69",
+        8: "IN THE SUPREME COURT OF INDIA\nAPPLICATION FOR EXEMPTION\n70",
+        9: "application body\n71",
+        10: "IN THE SUPREME COURT OF INDIA\nAPPLICATION FOR CONDONATION\n72",
+        11: "application body\n73",
+    }
+    repaired, _ = repair_compiled_split(
+        {1: ["Index"], 2: ["Main Petition"]}, texts, page_count=11
+    )
+    assert all(repaired[p] == ["Annexure P-6"] for p in range(3, 7))
+    assert repaired[7] == ["Annexure P-7"]
+    assert all(repaired[p] == ["Application 1"] for p in (8, 9))
+    assert all(repaired[p] == ["Application 2"] for p in (10, 11))
+
+
 def test_repair_keeps_sci_main_petition_and_nests_high_court_writ() -> None:
     page_parts = {
         1: ["Cover Page"],
