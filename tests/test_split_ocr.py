@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from pypdf import PdfWriter
 
-from extraction_review.split_ocr import ocr_sparse_pages
+from extraction_review.split_ocr import ocr_sparse_pages, pages_with_large_images
 from extraction_review.structure_split import extract_page_units
 
 
@@ -22,7 +22,7 @@ def test_scanned_page_uses_ocr_and_clears_unreadable_flag():
         "extraction_review.structure_split.ocr_sparse_pages", return_value={1: text}
     ):
         unit = extract_page_units(blank_pdf())[0]
-    assert unit.text == text
+    assert unit.text == text.strip()
     assert not unit.requires_ocr
     assert unit.pdf_page == 1
 
@@ -47,3 +47,42 @@ def test_ocr_keeps_native_annexure_stamp():
     with patch("extraction_review.structure_split.ocr_sparse_pages", return_value={1: "A scanned judgment with a long body but an unreadable handwritten annexure label."}):
         unit = extract_page_units(blank_pdf(), page_texts={1: "ANNEXURE P-9"})[0]
     assert unit.text.startswith("ANNEXURE P-9\n")
+
+
+def test_large_inserted_page_image_is_selected_even_with_native_text():
+    import pymupdf
+
+    # A one-pixel PNG stretched over most of the page models a scanned sheet;
+    # native footer text must not cause the scan to bypass OCR.
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+    pixmap.clear_with(255)
+    png = pixmap.tobytes("png")
+    document = pymupdf.open()
+    page = document.new_page(width=600, height=800)
+    page.insert_image(pymupdf.Rect(20, 20, 580, 760), stream=png)
+    page.insert_text((40, 790), "Digitally added footer with enough searchable text")
+    data = document.tobytes()
+    document.close()
+
+    assert pages_with_large_images(data) == {1}
+
+
+def test_image_only_heading_is_merged_with_existing_text_layer():
+    native = "Digitally searchable footer and metadata. " * 4
+    scanned = "ANNEXURE P-12\nScanned order that starts on this page"
+    with (
+        patch(
+            "extraction_review.structure_split.pages_with_large_images",
+            return_value={1},
+        ),
+        patch(
+            "extraction_review.structure_split.ocr_sparse_pages",
+            return_value={1: scanned},
+        ) as ocr,
+    ):
+        unit = extract_page_units(blank_pdf(), page_texts={1: native})[0]
+
+    assert unit.text.startswith("ANNEXURE P-12")
+    assert native.strip() in unit.text
+    ocr.assert_called_once()
+    assert ocr.call_args.args[1] == [1]

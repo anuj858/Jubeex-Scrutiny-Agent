@@ -657,10 +657,31 @@ def _annexure_mark_from_title_or_stamp(
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 
+    # Image OCR can put folio noise before a real first-line stamp
+    # ("i so ANNEXURE-P-11") or append the printed folio after it
+    # ("ANNEXURE-P-14 185").  Accept that compact top-of-page form.  An
+    # isolated Index serial immediately before ANNEXURE still blocks it, so
+    # continuation rows such as "18. ANNEXURE P/6 ..." are not stamps.
+    for index, line in enumerate(lines[:1]):
+        match = _ANNEXURE_HEADING_RE.search(line)
+        if not match or len(line) > 80:
+            continue
+        if index and re.fullmatch(r"\d{1,3}[.)]", lines[index - 1]):
+            continue
+        if re.match(r"^\s*\d{1,3}[.)]", line):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is not None and (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
+            return mark
+
     def _mark_from_title_line(
         line: str, *, allow_body_tail: bool, prev_line: str = ""
     ) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
+            return None
+        if re.fullmatch(r"\d{1,3}[.)]", prev_line.strip()):
             return None
         # AOR address lines ("E-28, Second Floor, Lajpat Nagar") are not stamps.
         if re.search(
@@ -673,6 +694,11 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
             return None
+        if require_series and re.match(
+            r"(?i)^\s*(?:\d{1,4}\s+)?annexure\s*(?:no\.?\s*)\d+\b",
+            line,
+        ):
+            return None
         if require_series and not (
             match.groupdict().get("series") or match.groupdict().get("bare_series")
         ):
@@ -684,7 +710,7 @@ def _annexure_mark_from_title_or_stamp(
         if _ANNEXURE_CITATION_PREV_RE.search(prev_line):
             return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
-        remainder = line[match.end() :].strip(" .;:-")
+        remainder = line[match.end() :].strip(" .;:-~_|")
         bare = bool(match.groupdict().get("bare_num"))
         if bare and remainder and not remainder.isdigit():
             # Bare "E-28, Second Floor" / "P-1 continued text" without ANNEXURE word.
@@ -692,7 +718,10 @@ def _annexure_mark_from_title_or_stamp(
         if remainder:
             if _ANNEXURE_PAGE_CITE_RE.search(remainder):
                 return None
-            if not allow_body_tail and not remainder.isdigit():
+            if not remainder.isdigit() and not re.match(
+                r"(?i)^true\s+(?:typed\s+|translated\s+)?cop(?:y|ies)\b",
+                remainder,
+            ):
                 return None
         return mark
 
@@ -701,10 +730,15 @@ def _annexure_mark_from_title_or_stamp(
         mark = _mark_from_title_line(line, allow_body_tail=True, prev_line=prev)
         if mark is not None:
             return mark
-    for line in lines[-10:]:
+    tail_start = max(0, len(lines) - 10)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
         if len(line) > 40:
             continue
-        mark = _mark_from_title_line(line, allow_body_tail=False)
+        prev = lines[index - 1] if index else ""
+        mark = _mark_from_title_line(
+            line, allow_body_tail=False, prev_line=prev
+        )
         if mark is not None:
             return mark
     return None
@@ -853,7 +887,37 @@ def _is_real_split_label(name: str) -> bool:
 
 
 def _looks_like_index_table(text: str) -> bool:
-    head = _fold(text[:900])
+    head_text = text[:1400]
+    head = _fold(head_text)
+    if not (
+        "index" in head
+        and ("particulars" in head or "page no" in head or "part i" in head)
+    ):
+        return False
+
+    # A reproduced lower-court pleading can begin with the outer paper-book
+    # stamp and then carry its own INDEX.  The stamp precedes both the court
+    # caption and that nested index; it is an Annexure start, not another page
+    # of the Supreme Court paper-book Index.  Outer Index rows put INDEX first
+    # and their Annexure references later, so they remain Index pages.
+    index_at = re.search(r"(?im)^\s*index\b", head_text)
+    stamped_at = re.search(
+        r"(?im)^\s*(?:\d{1,4}\s+)?annexure\s*[-–—:./\s]*[pr]\s*[-–—:./\s]*\d+\b",
+        head_text,
+    )
+    lower_caption_at = re.search(
+        r"(?i)\bin\s+the\s+(?:hon['’]?ble\s+)?(?:high\s+court|district\s+court|"
+        r"court\s+of|tribunal)\b",
+        head_text,
+    )
+    if (
+        index_at
+        and stamped_at
+        and lower_caption_at
+        and stamped_at.start() < lower_caption_at.start() < index_at.start()
+    ):
+        return False
+
     return "index" in head and (
         "particulars" in head or "page no" in head or "part i" in head
     )

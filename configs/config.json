@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.16",
+  "config_version": "1.0.18",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -9,11 +9,11 @@
     },
     "extract": {
       "schema_version": "1.0",
-      "config_version": "1.0.0"
+      "config_version": "1.0.1"
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.16"
+      "config_version": "1.0.18"
     }
   },
   "classify": {
@@ -380,7 +380,7 @@
                 }
               ],
               "default": null,
-              "description": "Date of the order under challenge",
+              "description": "Date of the order under challenge. A filename or slot named Impugned Order is not proof of its contents. Do not use dates of earlier orders merely quoted, summarized, or discussed in Synopsis, List of Dates, pleadings, or applications. Require the actual standalone order or explicit particulars identifying the order challenged in this petition; otherwise return null.",
               "title": "Order Date"
             },
             "Forum": {
@@ -974,7 +974,7 @@
       },
       {
         "name": "AOR's Certificate",
-        "description": "The Advocate-on-Record (AOR) certificate in the paper book. Use only when the page opens with this case's full Supreme Court cause title (party names and VERSUS), immediately followed by CERTIFICATE (including letter-spaced text), and the AOR / Advocate-on-Record's own certification such as Certified that the petition is confined to pleadings before the court whose order is challenged. It usually ends FILED ON or DRAWN & FILED BY. A certificate or registration certificate within an Annexure, Appendix, Checklist, or another form remains part of that document. A Listing Proforma signature block is not this category."
+        "description": "The Advocate-on-Record certificate in the paper book. Use only when the page has the cause title at the top for this Supreme Court case (party names and VERSUS), immediately followed by CERTIFICATE or C E R T I F I C A T E, and the AOR / Advocate-on-Record's own certification such as Certified that / CERTIFIED that the petition is confined only to the pleadings before the court whose order is challenged. It usually ends FILED ON or DRAWN & FILED BY. A certificate or registration certificate within an Annexure, Appendix, Checklist, or another form remains part of that document. A Listing Proforma signature block is not this category."
       },
       {
         "name": "Index",
@@ -986,7 +986,7 @@
       },
       {
         "name": "Listing Proforma",
-        "description": "The first-listing proforma, identified by its form structure as well as any heading. Headings may read PERFORMA, PROFORMA, PERFORMA FOR FIRST LISTING, PROFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or similar variants; no one heading is required. The defining pattern is a series of left-hand prompts/numbered keys with corresponding values, such as Central/State Act, section and rule; impugned-order date, High Court, judges or tribunal/authority; nature of matter; petitioner/respondent names and contacts; main/sub-classification; listing restrictions; similar disposed or pending cases; and applicable criminal, land-acquisition, tax, special-category, or vehicle details. 'SECTION XII' and 'The case pertains to' may appear but are not required. Treat consecutive pages with this same form structure as one Listing Proforma, even when the heading is absent from continuation pages. It ends with its date and AOR/Advocate-on-Record details and signature (for example, name, party represented, AOR/CC code, email, mobile, or chamber address); keep that closing page in the Listing Proforma. It is not an AOR's Certificate."
+        "description": "The first-listing proforma (Proforma for First Listing), identified by its form structure as well as any heading. Headings may read PERFORMA, PROFORMA, PERFORMA FOR FIRST LISTING, PROFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTING PROFORMA, LISTED PROFORMA, or similar variants; no one heading is required. The defining pattern is a series of left-hand prompts/numbered keys with corresponding values, such as Central Act or State Act, section and rule; impugned-order date, High Court, judges or tribunal/authority; nature of matter; petitioner/respondent names and contacts; main/sub-classification; listing restrictions; similar disposed or pending cases; and applicable criminal, land-acquisition, tax, special-category, or vehicle details. 'SECTION XII' and 'The case pertains to' may appear but are not required. Treat consecutive pages with this same form structure as one Listing Proforma, even when the heading is absent from continuation pages. It ends with its date and AOR/Advocate-on-Record details and signature (for example, name, party represented, AOR/CC code, email, mobile, or chamber address); keep that closing page in the Listing Proforma. It is not an AOR's Certificate."
       },
       {
         "name": "Synopsis",
@@ -998,11 +998,11 @@
       },
       {
         "name": "Main Petition",
-        "description": "This case's main Supreme Court petition body. Identify it by the Supreme Court cause title and this case's own petition number, followed by this case's party details (often Between, names/addresses/relationships, and positions before the High Court and this Court; other petition formats may use a different party layout). SLPs generally use Form 28; other petition types need not. It contains the petition's own pleadings and ends with its Prayer, drafting/filing date, and advocate/AOR details. Keep Applications separate even when their closing Prayer and signature block look similar. A High Court/tribunal petition or order reproduced inside an Annexure, with a different court or case number, stays in that Annexure despite its own Grounds, Prayer, or SHOWETH section."
+        "description": "This case's main Supreme Court petition body. Identify it by the Supreme Court cause title and this case's own petition number, followed by this case's party details (often Between, names/addresses/relationships, and positions before the High Court and this Court; other petition formats may use a different party layout). SLPs generally use Form 28; other petition types need not. It contains the petition's own questions of law, Grounds, and pleadings and ends with its Prayer, drafting/filing date, and advocate/AOR details. Keep Applications separate even when their closing Prayer and signature block look similar. A High Court/tribunal petition or order reproduced inside an Annexure, with a different court or case number, stays in that Annexure despite its own Grounds, Prayer, or SHOWETH section."
       },
       {
         "name": "Affidavit",
-        "description": "The main affidavit for this Supreme Court petition, usually headed AFFIDAVIT, with a Deponent, Verification, and notary/oath attestation. Match its case type/cause title to the Cover Page and Main Petition and use its place in the outer paper-book sequence. An affidavit from an earlier proceeding inside an Annexure remains part of that Annexure, even if it has a deponent, verification, and attestation. A checklist or index mention of an affidavit is not an affidavit section."
+        "description": "The main affidavit for this Supreme Court petition, usually headed AFFIDAVIT or A F F I D A V I T, with a Deponent, Verification, and notary/oath attestation. Match its case type/cause title to the Cover Page and Main Petition and use its place in the outer paper-book sequence. An affidavit from an earlier proceeding inside an Annexure remains part of that Annexure, even if it has a deponent, verification, and attestation. A checklist or index mention of an affidavit is not an affidavit section."
       },
       {
         "name": "Annexures",
@@ -1026,11 +1026,11 @@
       },
       {
         "name": "Impugned Order",
-        "description": "The standalone copy of the judgment, order, decree, sentence, direction, or other decision that is the direct subject of challenge in this Supreme Court petition/appeal. Identify the challenged decision using the case papers together: give greatest weight to explicit statements naming the impugned/challenged decision or saying the petition is directed against it, and to the Prayer's requested relief; cross-check the court/authority, case number, date, and document type against the opening challenge, Synopsis/List of Dates, Grounds, and the order copy. The target may be a High Court, tribunal, trial court, or other authority decision depending on the procedural route; do not assume it is always a High Court order or simply the latest decision mentioned. Where multiple decisions are expressly challenged, keep the directly challenged order set together. Earlier or underlying decisions mentioned only as procedural history, background, or context are not Impugned Order. A different order reproduced inside an Annexure P-n remains part of that Annexure unless it is the standalone copy of a decision directly challenged in this petition. If no order copy is attached, do not classify the petition's references as an Impugned Order document; use those references only as particulars for extraction."
+        "description": "The standalone copy of the judgment or order under challenge, including a decree, sentence, direction, or other decision that is the direct subject of challenge in this Supreme Court petition/appeal. Identify the challenged decision using the case papers together: give greatest weight to explicit statements naming the impugned/challenged decision or saying the petition is directed against it, and to the Prayer's requested relief; cross-check the court/authority, case number, date, and document type against the opening challenge, Synopsis/List of Dates, Grounds, and the order copy. The target may be a High Court, tribunal, trial court, or other authority decision depending on the procedural route; do not assume it is always a High Court order or simply the latest decision mentioned. Where multiple decisions are expressly challenged, keep the directly challenged order set together. Earlier or underlying decisions mentioned only as procedural history, background, or context are not Impugned Order. A different order reproduced inside an Annexure P-n remains part of that Annexure unless it is the standalone copy of a decision directly challenged in this petition. If no order copy is attached, do not classify the petition's references as an Impugned Order document; use those references only as particulars for extraction."
       },
       {
         "name": "Vakalatnama",
-        "description": "A VAKALATNAMA, VAKALAT NAMA, VAKALTNAMA, or clear OCR/spelling variant that appoints an Advocate-on-Record to act for a party in this Supreme Court petition. Require the Supreme Court caption and match the parties/case to the current petition; the standalone instrument in the outer paper-book sequence is the top-level section. Keep its accompanying Memo of Appearance with it: the memo commonly appears on the same page, and when it begins on the immediately following page, include that full continuation page in the combined Memo of Appearance + Vakalatnama document. A High Court/tribunal instrument, or one reproduced within an Annexure or Application, stays with that enclosing document. Distinguish it from PoA/BR (authorizes a representative)."
+        "description": "A VAKALATNAMA (V/A), VAKALAT NAMA, VAKALTNAMA, or clear OCR/spelling variant that appoints an Advocate-on-Record to act for a party in this Supreme Court petition. Require the Supreme Court caption and match the parties/case to the current petition; the standalone instrument in the outer paper-book sequence is the top-level section. Keep its accompanying Memo of Appearance with it: the memo commonly appears on the same page, and when it begins on the immediately following page, include that full continuation page in the combined Memo of Appearance + Vakalatnama document. A High Court/tribunal instrument, or one reproduced within an Annexure or Application, stays with that enclosing document. Distinguish it from PoA/BR (authorizes a representative)."
       },
       {
         "name": "PoA/BR",
@@ -1038,7 +1038,7 @@
       },
       {
         "name": "Filing Memo",
-        "description": "The current Supreme Court petition's Filing Memo: the filing-submission sheet for this case, commonly headed FILING MEMO and showing the Supreme Court caption/case particulars, filing AOR, papers filed, and date. Match the court and case identity to this petition. A High Court/tribunal Filing Memo or a filing slip reproduced within an Annexure or Application stays with its enclosing document; it is not the Supreme Court Filing Memo."
+        "description": "The current Supreme Court petition's Filing Memo: the filing-submission sheet for this case, commonly headed FILING MEMO, FILING INDEX, or INDEX OF FILING and showing the Supreme Court caption/case particulars, filing AOR, papers filed, and date. Match the court and case identity to this petition. A High Court/tribunal Filing Memo or a filing slip reproduced within an Annexure or Application stays with its enclosing document; it is not the Supreme Court Filing Memo."
       },
       {
         "name": "Court Fees",

@@ -44,6 +44,12 @@ _ADVOCATE = re.compile(
     re.IGNORECASE,
 )
 _CERTIFIED_COPY = re.compile(r"certified\s+copy", re.IGNORECASE)
+_AOR_CERTIFICATE = re.compile(
+    r"\b(?:aor(?:'s)?|advocate(?:-on-record)?(?:'s)?)\s+certificate\b"
+    r"|\bcertificate\s+of\s+(?:the\s+)?(?:aor|advocate)\b"
+    r"|\bcheck\s+the\s+certificate\s+for\s+the\s+name/signature\s+of\s+the\s+advocate\b",
+    re.IGNORECASE,
+)
 
 ADVOCATE_ROLES = frozenset({"advocate", "unknown"})
 EXECUTANT_ROLES = frozenset({"petitioner", "respondent", "deponent", "unknown"})
@@ -100,7 +106,7 @@ def _named_parts(defect: Defect) -> list[str]:
     ):
         extras.append(ANNEXURE_FAMILY)
     if (
-        re.search(r"\bcertificate\b", lowered)
+        _AOR_CERTIFICATE.search(text)
         and not _CERTIFIED_COPY.search(text)
         and "AOR's Certificate" not in names
     ):

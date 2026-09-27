@@ -1125,6 +1125,9 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         extra += f" {AOR_EXTRACT_RULES}"
     if field_name == "impugned_orders":
         extra += (
+            " Validate the document contents, not just the Impugned Order filename. "
+            "Reject dates merely quoted or summarized from earlier proceedings; "
+            "if no challenged order is identifiable, return an empty list. "
             " If the Impugned Order document is in this pack, fill from it. If it is "
             "not attached, fill from bracketed particulars on the Main Petition cause "
             "title, Cover Page, AOR's Certificate, and Affidavit. Cross-check those "

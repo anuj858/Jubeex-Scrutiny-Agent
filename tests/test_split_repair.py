@@ -1463,3 +1463,93 @@ def test_annexure_realign_does_not_read_dates_from_later_bail_application():
     repaired = _realign_annexure_boundaries_to_index_content(parts, texts, 4)
     assert repaired[3] == ["Annexure P-2"]
     assert repaired[4] == ["Application 1"]
+
+
+def test_ocr_affidavit_numbered_paragraphs_do_not_extend_index():
+    from extraction_review.split_repair import _looks_like_index_continuation
+
+    affidavit = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "CURATIVE PETITION (CIVIL) NO. OF 2016\nIN\nREVIEW PETITION (CIVIL)\n"
+        "IN\nSPECIAL LEAVE PETITION (CIVIL)\nIN THE MATTER OF:\n"
+        "A Company ...Petitioner\nVERSUS\nA Board ...Respondent\nAFFIDAVIT\n"
+        "I, the Director, do hereby solemnly affirm and state as under:\n"
+        "1.\nThat I am duly authorized to swear this affidavit.\n"
+        "2.\nThat I have read the Synopsis and List of Dates and Curative Petition.\n"
+        "3.\nI state that the Curative Petition is confined only to the pleadings.\n"
+        "Copies of the annexures are true copies.\nDEPONENT\nVERIFICATION\n"
+        "I solemnly verify that the contents are true."
+    )
+    assert not _looks_like_index_continuation(affidavit)
+    repaired, _ = repair_compiled_split(
+        {1: ["Index"], 2: ["Index"]},
+        {1: "INDEX\nSL. NO. PARTICULARS PAGE NO.\n1. Curative Petition with affidavit", 2: affidavit},
+        page_count=2,
+    )
+    assert repaired == {1: ["Index"], 2: ["Affidavit"]}
+
+
+def test_outer_annexure_stamp_wins_over_nested_lower_court_index():
+    from extraction_review.document_parts import annexure_label_from_text
+    from extraction_review.split_repair import _looks_like_index_continuation
+
+    text = (
+        "ANNEXURE-P11\n217\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "C.S. (OS) NO. 1251/2009\nPLAINTIFF VERSUS DEFENDANTS\n"
+        "INDEX\nS.No. Particulars Pages Court Fees\n"
+        "1. Written Statement with supporting Affidavit 1-39"
+    )
+    assert annexure_label_from_text(text) == "Annexure P-11"
+    assert not _looks_like_index_continuation(text)
+
+
+def test_ocr_aor_certificate_accepts_only_misread_as_oniy():
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (C) NO. OF 2025\nCERTIFICATE\n"
+        "Certified that the Special Leave Petition is confined oniy to the "
+        "pleadings before the Court whose order is challenged.\nFILED BY\n"
+        "[TINA GARG]\nAdvocate for the Petitioner"
+    )
+    assert _outer_anchor_label(text) == "AOR's Certificate"
+
+
+def test_noisy_scanned_annexure_stamp_and_index_row_are_distinguished():
+    from extraction_review.document_parts import annexure_label_from_text
+
+    assert annexure_label_from_text(
+        "i so ANNEXURE-P-11 as\nCNR No: CHCH020002042022\nPresent: Counsel"
+    ) == "Annexure P-11"
+    assert annexure_label_from_text(
+        "ANNEXURE-P-14 0-185\nIN THE HIGH COURT AT CHANDIGARH\nCivil Writ Petition"
+    ) == "Annexure P-14"
+    assert annexure_label_from_text(
+        "18.\nANNEXURE P/6\nA true copy of Rejoinder\n124-133"
+    ) is None
+    assert annexure_label_from_text(
+        "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nThe petition is confined "
+        "to the pleadings.\nAnnexure-P-18 which is being filed with an application."
+    ) is None
+
+
+def test_indexed_high_court_appellant_memo_is_restored_after_filing_memo():
+    texts = {
+        1: (
+            "INDEX\nSl. No. Particulars Page No.\n"
+            "26. Filing Memo 304\n27. Vakalatnama 305-306\n"
+            "28. Memo of Parties 307"
+        ),
+        2: "FILING MEMO\nIN THE SUPREME COURT OF INDIA\n304",
+        3: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CIVIL APPELLATE JURISDICTION\nFAO(OS) NO. OF 2025\n"
+            "MEMO OF PARTIES\nADARSH SHARMA ... APPELLANT\nVERSUS\n"
+            "HARSH SHARMA ... RESPONDENT\n307"
+        ),
+    }
+    repaired, _ = repair_compiled_split(
+        {1: ["Index"], 2: ["Filing Memo"]}, texts, page_count=3
+    )
+    assert repaired[3] == ["Memo of Parties"]

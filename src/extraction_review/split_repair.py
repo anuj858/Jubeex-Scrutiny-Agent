@@ -51,14 +51,14 @@ _SCI_CAPTION_OCR_RE = re.compile(
     re.IGNORECASE,
 )
 _HC_CAPTION_RE = re.compile(
-    r"in the (?:hon'?ble\s+)?high court|"
+    r"in the (?:hon['’]?ble\s+)?high court|"
     r"high court of judicature|"
     r"in the court of (?:the )?(?:additional )?sessions judge|"
     r"bench at\s+\w+",
     re.IGNORECASE,
 )
 _TRIBUNAL_CAPTION_RE = re.compile(
-    r"before the (?:hon'?ble\s+)?(?:minister|tribunal|authority|registrar)|"
+    r"before the (?:hon['’]?ble\s+)?(?:minister|tribunal|authority|registrar)|"
     r"revisional authority|"
     r"divisional joint registrar",
     re.IGNORECASE,
@@ -118,8 +118,8 @@ _FILING_MEMO_RE = re.compile(
     re.I,
 )
 _AOR_CERT_RE = re.compile(
-    r"confined\s+only\s+to\s+the\s+pleadings|"
-    r"(?:^|\n)\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
+    r"confined\s+on(?:ly|iy)(?:\s+\w{1,3})?\s+to\s+the\s+pleadings|"
+    r"(?:^|\n)\s*[^A-Za-z0-9\s]{0,3}(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
     # OCR often garbles Certificate → Q;RTIFICATE / C.RTIFICATE / CERTIFICA TE.
     r"[a-z]?\W{0,3}rtifica\s*te|certifica\s*te|certificate)\b",
     re.IGNORECASE,
@@ -493,6 +493,12 @@ def _looks_like_index_continuation(text: str) -> bool:
     """Index pages after the heading often omit the word INDEX."""
     if _looks_like_index_table(text):
         return True
+    # Sworn numbered paragraphs are not table rows. OCR can put each
+    # paragraph number on its own line and defeat the prose-row exclusion.
+    if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=24)) and (
+        re.search(r"solemnly\s+affirm|\bdeponent\b|\bverification\b", text, re.IGNORECASE)
+    ):
+        return False
     folded_body = _fold(text[:2000])
     if any(
         phrase in folded_body
@@ -831,7 +837,7 @@ def _outer_anchor_label(text: str) -> str | None:
     if _AOR_CERT_RE.search(text[:2500]) and _is_sci_caption(text):
         # Require a Certificate title when the page is affidavit-like prose.
         cert_title = re.search(
-            r"(?m)^\s*(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
+            r"(?m)^\s*[^A-Za-z0-9\s]{0,3}(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
             r"[a-z]?\W{0,3}rtifica\s*te|certifica\s*te|certificate)\b",
             _heading_window(text, lines=24),
             re.I,
@@ -1112,6 +1118,9 @@ def _apply_outer_anchors(
                 and not _looks_like_sci_main_petition(text)
             ):
                 continue
+            updated[page] = [label]
+            continue
+        if label == "Affidavit" and "Index" in names:
             updated[page] = [label]
             continue
         # Upgrade weak/wrong labels when a strong outer heading is present.
@@ -3022,7 +3031,12 @@ def _restore_indexed_back_matter_parts(
         if "Index" in parts_on_page(names)
     )
     indexed_hc_memo = bool(
-        re.search(r"memo\s+of\s+parties\s+in\s+(?:the\s+)?high\s+court", index_text, re.I)
+        re.search(
+            r"memo\s+of\s+parties\s+in\s+(?:the\s+)?high\s+court|"
+            r"^\s*\d{1,3}[.)]?\s*memo\s+of\s+parties\b",
+            index_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
     )
     filing_pages = [
         page
@@ -3068,7 +3082,11 @@ def _restore_indexed_back_matter_parts(
             page
             for page in range(filing_end + 1, page_count + 1)
             if _is_lower_court_caption(page_text.get(page, ""))
-            and re.search(r"\b(?:petitioner|opposite\s+parties)\b", page_text.get(page, ""), re.I)
+            and re.search(
+                r"\b(?:petitioner|appellant|opposite\s+parties|respondents?)\b",
+                page_text.get(page, ""),
+                re.I,
+            )
             and not annexure_ref_in_heading(page_text.get(page, ""))
         ),
         None,

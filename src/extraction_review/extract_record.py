@@ -1128,6 +1128,39 @@ def _drop_removed_fields(payload: dict[str, Any]) -> None:
         blob.pop("summary", None)
 
 
+def _discard_reference_only_orders(payload: dict[str, Any]) -> None:
+    """Do not promote a narrated earlier order to the order under challenge.
+
+    A split filename is only a hint. Even a file named Impugned Order can
+    contain chronology pages; inspect the actual quoted identification.
+    Keep explicit challenge particulars and standalone order identifications.
+    """
+    orders = payload.get("impugned_orders")
+    if not isinstance(orders, list):
+        return
+    kept = []
+    for order in orders:
+        if not isinstance(order, dict):
+            kept.append(order)
+            continue
+        raw = re.sub(r"\s+", " ", str(order.get("raw_text") or "")).strip()
+        challenged = re.search(
+            r"\bimpugned\b|\bunder challenge\b|\bchalleng(?:e|es|ed|ing)\b|"
+            r"\baggrieved\b|\barising (?:out of|from)\b|\bset aside\b",
+            raw, re.IGNORECASE,
+        )
+        reference = re.search(
+            r"\b(?:summari[sz]ed|quoted|reproduced|extracted)\s+(?:herein\s+)?"
+            r"(?:below|above|as follows)|"
+            r"\b(?:in compliance with|pursuant to|in pursuance of)\b.{0,100}\border\b",
+            raw, re.IGNORECASE,
+        )
+        if reference and not challenged:
+            continue
+        kept.append(order)
+    payload["impugned_orders"] = kept
+
+
 def apply_extract_envelope(
     record: dict[str, Any] | None,
     *,
@@ -1149,6 +1182,7 @@ def apply_extract_envelope(
         payload["court"] = court_name
 
     _normalize_legacy_keys(payload)
+    _discard_reference_only_orders(payload)
     printed_date = petition_date_from_closing(
         main_petition_closing_text(page_markdown, page_parts)
     )

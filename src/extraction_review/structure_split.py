@@ -33,7 +33,7 @@ from .document_parts import (
     page_starts_application,
     parts_on_page,
 )
-from .split_ocr import ocr_sparse_pages
+from .split_ocr import ocr_sparse_pages, pages_with_large_images
 from .split_pdf_layout import extract_split_layout
 from .split_repair import (
     _heading_window,
@@ -195,14 +195,16 @@ def extract_page_units(
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total = len(reader.pages)
     layout = extract_split_layout(pdf_bytes)
-    sparse_pages = [
+    sparse_pages = {
         number for number in range(1, total + 1)
         if max(
             len(layout.get(number, ("", None, None))[0].strip()),
             len(((page_texts or {}).get(number) or "").strip()),
         ) < _OCR_TEXT_MIN
-    ]
-    ocr_texts = ocr_sparse_pages(pdf_bytes, sparse_pages)
+    }
+    image_pages = pages_with_large_images(pdf_bytes)
+    ocr_pages = sorted(sparse_pages | image_pages)
+    ocr_texts = ocr_sparse_pages(pdf_bytes, ocr_pages)
     units: list[PageUnit] = []
     for number in range(1, total + 1):
         text = layout.get(number, ("", None, None))[0]
@@ -216,9 +218,18 @@ def extract_page_units(
         alt, index_table, folio = layout.get(number, ("", None, None))
         if len(alt.strip()) > len((text or "").strip()):
             text = alt
-        if len(ocr_texts.get(number, "").strip()) > len(text.strip()):
+        ocr_text = ocr_texts.get(number, "").strip()
+        if ocr_text:
             native_stamp = annexure_label_from_text(text)
-            text = (text.rstrip() + "\n" if native_stamp else "") + ocr_texts[number]
+            ocr_stamp = annexure_label_from_text(ocr_text)
+            native_anchor = _outer_anchor_label(text)
+            ocr_anchor = _outer_anchor_label(ocr_text)
+            if len(ocr_text) > len(text.strip()) * 1.15:
+                text = (text.rstrip() + "\n" if native_stamp else "") + ocr_text
+            elif (ocr_stamp and not native_stamp) or (ocr_anchor and not native_anchor):
+                # Preserve exact born-digital text while making a heading that
+                # exists only inside the inserted scan visible to repair.
+                text = ocr_text + "\n" + text.lstrip()
         if index_table:
             text = index_table
         elif folio and text.rstrip().splitlines()[-1:] != [folio]:

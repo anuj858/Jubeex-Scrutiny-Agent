@@ -13,6 +13,46 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def pages_with_large_images(
+    pdf_bytes: bytes, *, minimum_page_coverage: float = 0.40
+) -> set[int]:
+    """Return pages containing a scan-sized raster image.
+
+    A scanned page may already have a small or stale OCR text layer. Character
+    count alone would then skip OCR even though the heading or handwritten
+    Annexure stamp exists only in the image. Small logos, seals and signatures
+    stay below the coverage threshold.
+    """
+    if not pdf_bytes:
+        return set()
+    try:
+        import pymupdf
+
+        document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:  # noqa: BLE001 - scan detection must fail open
+        return set()
+
+    pages: set[int] = set()
+    with document:
+        for number in range(document.page_count):
+            page = document[number]
+            page_area = float(page.rect.width * page.rect.height)
+            if page_area <= 0:
+                continue
+            try:
+                image_area = sum(
+                    max(0.0, float(block["bbox"][2] - block["bbox"][0]))
+                    * max(0.0, float(block["bbox"][3] - block["bbox"][1]))
+                    for block in page.get_text("dict").get("blocks", [])
+                    if block.get("type") == 1 and block.get("bbox")
+                )
+            except Exception:  # noqa: BLE001 - malformed image blocks fail open
+                continue
+            if min(image_area / page_area, 1.0) >= minimum_page_coverage:
+                pages.add(number + 1)
+    return pages
+
+
 def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
     if not pages:
         return {}
