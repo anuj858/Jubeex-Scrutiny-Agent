@@ -43,6 +43,55 @@ def test_explicit_outer_stamp_wins_over_local_annexure_number() -> None:
     assert annexure_label_from_text(text + "32\nANNEXURE P-2") == "Annexure P-2"
 
 
+def test_later_printed_annexures_survive_incomplete_index_ocr() -> None:
+    """A chained stamped sequence wins when Index OCR captured only P-1."""
+    from extraction_review.split_repair import _demote_unmentioned_annexures
+
+    texts = {
+        1: "INDEX\nS.No. Particulars Page No.\n1. ANNEXURE P-1 Order 31-34",
+        2: "ANNEXURE P-1\nORDER",
+        3: "ANNEXURE P-2\nORDER",
+        4: "ANNEXURE P-3\nORDER",
+        5: "ANNEXURE P-4\nORDER",
+        6: "ANNEXURE P-5\nORDER",
+        7: "ANNEXURE P-6\nORDER",
+        8: "ANNEXURE P-8\nORDER",
+        9: "ANNEXURE P-9\nORDER",
+        10: "ANNEXURE P-11\nORDER",
+    }
+    page_parts = {
+        1: ["Index"],
+        2: ["Annexure P-1"],
+        3: ["Annexure P-2"],
+        4: ["Annexure P-3"],
+        5: ["Annexure P-4"],
+        6: ["Annexure P-5"],
+        7: ["Annexure P-6"],
+        8: ["Annexure P-8"],
+        9: ["Annexure P-9"],
+        10: ["Annexure P-11"],
+    }
+
+    repaired = _demote_unmentioned_annexures(page_parts, texts)
+
+    assert repaired == page_parts
+
+
+def test_isolated_far_annexure_stamp_does_not_bypass_index_inventory() -> None:
+    from extraction_review.split_repair import _demote_unmentioned_annexures
+
+    texts = {
+        1: "INDEX\nS.No. Particulars Page No.\n1. ANNEXURE P-1 Order 31-34",
+        2: "ANNEXURE P-1\nORDER",
+        3: "ANNEXURE P-9\nUnrelated reproduced paper",
+    }
+    repaired = _demote_unmentioned_annexures(
+        {1: ["Index"], 2: ["Annexure P-1"], 3: ["Annexure P-9"]}, texts
+    )
+
+    assert repaired == {1: ["Index"], 2: ["Annexure P-1"]}
+
+
 def test_layout_ranges_keep_annexure_body_and_close_at_outer_applications() -> None:
     texts = {
         1: "INDEX\nS.No. Particulars Page No.\n"
@@ -354,6 +403,31 @@ Total: Rs. 710 (Online Receipts no.: EPSDL0935063917454914)
     assert repaired[1] == ["Filing Memo"]
     assert repaired[2] == ["Main Petition"]
     assert repaired[3] == ["Court Fees"]
+
+
+def test_vakalatnama_title_after_long_cause_title_overrides_main_petition():
+    text = """IN THE SUPREME COURT OF INDIA
+CIVIL ORIGINAL JURISDICTION
+CIVIL WRIT PETITION NO. OF 2024
+(UNDER ARTICLE 32 OF THE CONSTITUTION OF INDIA)
+(PUBLIC INTEREST LITIGATION)
+IN THE MATTER OF:
+Alakh Pandey
+... Petitioner
+Versus
+National Testing Agency & Anr
+... Respondents
+VAKALATNAMA
+SCR ORDER IV RULE 19
+I, Alakh Pandey, Petitioner, do hereby appoint and retain the Advocate.
+MEMO OF APPEARANCE
+Please enter my appearance on behalf of Petitioner.
+"""
+    repaired, _ = repair_compiled_split(
+        {1: ["Main Petition"]}, {1: text}, page_count=1
+    )
+
+    assert repaired[1] == ["Vakalatnama"]
 
 
 def test_find_duplicate_vakalatnama_spans() -> None:

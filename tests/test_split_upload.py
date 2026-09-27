@@ -133,10 +133,10 @@ def test_config_json_has_versioning() -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["config_id"] == "jubeex_parse"
     assert data["schema_version"] == "1.0"
-    assert data["config_version"] == "1.0.20"
+    assert data["config_version"] == "1.0.21"
     assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
     assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.1"
-    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.20"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.21"
     assert [rule["type"] for rule in data["classify"]["rules"]] == list(
         JUBEEX_FILING_TYPES
     )
@@ -151,10 +151,10 @@ def test_config_json_has_versioning() -> None:
     config = Config.model_validate(data)
     assert config.config_id == "jubeex_parse"
     assert config.schema_version == "1.0"
-    assert config.config_version == "1.0.20"
+    assert config.config_version == "1.0.21"
     assert config.pipeline_versions.classify.config_version == "1.0.0"
     assert config.pipeline_versions.extract.config_version == "1.0.1"
-    assert config.pipeline_versions.split.config_version == "1.0.20"
+    assert config.pipeline_versions.split.config_version == "1.0.21"
     classify_sent = dump_api_configuration(config.classify)
     assert "schema_version" not in classify_sent
     assert "config_version" not in classify_sent
@@ -177,7 +177,7 @@ def test_config_json_has_versioning() -> None:
     stamped = config_identity(data)
     assert stamped["classify"]["config_version"] == "1.0.0"
     assert stamped["extract"]["config_version"] == "1.0.1"
-    assert stamped["split"]["config_version"] == "1.0.20"
+    assert stamped["split"]["config_version"] == "1.0.21"
 
 
 def test_classify_dump_strips_unsupported_version_keys() -> None:
@@ -1665,7 +1665,7 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert result.config["config_id"] == "jubeex_parse"
     assert result.config["classify"]["config_version"] == "1.0.0"
     assert result.config["extract"]["config_version"] == "1.0.1"
-    assert result.config["split"]["config_version"] == "1.0.20"
+    assert result.config["split"]["config_version"] == "1.0.21"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]

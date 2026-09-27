@@ -949,7 +949,10 @@ def _memo_of_parties_heading(text: str) -> bool:
 
 def _vakalatnama_heading(text: str) -> bool:
     """True only for a Vakalatnama title line — not narrative 'filing Vakalatnama'."""
-    head = _heading_window(text, lines=12)
+    # Detailed SCI captions can consume 15–20 lines before the instrument
+    # title. The exact standalone-line requirement below prevents narrative
+    # references later in a petition from becoming a Vakalatnama boundary.
+    head = _heading_window(text, lines=30)
     # Accept common spelling and OCR variants: Vakalatnama, Vakalat Name,
     # Vakaltnama (missing the second "a"), and punctuated letter spacing.
     title = r"v\W*a\W*k\W*a\W*l\W*a?\W*t\W*n\W*a\W*m\W*a"

@@ -699,6 +699,10 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return False
     if _looks_like_court_notice_or_rop(text):
         return False
+    # A detailed cause title also appears above Vakalatnama. The explicit
+    # instrument title wins; its party/address block is not a petition start.
+    if _vakalatnama_heading(text):
+        return False
     window = text[:3000]
     folded = _fold(window)
     # The SLP's opening party schedule includes the impugned High Court case
@@ -1181,6 +1185,8 @@ def _apply_outer_anchors(
             "List of Dates & Events",
             "Filing Memo",
             "Court Fees",
+            "Vakalatnama",
+            "Memo of Appearance",
             MAIN_PETITION_PART,
             "Cover Page",
         }:
@@ -2781,17 +2787,17 @@ def _demote_unmentioned_annexures(
         number = int(match.group(2))
         max_by_series[series] = max(max_by_series.get(series, 0), number)
 
-    stamped_marks: list[Any] = []
-    for text in page_text.values():
+    stamped_marks: list[tuple[int, Any]] = []
+    for page, text in sorted(page_text.items()):
         mark = annexure_ref_in_heading(text or "")
         if mark is not None:
-            stamped_marks.append(mark)
+            stamped_marks.append((int(page), mark))
 
     # Index OCR often drops later rows while stamps remain — keep stamped
     # labels near the Index inventory for the same series (P or R). Far stray
     # P stamps (e.g. P-9 when Index only cites P-1) still demote.
     if max_by_series:
-        for mark in stamped_marks:
+        for _page, mark in stamped_marks:
             series_max = max_by_series.get(mark.series)
             if series_max is None:
                 # Respondent stamps often omitted from Index OCR — keep them.
@@ -2800,6 +2806,24 @@ def _demote_unmentioned_annexures(
                 continue
             if mark.number <= series_max + 5:
                 expected.add(mark.label)
+
+        # A fixed ``Index max + 5`` window loses valid later exhibits when OCR
+        # reads only the first Index row. Recover an ordered printed sequence
+        # instead: P-1, P-2, ... P-6, P-8, P-9, P-11 is strong evidence even
+        # though P-7/P-10 covers were unreadable. An isolated P-9 after P-1
+        # remains too large a jump and is still demoted.
+        for series, index_max in max_by_series.items():
+            cursor = index_max
+            for _page, mark in stamped_marks:
+                if mark.series != series or mark.number <= cursor:
+                    continue
+                if mark.label in expected:
+                    cursor = mark.number
+                    continue
+                if mark.number > cursor + 3:
+                    continue
+                expected.add(mark.label)
+                cursor = mark.number
 
     updated: PagePartMap = {}
     for page, names in page_parts.items():

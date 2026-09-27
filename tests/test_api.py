@@ -66,7 +66,7 @@ def test_catalog(client: TestClient) -> None:
     assert body["config"]["config_id"] == "jubeex_parse"
     assert body["config"]["classify"]["config_version"] == "1.0.0"
     assert body["config"]["extract"]["config_version"] == "1.0.1"
-    assert body["config"]["split"]["config_version"] == "1.0.20"
+    assert body["config"]["split"]["config_version"] == "1.0.21"
 
 
 def test_create_filing_rejects_empty_body(client: TestClient) -> None:
