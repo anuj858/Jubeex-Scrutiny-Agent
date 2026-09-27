@@ -286,6 +286,76 @@ def test_repair_demotes_cover_tagged_as_main_and_recovers_petition_body() -> Non
     }
 
 
+def test_cover_allows_numbered_respondent_in_advocate_footer() -> None:
+    cover = """IN THE SUPREME COURT OF INDIA
+CIVIL APPELLATE JURISDICTION
+M.A. NO. _______ OF 2026
+IN
+SPECIAL LEAVE PETITION (CIVIL) NO. 693 OF 2024
+IN THE MATTER OF:
+ANIRBAN DUTTA & ORS. …PETITIONERS
+VERSUS
+UNION OF INDIA & ORS. …RESPONDENTS
+PAPER BOOK
+WITH
+M.A. NO. _______ OF 2026
+VIJAY KASANA
+ADVOCATE FOR RESPONDENT NO. 3
+"""
+
+    repaired, _ = repair_compiled_split(
+        {1: ["Main Petition"]}, {1: cover}, page_count=1
+    )
+
+    assert repaired[1] == ["Cover Page"]
+
+
+def test_filing_index_main_cause_title_and_efiling_receipt_override_wrong_labels():
+    filing_index = """IN THE SUPREME COURT OF INDIA
+CIVIL ORIGINAL JURISDICTION
+WRIT PETITION (CIVIL) NO. OF 2024
+IN THE MATTER OF: Alakh Pandey ...Petitioner Versus NTA ...Respondents
+FILING INDEX
+S.No. Particulars Court Fee (In Rs.)
+1. Civil Writ Petition 500
+2. Affidavit 000
+Filed on: 09.06.2024
+Advocate for the Petitioner
+"""
+    petition_title = """IN THE SUPREME COURT OF INDIA
+CIVIL ORIGINAL JURISDICTION
+CIVIL WRIT PETITION NO. OF 2024
+(UNDER ARTICLE 32 OF THE CONSTITUTION OF INDIA)
+IN THE MATTER OF:
+Alakh Pandey, S/o Satish Kumar Pandey, Aged About 32 years
+R/o Kalindipuram, Allahabad ...Petitioner
+Versus
+1. National Testing Agency Through Director General, New Delhi
+2. Ministry of Education, New Delhi ...Respondents
+"""
+    acknowledgement = """Supreme Court Of India
+Acknowledgement
+e-Filing No.: EC-SCIN01-20258-2024
+Case Type: WRIT PETITION (CIVIL)
+Payment Details:
+Court Fee: Rs. 710
+Total: Rs. 710 (Online Receipts no.: EPSDL0935063917454914)
+"""
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Index"],
+            2: ["List of Dates & Events"],
+            3: ["Filing Memo"],
+        },
+        {1: filing_index, 2: petition_title, 3: acknowledgement},
+        page_count=3,
+    )
+
+    assert repaired[1] == ["Filing Memo"]
+    assert repaired[2] == ["Main Petition"]
+    assert repaired[3] == ["Court Fees"]
+
+
 def test_find_duplicate_vakalatnama_spans() -> None:
     page_parts = {
         40: ["Vakalatnama"],

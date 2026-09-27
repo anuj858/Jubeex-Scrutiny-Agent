@@ -117,6 +117,17 @@ _FILING_MEMO_RE = re.compile(
     r"(?m)^\s*(?:filing memo|index of filing|filing index|index of documents)\b",
     re.I,
 )
+_EFILE_COURT_FEE_RE = re.compile(
+    r"supreme\s+court\s+of\s+india.{0,120}acknowledgement|"
+    r"e-?filing\s+no\..{0,500}payment\s+details.{0,200}court\s+fee|"
+    r"receipts?\s+no\..{0,100}court\s+fee",
+    re.I | re.S,
+)
+_MAIN_PARTY_DETAILS_RE = re.compile(
+    r"\b(?:s\s*/\s*o|d\s*/\s*o|w\s*/\s*o|aged\s+about|r\s*/\s*o)\b|"
+    r"^\s*1[.)]\s+[^\n]{1,120}(?:through|director|building|road|estate)\b",
+    re.I | re.M,
+)
 _AOR_CERT_RE = re.compile(
     r"confined\s+on(?:ly|iy)(?:\s+\w{1,3})?\s+to\s+the\s+pleadings|"
     r"(?:^|\n)\s*[^A-Za-z0-9\s]{0,3}(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|"
@@ -619,8 +630,17 @@ def _looks_like_cover_page(text: str) -> bool:
     folded = _fold(page_head)
     if _looks_like_court_notice_or_rop(text):
         return False
+    # Cover footers commonly say "Advocate for Respondent No. 3". Remove
+    # that role line before looking for a numbered Form-28 party schedule;
+    # otherwise the footer's "Respondent No." defeats a strong PAPER BOOK cue.
+    party_schedule_text = re.sub(
+        r"advocate\s+for\s+(?:the\s+)?(?:petitioner|respondent)s?\s+no\.?\s*\d+",
+        "",
+        page_head,
+        flags=re.IGNORECASE,
+    )
     # Multi-party Form-28 schedule is never the paper-book cover.
-    if _PARTY_SCHEDULE_RE.search(page_head):
+    if _PARTY_SCHEDULE_RE.search(party_schedule_text):
         return False
     has_cover_footer = bool(_COVER_FOOTER_RE.search(page_head))
     # Strong paper-book cover stamps win even when caption OCR is noisy.
@@ -717,6 +737,18 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         return False
     if _AOR_CERT_RE.search(text[:2500]):
         return False
+    # A writ/arbitration petition can begin with a detailed cause-title page;
+    # its Form-28/showeth body starts on the next physical page. Covers usually
+    # print only one name per side and PAPER BOOK, without personal/address
+    # details or a numbered respondent schedule.
+    if (
+        _is_sci_caption(text)
+        and "in the matter of" in folded
+        and "petitioner" in folded
+        and "respondent" in folded
+        and _MAIN_PARTY_DETAILS_RE.search(window)
+    ):
+        return True
     # Form-28 party schedule under SCI caption (names live here, not on Cover).
     if _is_sci_caption(text) and _PARTY_SCHEDULE_RE.search(window):
         return True
@@ -770,6 +802,19 @@ def _outer_anchor_label(text: str) -> str | None:
     # That is not the paper-book Index — classify the checklist first.
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
+    # The current filing's own FILING INDEX is the Filing Memo. Evaluate it
+    # before the generic Index-table rule, which otherwise absorbs this page
+    # into the preceding paper-book Index.
+    if (
+        _FILING_MEMO_RE.search(text[:1800])
+        and _is_sci_caption(text)
+        and not _is_lower_court_caption(text)
+    ):
+        return "Filing Memo"
+    # SCI e-filing acknowledgement/payment receipt is court-fee evidence,
+    # not the filing list described by the Filing Memo category.
+    if _EFILE_COURT_FEE_RE.search(text[:3000]):
+        return "Court Fees"
     # A paper-book Index can list Filing Memo, Annexures, and other sections.
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
@@ -1134,6 +1179,8 @@ def _apply_outer_anchors(
             "Record of Proceedings",
             "Synopsis",
             "List of Dates & Events",
+            "Filing Memo",
+            "Court Fees",
             MAIN_PETITION_PART,
             "Cover Page",
         }:
@@ -2003,6 +2050,7 @@ def _extend_main_petition_body(
         "Impugned Order",
         "Synopsis",
         "List of Dates & Events",
+        "Court Fees",
     }
     for page in range(start + 1, page_count + 1):
         text = page_text.get(page, "")

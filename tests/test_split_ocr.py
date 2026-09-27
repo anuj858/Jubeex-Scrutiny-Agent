@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pypdf import PdfWriter
 
 from extraction_review.split_ocr import ocr_sparse_pages, pages_with_large_images
-from extraction_review.structure_split import extract_page_units
+from extraction_review.structure_split import extract_page_units, structure_aware_split
 
 
 def blank_pdf():
@@ -86,3 +86,22 @@ def test_image_only_heading_is_merged_with_existing_text_layer():
     assert native.strip() in unit.text
     ocr.assert_called_once()
     assert ocr.call_args.args[1] == [1]
+
+
+def test_image_only_vakalatnama_is_not_left_unidentified():
+    text = """VAKALATNAMA
+IN THE SUPREME COURT OF INDIA, NEW DELHI
+ARBITRATION PETITION NO. ___ OF 2025
+Easy Handling LLC ... Petitioner
+Versus
+Pradhaan Air Express Pvt. Ltd. ... Respondent
+We hereby appoint and retain the Advocate-on-Record to act and appear.
+MEMO OF APPEARANCE
+Please enter my appearance on behalf of the Petitioner.
+"""
+    with patch(
+        "extraction_review.structure_split.ocr_sparse_pages", return_value={1: text}
+    ):
+        result = structure_aware_split(blank_pdf())
+
+    assert result.page_parts == {1: ["Vakalatnama"]}
