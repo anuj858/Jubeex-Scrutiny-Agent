@@ -35,7 +35,7 @@ from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import map_slot_pages, pdf_page_texts, slice_bundle_pdf
+from .bundle_slicer import map_slot_pages, slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
@@ -1884,14 +1884,19 @@ class ProcessFileWorkflow(Workflow):
             "flag_counts": {"error": 0, "warning": 0, "total": 0},
         }
         if pdf_page_count:
-            page_texts = pdf_page_texts(pdf_bytes)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Reading scanned pages and validating document boundaries",
+                )
+            )
             # Structure-aware path: page units → classify → boundaries →
             # logical docs → hybrid repair. LlamaSplit is a warm-start hint.
             # Physical slot PDFs are created only after boundaries are final.
-            structured = structure_aware_split(
+            structured = await asyncio.to_thread(
+                structure_aware_split,
                 pdf_bytes,
                 llama_page_parts=page_parts,
-                page_texts=page_texts,
                 source_pdf=state.filename or "bundle.pdf",
                 run_hybrid_repair=True,
             )

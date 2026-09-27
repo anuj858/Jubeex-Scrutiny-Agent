@@ -168,6 +168,7 @@ def _fold(text: str) -> str:
     )
 
 
+@lru_cache(maxsize=256)
 def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     """Search phrases for one Split part: official name plus description nicknames."""
     needles: list[str] = []
@@ -190,6 +191,7 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     return tuple(needles)
 
 
+@lru_cache(maxsize=1024)
 def normalize_part_name(name: str | None) -> str:
     if not name:
         return ""

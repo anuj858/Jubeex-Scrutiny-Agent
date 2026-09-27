@@ -339,3 +339,19 @@ def test_incomplete_detached_column_is_not_guessed_onto_last_rows():
     assert not index_rows_with_printed_pages(
         "INDEX\n1. Annexure P-1 Order\n2. Annexure P-2 Deed\n32-41"
     )
+
+
+def test_scanned_index_annexures_ignore_front_folios_and_split_damaged_serials():
+    from extraction_review.split_audit import collect_index_annexure_entries
+
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1. Index of Record A-4\n"
+        "11. ANNEXURE P/1\nOrder dated 27.05.2006\n"
+        "12, | ANNEXURE P/2\nPolicy dated 1.8.18\n"
+        "13.\nANNEXURE P/3\nOrder dated 5.7.21\n"
+    )
+    entries = collect_index_annexure_entries({1: ["Index"]}, {1: text})
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure P-2", "Annexure P-3"]
+    assert "Policy" not in entries[0][1]
+    assert "27.05.2006" not in entries[1][1]

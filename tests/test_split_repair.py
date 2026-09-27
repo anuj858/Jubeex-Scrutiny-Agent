@@ -233,8 +233,8 @@ def test_repair_index_continuation_and_blank_impugned_before_petition() -> None:
     assert repaired[5] == ["Listing Proforma"]
     assert repaired[6] == ["Synopsis"]
     assert repaired[7] == ["List of Dates & Events"]
-    assert repaired[9] == ["Impugned Order"]
-    assert repaired[11] == ["Impugned Order"]
+    assert "Impugned Order" not in repaired.get(9, [])
+    assert "Impugned Order" not in repaired.get(11, [])
     assert repaired[12] == ["Main Petition"]
     assert repaired[14] == ["Appendix"]
     assert repaired[15] == ["Annexure P-1"]
@@ -1424,3 +1424,42 @@ def test_index_folio_is_checked_and_body_citation_is_not_a_folio() -> None:
     assert repaired[3] == ["Annexure A-4"]
     assert repaired[4] == ["Vakalatnama"]
     assert repaired[5] == ["Court Fees"]
+
+
+def test_scanned_synopsis_continues_without_readable_letter_folios():
+    texts = {
+        1: "SYNOPSIS\nThe petitioner seeks relief in this case.",
+        2: "The following reasons explain the petitioner's grievance in detail.",
+        3: "The proceedings continued and the relief remains necessary today.",
+        4: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION (CIVIL)\nPOSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH:",
+    }
+    repaired, _ = repair_compiled_split({3: ["Impugned Order"]}, texts, page_count=4)
+    assert all(repaired[p] == ["Synopsis"] for p in (1, 2, 3))
+
+
+def test_index_content_matching_supports_sessions_case_and_ocr_policy_date():
+    from extraction_review.split_repair import _score_island_for_index_annexure
+
+    assert _score_island_for_index_annexure(
+        "In the Court of Additional Sessions Judge\nST No. 943/03\nJUDGEMENT",
+        "Order dated 27.05.2006 in S.T. No 943 / 2003", "Annexure P-1",
+    ) >= 9
+    assert _score_island_for_index_annexure(
+        'From:-\nPrincipal Secretary\nLucknow, Date: 28" July, 2021\nPolicy',
+        "Policy dated 28.7.21", "Annexure P-5",
+    ) >= 9
+
+
+def test_annexure_realign_does_not_read_dates_from_later_bail_application():
+    from extraction_review.split_repair import _realign_annexure_boundaries_to_index_content
+
+    texts = {
+        1: "INDEX\n1. ANNEXURE P/1\nOrder dated 27.05.2006\n2. ANNEXURE P/2\nOrder dated 21.02.2022",
+        2: "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\nDate : 27-05-2006\nORDER",
+        3: "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\nDate : 21-02-2022\nORDER",
+        4: "IN THE SUPREME COURT OF INDIA\nCRL M.P. NO. OF 2023\nAPPLICATION FOR BAIL\nThe order dated 27.05.2006 is discussed again.",
+    }
+    parts = {1: ["Index"], 2: ["Annexure P-1"], 3: ["Annexure P-2"], 4: ["Application 1"]}
+    repaired = _realign_annexure_boundaries_to_index_content(parts, texts, 4)
+    assert repaired[3] == ["Annexure P-2"]
+    assert repaired[4] == ["Application 1"]

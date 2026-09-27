@@ -53,6 +53,7 @@ _SCI_CAPTION_OCR_RE = re.compile(
 _HC_CAPTION_RE = re.compile(
     r"in the (?:hon'?ble\s+)?high court|"
     r"high court of judicature|"
+    r"in the court of (?:the )?(?:additional )?sessions judge|"
     r"bench at\s+\w+",
     re.IGNORECASE,
 )
@@ -128,7 +129,7 @@ _DATE_NUMERIC_RE = re.compile(
     r"\b(?P<d>\d{1,2})[\s./\-]+(?P<m>\d{1,2})[\s./\-]+(?P<y>\d{2,4})\b"
 )
 _DATE_SPOKEN_RE = re.compile(
-    r"\b(?P<d>\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"\b(?P<d>\d{1,2})(?:st|nd|rd|th|[\"”])?\s+"
     r"(?P<month>january|february|march|april|may|june|july|august|september|"
     r"october|november|december)\s*,?\s*(?P<y>\d{4})\b",
     re.IGNORECASE,
@@ -777,6 +778,18 @@ def _outer_anchor_label(text: str) -> str | None:
     # A Filing Memo is an outer section only when it belongs to the current
     # Supreme Court filing. A lower-court filing memo reproduced in an exhibit
     # must stay with that record.
+    # The standard filing-list form can say INDEX OF THE PAPER BOOK rather
+    # than Filing Memo. Its copies column and filing footer distinguish it
+    # from the front Index's page-number table, including degraded OCR.
+    folded_form = _fold(text)
+    if (
+        "court of india" in folded_form
+        and "of the paper book" in folded_form
+        and "copies" in folded_form
+        and re.search(r"fi(?:lled|led)\s+by", folded_form)
+        and "description" in folded_form
+    ):
+        return "Filing Memo"
     if _FILING_MEMO_RE.search(text[:1800]) and not (
         _looks_like_court_notice_or_rop(text)
     ) and _is_sci_caption(text) and not _is_lower_court_caption(text):
@@ -1791,7 +1804,7 @@ def _restore_split_preface(
         if _is_near_blank_page(text) or _looks_like_garbled_scan_ocr(text):
             continue
         names = parts_on_page(updated.get(page))
-        if "Impugned Order" in names:
+        if not names or "Impugned Order" in names:
             updated[page] = [preface]
 
     for page in range(2, page_count + 1):
@@ -1885,6 +1898,17 @@ def _label_near_blank_impugned_gap(
         if _is_near_blank_page(text) or _looks_like_garbled_scan_ocr(text):
             return True
         return False
+
+    # Missing OCR is not evidence of an order. Require an existing order
+    # anchor; an unreadable continuation may belong to the synopsis itself.
+    if not any(
+        "Impugned Order" in parts_on_page(names)
+        and not _is_near_blank_page(page_text.get(page, ""))
+        and _outer_anchor_label(page_text.get(page, "")) == "Impugned Order"
+        for page, names in updated.items()
+        if page < petition_start
+    ):
+        return updated
 
     gap_end = petition_start - 1
     gap_start = gap_end
@@ -2310,6 +2334,8 @@ def _is_unstamped_annexure_island_start(text: str) -> bool:
         return False
     if _FILING_MEMO_RE.search(_heading_window(text, lines=8)):
         return False
+    if re.search(r"(?im)^\s*[*]?\s*from\s*[:,–-]", text[:500]) or re.search(r"(?i)\bre[.:]\s*compliance\s+(?:letter|chart)", text[:700]):
+        return True
     if _looks_like_sci_court_rop_extract(text):
         return True
     if _is_lower_court_caption(text):
@@ -2348,7 +2374,8 @@ def _score_island_for_index_annexure(
         or re.search(r"\br\.?\s*p\.?\s*\(?\s*c", folded_island)
     )
     is_letter = bool(
-        re.search(r"(?mi)^\s*from\s*,", (island_text or "")[:500])
+        re.search(r"(?mi)^\s*[*]?\s*from\s*[:,–-]", (island_text or "")[:500])
+        or bool(re.search(r"\bre[.:]\s*compliance\s+(?:letter|chart)", folded_island[:700]))
         or "sub-divisional" in folded_island
         or "block development" in folded_island
         or "first information report" in folded_island
@@ -2360,6 +2387,17 @@ def _score_island_for_index_annexure(
     )
     if not structural:
         return 0
+
+    if "compliance chart" in folded_part and re.search(
+        r"\bre[.:]\s*compliance\s+(?:letter|chart)", folded_island[:700]
+    ):
+        score += 12
+    # A case number in an Index row must match the record's opening caption,
+    # not an incidental citation several pages into another order.
+    for number, year in re.findall(r"\b(\d{1,6})\s*/\s*(\d{4})\b", folded_part):
+        if re.search(rf"\b{number}\s*/\s*(?:{year}|{year[-2:]})\b", folded_island[:900]):
+            score += 12
+            break
 
     part_dates = _extract_date_keys(particulars or "")
     pronounced = _extract_pronounced_date_keys(island_text)
@@ -2856,6 +2894,15 @@ def _realign_annexure_boundaries_to_index_content(
         # Include the full short record where possible, but don't let a later
         # exhibit's date/title contaminate the match for this one.
         window_end = min(next_candidate, start + 25, page_count + 1)
+        # Stop at outer back matter, even though it is not an annexure
+        # candidate. Bail applications often quote every preceding order.
+        window_end = min(window_end, next((
+            page for page in range(start + 1, window_end)
+            if page_starts_application(page_text.get(page, ""))
+            or _outer_anchor_label(page_text.get(page, "")) in {
+                "Filing Memo", "Vakalatnama", MAIN_PETITION_PART,
+            }
+        ), window_end))
         window = "\n".join(
             page_text.get(offset, "")
             for offset in range(start, window_end)
@@ -3226,6 +3273,19 @@ def repair_compiled_split(
     # that can split or demote those local exhibit runs.
     repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
     repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
+    # A standalone custody certificate has no configured slot. Preserve it
+    # as Unidentified rather than swallowing it into the preceding bail IA.
+    indexed_custody = any(
+        "Index" in parts_on_page(names)
+        and re.search(r"custody\s+certificate", page_text.get(page, ""), re.IGNORECASE)
+        for page, names in repaired.items()
+    )
+    if indexed_custody:
+        for page in range(1, page_count + 1):
+            if re.search(r"(?im)^\s*custody\s+certificate\s*$", page_text.get(page, "")[:1000]):
+                if any(name.startswith("Application ") for name in parts_on_page(repaired.get(page))):
+                    repaired.pop(page, None)
+
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )

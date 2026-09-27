@@ -620,6 +620,31 @@ def collect_index_annexure_entries(
     if not index_text.strip():
         return []
 
+    # Scanned Index rows often lose serial punctuation or put the serial on
+    # its own line. Explicit Annexure headings still delimit the particulars.
+    # Do not mistake A-4/A-5 front-matter folios for exhibit identifiers.
+    if "\t" not in index_text:
+        headings = list(re.finditer(
+            r"(?im)^\s*(?:\d{1,3}[.,)]?\s*[|]?\s*)?[|]?\s*"
+            r"annexure\s*[-:]?\s*[PR]\s*[/–—-]?\s*\d+\b",
+            index_text,
+        ))
+        if headings:
+            explicit = []
+            for i, heading in enumerate(headings):
+                end = headings[i + 1].start() if i + 1 < len(headings) else len(index_text)
+                labels = annexure_labels_from_text(heading.group())
+                if len(labels) == 1:
+                    particulars = index_text[heading.start():end].strip()
+                    # The final exhibit may be followed by applications and
+                    # filing-list rows, which are not its particulars.
+                    following_row = re.search(r"\n\s*\d{1,3}[.)]\s*(?:\n|[A-Z])", particulars)
+                    if following_row:
+                        particulars = particulars[:following_row.start()].strip()
+                    explicit.append((next(iter(labels)), particulars))
+            if explicit:
+                return explicit
+
     entries: list[tuple[int, tuple[int, int], str, str]] = []
     seen: set[str] = set()
     for row_index, row in enumerate(parse_index_rows(index_text)):

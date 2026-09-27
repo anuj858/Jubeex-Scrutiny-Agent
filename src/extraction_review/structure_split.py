@@ -33,6 +33,7 @@ from .document_parts import (
     page_starts_application,
     parts_on_page,
 )
+from .split_ocr import ocr_sparse_pages
 from .split_pdf_layout import extract_split_layout
 from .split_repair import (
     _heading_window,
@@ -194,9 +195,17 @@ def extract_page_units(
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total = len(reader.pages)
     layout = extract_split_layout(pdf_bytes)
+    sparse_pages = [
+        number for number in range(1, total + 1)
+        if max(
+            len(layout.get(number, ("", None, None))[0].strip()),
+            len(((page_texts or {}).get(number) or "").strip()),
+        ) < _OCR_TEXT_MIN
+    ]
+    ocr_texts = ocr_sparse_pages(pdf_bytes, sparse_pages)
     units: list[PageUnit] = []
     for number in range(1, total + 1):
-        text = ""
+        text = layout.get(number, ("", None, None))[0]
         if page_texts is not None and number in page_texts:
             text = page_texts.get(number) or ""
         if not (text or "").strip():
@@ -207,6 +216,9 @@ def extract_page_units(
         alt, index_table, folio = layout.get(number, ("", None, None))
         if len(alt.strip()) > len((text or "").strip()):
             text = alt
+        if len(ocr_texts.get(number, "").strip()) > len(text.strip()):
+            native_stamp = annexure_label_from_text(text)
+            text = (text.rstrip() + "\n" if native_stamp else "") + ocr_texts[number]
         if index_table:
             text = index_table
         elif folio and text.rstrip().splitlines()[-1:] != [folio]:

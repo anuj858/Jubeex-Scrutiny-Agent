@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.15",
+  "config_version": "1.0.16",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -13,7 +13,7 @@
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.15"
+      "config_version": "1.0.16"
     }
   },
   "classify": {
@@ -990,7 +990,7 @@
       },
       {
         "name": "Synopsis",
-        "description": "The narrative SYNOPSIS section, starting at the SYNOPSIS heading and continuing across its lettered pages (for example, B-L) until a separate LIST OF DATES, LIST OF DATES AND EVENTS, or LIST OF EVENTS heading belonging to this Supreme Court petition. Stop Synopsis at that heading. From the heading onward, classify the dated event table and its continuation pages (for example, M-V) as List of Dates & Events, even if the split model initially labels them Synopsis. Do not use a lettered folio, mentions of dates/events, or references to other filing documents alone to change the section; use the explicit heading and the page content. Synopsis pages are narrative, while List of Dates pages are organized as chronological date/event entries. A LIST OF EVENTS with a High Court/tribunal caption and different case number inside an Annexure belongs to that Annexure, not this Synopsis."
+        "description": "Keep quoted orders and reproduced passages within the narrative; they do not start an Impugned Order document. The narrative SYNOPSIS section, starting at the SYNOPSIS heading and continuing across its lettered pages (for example, B-L) until a separate LIST OF DATES, LIST OF DATES AND EVENTS, or LIST OF EVENTS heading belonging to this Supreme Court petition. Stop Synopsis at that heading. From the heading onward, classify the dated event table and its continuation pages (for example, M-V) as List of Dates & Events, even if the split model initially labels them Synopsis. Do not use a lettered folio, mentions of dates/events, or references to other filing documents alone to change the section; use the explicit heading and the page content. Synopsis pages are narrative, while List of Dates pages are organized as chronological date/event entries. A LIST OF EVENTS with a High Court/tribunal caption and different case number inside an Annexure belongs to that Annexure, not this Synopsis."
       },
       {
         "name": "List of Dates & Events",
@@ -1006,7 +1006,7 @@
       },
       {
         "name": "Annexures",
-        "description": "Case-specific supporting exhibits attached to the current Supreme Court petition. Treat an Annexure as a labeled document range, not a page keyword. Use the Supreme Court paper-book Index as the authority for each outer P/R number and printed-folio start/end range; assign all pages in that unambiguous range to that exhibit even when later pages have no Annexure heading, are poorly scanned, or contain a different lower-court document title. Cross-check Index particulars against explicit outer Annexure labels and references in the current petition; a petition reference or 'TRUE COPY' phrase alone is not an exhibit boundary. A reproduced High Court/tribunal record may contain local labels such as ANNEXURE NO. 1 or ANNEXURE 5; these are internal and must never become Supreme Court P/R numbers or create new outer boundaries. Keep the underlying judgment, order, application, notice, or other record as the content of its enclosing Annexure range. If Index rows overlap or the Index, outer labels, and document contents conflict so the range cannot be established without cutting through a document, keep the complete uncertain continuous run in Unidentified and provide a plain-language user-visible reason that names the conflicting evidence. Preserve actual series and numbers (for example P-10, P-20, P-50, R-2, or E-number variants mapped only when supported by the outer Index). Do not cap the sequence at 15 or renumber by position."
+        "description": "Case-specific supporting exhibits attached to the current Supreme Court petition. Treat an Annexure as a labeled document range, not a page keyword. Use the Supreme Court paper-book Index as the authority for each outer P/R number and printed-folio start/end range; assign all pages in that unambiguous range to that exhibit even when later pages have no Annexure heading, are poorly scanned, or contain a different lower-court document title. Cross-check Index particulars against explicit outer Annexure labels and references in the current petition; a petition reference or 'TRUE COPY' phrase alone is not an exhibit boundary. A reproduced High Court/tribunal record may contain local labels such as ANNEXURE NO. 1 or ANNEXURE 5; these are internal and must never become Supreme Court P/R numbers or create new outer boundaries. Keep the underlying judgment, order, application, notice, or other record as the content of its enclosing Annexure range. For handwritten or OCR-damaged labels, cross-check the Index description, record date and case number. Do not infer a new identity from an unreadable stamp or a date quoted in a later application. If Index rows overlap or the Index, outer labels, and document contents conflict so the range cannot be established without cutting through a document, keep the complete uncertain continuous run in Unidentified and provide a plain-language user-visible reason that names the conflicting evidence. Preserve actual series and numbers (for example P-10, P-20, P-50, R-2, or E-number variants mapped only when supported by the outer Index). Do not cap the sequence at 15 or renumber by position."
       },
       {
         "name": "Application",
