@@ -18,8 +18,8 @@ from .document_parts import (
     APPLICATION_FAMILY,
     MAIN_PETITION_PART,
     family_split_name,
-    format_page_span,
     numbered_part_slot_id,
+    page_ranges,
     parts_on_page,
 )
 from .split_upload import (
@@ -41,7 +41,7 @@ class SlotSlice:
     slot_id: str
     label: str
     pages: tuple[int, ...]
-    page_span: str
+    page_span: tuple[dict[str, int], ...]
     pdf_bytes: bytes
     filename: str
     file_hash: str
@@ -304,7 +304,7 @@ def slice_bundle_pdf(
                 slot_id=slot.id,
                 label=slot.label,
                 pages=tuple(pages),
-                page_span=format_page_span(pages),
+                page_span=tuple(page_ranges(pages)),
                 pdf_bytes=chunk,
                 filename=filename,
                 file_hash=hashlib.sha256(chunk).hexdigest(),
@@ -313,5 +313,7 @@ def slice_bundle_pdf(
     return slices
 
 
-def slot_page_spans(slices: Sequence[SlotSlice]) -> dict[str, str]:
-    return {item.slot_id: item.page_span for item in slices if item.page_span}
+def slot_page_spans(
+    slices: Sequence[SlotSlice],
+) -> dict[str, list[dict[str, int]]]:
+    return {item.slot_id: list(item.page_span) for item in slices if item.page_span}

@@ -8,6 +8,7 @@ from extraction_review.split_audit import (
     check_document_sequence,
     check_index_consistency,
     collect_expected_annexures,
+    collect_index_annexure_entries,
     map_index_particulars_to_part,
     parse_index_rows,
 )
@@ -168,7 +169,75 @@ def test_collect_expected_annexures_from_index_and_main() -> None:
     }
     expected = collect_expected_annexures(page_parts, texts)
     assert expected == {"Annexure P-1", "Annexure P-2", "Annexure P-3"}
+    entries = collect_index_annexure_entries(page_parts, texts)
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure P-3"]
     # Bare "Annexure 5" inside annexed HC prose must not invent SCI inventory.
     assert "Annexure P-5" not in annexure_labels_from_text(
         "stated that allocable area in Annexure 5 to IPS-1"
     )
+
+def test_annexure_series_p_petitioner_r_respondent() -> None:
+    """P = Petitioner, R = Respondent; E exhibit stamps normalize to P."""
+    from extraction_review.document_parts import annexure_label_from_text
+    from extraction_review.split_audit import normalize_annexure_part_label
+
+    assert normalize_annexure_part_label("P", 1) == "Annexure P-1"
+    assert normalize_annexure_part_label("R", 2) == "Annexure R-2"
+    assert normalize_annexure_part_label("E", 3) == "Annexure P-3"
+    assert normalize_annexure_part_label("petitioner", 4) == "Annexure P-4"
+    assert normalize_annexure_part_label("respondent", 5) == "Annexure R-5"
+
+    assert annexure_label_from_text("ANNEXURE R-1\nIN THE HIGH COURT") == "Annexure R-1"
+    assert annexure_label_from_text("ANNEXURE-P/2\nWrit Petition") == "Annexure P-2"
+    assert annexure_label_from_text("ANNEXURE-E-3\nBank statement") == "Annexure P-3"
+
+    labels = annexure_labels_from_text(
+        "marked as ANNEXURE P-1 and ANNEXURE R-1; also ANNEXURE E-2"
+    )
+    assert labels == {"Annexure P-1", "Annexure R-1", "Annexure P-2"}
+
+    page_parts = {2: ["Index"], 10: ["Main Petition"]}
+    texts = {
+        2: (
+            "INDEX\n1. ANNEXURE P-1: Petitioner writ\n"
+            "2. ANNEXURE R-1: Respondent counter affidavit\n"
+        ),
+        10: "body citing ANNEXURE R-2",
+    }
+    expected = collect_expected_annexures(page_parts, texts)
+    assert "Annexure P-1" in expected
+    assert "Annexure R-1" in expected
+    assert "Annexure R-2" in expected
+    entries = collect_index_annexure_entries(page_parts, texts)
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure R-1"]
+
+
+def test_detached_index_page_column_zips_onto_rows() -> None:
+    """Page numbers printed in their own column still attach to each document."""
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = """
+INDEX
+1. Arbitration Petition with Affidavit
+2. Annexure A-1 Board Resolution
+3. Annexure A-4 Reminder Notice
+4. FILING INDEX
+5. V AKALATNAMA
+6. Payment receipt for sum of Rs. 15000/-
+1-21B
+22-24B
+36
+60
+61-63B
+64
+"""
+    rows = index_rows_with_printed_pages(text)
+    by_part = {row.mapped_part: row for row in rows}
+    assert by_part["Main Petition"].start == 1
+    assert by_part["Main Petition"].end == 21
+    assert by_part["Main Petition"].end_suffix == "B"
+    assert by_part["Annexure A-1"].start == 22
+    assert by_part["Annexure A-4"].start == 36
+    assert by_part["Filing Memo"].start == 60
+    assert by_part["Vakalatnama"].end_suffix == "B"
+    assert by_part["Court Fees"].start == 64

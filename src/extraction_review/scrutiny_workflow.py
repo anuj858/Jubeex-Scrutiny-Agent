@@ -41,6 +41,7 @@ from .layout_index import (
 from .llm import (
     LLMError,
     call_structured,
+    llm_provider,
     mask_openrouter_api_key,
     openrouter_enabled,
     openrouter_model,
@@ -402,11 +403,16 @@ class ScrutinyWorkflow(Workflow):
         if not scrutiny_enabled():
             raise ValueError("Scrutiny is disabled (SCRUTINY_ENABLED=false)")
         if not openrouter_enabled():
+            if llm_provider() == "vertex":
+                raise ValueError(
+                    "LLM_PROVIDER=vertex but GOOGLE_CLOUD_PROJECT is not set"
+                )
             raise ValueError(
                 "OPENROUTER_API_KEY is not set, so defect checks cannot run"
             )
         logger.info(
-            "OpenRouter key=%s model=%s rpm=%s",
+            "LLM provider=%s key=%s model=%s rpm=%s",
+            llm_provider(),
             mask_openrouter_api_key(),
             openrouter_model(),
             openrouter_requests_per_minute() or "unlimited",

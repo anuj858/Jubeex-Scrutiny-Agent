@@ -24,8 +24,10 @@ from ..llm import (
     _extract_content,
     _headers,
     acquire_openrouter_slot,
+    generate_vision_json,
+    llm_provider,
     mask_openrouter_api_key,
-    openrouter_api_key,
+    openrouter_enabled,
     openrouter_model,
     parse_openrouter_usage,
 )
@@ -68,12 +70,15 @@ def visual_detection_enabled() -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     if raw in {"1", "true", "yes", "on"}:
-        return bool(openrouter_api_key())
-    return bool(openrouter_api_key())
+        return openrouter_enabled()
+    return openrouter_enabled()
 
 
 def vision_model() -> str:
-    return (os.getenv("OPENROUTER_VISION_MODEL") or openrouter_model()).strip()
+    raw = (os.getenv("OPENROUTER_VISION_MODEL") or openrouter_model()).strip()
+    if llm_provider() == "vertex" and raw.startswith("google/"):
+        return raw[len("google/") :]
+    return raw
 
 
 def vision_fallback_model() -> str | None:
@@ -466,12 +471,54 @@ async def analyze_page_image(
         document_types=target.document_types,
         nearby_text=target.markdown,
     )
-    content: list[dict[str, Any]] = [
+    max_tokens = _int_env("VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS)
+
+    if llm_provider() == "vertex":
+        images: list[tuple[bytes, str]] = [(page_image, "image/jpeg")]
+        ref_notes: list[str] = []
+        for reference in references:
+            ref_notes.append(
+                f"REFERENCE SHEET {reference.reference_id}: "
+                f"{reference.description} Do not return any element from this image."
+            )
+            images.append((reference.content, "image/jpeg"))
+        user_text = prompt
+        if ref_notes:
+            user_text = prompt + "\n\n" + "\n".join(ref_notes)
+        content, usage = await generate_vision_json(
+            system_prompt=VISION_SYSTEM_PROMPT,
+            user_prompt=user_text,
+            images=images,
+            model=model,
+            max_tokens=max_tokens,
+        )
+        logger.info(
+            "Vision page=%s model=%s tokens=%s cost=%s",
+            target.page,
+            usage.model or model,
+            usage.total_tokens,
+            usage.cost_usd,
+        )
+        try:
+            parsed = _parse_vision_json(content)
+        except LLMError as exc:
+            raise LLMError(str(exc), usage=usage) from exc
+        marks = parse_vision_elements(
+            parsed,
+            page_number=target.page,
+            document_type=_document_type_for_page(target),
+            page_text=target.markdown,
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+        return marks, usage
+
+    content_parts: list[dict[str, Any]] = [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": jpeg_data_url(page_image)}},
     ]
     for reference in references:
-        content.append(
+        content_parts.append(
             {
                 "type": "text",
                 "text": (
@@ -480,7 +527,7 @@ async def analyze_page_image(
                 ),
             }
         )
-        content.append(
+        content_parts.append(
             {
                 "type": "image_url",
                 "image_url": {"url": jpeg_data_url(reference.content)},
@@ -488,9 +535,8 @@ async def analyze_page_image(
         )
     messages = [
         {"role": "system", "content": VISION_SYSTEM_PROMPT},
-        {"role": "user", "content": content},
+        {"role": "user", "content": content_parts},
     ]
-    max_tokens = _int_env("VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS)
     payload = {
         "model": model,
         "messages": messages,

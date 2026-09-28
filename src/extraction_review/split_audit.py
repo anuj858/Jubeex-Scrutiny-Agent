@@ -78,10 +78,11 @@ _INDEX_SOFT_ROW_RE = re.compile(
 _ANNEXURE_IN_INDEX_RE = re.compile(
     r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d{1,3})", re.IGNORECASE
 )
-# SCI paper-book cites use a letter series (P/E). Bare "Annexure 5" inside an
-# annexed HC writ is not an inventory row for the outer petition.
+# SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
+# E (exhibit → P). Bare "Annexure 5" inside an annexed HC writ is not an
+# inventory row for the outer petition.
 _SCI_ANNEXURE_MENTION_RE = re.compile(
-    r"\bannexure\s*[-–—:/\s]*([pe])\s*[-–—./\s]*(\d{1,3})\b",
+    r"\bannexure\s*[-–—:/\s]*(petitioner|respondent|[per])\s*[-–—./\s]*(\d{1,3})\b",
     re.IGNORECASE,
 )
 _APPLICATION_IN_INDEX_RE = re.compile(
@@ -166,10 +167,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
-        series = (annex.group(1) or "P").upper()
-        if series == "E":
-            series = "P"
-        return f"Annexure {series}-{int(annex.group(2))}"
+        return normalize_annexure_part_label(annex.group(1), int(annex.group(2)))
 
     if "office report" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text
@@ -200,7 +198,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Affidavit"
     if "appendix" in text:
         return "Appendix"
-    if "vakalatnama" in text:
+    if "vakalatnama" in text or "vakalatnama" in re.sub(r"\s+", "", text):
         return "Vakalatnama"
     if "memo of appearance" in text or "memorandum of appearance" in text:
         return "Memo of Appearance"
@@ -216,7 +214,7 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Record of Proceedings"
     if "filing memo" in text or "index of filing" in text or "filing index" in text:
         return "Filing Memo"
-    if "court fee" in text:
+    if "court fee" in text or "payment receipt" in text:
         return "Court Fees"
     if "application" in text or re.search(r"\bi\.?\s*a\.?\b", text):
         match = _APPLICATION_IN_INDEX_RE.search(particulars)
@@ -299,20 +297,283 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
     return rows
 
 
+@dataclass(frozen=True)
+class IndexPrintedRow:
+    """Index document tied to the printed folio numbers on the sheets.
+
+    ``kind="number"`` is 36 or 61–63B. ``kind="letter"`` is B–I.
+    ``end_suffix`` is the letter on the last folio (63B → ``B``).
+    """
+
+    mapped_part: str | None
+    particulars: str
+    kind: str
+    start: int
+    end: int
+    end_suffix: str = ""
+
+
+_SPAN_TOKEN_RE = re.compile(
+    r"^(?:"
+    r"(?P<n1>\d{1,4})(?:(?P<s1>[A-Za-z])?(?:\s*[-–—]\s*(?P<n2>\d{1,4})(?P<s2>[A-Za-z])?)?)?"
+    r"|(?P<L1>[A-Za-z])\s*[-–—]\s*(?P<L2>[A-Za-z])"
+    r"|A\s*(?P<a1>\d{1,2})\s*[-–—]\s*A\s*-?\s*(?P<a2>\d{1,2})"
+    r"|A(?P<aonly>\d{1,2})"
+    r")$",
+    re.IGNORECASE,
+)
+_LEADING_SPAN_RE = re.compile(
+    r"^(?P<n1>\d{1,4})(?:\s*[-–—]\s*(?P<n2>\d{1,4}))?(?P<s2>[A-Za-z])?(?P<rest>\D.+)$"
+)
+
+
+def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
+    match = _SPAN_TOKEN_RE.fullmatch(token.strip())
+    if not match:
+        return None
+    if match.group("a1") or match.group("aonly"):
+        start = int(match.group("a1") or match.group("aonly"))
+        end = int(match.group("a2") or start)
+        return IndexPrintedRow(
+            mapped_part=None,
+            particulars=token,
+            kind="letter",
+            start=start,
+            end=end,
+        )
+    if match.group("L1"):
+        return IndexPrintedRow(
+            mapped_part=None,
+            particulars=token,
+            kind="letter",
+            start=ord(match.group("L1").upper()),
+            end=ord(match.group("L2").upper()),
+        )
+    start = int(match.group("n1"))
+    end = int(match.group("n2") or start)
+    if end < start:
+        start, end = end, start
+    suffix = (match.group("s2") or "").upper()
+    return IndexPrintedRow(
+        mapped_part=None,
+        particulars=token,
+        kind="number",
+        start=start,
+        end=end,
+        end_suffix=suffix,
+    )
+
+
+def _span_only_line(line: str) -> list[IndexPrintedRow]:
+    tokens = [token for token in line.split() if token]
+    if not tokens:
+        return []
+    spans: list[IndexPrintedRow] = []
+    for token in tokens:
+        span = _printed_span_from_token(token.strip(".,"))
+        if span is None:
+            return []
+        spans.append(span)
+    return spans
+
+
+def _dedupe_spans(spans: Sequence[IndexPrintedRow]) -> list[IndexPrintedRow]:
+    seen: set[tuple[str, int, int, str]] = set()
+    unique: list[IndexPrintedRow] = []
+    for span in spans:
+        key = (span.kind, span.start, span.end, span.end_suffix)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(span)
+    return unique
+
+
+def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
+    """Attach Index page numbers, including a column the OCR split off the rows.
+
+    SCI indexes print the page span in its own column. Those spans come out as
+    lines like ``37-48`` and ``61-63B``. They are zipped onto the rows that
+    lost their page numbers, from the bottom, and only when the counts match.
+    """
+    kept: list[str] = []
+    orphans: list[IndexPrintedRow] = []
+    for line in (index_text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        spans = _span_only_line(stripped)
+        if spans:
+            orphans.extend(spans)
+            continue
+        kept.append(stripped)
+    rows = parse_index_rows("\n".join(kept))
+    if not rows:
+        return []
+
+    printed: list[IndexPrintedRow | None] = [None] * len(rows)
+    unassigned: list[int] = []
+    for index, row in enumerate(rows):
+        start, end, suffix = row.start_page, row.end_page, ""
+        if start <= 0:
+            lead = _LEADING_SPAN_RE.match(row.particulars.strip())
+            if lead:
+                start = int(lead.group("n1"))
+                end = int(lead.group("n2") or start)
+                suffix = (lead.group("s2") or "").upper()
+                if end < start:
+                    start, end = end, start
+        if start > 0:
+            printed[index] = IndexPrintedRow(
+                mapped_part=row.mapped_part,
+                particulars=row.particulars,
+                kind="number",
+                start=start,
+                end=end,
+                end_suffix=suffix,
+            )
+        else:
+            unassigned.append(index)
+
+    orphans = _dedupe_spans(orphans)
+    numeric = [span for span in orphans if span.kind == "number"]
+    if numeric and len(numeric) <= len(unassigned):
+        targets = unassigned[-len(numeric) :]
+        # Only the trailing rows. Leave a gap of unassigned rows in front
+        # when the letter-page column is a different list.
+        if targets == unassigned[-len(targets) :]:
+            for index, span in zip(targets, numeric, strict=True):
+                row = rows[index]
+                printed[index] = IndexPrintedRow(
+                    mapped_part=row.mapped_part,
+                    particulars=row.particulars,
+                    kind="number",
+                    start=span.start,
+                    end=span.end,
+                    end_suffix=span.end_suffix,
+                )
+                unassigned.remove(index)
+
+    aligned = [row for row in printed if row is not None and row.start > 0]
+    seen_serials = {row.serial for row in rows if row.serial is not None}
+    for line in kept:
+        serial_match = re.match(r"^(\d{1,3})[.)]\s+(.*)$", line)
+        if not serial_match:
+            continue
+        serial = int(serial_match.group(1))
+        if serial in seen_serials:
+            continue
+        lead = _LEADING_SPAN_RE.match(serial_match.group(2).strip())
+        if not lead:
+            continue
+        start = int(lead.group("n1"))
+        end = int(lead.group("n2") or start)
+        if end < start:
+            start, end = end, start
+        suffix = (lead.group("s2") or "").upper()
+        rest = lead.group("rest") or ""
+        # "67Undertaking" is a word, not folio suffix 67U.
+        if suffix and rest[:1].isalpha():
+            suffix = ""
+            rest = f"{lead.group('s2')}{rest}"
+        aligned.append(
+            IndexPrintedRow(
+                mapped_part=map_index_particulars_to_part(rest),
+                particulars=line,
+                kind="number",
+                start=start,
+                end=end,
+                end_suffix=suffix,
+            )
+        )
+    return aligned
+
+
+def aligned_index_printed_rows(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> list[IndexPrintedRow]:
+    """Printed-folio rows from the paper-book Index, when that Index is present."""
+    index_text = _index_pages_text(page_parts, page_text)
+    if not index_text.strip():
+        return []
+    return index_rows_with_printed_pages(index_text)
+
+
 def normalize_annexure_part_label(series: str | None, number: int) -> str:
-    """Normalize Index/body annexure cites to ``Annexure P-n`` (E → P)."""
-    letter = (series or "P").upper()
-    if letter == "E":
+    """Normalize Index/body annexure cites to ``Annexure P-n`` / ``Annexure R-n``.
+
+    - ``P`` / petitioner → Petitioner series
+    - ``R`` / respondent → Respondent series
+    - ``E`` / exhibit → ``P`` (paper-book alias)
+    """
+    raw = (series or "P").strip().lower()
+    if raw.startswith("pet") or raw in {"p", "e"} or raw.startswith("exh"):
         letter = "P"
+    elif raw.startswith("res") or raw == "r":
+        letter = "R"
+    else:
+        letter = raw[:1].upper() if raw else "P"
+        if letter == "E":
+            letter = "P"
+        if not letter.isalpha():
+            letter = "P"
     return f"Annexure {letter}-{int(number)}"
 
 
 def annexure_labels_from_text(text: str) -> set[str]:
-    """Extract SCI ``Annexure P-n`` labels from Index / LOD / Main prose."""
+    """Extract SCI ``Annexure P-n`` / ``Annexure R-n`` labels from prose."""
     found: set[str] = set()
     for match in _SCI_ANNEXURE_MENTION_RE.finditer(text or ""):
         found.add(normalize_annexure_part_label(match.group(1), int(match.group(2))))
     return found
+
+
+def collect_index_annexure_entries(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> list[tuple[str, str]]:
+    """Ordered ``(Annexure P-n, particulars)`` rows from the Index only.
+
+    Used to place unstamped exhibit islands after Affidavit / Certificate.
+    Prefers Index serial order; falls back to annexure number.
+    """
+    index_text = _index_pages_text(page_parts, page_text)
+    if not index_text.strip():
+        return []
+
+    entries: list[tuple[int, int, str, str]] = []
+    seen: set[str] = set()
+    for row_index, row in enumerate(parse_index_rows(index_text)):
+        labels: set[str] = set()
+        part = row.mapped_part
+        if part and family_split_name(part) == "Annexures":
+            labels.add(part)
+        labels.update(annexure_labels_from_text(row.particulars))
+        for label in sorted(labels, key=_annexure_sort_key):
+            if label in seen:
+                continue
+            seen.add(label)
+            serial = row.serial if row.serial is not None else 10_000 + row_index
+            entries.append((serial, _annexure_sort_key(label), label, row.particulars))
+
+    if not entries:
+        # Free-text Index without parseable rows — keep number order.
+        for label in sorted(annexure_labels_from_text(index_text), key=_annexure_sort_key):
+            entries.append((10_000, _annexure_sort_key(label), label, ""))
+
+    entries.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [(label, particulars) for _serial, _num, label, particulars in entries]
+
+
+def _annexure_sort_key(label: str) -> tuple[int, int]:
+    """Sort Petitioner (P) before Respondent (R), then by number."""
+    match = re.fullmatch(r"(?i)annexure\s+([a-z])-?(\d{1,3})", (label or "").strip())
+    if not match:
+        return (99, 9999)
+    series = match.group(1).upper()
+    series_rank = 0 if series == "P" else (1 if series == "R" else 2)
+    return (series_rank, int(match.group(2)))
 
 
 def collect_expected_annexures(
@@ -326,13 +587,11 @@ def collect_expected_annexures(
     """
     expected: set[str] = set()
 
+    for label, _particulars in collect_index_annexure_entries(page_parts, page_text):
+        expected.add(label)
+
     index_text = _index_pages_text(page_parts, page_text)
     if index_text.strip():
-        for row in parse_index_rows(index_text):
-            part = row.mapped_part
-            if part and family_split_name(part) == "Annexures":
-                expected.add(part)
-            expected.update(annexure_labels_from_text(row.particulars))
         expected.update(annexure_labels_from_text(index_text))
 
     for page, names in page_parts.items():
@@ -394,7 +653,11 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
     folded = _fold(part)
     annex = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
     if annex:
-        return (_SEQUENCE_RANK["Annexures"], int(annex.group(2)))
+        series = annex.group(1)
+        number = int(annex.group(2))
+        # Petitioner (P) before Respondent (R) before other series.
+        series_rank = 0 if series == "p" else (1 if series == "r" else 2)
+        return (_SEQUENCE_RANK["Annexures"], series_rank * 1000 + number)
     app = re.fullmatch(r"application (\d{1,3})", folded)
     if app:
         return (_SEQUENCE_RANK["Applications"], int(app.group(1)))
@@ -705,10 +968,3 @@ def audit_compiled_split(
             "total": len(flags),
         },
     }
-
-
-def _annexure_sort_key(label: str) -> tuple[str, int]:
-    match = re.fullmatch(r"(?i)annexure ([a-z])-?(\d{1,3})", label.strip())
-    if match:
-        return (match.group(1).upper(), int(match.group(2)))
-    return (label, 0)

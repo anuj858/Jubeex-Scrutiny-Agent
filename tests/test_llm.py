@@ -75,6 +75,26 @@ def test_openrouter_requests_per_minute_env(monkeypatch: pytest.MonkeyPatch) -> 
     assert openrouter_requests_per_minute() == 0
 
 
+def test_llm_provider_defaults_to_vertex(monkeypatch: pytest.MonkeyPatch) -> None:
+    from extraction_review.llm import llm_provider, openrouter_model
+
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("VERTEX_MODEL", "gemini-3.8-flash")
+    assert llm_provider() == "vertex"
+    assert openrouter_model() == "gemini-3.8-flash"
+
+
+def test_llm_provider_openrouter_keeps_prefixed_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.llm import llm_provider, openrouter_model
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-3.8-flash")
+    assert llm_provider() == "openrouter"
+    assert openrouter_model() == "google/gemini-3.8-flash"
+
+
 @pytest.mark.asyncio
 async def test_openrouter_rate_limiter_paces_requests(
     monkeypatch: pytest.MonkeyPatch,
