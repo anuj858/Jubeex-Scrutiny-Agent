@@ -1900,13 +1900,13 @@ def _restore_early_record_of_proceedings(
         if not active:
             continue
         anchor = _outer_anchor_label(text)
-        if _looks_like_index_table(text) or anchor in {
-            "Index",
-            "Office Report on Limitation",
-            "Listing Proforma",
-            "Synopsis",
-            MAIN_PETITION_PART,
-        }:
+        # Any explicit outer-document heading ends the early RoP run.  This
+        # repair is deliberately late in the pipeline, so carrying RoP past a
+        # heading would overwrite stronger labels already established for a
+        # following Application, Index, Office Report, Vakalatnama, etc.
+        if _looks_like_index_table(text) or (
+            anchor is not None and anchor != "Record of Proceedings"
+        ):
             active = False
             continue
         updated[page] = ["Record of Proceedings"]

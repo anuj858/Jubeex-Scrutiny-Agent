@@ -1982,6 +1982,42 @@ def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None
     assert repaired[5] == ["Office Report on Limitation"]
 
 
+def test_early_rop_stops_at_following_application_heading() -> None:
+    texts = {
+        1: (
+            "DELIVERY MODE: REGISTERED\n"
+            "IN THE SUPREME COURT OF INDIA\n"
+            "RECORD OF PROCEEDINGS\n"
+            "SPECIAL LEAVE PETITION (C) NO. 5253 OF 2021"
+        ),
+        2: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "I.A. NO. OF 2021\n"
+            "APPLICATION FOR EXEMPTION FROM FILING OFFICIAL TRANSLATION\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+        3: (
+            "The applicant seeks exemption from filing the official translation.\n"
+            "PRAYER\nADVOCATE FOR THE PETITIONER"
+        ),
+        4: "VERIFICATION\nVerified at New Delhi that the contents are true.",
+    }
+    # Reproduce the relevant late-repair state: the Registry notice starts an
+    # RoP run while the explicit Application heading is already recognized.
+    # The old RoP restoration overwrote that stronger Application anchor.
+    page_parts = {
+        1: ["Record of Proceedings"],
+        2: ["Application 1"],
+    }
+
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=4)
+
+    assert repaired[1] == ["Record of Proceedings"]
+    assert repaired[2] == ["Application 1"]
+    assert repaired[3] == ["Application 1"]
+    assert repaired[4] == ["Application 1"]
+
+
 def test_scanner_filename_marks_memo_of_parties_continuation() -> None:
     texts = {
         1: (
