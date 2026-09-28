@@ -14,7 +14,6 @@ from typing import Any
 from ..document_parts import (
     filing_type_label,
     format_document_parts,
-    parts_named_in_where_to_look,
     pinecone_queries_for_defect,
 )
 from .rules import (
@@ -86,8 +85,7 @@ missing, return defect_found.
 records stamps and seals as words such as STAMP, SEAL, NOTARY, WELFARE \
 FUND, COURT FEE, Sd/-, digitally signed, or A4. If none of that appears \
 in the inspected part, the requirement has not been met.
-5. Do not add requirements that are not in this task. Do not score sibling or \
-parent defects.
+5. Do not add requirements that are not in this task.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.6, return \
 needs_review instead.
@@ -755,6 +753,15 @@ def _format_parent(defect: Defect) -> str | None:
     return " ".join(lines)
 
 
+def _document_types_for_prompt(defect: Defect) -> str:
+    groups = list(defect.inspect_part_groups or [])
+    lines: list[str] = []
+    for index, name in enumerate(defect.inspect_parts):
+        group = groups[index] if index < len(groups) else ""
+        lines.append(f"- {name} ({group})" if group else f"- {name}")
+    return "\n".join(lines)
+
+
 def build_defect_prompt(
     defect: Defect,
     *,
@@ -764,14 +771,10 @@ def build_defect_prompt(
     catalogue: Catalogue | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
-    filing = _filing_phrase(defect.main_category)
-    category_block = _format_category(defect)
     search = "\n".join(
         f"{i}. {_search_step(step)}"
         for i, step in enumerate(defect.where_to_look, start=1)
     )
-    cues = _trigger_cues(defect.trigger_words)
-    parent = _format_parent(defect)
     excerpts_label = (
         f"## Document excerpts from {file_name}"
         if file_name
@@ -789,57 +792,30 @@ def build_defect_prompt(
             continue
         seen_topics.add(topic)
         cure_lines.append(f"- {aim}")
+    document_types = _document_types_for_prompt(defect)
     sections = [
-        category_block.strip(),
-        "",
         f"# Task {defect.check_id}",
-        (
-            f"For {filing}, decide one registry objection. Ignore every other "
-            "defect, even if the excerpts mention it."
-        ),
+        "Decide this one defect. Ignore every other defect, even if the excerpts mention it.",
         "",
         "## Standard",
         _format_standard(defect),
         "",
-        "## Where to search",
-        "Use the structured record and the excerpts. Work through this plan:",
+        "## Where to look",
+        search or "Use the document types below.",
+        "",
+        "## Document types to inspect",
+        document_types or "The parts named in where to look.",
+        "",
         (
-            f"Inspect these filing parts (match the excerpt labels): "
-            f"{', '.join(parts_named_in_where_to_look(defect)) or 'the parts named below'}. "
-            "Parts listed as inspect targets are required for a decisive result; "
-            "other named parts are context only."
-        ),
-        search,
-        (
-            "A heading without the required content is not compliance. Names "
-            "used only as landmarks (before/after another document) are not "
-            "extra parts you must have in the excerpts. If the excerpts do "
-            "not include the filing part this task is inspecting, return "
-            "needs_review — not defect_found. If those parts are in the "
-            "excerpts and the required content is still missing — including "
-            "a stamp, seal, signature, paper size, margin, numbering, or "
-            "font that this task requires — return defect_found. Do not use "
-            "not_determined for those. If you suspect a defect but "
+            "If the excerpts do not include the document type this task is "
+            "inspecting, return needs_review — not defect_found. If those "
+            "parts are in the excerpts and the required content is still "
+            "missing, return defect_found. If you suspect a defect but "
             "confidence is below 0.6, return needs_review."
         ),
     ]
-    if cues:
-        sections.extend(["", "## Recognition cues", cues])
-    sections.extend(
-        [
-            "",
-            "## Authority",
-            _format_authority(defect, catalogue),
-        ]
-    )
-    if getattr(defect, "notes", None):
-        sections.extend(["", "## Notes", defect.notes.strip()])
-    if getattr(defect, "ivan_comment", None):
-        sections.extend(["", "## Review comment", defect.ivan_comment.strip()])
-    if getattr(defect, "notes_2", None):
-        sections.extend(["", "## Further notes", defect.notes_2.strip()])
-    if parent:
-        sections.extend(["", "## Scope", parent])
+    if getattr(defect, "ai_note", None):
+        sections.extend(["", "## Note for AI", defect.ai_note.strip()])
     sections.extend(
         [
             "",

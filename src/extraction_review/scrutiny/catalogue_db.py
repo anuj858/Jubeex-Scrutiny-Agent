@@ -1,8 +1,7 @@
 """Read-only catalogue loader for the shared Postgres views.
 
-Parse never writes these tables. ``CATALOGUE_SOURCE=file`` (the default) keeps
-the JSON catalogue. ``CATALOGUE_SOURCE=db`` reads ``v_parse_*`` with
-``CATALOGUE_DATABASE_URL``. A failed database read falls back to the JSON file.
+Parse never writes these tables. Defect checks always read ``v_parse_*`` with
+``CATALOGUE_DATABASE_URL``.
 """
 
 from __future__ import annotations
@@ -21,15 +20,11 @@ from .rules import (
 )
 
 
-def catalogue_uses_database() -> bool:
-    return os.getenv("CATALOGUE_SOURCE", "file").strip().lower() == "db"
-
-
 def catalogue_database_url() -> str:
     url = (os.getenv("CATALOGUE_DATABASE_URL") or "").strip()
     if not url:
         raise RuntimeError(
-            "CATALOGUE_SOURCE=db requires CATALOGUE_DATABASE_URL "
+            "CATALOGUE_DATABASE_URL is required "
             "(read-only role, SELECT on v_parse_* and hub_catalogue_state)"
         )
     return url
@@ -166,11 +161,21 @@ def _defect_from_row(row: dict[str, Any]) -> Defect:
         notes=_text(row.get("notes")),
         ivan_comment=_text(row.get("ivan_comment")),
         notes_2=_text(row.get("notes_2")),
+        ai_note=_text(row.get("ai_note")),
         applies_to_all_petition_types=bool(row.get("applies_to_all_petition_types")),
+        is_global=(
+            bool(row.get("is_global"))
+            if "is_global" in row
+            else bool(row.get("applies_to_all_petition_types"))
+        ),
         agent_filing_types=filing_types,
         special_category_mode=_text(row.get("special_category_mode")),
         special_category_key="",
         is_enabled=bool(row.get("is_enabled", True)),
+        selection_source="db",
+        release_stage=str(row.get("release_stage") or "production"),
+        court_code=_text(row.get("court_code")),
+        inspect_part_groups=_string_list(row.get("inspect_part_groups")),
         defect_version=int(row.get("defect_version") or 1),
         use_explicit_applicability=True,
     )

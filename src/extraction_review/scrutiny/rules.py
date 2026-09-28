@@ -324,8 +324,14 @@ class Defect(_Strict):
     agent_filing_types: list[str] = Field(default_factory=list)
     special_category_mode: str | None = None
     is_enabled: bool = True
+    is_global: bool = False
+    release_stage: str = "production"
+    court_code: str | None = None
+    ai_note: str | None = None
+    inspect_part_groups: list[str] = Field(default_factory=list)
     defect_version: int = 1
     use_explicit_applicability: bool = False
+    selection_source: str = "file"
     # Normalized special key (refiling_defect, miscellaneous_application).
     # Kept separate so overlay defects can keep their original special_category text.
     special_category_key: str = ""
@@ -339,6 +345,8 @@ class Defect(_Strict):
         "notes",
         "ivan_comment",
         "notes_2",
+        "ai_note",
+        "court_code",
         mode="before",
     )
     @classmethod
@@ -589,28 +597,9 @@ def get_catalogue() -> Catalogue:
 get_catalogue.cache_clear = _catalogue_cache.clear  # type: ignore[attr-defined]
 
 
-def _store_file_catalogue() -> Catalogue:
-    catalogue = _load_file_catalogue()
-    _catalogue_cache.value = catalogue
-    _catalogue_cache.source = "file"
-    _catalogue_cache.revision = None
-    return catalogue
-
-
 def refresh_catalogue() -> Catalogue:
-    """Reload the catalogue. In database mode, skip the reload when the revision is unchanged.
-
-    If the database cannot be reached or read, use sci_registry_defects.v1.json.
-    The next refresh tries the database again.
-    """
-    from .catalogue_db import (
-        catalogue_uses_database,
-        fetch_catalogue_revision,
-        load_catalogue_from_db,
-    )
-
-    if not catalogue_uses_database():
-        return _store_file_catalogue()
+    """Reload defects from the database. Skip the reload when the revision is unchanged."""
+    from .catalogue_db import fetch_catalogue_revision, load_catalogue_from_db
 
     try:
         revision = fetch_catalogue_revision()
@@ -621,13 +610,14 @@ def refresh_catalogue() -> Catalogue:
         ):
             return _catalogue_cache.value
         catalogue = load_catalogue_from_db(revision)
-    except Exception:
-        logger.warning(
-            "[Scrutiny] Database catalogue unavailable; using %s",
-            catalogue_path(),
-            exc_info=True,
-        )
-        return _store_file_catalogue()
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logger.exception("[Scrutiny] Database catalogue unavailable")
+        raise RuntimeError(
+            "Defect catalogue could not be loaded from the database. "
+            "Set CATALOGUE_DATABASE_URL to the hub database."
+        ) from exc
 
     _catalogue_cache.value = catalogue
     _catalogue_cache.source = "db"
@@ -847,10 +837,8 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
 
 
 def _allowed_check_ids(catalogue: Catalogue) -> set[str]:
-    """File mode uses SCRUTINY_DEFECTS. Database mode uses is_enabled, narrowed by that list."""
-    from .catalogue_db import catalogue_uses_database
-
-    if catalogue_uses_database():
+    """Database catalogues use is_enabled, narrowed by SCRUTINY_DEFECTS when it is a list."""
+    if catalogue.schema_version == "db":
         enabled = {defect.check_id.upper() for defect in catalogue.defects if defect.is_enabled}
         raw = (os.getenv("SCRUTINY_DEFECTS") or "").strip()
         if not raw or raw.lower() == "all":
@@ -871,27 +859,61 @@ def _specials_allowed(catalogue: Catalogue, filing_type: str | None) -> frozense
     return allowed_special_keys(filing_type)
 
 
+def _database_layer_matches(
+    defect: Defect,
+    filing_type: str | None,
+    special_category: str | None,
+    court: str | None,
+) -> bool:
+    """Special category, then petition type, then global. Court applies to all three."""
+    from .applicability import normalize_special_category
+
+    if (defect.release_stage or "production") != "production":
+        return False
+    court_code = (defect.court_code or "").strip().lower()
+    requested_court = (court or "").strip().lower()
+    if requested_court and court_code != requested_court:
+        return False
+    if defect.special_category:
+        requested = normalize_special_category(special_category)
+        return bool(
+            requested and requested == normalize_special_category(defect.special_category)
+        )
+    if defect.is_global:
+        return True
+    normalized = normalize_filing_type(filing_type)
+    return bool(normalized and normalized in set(defect.agent_filing_types))
+
+
 def defects_for_filing_type(
     filing_type: str | None,
     special_category: str | None = None,
+    court: str | None = None,
 ) -> list[Defect]:
     from .applicability import defect_applies, derive_applicability
 
     catalogue = get_catalogue()
     allowed = _allowed_check_ids(catalogue)
     specials = _specials_allowed(catalogue, filing_type)
+    court_code = court or ("sci" if catalogue.schema_version == "db" else None)
 
-    selected = [
-        defect
-        for defect in catalogue.defects
-        if defect.check_id.upper() in allowed
-        and defect_applies(
-            derive_applicability(defect),
-            filing_type,
-            special_category,
-            specials,
-        )
-    ]
+    selected = []
+    for defect in catalogue.defects:
+        if defect.check_id.upper() not in allowed:
+            continue
+        if defect.selection_source == "db":
+            matches = _database_layer_matches(
+                defect, filing_type, special_category, court_code
+            )
+        else:
+            matches = defect_applies(
+                derive_applicability(defect),
+                filing_type,
+                special_category,
+                specials,
+            )
+        if matches:
+            selected.append(defect)
     selected = order_parent_then_children(selected)
 
     unknown = allowed - {d.check_id for d in catalogue.defects}

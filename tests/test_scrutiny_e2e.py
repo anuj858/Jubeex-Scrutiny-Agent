@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from extraction_review.scrutiny.rules import get_catalogue
+from extraction_review.scrutiny.rules import _load_file_catalogue
 from extraction_review.scrutiny_workflow import (
     assert_filing_ready_for_scrutiny,
     collect_defect_findings,
@@ -25,8 +25,7 @@ def test_scrutiny_allows_pending_review_and_blocks_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_all_defects_are_catalogue_sized() -> None:
-    get_catalogue.cache_clear()
-    catalogue = get_catalogue()
+    catalogue = _load_file_catalogue()
     assert catalogue.catalogue_version == "3.0.1"
     assert len(catalogue.defects) == 321
     assert catalogue.defect("D-1").check_id == "D-1"

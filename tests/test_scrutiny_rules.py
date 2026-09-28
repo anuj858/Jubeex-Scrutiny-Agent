@@ -320,10 +320,10 @@ OPAQUE_SOURCE_FILES = {
 
 
 def test_imported_csv_catalogue(monkeypatch) -> None:
-    rules_mod.get_catalogue.cache_clear()
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
 
-    catalogue = rules_mod.get_catalogue()
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
     assert catalogue.catalogue_version == "3.0.1"
     assert len(catalogue.defects) == 321
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
@@ -400,8 +400,13 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     noted = next(d for d in catalogue.defects if d.notes)
     prompt = build_defect_prompt(noted, record={}, chunks=[], catalogue=catalogue)
-    assert "## Notes" in prompt
-    assert noted.notes.splitlines()[0][:20] in prompt
+    assert "## Notes" not in prompt
+    assert "## Review comment" not in prompt
+    assert "## Standard" in prompt
+    with_note = noted.model_copy(update={"ai_note": "Look for the court stamp."})
+    noted_prompt = build_defect_prompt(with_note, record={}, chunks=[], catalogue=catalogue)
+    assert "## Note for AI" in noted_prompt
+    assert "Look for the court stamp." in noted_prompt
     assert "This task is in the area" not in prompt
 
     for defect in catalogue.defects:
@@ -413,8 +418,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
 
 def test_rewrite_location_source_maps_opaque_pdf_names() -> None:
-    rules_mod.get_catalogue.cache_clear()
-    catalogue = rules_mod.get_catalogue()
+    catalogue = rules_mod._load_file_catalogue()
     for filename, source_id in OPAQUE_SOURCE_FILES.items():
         rewritten = rewrite_location_source(
             f"Page 30 of the PDF {filename}",
@@ -519,9 +523,9 @@ def test_miscellaneous_application_overlay_from_special(monkeypatch) -> None:
 
 
 def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
-    rules_mod.get_catalogue.cache_clear()
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
-    catalogue = rules_mod.get_catalogue()
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
     motor_ids = {
         d.check_id
         for d in catalogue.defects

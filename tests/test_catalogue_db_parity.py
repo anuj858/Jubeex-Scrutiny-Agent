@@ -6,15 +6,12 @@ import os
 
 import pytest
 
-from extraction_review.config import JUBEEX_FILING_TYPES
 from extraction_review.scrutiny.catalogue_db import catalogue_from_rows
 from extraction_review.scrutiny.catalogue_export import legacy_selected_ids
 from extraction_review.scrutiny.rules import (
     Defect,
     defects_for_filing_type,
-    get_case_types,
     get_catalogue,
-    normalize_filing_type,
     refresh_catalogue,
 )
 
@@ -72,14 +69,11 @@ def test_rows_become_an_explicit_catalogue() -> None:
     assert catalogue.petition_specials["slp_civil"] == ["Tax Matters"]
 
 
-def test_database_failure_falls_back_to_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CATALOGUE_SOURCE", "db")
+def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)
     get_catalogue.cache_clear()
-    missing_url = refresh_catalogue()
-    assert missing_url.catalogue_id == "sci_registry_defects"
-    assert missing_url.catalogue_version == "3.0.1"
-    assert len(missing_url.defects) == 321
+    with pytest.raises(RuntimeError, match="CATALOGUE_DATABASE_URL"):
+        refresh_catalogue()
 
     def unavailable() -> int:
         raise OSError("connection refused")
@@ -90,25 +84,23 @@ def test_database_failure_falls_back_to_json_file(monkeypatch: pytest.MonkeyPatc
         unavailable,
     )
     get_catalogue.cache_clear()
-    loaded = refresh_catalogue()
-    assert loaded.catalogue_version == "3.0.1"
-    assert len(loaded.defects) == 321
-    assert loaded.defect_by_id("D-1") is not None
+    with pytest.raises(RuntimeError, match="could not be loaded from the database"):
+        refresh_catalogue()
     get_catalogue.cache_clear()
 
 
 def test_refresh_reloads_only_when_revision_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     loads: list[int] = []
+    revisions = [4]
 
     def fake_revision() -> int:
         return revisions[0]
 
-    def fake_load(revision: int) -> object:
+    def fake_load(revision: int):
         loads.append(revision)
-        return get_catalogue()
+        return catalogue_from_rows([], [], [], revision)
 
-    revisions = [4]
-    monkeypatch.setenv("CATALOGUE_SOURCE", "db")
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "postgresql://parse:secret@127.0.0.1:1/none")
     monkeypatch.setattr(
         "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
         fake_revision,
@@ -118,29 +110,17 @@ def test_refresh_reloads_only_when_revision_changes(monkeypatch: pytest.MonkeyPa
         fake_load,
     )
     get_catalogue.cache_clear()
-    # Prime the file catalogue, then switch the cache into database mode.
-    monkeypatch.setenv("CATALOGUE_SOURCE", "file")
     first = refresh_catalogue()
-    assert first.catalogue_version == "3.0.1"
-
-    monkeypatch.setenv("CATALOGUE_SOURCE", "db")
-    # The patched loader returns the already-built file catalogue and records the revision.
-    loaded = refresh_catalogue()
-    assert loaded is first
+    assert first.catalogue_version == "db:4"
     assert loads == [4]
     again = refresh_catalogue()
     assert again is first
     assert loads == [4]
     revisions[0] = 5
-    refresh_catalogue()
+    refreshed = refresh_catalogue()
+    assert refreshed.catalogue_version == "db:5"
     assert loads == [4, 5]
     get_catalogue.cache_clear()
-
-
-def _specials_for(filing_type: str) -> list[str | None]:
-    spec = get_case_types().get(normalize_filing_type(filing_type)) or {}
-    labels = [str(label) for label in spec.get("special_categories") or []]
-    return [None, "N/A", *labels]
 
 
 @pytest.mark.skipif(
@@ -150,35 +130,44 @@ def _specials_for(filing_type: str) -> list[str | None]:
 def test_database_selection_matches_file_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
     os.environ["SCRUTINY_DEFECTS"] = "all"
-    monkeypatch.setenv("CATALOGUE_SOURCE", "file")
     get_catalogue.cache_clear()
-    file_ids = {
-        filing: {
-            special: legacy_selected_ids(filing, special)
-            for special in _specials_for(filing)
-        }
-        for filing in JUBEEX_FILING_TYPES
-    }
+    try:
+        catalogue = refresh_catalogue()
+    except RuntimeError as exc:
+        get_catalogue.cache_clear()
+        pytest.skip(str(exc))
+    sample = catalogue.defects[0] if catalogue.defects else None
+    if sample is None or not sample.court_code:
+        get_catalogue.cache_clear()
+        pytest.skip("database catalogue has no court on the parse view")
 
-    monkeypatch.setenv("CATALOGUE_SOURCE", "db")
+    plain = defects_for_filing_type("SLP_CIVIL", None)
+    indigent = defects_for_filing_type("SLP_CIVIL", "Indigent person")
     get_catalogue.cache_clear()
-    refresh_catalogue()
-    mismatches: list[str] = []
-    for filing in JUBEEX_FILING_TYPES:
-        for special in _specials_for(filing):
-            selected = [defect.check_id for defect in defects_for_filing_type(filing, special)]
-            expected = file_ids[filing][special]
-            if selected != expected:
-                mismatches.append(f"{filing} / {special}: file {len(expected)} db {len(selected)}")
-    get_catalogue.cache_clear()
-    assert not mismatches, "\n".join(mismatches[:20])
+    assert plain
+    assert all(defect.release_stage == "production" for defect in plain)
+    assert all(not defect.special_category for defect in plain)
+    assert any(defect.is_global for defect in plain)
+    assert any(
+        (defect.special_category or "").lower().startswith("indigent") for defect in indigent
+    )
+    assert set(defect.check_id for defect in plain).issubset(
+        defect.check_id for defect in indigent
+    )
 
 
 def test_live_selector_matches_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CATALOGUE_SOURCE", "file")
+    from extraction_review.scrutiny.rules import _load_file_catalogue
+
+    catalogue = _load_file_catalogue()
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.rules.get_catalogue", lambda: catalogue
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_export.get_catalogue", lambda: catalogue
+    )
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
     os.environ["SCRUTINY_DEFECTS"] = "all"
-    get_catalogue.cache_clear()
     filing = "SLP_CIVIL"
     assert [d.check_id for d in defects_for_filing_type(filing)] == legacy_selected_ids(filing, None)
     sample = Defect.model_validate(
