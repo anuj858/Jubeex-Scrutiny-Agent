@@ -118,7 +118,13 @@ def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
 
 
 def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot | None:
-    return catalog.slot_by_id().get(slot_id) or dynamic_upload_slot(slot_id)
+    key = (slot_id or "").strip()
+    # Before the two AOR documents were separated, ``aors_declaration`` was
+    # the id of the slot labelled AOR's Certificate.  Continue accepting that
+    # id, but normalize it to the unambiguous Certificate slot.
+    if key == "aors_declaration":
+        key = "aor_s_certificate"
+    return catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
 
 
 def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
@@ -366,19 +372,18 @@ def validate_parts(
     require_all_slots: bool = False,
 ) -> tuple[UploadTypeCatalog, list[SplitPartInput]]:
     catalog = type_catalog(filing_type, payload)
-    allowed = catalog.slot_by_id()
     parsed: list[SplitPartInput] = []
     seen: set[str] = set()
     for raw in parts:
         item = _part_from_mapping(raw)
         if not item.slot_id:
             raise SplitUploadError("Each uploaded file must include slot_id")
-        seen.add(item.slot_id)
-        slot = allowed.get(item.slot_id) or dynamic_upload_slot(item.slot_id)
+        slot = resolve_upload_slot(catalog, item.slot_id)
         if slot is None:
             raise SplitUploadError(
                 f"Unknown slot {item.slot_id!r} for {catalog.filing_type}"
             )
+        seen.add(slot.id)
         if not item.file_id:
             raise SplitUploadError(f"No file uploaded for {slot.label}")
         parsed.append(
@@ -550,7 +555,9 @@ PRECISE_PARSE_SLOT_IDS = frozenset(
         "memo_of_parties",
         "vakalatnama_appearance",
         "aor_certificate",
-        "aors_declaration",
+        "aor_s_declaration",
+        "aor_s_certificate",
+        "aors_declaration",  # legacy compiled-split Certificate id
         "impugned_order",
         "affidavit",
         "listing_proforma",

@@ -17,7 +17,7 @@ from .document_parts import (
     family_split_name,
     parts_on_page,
 )
-from .split_pdf_layout import printed_folio
+from .split_pdf_layout import letter_folio_number, printed_folio
 
 # Parts that commonly sit outside the Part-I Index table.
 _INDEX_OPTIONAL_PARTS = frozenset(
@@ -36,6 +36,7 @@ _INDEX_OPTIONAL_PARTS = frozenset(
 
 # Expected outer order for SCI paper books (D-225 / catalog-aligned).
 _SEQUENCE_ORDER: tuple[str, ...] = (
+    "AOR's Declaration",
     "Advocate's Checklist",
     "Cover Page",
     "Record of Proceedings",
@@ -184,10 +185,16 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
     # An IA description can mention the SLP, its affidavit or impugned order.
     # Its own title determines the document type, not those references.
-    if re.match(r"(?:i\.?\s*a\.?\s*(?:no\.?|\b)|(?:an?\s+)?application\b)", text):
+    if re.match(
+        r"^[^a-z0-9]{0,3}(?:[il]\.?\s*a\.?\s*(?:no\.?|\b)|"
+        r"(?:an?\s+)?application\b)",
+        text,
+    ) or "application for" in text:
         return "Application 1"
 
-    if "office report" in text or "o/r on limitation" in text or (
+    if "fresh case" in text and "report" in text:
+        return None
+    if "office report on limitation" in text or "o/r on limitation" in text or (
         "limitation" in text and "report" in text
     ):
         return "Office Report on Limitation"
@@ -222,6 +229,8 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Memo of Appearance"
     if "memo of parties" in text or "memorandum of parties" in text:
         return "Memo of Parties"
+    if "declaration" in text and ("aor" in text or "defect" in text or "refiling" in text):
+        return "AOR's Declaration"
     if "certificate" in text and ("aor" in text or "advocate" in text or "confined" in text):
         return "AOR's Certificate"
     if "advocate" in text and "check" in text:
@@ -293,7 +302,23 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
             trailing = re.search(
                 r"(\d{1,4})(?:\s*[-–—/]\s*(\d{1,4}))?\s*$", body
             )
-            if not trailing:
+            # In scanned tables OCR commonly reads across the page-number
+            # column and then resumes the wrapped particulars, for example
+            # ``Annexure P-1: 24-46 A copy of order ...``.
+            embedded = re.search(
+                r"(?<![.\d])(\d{1,4})\s*[-–—]\s*(\d{1,4})(?![.\d])",
+                body,
+            )
+            if embedded:
+                start = int(embedded.group(1))
+                end = int(embedded.group(2))
+                body = (body[: embedded.start()] + " " + body[embedded.end() :]).strip()
+                trailing = None
+            elif trailing:
+                start = int(trailing.group(1))
+                end = int(trailing.group(2) or start)
+                body = body[: trailing.start()].strip(" -–—/")
+            else:
                 # Still keep mapped rows without pages for missing-in-file checks.
                 mapped = map_index_particulars_to_part(body)
                 if not mapped:
@@ -309,9 +334,6 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
                     )
                 )
                 continue
-            start = int(trailing.group(1))
-            end = int(trailing.group(2) or start)
-            body = body[: trailing.start()].strip(" -–—/")
         else:
             start = int(start_raw)
             end_raw = match.group("end")
@@ -366,7 +388,7 @@ class IndexPrintedRow:
 _SPAN_TOKEN_RE = re.compile(
     r"^(?:"
     r"(?P<n1>\d{1,4})(?:(?P<s1>[A-Za-z])?(?:\s*[-–—]\s*(?P<n2>\d{1,4})(?P<s2>[A-Za-z])?)?)?"
-    r"|(?P<L1>[A-Za-z])\s*[-–—]\s*(?P<L2>[A-Za-z])"
+    r"|(?P<L1>[A-Za-z]{1,2})\s*[-–—]\s*(?P<L2>[A-Za-z]{1,2})"
     r"|A\s*(?P<a1>\d{1,2})\s*[-–—]\s*A\s*-?\s*(?P<a2>\d{1,2})"
     r"|A(?P<aonly>\d{1,2})"
     r")$",
@@ -378,8 +400,8 @@ _LEADING_SPAN_RE = re.compile(
 
 
 def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
-    if re.fullmatch(r"[A-Za-z]", token.strip()):
-        number = ord(token.strip().upper())
+    if re.fullmatch(r"[A-Za-z]{1,2}", token.strip()):
+        number = letter_folio_number(token)
         return IndexPrintedRow(None, token, "letter", number, number)
     match = _SPAN_TOKEN_RE.fullmatch(token.strip())
     if not match:
@@ -399,8 +421,8 @@ def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
             mapped_part=None,
             particulars=token,
             kind="letter",
-            start=ord(match.group("L1").upper()),
-            end=ord(match.group("L2").upper()),
+            start=letter_folio_number(match.group("L1")),
+            end=letter_folio_number(match.group("L2")),
         )
     start = int(match.group("n1"))
     end = int(match.group("n2") or start)
@@ -626,7 +648,7 @@ def collect_index_annexure_entries(
     if "\t" not in index_text:
         headings = list(re.finditer(
             r"(?im)^\s*(?:\d{1,3}[.,)]?\s*[|]?\s*)?[|]?\s*"
-            r"annexure\s*[-:]?\s*[PR]\s*[/–—-]?\s*\d+\b",
+            r"[\[(]?\s*annexure\s*[-:~]?\s*[PR]\s*[/~–—-]?\s*\d+\b",
             index_text,
         ))
         if headings:
@@ -737,15 +759,29 @@ def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> 
         ]
     if not pages:
         return ""
-    # Prefer only the first contiguous Index run.
-    start = pages[0]
-    contiguous = [start]
-    for page in pages[1:]:
-        if page == contiguous[-1] + 1:
-            contiguous.append(page)
+    runs: list[list[int]] = []
+    for page in pages:
+        if runs and page == runs[-1][-1] + 1:
+            runs[-1].append(page)
         else:
-            break
-    return "\n".join(page_text.get(page, "") for page in contiguous)
+            runs.append([page])
+
+    # The first master Index is authoritative. Also include a later Index run
+    # when it immediately follows an explicit paper-book Volume cover. This
+    # keeps Volume II/III ranges while excluding nested lower-court indexes and
+    # the final Filing Index.
+    selected = list(runs[0])
+    for run in runs[1:]:
+        start = run[0]
+        prior_text = _fold(page_text.get(start - 1, "")[:3000])
+        prior_parts = parts_on_page(page_parts.get(start - 1))
+        if (
+            "Cover Page" in prior_parts
+            and "paper book" in prior_text
+            and re.search(r"\bvolume\s*[-–—]?\s*(?:i{1,3}|[1-3])\b", prior_text)
+        ):
+            selected.extend(run)
+    return "\n".join(page_text.get(page, "") for page in selected)
 
 
 def _sequence_family_rank(part: str) -> tuple[int, int]:

@@ -136,6 +136,19 @@ def test_swagger_slot_id_string_maps_from_filename() -> None:
     assert event.documents[0].file_url.endswith("01_Petition.pdf")
 
 
+def test_aor_declaration_and_certificate_names_map_to_separate_slots() -> None:
+    assert slot_id_from_name("AOR's Declaration.pdf", "SLP_CIVIL") == (
+        "aor_s_declaration"
+    )
+    assert slot_id_from_name("AOR's Certificate.pdf", "SLP_CIVIL") == (
+        "aor_s_certificate"
+    )
+    # This old id labelled the Certificate before the slots were separated.
+    assert slot_id_from_name("aors_declaration.pdf", "SLP_CIVIL") == (
+        "aor_s_certificate"
+    )
+
+
 def test_split_mode_from_petitiontype() -> None:
     event = FileEvent(
         petitiontype="split",

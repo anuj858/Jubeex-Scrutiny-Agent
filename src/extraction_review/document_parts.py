@@ -47,15 +47,23 @@ PagePartMap = dict[int, list[str]]
 MAIN_PETITION_PART = "Main Petition"
 _LEGACY_PART_NAMES = {
     "petition": MAIN_PETITION_PART,
-    "aor's declaration": "AOR's Certificate",
-    "aors declaration": "AOR's Certificate",
-    "aor declaration": "AOR's Certificate",
+    "aor's declaration": "AOR's Declaration",
+    "aors declaration": "AOR's Declaration",
+    "aor declaration": "AOR's Declaration",
 }
 
 # Extra catalogue phrases → Split labels (beyond the config name/description).
 _PART_ALIASES: dict[str, tuple[str, ...]] = {
-    # Do not alias bare "declaration" / "check the declaration": those words
-    # on the Advocate's Check List are not this page.
+    "AOR's Declaration": (
+        "aor's declaration",
+        "aors declaration",
+        "aor declaration",
+        "declaration curing defects",
+        "declaration for curing defects",
+        "decleartion",
+    ),
+    # Do not alias bare "declaration" / "check the declaration" to the
+    # Certificate: those words describe a separate refiling document.
     "AOR's Certificate": (
         "advocate's certificate",
         "advocate-on-record certificate",
@@ -69,8 +77,6 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
         "court/tribunal whose order is challenged",
         "this certificate is given on the basis of the instructions",
         "c e r t i f i c a t e",
-        "aor's declaration",
-        "aors declaration",
     ),
     "Affidavit": (
         "a f f i d a v i t",
@@ -294,6 +300,7 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
         "Synopsis",
         "List of Dates & Events",
         "Impugned Order",
+        "AOR's Declaration",
         "AOR's Certificate",
         "Affidavit",
         "Appendix",
@@ -516,8 +523,8 @@ class AnnexureMark:
 
 # OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
-    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.~\s]*)?"
     r"(?P<num>\d+)\b"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
     r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
@@ -525,10 +532,10 @@ _ANNEXURE_HEADING_RE = re.compile(
 )
 # Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
 _ANNEXURE_TITLE_LINE_RE = re.compile(
-    r"^(?:\d{1,4}\s+)?"
+    r"^[^A-Za-z0-9\s]{0,4}\s*(?:\d{1,4}\s+)?"
     r"(?:"
-    r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
-    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.~\s]*)?"
     r"(?P<num>\d+)"
     r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
     r")\b",
@@ -559,7 +566,7 @@ _CERTIFICATE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _PROTECTED_HEADING_PARTS = frozenset(
-    {"Cover Page", "Index", "AOR's Certificate", "Affidavit"}
+    {"Cover Page", "Index", "AOR's Declaration", "AOR's Certificate", "Affidavit"}
 )
 _RECLASSIFY_FAMILIES = frozenset({MAIN_PETITION_PART, APPLICATION_FAMILY})
 
@@ -712,6 +719,10 @@ def _annexure_mark_from_title_or_stamp(
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-~_|")
         bare = bool(match.groupdict().get("bare_num"))
+        # OCR body noise such as "e 2 ." must not open Annexure E-2. Real
+        # bare paper-book stamps use an uppercase series letter.
+        if bare and line.lstrip()[:1] not in {"P", "R", "E"}:
+            return None
         if bare and remainder and not remainder.isdigit():
             # Bare "E-28, Second Floor" / "P-1 continued text" without ANNEXURE word.
             return None
@@ -747,8 +758,16 @@ def _annexure_mark_from_title_or_stamp(
 def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     """Return printed Annexure series+number from a page title or stamp."""
     folded_head = _fold(_heading_window(text, lines=6))
+    scan_head = (text or "")[:4000]
+    serial_rows = re.findall(r"(?m)^\s*\d{1,2}[.)]\s*$", scan_head)
+    annexure_rows = re.findall(
+        r"(?mi)^\s*[\[(]?\s*annexure\s*[-~–—:.\s]*[per]?"
+        r"\s*[-~–—/:.\s]*\d+\b",
+        scan_head,
+    )
     if (
         _looks_like_index_table(text)
+        or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
         or _looks_like_sci_interlocutory(text)
         or "list of dates" in folded_head
         or folded_head.startswith("synopsis")
@@ -760,6 +779,26 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         r"(?m)^\s*\d{1,2}\.\s+that\s+the\b",
         _heading_window(text, lines=8),
         re.I,
+    ):
+        return None
+    # Judgment evidence tables use local exhibit rows such as ``3 P-3`` and
+    # ``4 P-4``. OCR can isolate those cells and make them look like an outer
+    # paper-book stamp. Multiple numbered P/R rows plus sale/exhibit columns
+    # are table evidence, never Annexure boundaries.
+    table_rows = re.findall(r"(?i)\b[PRE]\s*[-/]\s*\d+\b", scan_head)
+    lower_record = re.search(
+        r"(?i)\b(?:RFA|FAO|LPA|W\.?P\.?|CIVIL\s+APPEAL)\b|"
+        r"\bother\s+connected\s+cases\b",
+        _heading_window(text, lines=12),
+    )
+    table_cues = re.search(
+        r"(?i)\b(?:sale\s+deed|exh\.?|rate\s+per\s+acre|total\s+amount)\b",
+        text or "",
+    )
+    explicit_annexure = re.search(r"(?i)\bannexure\b", _heading_window(text, lines=24))
+    if not explicit_annexure and (
+        (table_cues and (len(table_rows) >= 2 or lower_record))
+        or (lower_record and len(table_rows) >= 3)
     ):
         return None
     # A reproduced local Annexure No. 1 does not suppress an explicit outer
@@ -940,11 +979,27 @@ def _looks_like_sci_interlocutory(text: str) -> bool:
 
 
 def _memo_of_parties_heading(text: str) -> bool:
-    """True for a Memo of Parties title — not Index row '21. Memo of Parties'."""
+    """True for an explicit party/judgment memo title, never an Index row."""
     head = _heading_window(text, lines=12)
-    if re.search(r"(?m)^\s*\d{1,3}[.\)]\s*memo of part", head, re.I):
+    title = (
+        r"memo(?:randum)?\s+of\s+"
+        r"(?:part(?:y|ies)|parities|judg(?:e)?ment)\b"
+    )
+    if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.I):
         return False
-    return bool(re.search(r"(?m)^\s*memo of part(?:ies)?\b", head, re.I))
+    if re.search(rf"(?m)^\s*{title}", head, re.I):
+        return True
+    # Scanning software often prefixes continuation sheets with a filename
+    # such as ``RFA_665_2018_MEMO_OF_PARTIES`` rather than repeating the title.
+    first_lines = "\n".join((text or "").splitlines()[:4])
+    return bool(
+        "_" in first_lines
+        and re.search(
+            r"(?:^|[_\s])memo[_\s]+of[_\s]+part(?:y|ies)\b",
+            first_lines,
+            re.I,
+        )
+    )
 
 
 def _vakalatnama_heading(text: str) -> bool:

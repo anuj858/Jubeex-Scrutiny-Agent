@@ -55,6 +55,7 @@ DOCUMENT_TYPES: tuple[str, ...] = (
     "List of Dates & Events",
     "Impugned Order",
     MAIN_PETITION_PART,
+    "AOR's Declaration",
     "AOR's Certificate",
     "Affidavit",
     "Appendix",
@@ -70,6 +71,7 @@ DOCUMENT_TYPES: tuple[str, ...] = (
 _AUTO_SPLIT_THRESHOLD = 0.75
 _VERIFY_THRESHOLD = 0.55
 _OCR_TEXT_MIN = 50
+_SUSPICIOUS_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _ANNEXURE_HEADING_RE = re.compile(
     r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d+\b",
@@ -216,7 +218,16 @@ def extract_page_units(
             except Exception:
                 text = ""
         alt, index_table, folio = layout.get(number, ("", None, None))
-        if len(alt.strip()) > len((text or "").strip()):
+        # Some PDFs use a broken character map for digits.  The upstream text
+        # can then be longer than the layout extraction but contain C0 control
+        # bytes where the visible date is printed (for example
+        # ``Dated:\x15\x14.\x13\x14.202\x19``).  Prefer the clean layout text in
+        # that case; length alone would preserve the corrupt/wrong date.
+        if len(alt.strip()) > len((text or "").strip()) or (
+            _SUSPICIOUS_CONTROL_RE.search(text or "")
+            and not _SUSPICIOUS_CONTROL_RE.search(alt)
+            and len(alt.strip()) >= len((text or "").strip()) * 0.5
+        ):
             text = alt
         ocr_text = ocr_texts.get(number, "").strip()
         if ocr_text:
@@ -224,7 +235,33 @@ def extract_page_units(
             ocr_stamp = annexure_label_from_text(ocr_text)
             native_anchor = _outer_anchor_label(text)
             ocr_anchor = _outer_anchor_label(ocr_text)
-            if len(ocr_text) > len(text.strip()) * 1.15:
+            # Scanned Index tables can have a stale/native text layer that
+            # reads every column vertically.  OCR is only slightly longer in
+            # that case, but it restores serial-numbered rows and their page
+            # spans. Prefer that row-shaped OCR so the Index can drive ranges.
+            native_index_rows = len(
+                re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", text)
+            )
+            ocr_index_rows = len(
+                re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", ocr_text)
+            )
+            ocr_index_spans = len(
+                re.findall(
+                    r"(?i)(?<![A-Za-z0-9])(?:A\d{1,2}|[A-Z]{1,2}|\d{1,4})"
+                    r"\s*[-–—]\s*(?:A\d{1,2}|[A-Z]{1,2}|\d{1,4})(?![A-Za-z0-9])",
+                    ocr_text,
+                )
+            )
+            ocr_has_better_index = bool(
+                re.search(r"(?mi)^\s*index\s*$", ocr_text)
+                and "particulars" in ocr_text.casefold()
+                and ocr_index_rows >= 3
+                and ocr_index_spans >= 3
+                and ocr_index_rows > native_index_rows
+            )
+            if ocr_has_better_index:
+                text = ocr_text
+            elif len(ocr_text) > len(text.strip()) * 1.15:
                 text = (text.rstrip() + "\n" if native_stamp else "") + ocr_text
             elif (ocr_stamp and not native_stamp) or (ocr_anchor and not native_anchor):
                 # Preserve exact born-digital text while making a heading that
@@ -482,6 +519,7 @@ def _resolve_page_labels(
 
     short_slots = {
         "Affidavit",
+        "AOR's Declaration",
         "AOR's Certificate",
         "Filing Memo",
         "Memo of Parties",

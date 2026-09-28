@@ -5,6 +5,16 @@ from __future__ import annotations
 import re
 
 
+def letter_folio_number(value: str) -> int:
+    """Sortable value for A..Z, AA..ZZ while preserving A == 65."""
+    number = 0
+    for char in value.strip().upper():
+        if not ("A" <= char <= "Z"):
+            raise ValueError(f"Invalid letter folio: {value!r}")
+        number = number * 26 + ord(char) - ord("A") + 1
+    return 64 + number
+
+
 def extract_split_layout(
     pdf_bytes: bytes,
 ) -> dict[int, tuple[str, str | None, str | None]]:
@@ -36,12 +46,22 @@ def extract_split_layout(
                     for line in block.get("lines", []):
                         value = "".join(span["text"] for span in line["spans"]).strip()
                         _x0, y0, _x1, y1 = line["bbox"]
-                        if not (
-                            y1 < page.rect.height * 0.08 or y0 > page.rect.height * 0.92
-                        ):
+                        horizontally_centered = (
+                            page.rect.width * 0.30
+                            <= (float(_x0) + float(_x1)) / 2
+                            <= page.rect.width * 0.70
+                        )
+                        numeric_folio = bool(
+                            re.fullmatch(r"(?:\d{1,4}[A-Za-z]?|A\d{1,2})", value)
+                        )
+                        in_margin = y0 > page.rect.height * 0.92 or (
+                            y1 < page.rect.height * 0.11
+                            and (horizontally_centered or numeric_folio)
+                        )
+                        if not in_margin:
                             continue
                         if re.fullmatch(
-                            r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]|A\d{1,2})", value
+                            r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})", value
                         ) and not re.fullmatch(r"(?:19|20)\d{2}", value):
                             folios.add(value)
                 folio = next(iter(folios)) if len(folios) == 1 else None
@@ -49,16 +69,31 @@ def extract_split_layout(
                     re.search(r"particulars|page\s+no", text, re.IGNORECASE)
                 )
                 table_text = None
-                if (is_heading and not index_seen) or index_active:
+                volume_index = bool(
+                    is_heading
+                    and re.search(
+                        r"volume\s*[-–—]?\s*(?:i{1,3}|[1-3])\b",
+                        text,
+                        re.IGNORECASE,
+                    )
+                )
+                if (is_heading and (not index_seen or volume_index)) or index_active:
                     rows = []
                     continuation = None
                     for table in page.find_tables().tables:
                         for cells in table.extract():
                             if len(cells) < 3:
                                 continue
-                            serial, body, span = (
-                                " ".join((cell or "").split()) for cell in cells[:3]
-                            )
+                            serial = " ".join((cells[0] or "").split())
+                            body = " ".join((cells[1] or "").split())
+                            # Some SCI Indexes place Filing Memo/Vakalatnama
+                            # folios in the Part-II (fourth) column while the
+                            # normal Part-I page column is blank.
+                            page_cells = [
+                                " ".join((cell or "").split())
+                                for cell in cells[2:4]
+                            ]
+                            span = next((cell for cell in page_cells if cell), "")
                             if re.fullmatch(r"\d{1,3}[.)]", serial) and body:
                                 rows.append(f"{serial}\t{body}\t{span}")
                             elif not serial and body and rows == []:
@@ -100,7 +135,7 @@ def extract_split_layout(
 
 
 _FOLIO_NUM_RE = re.compile(r"^(?P<n>\d{1,4})(?P<suffix>[A-Za-z])?$")
-_FOLIO_LETTER_RE = re.compile(r"^[A-Za-z]$")
+_FOLIO_LETTER_RE = re.compile(r"^[A-Za-z]{1,2}$")
 
 
 def printed_folio(text: str) -> tuple[str, int, str] | None:
@@ -124,7 +159,7 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
                 return None
             return ("number", number, (numbered.group("suffix") or "").upper())
         if _FOLIO_LETTER_RE.fullmatch(line):
-            return ("letter", ord(line.upper()), "")
+            return ("letter", letter_folio_number(line), "")
         # "61" then "December": the folio sits just above a one-word signature.
         if not skipped_word and re.fullmatch(r"[A-Za-z]{3,}", line):
             skipped_word = True

@@ -181,15 +181,19 @@ _SLOT_NAME_ALIASES = {
     "full_petition": "fullpetition",
     "advocates_check_list": "advocates_checklist",
     "advocate_checklist": "advocates_checklist",
-    "aor_declaration": "aors_declaration",
-    "aors_certificate": "aors_declaration",
-    "aor_certificate": "aors_declaration",
+    "aor_declaration": "aor_s_declaration",
+    # Historical compiled-split payloads used this ambiguous id for the
+    # Certificate.  Keep that meaning while exposing the Declaration under
+    # the new, explicit aor_s_declaration id.
+    "aors_declaration": "aor_s_certificate",
+    "aors_certificate": "aor_s_certificate",
+    "aor_certificate": "aor_s_certificate",
     "office_report_limitation": "office_report_on_limitation",
     "vakalatnama": "vakalatnama_appearance",
     "memo_of_appearance": "vakalatnama_appearance",
     "filing_memorandum": "filing_memo",
-    "aor_s_certificate": "aors_declaration",
-    "aor_s_declaration": "aors_declaration",
+    "aor_s_certificate": "aor_s_certificate",
+    "aor_s_declaration": "aor_s_declaration",
     "listing_proforma": "listing_proforma",
 }
 

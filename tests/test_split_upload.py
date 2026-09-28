@@ -265,14 +265,15 @@ def test_ui_catalog_is_driven_by_config_types() -> None:
     assert civil_required["poa_br"] is False
     assert "poa_br" in civil_ids
     assert "poa_br" in criminal_ids
-    aor_slots = [
-        slot
+    aor_slots = {
+        slot["id"]: slot
         for slot in catalog["SLP_CIVIL"]["slots"]
-        if slot["id"] == "aors_declaration"
-    ]
-    assert aor_slots
-    assert aor_slots[0]["label"] == "AOR's Certificate"
-    assert aor_slots[0]["parts"] == ["AOR's Certificate"]
+        if slot["id"] in {"aor_s_declaration", "aor_s_certificate"}
+    }
+    assert aor_slots["aor_s_declaration"]["label"] == "AOR's Declaration"
+    assert aor_slots["aor_s_declaration"]["parts"] == ["AOR's Declaration"]
+    assert aor_slots["aor_s_certificate"]["label"] == "AOR's Certificate"
+    assert aor_slots["aor_s_certificate"]["parts"] == ["AOR's Certificate"]
     appearance = [
         slot
         for slot in catalog["SLP_CIVIL"]["slots"]
@@ -394,7 +395,8 @@ def test_transfer_petition_civil_includes_filing_memo() -> None:
     assert "memo_of_parties" in present
     assert "poa_br" in present
     assert "vakalatnama_appearance" in present
-    assert "aors_declaration" in present
+    assert "aor_s_declaration" in present
+    assert "aor_s_certificate" in present
     extra = [
         {"slot_id": "annexures", "file_id": "file-annexures"},
     ]
@@ -768,9 +770,13 @@ def test_extract_source_parts_include_petition_and_index() -> None:
     assert "Office Report on Limitation" not in parts
     assert "Undefined" not in parts
     assert "Index" not in parts
-    assert normalize_part_name("AOR's Declaration") == "AOR's Certificate"
+    assert normalize_part_name("AOR's Declaration") == "AOR's Declaration"
     assert normalize_part_name("AOR's Certificate") == "AOR's Certificate"
     _split_categories.cache_clear()
+    declaration = dict(_split_categories())["AOR's Declaration"]
+    assert "defects have been duly cured" in declaration
+    assert "DECLEARTION" in declaration
+    assert "different from the AOR's Certificate" in declaration
     cert = dict(_split_categories())["AOR's Certificate"]
     assert "CERTIFICATE" in cert
     assert "C E R T I F I C A T E" in cert
@@ -2465,6 +2471,30 @@ def test_slice_bundle_pdf_uploads_shape_passes_validate_parts() -> None:
     }
 
 
+def test_slice_bundle_keeps_aor_declaration_and_certificate_separate() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    slices = slice_bundle_pdf(
+        _blank_pdf(2),
+        catalog,
+        {1: ["AOR's Declaration"], 2: ["AOR's Certificate"]},
+    )
+    by_id = {item.slot_id: item for item in slices}
+    assert by_id["aor_s_declaration"].filename == "AOR's Declaration.pdf"
+    assert by_id["aor_s_declaration"].page_span == ({"start": 1, "end": 1},)
+    assert by_id["aor_s_certificate"].filename == "AOR's Certificate.pdf"
+    assert by_id["aor_s_certificate"].page_span == ({"start": 2, "end": 2},)
+
+
+def test_legacy_aors_declaration_slot_remains_certificate() -> None:
+    catalog, parts = validate_parts(
+        "SLP_CIVIL",
+        [{"slot_id": "aors_declaration", "file_id": "legacy-cert"}],
+    )
+    assert catalog.filing_type == "SLP_CIVIL"
+    assert parts[0].slot_id == "aor_s_certificate"
+    assert parts[0].document_parts == ("AOR's Certificate",)
+
+
 def test_parse_and_ingest_concurrency_read_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2537,6 +2567,14 @@ def test_slot_needs_precise_parse_for_extract_sources() -> None:
     )
     assert slot_needs_precise_parse(
         SplitPartInput(slot_id="aors_declaration", file_id="f1"),
+        sources,
+    )
+    assert slot_needs_precise_parse(
+        SplitPartInput(slot_id="aor_s_declaration", file_id="f1"),
+        sources,
+    )
+    assert slot_needs_precise_parse(
+        SplitPartInput(slot_id="aor_s_certificate", file_id="f1"),
         sources,
     )
 

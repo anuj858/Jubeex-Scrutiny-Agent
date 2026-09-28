@@ -973,6 +973,10 @@
         "description": "This Court's record of proceedings, usually a one-page table of hearing dates and orders, headed RECORD OF PROCEEDING or RECORD OF PROCEEDINGS."
       },
       {
+        "name": "AOR's Declaration",
+        "description": "A separately headed and signed Advocate-on-Record declaration used when curing/refiling defects. Accept DECLARATION and clear OCR or printed spelling variants such as DECLEARTION and DECLERATION when the body states that defects have been duly cured, additions/deletions/modifications result only from curing defects, and the paper books are complete. It commonly shows a diary number and ends with the AOR/advocate signature, date, and contact details. This is different from the AOR's Certificate filed after the Main Petition."
+      },
+      {
         "name": "AOR's Certificate",
         "description": "The Advocate-on-Record certificate in the paper book. Use only when the page has the cause title at the top for this Supreme Court case (party names and VERSUS), immediately followed by CERTIFICATE or C E R T I F I C A T E, and the AOR / Advocate-on-Record's own certification such as Certified that / CERTIFIED that the petition is confined only to the pleadings before the court whose order is challenged. It usually ends FILED ON or DRAWN & FILED BY. A certificate or registration certificate within an Annexure, Appendix, Checklist, or another form remains part of that document. A Listing Proforma signature block is not this category."
       },
@@ -982,7 +986,7 @@
       },
       {
         "name": "Office Report on Limitation",
-        "description": "The Supreme Court of India's Registry Office Report on Limitation (O/R on Limitation) for this Supreme Court petition, stating whether it is within time and any delay in filing or re-filing. Confirm the report belongs to the Supreme Court proceeding from its court/registry heading and matching case details. A High Court or tribunal Office Report on Limitation reproduced in this compiled filing is part of its enclosing Annexure, not this Supreme Court paper-book section, even though it has the same title."
+        "description": "Only the Supreme Court of India's Registry document explicitly headed OFFICE REPORT ON LIMITATION (O/R on Limitation) for this petition, stating whether it is within time and any delay in filing or re-filing. REPORT OF FRESH CASE, OFFICE REPORT OF FRESH CASE, and FRESH CASE REPORT are different documents and must never populate this slot. If no explicit limitation-report heading exists, leave this slot empty. A High Court or tribunal Office Report on Limitation reproduced in this compiled filing is part of its enclosing Annexure, not this Supreme Court paper-book section."
       },
       {
         "name": "Listing Proforma",
@@ -1018,7 +1022,7 @@
       },
       {
         "name": "Memo of Parties",
-        "description": "A distinct MEMO OF PARTIES or MEMORANDUM OF PARTIES section in the outer paper-book. Normally require the Supreme Court case identity and parties to match the current petition; a cause title or party list alone is not enough. A separate High Court Memo of Parties may be included in this section only when the outer paper-book Index lists it as a standalone back-matter document (for example, 'Memo of Parties in High Court') after the Filing Memo. A High Court/tribunal memo reproduced within an Annexure, or a party list embedded in an Application, stays with its enclosing document. Distinguish a standalone memo from the Main Petition cause title."
+        "description": "A distinctly headed MEMO OF PARTIES or MEMORANDUM OF PARTIES section, including variants such as MEMO OF PARTIES BEFORE THE HIGH COURT, MEMO OF PARTIES OF JUDGMENT/JUDGEMENT, and MEMO OF JUDGMENT/JUDGEMENT. Accept the explicit heading for Supreme Court, High Court, tribunal, or other lower-court captions and keep its party-list continuation pages together. A cause title or party list without such a memo heading is not enough. Distinguish a standalone memo from the Main Petition cause title."
       },
       {
         "name": "Memo of Appearance",
@@ -1159,7 +1163,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -1326,7 +1338,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -1485,7 +1505,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -1652,7 +1680,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -1811,7 +1847,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -1978,7 +2022,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2186,7 +2238,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2345,7 +2405,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2447,7 +2515,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2614,7 +2690,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2773,7 +2857,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -2940,7 +3032,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3107,7 +3207,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3266,7 +3374,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3433,7 +3549,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3600,7 +3724,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3767,7 +3899,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"
@@ -3926,7 +4066,15 @@
             "required": false
           },
           {
-            "id": "aors_declaration",
+            "id": "aor_s_declaration",
+            "label": "AOR's Declaration",
+            "parts": [
+              "AOR's Declaration"
+            ],
+            "required": false
+          },
+          {
+            "id": "aor_s_certificate",
             "label": "AOR's Certificate",
             "parts": [
               "AOR's Certificate"

@@ -332,6 +332,14 @@ def test_letter_and_suffixed_folios_remain_distinct():
     ]
     assert printed_folio("Listing body\nA1") == ("prefixed", 1, "")
 
+    multi = index_rows_with_printed_pages(
+        "9.\tSynopsis & List of Dates\tB-EE"
+    )
+    assert [(r.kind, r.start, r.end) for r in multi] == [
+        ("letter", 66, 199)
+    ]
+    assert printed_folio("Chronology continuation\nEE") == ("letter", 199, "")
+
 
 def test_incomplete_detached_column_is_not_guessed_onto_last_rows():
     from extraction_review.split_audit import index_rows_with_printed_pages
@@ -355,3 +363,19 @@ def test_scanned_index_annexures_ignore_front_folios_and_split_damaged_serials()
     assert [label for label, _ in entries] == ["Annexure P-1", "Annexure P-2", "Annexure P-3"]
     assert "Policy" not in entries[0][1]
     assert "27.05.2006" not in entries[1][1]
+
+
+def test_scanned_index_range_embedded_before_wrapped_particulars():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    rows = index_rows_with_printed_pages(
+        "INDEX\n"
+        "12. | Annexure P-1: 24-46 A copy of order dated 04.03.2014\n"
+        "passed by the Additional District Judge\n"
+        "13. | I.A. No. of 2025 47-48 application for permission to file SLP\n"
+    )
+
+    assert [(row.mapped_part, row.start, row.end) for row in rows] == [
+        ("Annexure P-1", 24, 46),
+        ("Application 1", 47, 48),
+    ]

@@ -12,6 +12,19 @@ from extraction_review.structure_split import (
 )
 
 
+def _blank_pdf(page_count: int) -> bytes:
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=612, height=792)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
 def test_document_types_are_controlled_taxonomy() -> None:
     assert "Main Petition" in DOCUMENT_TYPES
     assert "cover_page" not in DOCUMENT_TYPES  # canonical Split names only
@@ -127,3 +140,89 @@ def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
     report = result.report()
     assert report["architecture"] == "structure_aware_v1"
     assert "logical_documents" in report
+
+
+def test_structure_split_cuts_sci_application_out_of_annexure_carry() -> None:
+    """A fresh I.A. caption must end an incorrectly carried annexure label."""
+    from extraction_review.bundle_slicer import slice_bundle_pdf
+    from extraction_review.split_upload import type_catalog
+
+    texts = {
+        1: ("ANNEXURE P-5\nIN THE HIGH COURT OF JUDICATURE AT BOMBAY\nORDER\n96"),
+        2: "Continuation of the High Court order.\n97",
+        3: "Continuation and conclusion of the High Court order.\n98",
+        4: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "CIVIL APPELLATE JURISDICTION\n"
+            "I.A. NO. ____ OF 2025\n"
+            "IN SPECIAL LEAVE PETITION (CIVIL) NO. ____ OF 2025\n"
+            "APPLICATION FOR EXEMPTION FROM FILING OFFICIAL TRANSLATION"
+        ),
+        5: (
+            "4. The applicant seeks exemption from filing official translation.\n"
+            "PRAYER\nIt is therefore most respectfully prayed.\n"
+            "ADVOCATE FOR THE PETITIONER"
+        ),
+        6: "IN THE SUPREME COURT OF INDIA\nVAKALATNAMA",
+    }
+    # Reproduce the bad classifier result from the bundle: Annexure P-5 was
+    # carried over both application pages.
+    llama = {page: ["Annexure P-5"] for page in range(1, 6)}
+    llama[6] = ["Vakalatnama"]
+    pdf_bytes = _blank_pdf(6)
+
+    result = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert all(result.page_parts[page] == ["Annexure P-5"] for page in range(1, 4))
+    assert result.page_parts[4] == ["Application 1"]
+    assert result.page_parts[5] == ["Application 1"]
+    assert result.page_parts[6] == ["Vakalatnama"]
+
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            pdf_bytes,
+            type_catalog("SLP_CIVIL"),
+            result.page_parts,
+        )
+    }
+    assert slices["annexure_p5"].pages == (1, 2, 3)
+    assert slices["application_1"].pages == (4, 5)
+    assert slices["application_1"].filename == "Application 1.pdf"
+
+
+def test_extract_page_units_prefers_clean_layout_over_control_corrupted_date(
+    monkeypatch,
+) -> None:
+    import extraction_review.structure_split as module
+
+    pdf_bytes = _blank_pdf(1)
+    clean = (
+        "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+        "Dated:21.01.2026"
+    )
+    monkeypatch.setattr(
+        module,
+        "extract_split_layout",
+        lambda _pdf: {1: (clean, None, None)},
+    )
+    monkeypatch.setattr(module, "pages_with_large_images", lambda _pdf: set())
+    monkeypatch.setattr(module, "ocr_sparse_pages", lambda _pdf, _pages: {})
+
+    units = module.extract_page_units(
+        pdf_bytes,
+        page_texts={
+            1: (
+                "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+                "Dated:\x15\x14.\x13\x14.202\x19 extra padding"
+            )
+        },
+    )
+
+    assert "Dated:21.01.2026" in units[0].text
+    assert "\x15" not in units[0].text
