@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import uuid
 from typing import Any
 
@@ -68,6 +69,10 @@ async def run_worker(*, once: bool = False) -> None:
     if not sqs_enabled():
         raise RuntimeError(
             "SQS is not configured. Set JUBEEX_SQS_ENABLED=true or a queue URL."
+        )
+    if not shutil.which("tesseract"):
+        raise RuntimeError(
+            "Split OCR is unavailable: install tesseract-ocr in the worker image."
         )
     kinds = ("process_file", "scrutiny")
     while True:
