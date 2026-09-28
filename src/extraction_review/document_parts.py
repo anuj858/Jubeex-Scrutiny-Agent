@@ -168,6 +168,7 @@ def _fold(text: str) -> str:
     )
 
 
+@lru_cache(maxsize=256)
 def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     """Search phrases for one Split part: official name plus description nicknames."""
     needles: list[str] = []
@@ -190,6 +191,7 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     return tuple(needles)
 
 
+@lru_cache(maxsize=1024)
 def normalize_part_name(name: str | None) -> str:
     if not name:
         return ""
@@ -280,12 +282,12 @@ def _format_page_span(pages: list[int]) -> str:
 
 
 # Outer SCI paper-book parts keep the *first* contiguous run. A later High Court
-# writ mislabeled as Main Petition must not replace the real Form 28 body.
+# writ mislabeled as Main Petition must not replace the real Form 28 body. Index
+# is the exception: master and volume indexes can be separate legitimate runs.
 _FIRST_RUN_OUTER_PARTS = frozenset(
     {
         MAIN_PETITION_PART,
         "Cover Page",
-        "Index",
         "Advocate's Checklist",
         "Office Report on Limitation",
         "Listing Proforma",
@@ -309,7 +311,8 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep one contiguous run of each Split part.
 
-    Index at 5–7 is kept; Index at 55–57 is dropped. Main Petition at 15–23 is
+    All Index runs are kept because master and volume indexes are distinct valid
+    sections. Main Petition at 15–23 is
     kept; a later Main Petition island (often a High Court writ) is dropped —
     first run wins for outer paper-book parts. Record of Proceedings keeps the
     longest run (stray early pages are common noise). Annexure P-2 at 29–30 is
@@ -324,6 +327,9 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     keep: set[tuple[int, str]] = set()
     for part, pages in pages_by_part.items():
         unique = sorted(set(pages))
+        if part == "Index":
+            keep.update((page, part) for page in unique)
+            continue
         if family_split_name(part) == ANNEXURE_FAMILY and not _is_numbered_annexure(
             part
         ):
@@ -333,7 +339,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
         if not groups:
             continue
         folded = _fold(part)
-        numbered_app = bool(re.fullmatch(r"application \d{1,3}", folded))
+        numbered_app = bool(re.fullmatch(r"application \d+", folded))
         if (
             _is_numbered_annexure(part)
             or numbered_app
@@ -472,7 +478,6 @@ def filing_type_label(filing_type: str | None) -> str:
     return raw or "this filing"
 
 
-MAX_NUMBERED_PART = 999
 ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
 
@@ -513,9 +518,9 @@ class AnnexureMark:
 _ANNEXURE_HEADING_RE = re.compile(
     r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
-    r"(?P<num>\d{1,3})\b"
+    r"(?P<num>\d+)\b"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
-    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})\b",
+    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
     re.IGNORECASE,
 )
 # Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
@@ -524,8 +529,8 @@ _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"(?:"
     r"(?:annexure|annx\.?)\s*[-–—:.\s]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.\s]*)?"
-    r"(?P<num>\d{1,3})"
-    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d{1,3})"
+    r"(?P<num>\d+)"
+    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
     r")\b",
     re.IGNORECASE,
 )
@@ -569,7 +574,7 @@ def family_split_name(name: str) -> str:
     return name
 
 
-_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d{1,3}$")
+_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d+$")
 
 
 def _is_numbered_annexure(name: str) -> bool:
@@ -606,7 +611,7 @@ def _annexure_mark_from_match(match: re.Match[str]) -> AnnexureMark | None:
     if not number_raw:
         return None
     number = int(number_raw)
-    if not (1 <= number <= MAX_NUMBERED_PART):
+    if number < 1:
         return None
     series = _normalize_annexure_series(
         groups.get("series") or groups.get("bare_series")
@@ -619,18 +624,18 @@ def numbered_part_slot_id(name: str) -> str | None:
     folded = _fold(name)
     if folded in {"annexures", "annexure"}:
         return "annexures"
-    match = re.fullmatch(r"annexure ([a-z])-?(\d{1,3})", folded)
+    match = re.fullmatch(r"annexure ([a-z])-?(\d+)", folded)
     if match:
         series = match.group(1)
         number = int(match.group(2))
-        if 1 <= number <= MAX_NUMBERED_PART:
+        if number >= 1:
             return f"annexure_{series}{number}"
     if folded == "application":
         return "applications"
-    match = re.fullmatch(r"application (\d{1,3})", folded)
+    match = re.fullmatch(r"application (\d+)", folded)
     if match:
         number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
+        if number >= 1:
             return f"application_{number}"
     return None
 
@@ -642,7 +647,9 @@ def _annexure_mark_in_window(text: str) -> AnnexureMark | None:
     return _annexure_mark_from_match(match)
 
 
-def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
+def _annexure_mark_from_title_or_stamp(
+    text: str, *, require_series: bool = False
+) -> AnnexureMark | None:
     """Series+number from a title line near the top or a short foot stamp line."""
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
@@ -650,10 +657,31 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 
+    # Image OCR can put folio noise before a real first-line stamp
+    # ("i so ANNEXURE-P-11") or append the printed folio after it
+    # ("ANNEXURE-P-14 185").  Accept that compact top-of-page form.  An
+    # isolated Index serial immediately before ANNEXURE still blocks it, so
+    # continuation rows such as "18. ANNEXURE P/6 ..." are not stamps.
+    for index, line in enumerate(lines[:1]):
+        match = _ANNEXURE_HEADING_RE.search(line)
+        if not match or len(line) > 80:
+            continue
+        if index and re.fullmatch(r"\d{1,3}[.)]", lines[index - 1]):
+            continue
+        if re.match(r"^\s*\d{1,3}[.)]", line):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is not None and (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
+            return mark
+
     def _mark_from_title_line(
         line: str, *, allow_body_tail: bool, prev_line: str = ""
     ) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
+            return None
+        if re.fullmatch(r"\d{1,3}[.)]", prev_line.strip()):
             return None
         # AOR address lines ("E-28, Second Floor, Lajpat Nagar") are not stamps.
         if re.search(
@@ -666,6 +694,15 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
             return None
+        if require_series and re.match(
+            r"(?i)^\s*(?:\d{1,4}\s+)?annexure\s*(?:no\.?\s*)\d+\b",
+            line,
+        ):
+            return None
+        if require_series and not (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
+            return None
         mark = _annexure_mark_from_match(match)
         if mark is None:
             return None
@@ -673,7 +710,7 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
         if _ANNEXURE_CITATION_PREV_RE.search(prev_line):
             return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
-        remainder = line[match.end() :].strip(" .;:-")
+        remainder = line[match.end() :].strip(" .;:-~_|")
         bare = bool(match.groupdict().get("bare_num"))
         if bare and remainder and not remainder.isdigit():
             # Bare "E-28, Second Floor" / "P-1 continued text" without ANNEXURE word.
@@ -681,7 +718,10 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
         if remainder:
             if _ANNEXURE_PAGE_CITE_RE.search(remainder):
                 return None
-            if not allow_body_tail and not remainder.isdigit():
+            if not remainder.isdigit() and not re.match(
+                r"(?i)^true\s+(?:typed\s+|translated\s+)?cop(?:y|ies)\b",
+                remainder,
+            ):
                 return None
         return mark
 
@@ -690,10 +730,15 @@ def _annexure_mark_from_title_or_stamp(text: str) -> AnnexureMark | None:
         mark = _mark_from_title_line(line, allow_body_tail=True, prev_line=prev)
         if mark is not None:
             return mark
-    for line in lines[-10:]:
+    tail_start = max(0, len(lines) - 10)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
         if len(line) > 40:
             continue
-        mark = _mark_from_title_line(line, allow_body_tail=False)
+        prev = lines[index - 1] if index else ""
+        mark = _mark_from_title_line(
+            line, allow_body_tail=False, prev_line=prev
+        )
         if mark is not None:
             return mark
     return None
@@ -715,6 +760,28 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         r"(?m)^\s*\d{1,2}\.\s+that\s+the\b",
         _heading_window(text, lines=8),
         re.I,
+    ):
+        return None
+    # A reproduced local Annexure No. 1 does not suppress an explicit outer
+    # P/R stamp at the foot of the same sheet.
+    explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
+    if explicit is not None:
+        return explicit
+    # Reproduced lower-court records often have their own local numbering
+    # ("ANNEXURE NO. 1"). It is not the Supreme Court paper-book's P/R number.
+    # Leave the outer boundary to the Supreme Court Index / repair pass.
+    lower_court_caption = bool(
+        re.search(
+            r"(?i)\bin\s+the\s+(?:high\s+court|district\s+court|"
+            r"court\s+of\s+the\s+\w+|tribunal)\b",
+            _heading_window(text, lines=12),
+        )
+    )
+    if lower_court_caption and re.search(
+        r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", _heading_window(text, lines=8)
+    ) and not re.search(
+        r"(?i)\bannexure\s*[-–—:/\s]*[pr]\s*[-–—./\s]*\d+\b",
+        _heading_window(text, lines=8),
     ):
         return None
     return _annexure_mark_from_title_or_stamp(text)
@@ -820,7 +887,37 @@ def _is_real_split_label(name: str) -> bool:
 
 
 def _looks_like_index_table(text: str) -> bool:
-    head = _fold(text[:900])
+    head_text = text[:1400]
+    head = _fold(head_text)
+    if not (
+        "index" in head
+        and ("particulars" in head or "page no" in head or "part i" in head)
+    ):
+        return False
+
+    # A reproduced lower-court pleading can begin with the outer paper-book
+    # stamp and then carry its own INDEX.  The stamp precedes both the court
+    # caption and that nested index; it is an Annexure start, not another page
+    # of the Supreme Court paper-book Index.  Outer Index rows put INDEX first
+    # and their Annexure references later, so they remain Index pages.
+    index_at = re.search(r"(?im)^\s*index\b", head_text)
+    stamped_at = re.search(
+        r"(?im)^\s*(?:\d{1,4}\s+)?annexure\s*[-–—:./\s]*[pr]\s*[-–—:./\s]*\d+\b",
+        head_text,
+    )
+    lower_caption_at = re.search(
+        r"(?i)\bin\s+the\s+(?:hon['’]?ble\s+)?(?:high\s+court|district\s+court|"
+        r"court\s+of|tribunal)\b",
+        head_text,
+    )
+    if (
+        index_at
+        and stamped_at
+        and lower_caption_at
+        and stamped_at.start() < lower_caption_at.start() < index_at.start()
+    ):
+        return False
+
     return "index" in head and (
         "particulars" in head or "page no" in head or "part i" in head
     )
@@ -852,12 +949,18 @@ def _memo_of_parties_heading(text: str) -> bool:
 
 def _vakalatnama_heading(text: str) -> bool:
     """True only for a Vakalatnama title line — not narrative 'filing Vakalatnama'."""
-    head = _heading_window(text, lines=12)
-    if re.search(r"(?m)^\s*v\W*a\W*k\W*a\W*l\W*a\W*t\W*n\W*a\W*m\W*a\b", head, re.I):
+    # Detailed SCI captions can consume 15–20 lines before the instrument
+    # title. The exact standalone-line requirement below prevents narrative
+    # references later in a petition from becoming a Vakalatnama boundary.
+    head = _heading_window(text, lines=30)
+    # Accept common spelling and OCR variants: Vakalatnama, Vakalat Name,
+    # Vakaltnama (missing the second "a"), and punctuated letter spacing.
+    title = r"v\W*a\W*k\W*a\W*l\W*a?\W*t\W*n\W*a\W*m\W*a"
+    if re.search(rf"(?m)^\s*{title}\b", head, re.I):
         return True
     # Spaced OCR title on its own line.
     if re.search(
-        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a\s*t\s*n\s*a\s*m\s*a\s*$",
+        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a?\s*t\s*n\s*a\s*m\s*a\s*$",
         head,
         re.I,
     ):
@@ -981,11 +1084,11 @@ def _annexure_claimable(names: Sequence[str] | None) -> bool:
 
 
 def _annexure_number_from_label(name: str) -> int | None:
-    match = re.fullmatch(r"annexure [a-z]-?(\d{1,3})", _fold(name))
+    match = re.fullmatch(r"annexure [a-z]-?(\d+)", _fold(name))
     if not match:
         return None
     number = int(match.group(1))
-    return number if 1 <= number <= MAX_NUMBERED_PART else None
+    return number if number >= 1 else None
 
 
 def _page_annexure_number(names: Sequence[str] | None) -> int | None:

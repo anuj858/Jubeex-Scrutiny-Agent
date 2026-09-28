@@ -68,8 +68,7 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     )
     mapping = explode_repeating_split_parts(page_parts_from_split(job))
     docs = documents_from_page_parts(mapping)
-    assert "Index (pp. 5–7)" in docs["items"]
-    assert all("55" not in item for item in docs["items"])
+    assert "Index (pp. 5–7, 55–57)" in docs["items"]
     assert mapping[1] == ["Advocate's Checklist"]
     assert 51 not in mapping
     # First contiguous outer run wins (not the longest): page 17 is kept;
@@ -85,7 +84,7 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     assert 23 not in mapping  # singleton RoP island dropped (longest-run wins)
 
 
-def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
+def test_distinct_index_runs_are_preserved() -> None:
     job = SimpleNamespace(
         result=SimpleNamespace(
             segments=[
@@ -95,7 +94,15 @@ def test_second_index_label_is_dropped_even_if_nothing_else_repeats() -> None:
         )
     )
     mapping = explode_repeating_split_parts(page_parts_from_split(job))
-    assert mapping == {5: ["Index"], 6: ["Index"], 7: ["Index"], 10: ["Main Petition"]}
+    assert mapping == {
+        5: ["Index"],
+        6: ["Index"],
+        7: ["Index"],
+        10: ["Main Petition"],
+        55: ["Index"],
+        56: ["Index"],
+        57: ["Index"],
+    }
 
 
 def test_one_page_can_carry_two_document_parts() -> None:

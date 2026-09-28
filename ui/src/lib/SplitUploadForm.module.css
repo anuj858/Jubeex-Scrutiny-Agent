@@ -132,6 +132,13 @@
   color: var(--muted-foreground);
 }
 
+.reason {
+  max-width: 30rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  white-space: normal;
+}
+
 .hiddenInput {
   display: none;
 }

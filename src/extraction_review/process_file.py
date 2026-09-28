@@ -35,7 +35,7 @@ from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import map_slot_pages, pdf_page_texts, slice_bundle_pdf
+from .bundle_slicer import map_slot_pages, slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
@@ -750,6 +750,7 @@ class PreparedPart(BaseModel):
     name: str | None = None
     label: str | None = None
     page_span: list[dict[str, int]] | None = None
+    reason: str | None = None
 
 
 class SourceDocument(BaseModel):
@@ -1883,14 +1884,19 @@ class ProcessFileWorkflow(Workflow):
             "flag_counts": {"error": 0, "warning": 0, "total": 0},
         }
         if pdf_page_count:
-            page_texts = pdf_page_texts(pdf_bytes)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Reading scanned pages and validating document boundaries",
+                )
+            )
             # Structure-aware path: page units → classify → boundaries →
             # logical docs → hybrid repair. LlamaSplit is a warm-start hint.
             # Physical slot PDFs are created only after boundaries are final.
-            structured = structure_aware_split(
+            structured = await asyncio.to_thread(
+                structure_aware_split,
                 pdf_bytes,
                 llama_page_parts=page_parts,
-                page_texts=page_texts,
                 source_pdf=state.filename or "bundle.pdf",
                 run_hybrid_repair=True,
             )
@@ -1902,7 +1908,7 @@ class ProcessFileWorkflow(Workflow):
             ]
             split_audit = audit_compiled_split(
                 page_parts,
-                page_texts,
+                {unit.pdf_page: unit.text for unit in structured.page_units},
                 page_count=pdf_page_count,
             )
             split_audit["structure"] = structured.report()
@@ -1990,6 +1996,27 @@ class ProcessFileWorkflow(Workflow):
                 if upload_slots
                 else item.filename
             )
+            unidentified_reason = None
+            if item.slot_id == "undefined":
+                reasons = split_audit.get("unidentified_reasons") or []
+                item_pages = set(item.pages)
+                matching = [
+                    row.get("reason")
+                    for row in reasons
+                    if isinstance(row, dict)
+                    and isinstance(row.get("page_span"), dict)
+                    and item_pages.intersection(
+                        range(
+                            int(row["page_span"].get("start", 0)),
+                            int(row["page_span"].get("end", -1)) + 1,
+                        )
+                    )
+                    and row.get("reason")
+                ]
+                unidentified_reason = " ".join(dict.fromkeys(matching)) or (
+                    "These pages did not match a document section with enough confidence "
+                    "to assign them safely."
+                )
             prepared.append(
                 PreparedPart(
                     slot_id=item.slot_id,
@@ -1998,6 +2025,7 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     label=item.label,
                     page_span=list(item.page_span),
+                    reason=unidentified_reason,
                 )
             )
             if item.page_span:
@@ -2034,6 +2062,7 @@ class ProcessFileWorkflow(Workflow):
                                 "label": part.label,
                                 "filename": part.filename,
                                 "page_span": part.page_span,
+                                "reason": part.reason,
                                 "file_hash": part.file_hash,
                                 "file_id": part.file_id,
                             }

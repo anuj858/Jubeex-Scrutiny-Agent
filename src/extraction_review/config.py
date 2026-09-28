@@ -285,7 +285,7 @@ class ImpugnedOrder(BaseModel):
 
     is_primary: bool | None = Field(default=True, description="True for the Impugned Order slot. Do not invent extra annexure orders.")
     case_number: str | None = Field(default=None, description="Case number before the earlier court")
-    order_date: str | None = Field(default=None, description="Date of the order under challenge")
+    order_date: str | None = Field(default=None, description="Date of the order under challenge. A filename or slot named Impugned Order is not proof of its contents. Do not use dates of earlier orders merely quoted, summarized, or discussed in Synopsis, List of Dates, pleadings, or applications. Require the actual standalone order or explicit particulars identifying the order challenged in this petition; otherwise return null.")
     Forum: str | None = Field(default=None, description="The court/forum that passed the impugned order")
     bench: str | None = Field(default=None, description="Bench or seat as printed")
     certified_copy_applied_on: str | None = Field(default=None, description="Date the certified copy was applied for")

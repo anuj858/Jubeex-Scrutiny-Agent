@@ -33,6 +33,8 @@ from .document_parts import (
     page_starts_application,
     parts_on_page,
 )
+from .split_ocr import ocr_sparse_pages, pages_with_large_images
+from .split_pdf_layout import extract_split_layout
 from .split_repair import (
     _heading_window,
     _is_near_blank_page,
@@ -70,7 +72,7 @@ _VERIFY_THRESHOLD = 0.55
 _OCR_TEXT_MIN = 50
 
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d{1,3}\b",
+    r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d+\b",
     re.I,
 )
 _CENTERED_TITLE_RE = re.compile(
@@ -181,23 +183,6 @@ class StructureSplitResult:
         }
 
 
-def _pymupdf_page_text(pdf_bytes: bytes, page_index: int) -> str:
-    try:
-        import pymupdf
-    except ImportError:
-        return ""
-    try:
-        document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-        try:
-            if page_index < 0 or page_index >= document.page_count:
-                return ""
-            return document.load_page(page_index).get_text("text") or ""
-        finally:
-            document.close()
-    except Exception:
-        return ""
-
-
 def extract_page_units(
     pdf_bytes: bytes,
     *,
@@ -209,9 +194,20 @@ def extract_page_units(
         return []
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total = len(reader.pages)
+    layout = extract_split_layout(pdf_bytes)
+    sparse_pages = {
+        number for number in range(1, total + 1)
+        if max(
+            len(layout.get(number, ("", None, None))[0].strip()),
+            len(((page_texts or {}).get(number) or "").strip()),
+        ) < _OCR_TEXT_MIN
+    }
+    image_pages = pages_with_large_images(pdf_bytes)
+    ocr_pages = sorted(sparse_pages | image_pages)
+    ocr_texts = ocr_sparse_pages(pdf_bytes, ocr_pages)
     units: list[PageUnit] = []
     for number in range(1, total + 1):
-        text = ""
+        text = layout.get(number, ("", None, None))[0]
         if page_texts is not None and number in page_texts:
             text = page_texts.get(number) or ""
         if not (text or "").strip():
@@ -219,20 +215,35 @@ def extract_page_units(
                 text = reader.pages[number - 1].extract_text() or ""
             except Exception:
                 text = ""
-        if len((text or "").strip()) < _OCR_TEXT_MIN:
-            alt = _pymupdf_page_text(pdf_bytes, number - 1)
-            if len(alt.strip()) > len((text or "").strip()):
-                text = alt
+        alt, index_table, folio = layout.get(number, ("", None, None))
+        if len(alt.strip()) > len((text or "").strip()):
+            text = alt
+        ocr_text = ocr_texts.get(number, "").strip()
+        if ocr_text:
+            native_stamp = annexure_label_from_text(text)
+            ocr_stamp = annexure_label_from_text(ocr_text)
+            native_anchor = _outer_anchor_label(text)
+            ocr_anchor = _outer_anchor_label(ocr_text)
+            if len(ocr_text) > len(text.strip()) * 1.15:
+                text = (text.rstrip() + "\n" if native_stamp else "") + ocr_text
+            elif (ocr_stamp and not native_stamp) or (ocr_anchor and not native_anchor):
+                # Preserve exact born-digital text while making a heading that
+                # exists only inside the inserted scan visible to repair.
+                text = ocr_text + "\n" + text.lstrip()
+        if index_table:
+            text = index_table
+        elif folio and text.rstrip().splitlines()[-1:] != [folio]:
+            # Put the geometrically verified margin folio last for repair's
+            # text-only reader; stamps and body text keep their full content.
+            text = text.rstrip() + "\n" + folio
         stripped = (text or "").strip()
         requires_ocr = len(stripped) < _OCR_TEXT_MIN
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         header = "\n".join(lines[:3])
         footer = "\n".join(lines[-2:]) if len(lines) > 3 else ""
-        printed = None
-        if lines:
-            maybe = re.sub(r"\D", "", lines[-1])
-            if maybe and 0 < len(maybe) <= 4:
-                printed = maybe
+        printed = folio
+        if not printed and lines and re.fullmatch(r"\d{1,4}[A-Za-z]?", lines[-1]):
+            printed = lines[-1]
         units.append(
             PageUnit(
                 pdf_page=number,
@@ -601,10 +612,6 @@ def structure_aware_split(
         pdf_bytes, source_pdf=source_pdf, page_texts=page_texts
     )
     texts = {unit.pdf_page: unit.text for unit in units}
-    if page_texts:
-        for page, text in page_texts.items():
-            if text and len(text.strip()) > len(texts.get(int(page), "").strip()):
-                texts[int(page)] = text
 
     classifications = classify_pages(units, llama_page_parts=llama_page_parts)
     boundaries = detect_boundaries(classifications, units)
