@@ -673,6 +673,12 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_HEADING_RE.search(line)
         if not match or len(line) > 80:
             continue
+        # A real first-line stamp begins at the left margin (allowing only a
+        # few OCR-noise characters such as ``i so ANNEXURE-P-11``).  Petition
+        # prose like ``That the Annexure P-1 to Annexure P-11 ...`` must not
+        # open an annexure run and swallow the remaining petition/affidavit.
+        if match.start() > 6:
+            continue
         if index and re.fullmatch(r"\d{1,3}[.)]", lines[index - 1]):
             continue
         if re.match(r"^\s*\d{1,3}[.)]", line):

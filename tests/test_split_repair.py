@@ -679,6 +679,57 @@ def test_main_petition_extends_through_grounds_not_one_page() -> None:
     )
 
 
+def test_petition_annexure_inventory_sentence_is_not_an_annexure_stamp() -> None:
+    """Defect_005: declaration prose must not start Annexure P-1 early."""
+    from extraction_review.document_parts import annexure_ref_in_heading
+
+    declaration = (
+        "That the Annexure P - 1 to Annexure P - 11 produced along\n"
+        "with the Special Leave Petition are true copy of the documents\n"
+        "which formed part of the records of the case.\n"
+        "GROUNDS:-\nA) For that the Hon'ble High Court erred in law."
+    )
+    assert annexure_ref_in_heading(declaration) is None
+
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH"
+        ),
+        2: declaration,
+        3: "GROUNDS FOR INTERIM RELIEF\nThe balance of convenience favours the petitioner.",
+        4: "MAIN PRAYER\nGrant special leave to appeal.",
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "Certified that the Special Leave Petition is confined only to the pleadings."
+        ),
+        6: (
+            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\n"
+            "I do hereby solemnly affirm and state as follows."
+        ),
+        7: "VERIFICATION\nThe contents are true and correct.\nDEPONENT",
+        8: "ANNEXURE - E-1\nPOSSESSION NOTICE",
+        9: "Annexure body continuation",
+    }
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Main Petition"],
+            2: ["Annexure P-1"],
+            6: ["Annexure P-1"],
+            7: ["Annexure P-1"],
+        },
+        texts,
+        page_count=9,
+    )
+
+    assert all(repaired[page] == ["Main Petition"] for page in range(1, 5))
+    assert repaired[5] == ["AOR's Certificate"]
+    assert repaired[6] == ["Affidavit"]
+    assert repaired[7] == ["Affidavit"]
+    assert repaired[8] == ["Annexure P-1"]
+    assert repaired[9] == ["Annexure P-1"]
+
+
 def test_lod_annexure_page_cites_are_not_stamps() -> None:
     from extraction_review.document_parts import annexure_ref_in_heading
 

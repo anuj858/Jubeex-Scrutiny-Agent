@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadWriteAgentJobStatus",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/agent-jobs/*"
+    },
+    {
+      "Sid": "ReadWriteGeneratedFilingArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/splitfiles/*",
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/extractedfiles/*",
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/layoutfiles/*",
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/parsefiles/*",
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/defectfiles/*",
+        "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/visualfiles/*"
+      ]
+    }
+  ]
+}

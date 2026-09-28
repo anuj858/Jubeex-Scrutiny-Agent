@@ -2276,6 +2276,18 @@ def _extend_main_petition_body(
             return updated
         start = min(starts)
     updated[start] = [MAIN_PETITION_PART]
+    # Once Form-28 has entered its declaration/grounds/prayer sections, a
+    # model-carried Annexure label without a printed stamp is not a boundary.
+    # Defect_005 labels the declaration sentence "Annexure P-1 to P-11" as
+    # P-1 even though the petition continues for several more pages.
+    petition_body_committed = bool(
+        re.search(
+            r"declaration\s+in\s+terms|\bgrounds\b|main\s+prayer|"
+            r"prayer\s+for\s+interim",
+            page_text.get(start, ""),
+            re.IGNORECASE,
+        )
+    )
     stop_labels = {
         "AOR's Certificate",
         "AOR's Declaration",
@@ -2301,6 +2313,13 @@ def _extend_main_petition_body(
         text = page_text.get(page, "")
         if annexure_mark_in_heading(text):
             break
+        if re.search(
+            r"declaration\s+in\s+terms|\bgrounds\b|main\s+prayer|"
+            r"prayer\s+for\s+interim",
+            text,
+            re.IGNORECASE,
+        ):
+            petition_body_committed = True
         if page_starts_application(text):
             break
         if _vakalatnama_heading(text) and _is_sci_caption(text):
@@ -2315,6 +2334,15 @@ def _extend_main_petition_body(
             name in stop_labels or family_split_name(name) == ANNEXURE_FAMILY
             for name in names
         ):
+            if (
+                petition_body_committed
+                and any(
+                    family_split_name(name) == ANNEXURE_FAMILY for name in names
+                )
+                and not annexure_ref_in_heading(text)
+            ):
+                updated[page] = [MAIN_PETITION_PART]
+                continue
             # Allow overwriting weak wrong labels inside the petition body.
             if any(name == MAIN_PETITION_PART for name in names):
                 continue
@@ -3549,6 +3577,49 @@ def _demote_false_affidavit_between_annexures(
     return updated
 
 
+def _extend_explicit_affidavit_continuation(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep signed verification sheets with the preceding outer Affidavit.
+
+    Scanned continuation pages usually omit the AFFIDAVIT title.  A stale
+    Llama Annexure carry must not win when the sheet itself says VERIFICATION,
+    DEPONENT, or explicitly continues the affidavit.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    active = False
+    continuation = re.compile(
+        r"(?mi)^\s*verification\s*[:-]?|\bdeponent\b|"
+        r"contents\s+of\s+(?:this|the)\s+affidavit|"
+        r"\bknowledge\s+and\s+belief\b|\bsolemnly\s+affirm\b|"
+        r"annexures?\s+are\s+true\s+cop",
+    )
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        anchor = _outer_anchor_label(text)
+        if anchor == "Affidavit":
+            # An affidavit expressly verifying an I.A. is intentionally part
+            # of that Application output, not the standalone petition slot.
+            if re.search(r"accompanying\s+application", text[:3000], re.I):
+                active = False
+                continue
+            updated[page] = ["Affidavit"]
+            active = True
+            continue
+        if not active:
+            continue
+        if annexure_ref_in_heading(text) or (anchor and anchor != "Affidavit"):
+            active = False
+            continue
+        if continuation.search(text[:3000]):
+            updated[page] = ["Affidavit"]
+            continue
+        active = False
+    return updated
+
+
 def repair_compiled_split(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -3682,6 +3753,9 @@ def repair_compiled_split(
         repaired, page_text, page_count
     )
     repaired = _restore_early_record_of_proceedings(
+        repaired, page_text, page_count
+    )
+    repaired = _extend_explicit_affidavit_continuation(
         repaired, page_text, page_count
     )
     # A model label alone must never populate the limitation slot. In
