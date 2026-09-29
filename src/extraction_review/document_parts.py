@@ -1654,12 +1654,12 @@ def pinecone_queries_for_defect(defect: Defect) -> list[str]:
     ("before the Cover Page") and pull the wrong pages.
     """
     queries: list[str] = []
-    queries.extend(parts_named_in_where_to_look(defect))
-    queries.extend(_presence_queries_for_defect(defect))
     if defect.trigger_words:
         queries.extend(
             p.strip() for p in re.split(r"[;|]", defect.trigger_words) if p.strip()
         )
+    queries.extend(parts_named_in_where_to_look(defect))
+    queries.extend(_presence_queries_for_defect(defect))
     for step in defect.where_to_look:
         heading = _heading_from_where_to_look(step)
         if heading:

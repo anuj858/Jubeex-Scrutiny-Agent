@@ -236,6 +236,14 @@
         "notes": {
           "type": ["string", "null"],
           "description": "Spreadsheet Notes; injected into the defect prompt"
+        },
+        "ivan_comment": {
+          "type": ["string", "null"],
+          "description": "Ivan Sir's Comment from Defects v3.0.1"
+        },
+        "notes_2": {
+          "type": ["string", "null"],
+          "description": "Spreadsheet Notes 2"
         }
       }
     }

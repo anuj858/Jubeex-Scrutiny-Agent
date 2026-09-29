@@ -395,17 +395,25 @@ def _page_only(need: VisualNeed, page: int | None) -> VisualLocalization:
     )
 
 
+def _published_mark_page(mark: VisualMark) -> int:
+    """Page inside the document. Prefer the stored local page over the stitched page."""
+    if mark.local_page is not None:
+        return mark.local_page
+    return mark.page
+
+
 def _from_mark(need: VisualNeed, mark: VisualMark) -> VisualLocalization:
     box = mark.bbox
+    page = _published_mark_page(mark)
     bounding = BoundingBox(
-        page=mark.page,
+        page=page,
         x=float(box.get("x") or 0),
         y=float(box.get("y") or 0),
         w=float(box.get("w") or 0),
         h=float(box.get("h") or 0),
     )
     return VisualLocalization(
-        page=mark.page,
+        page=page,
         document_type=need.document_type,
         marking_type=need.marking_type,
         signature_role=(
