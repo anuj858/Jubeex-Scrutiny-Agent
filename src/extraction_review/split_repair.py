@@ -391,6 +391,11 @@ def _looks_like_rop_index_form(text: str) -> bool:
 def _looks_like_sci_court_rop_extract(text: str) -> bool:
     """Registry SCI order sheet headed RECORD OF PROCEEDINGS (often an Annexure)."""
     head = text[:2200]
+    # Local indexes commonly print an advocate telephone line such as
+    # ``Tel.No.22306536``. The OCR-tolerant ITEM-NO expression can resemble
+    # that text, but an explicit High Court/tribunal caption rules out SCI RoP.
+    if _is_lower_court_caption(text):
+        return False
     if not (_RECORD_RE.search(head) or _SCI_COURT_ROP_RE.search(head)):
         return False
     if _looks_like_rop_index_form(text):
@@ -608,6 +613,13 @@ def _renest_lower_court_indexes(
 ) -> PagePartMap:
     """Keep reproduced lower-court Index pages in their enclosing Annexure."""
     updated = {page: list(names) for page, names in page_parts.items()}
+    indexed_annexures = [
+        row
+        for row in aligned_index_printed_rows(page_parts, page_text)
+        if row.mapped_part
+        and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+        and row.kind == "number"
+    ]
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
         index_heading = re.search(
@@ -624,9 +636,7 @@ def _renest_lower_court_indexes(
         ):
             continue
         names = parts_on_page(updated.get(page))
-        if not names or not any(
-            name in {"Index", "Record of Proceedings"} for name in names
-        ):
+        if any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
             continue
         neighbours: list[str] = []
         for distance in range(1, 13):
@@ -647,6 +657,34 @@ def _renest_lower_court_indexes(
                 break
         if neighbours and len(set(neighbours)) == 1:
             updated[page] = [neighbours[0]]
+            continue
+
+        # When all surrounding pages were initially unidentified, there is no
+        # Annexure neighbour to inherit. The outer filing Index's printed page
+        # range is still authoritative (for example P-4 = 73-144 owns local
+        # INDEX-II at folio 92). Use it before dropping the false main Index.
+        folio = _printed_folio(text)
+        range_owners = {
+            row.mapped_part
+            for row in indexed_annexures
+            if folio and _folio_in_printed_row(folio, row) and row.mapped_part
+        }
+        if len(range_owners) == 1:
+            updated[page] = [next(iter(range_owners))]
+            continue
+
+        # A verified lower-court INDEX is never the paper-book's main Index.
+        # With no reliable enclosing exhibit, leave it for Unidentified rather
+        # than presenting a false filing Index to the user.
+        if not any(name in {"Index", "Record of Proceedings"} for name in names):
+            continue
+        remaining = [
+            name for name in names if name not in {"Index", "Record of Proceedings"}
+        ]
+        if remaining:
+            updated[page] = remaining
+        else:
+            updated.pop(page, None)
     return updated
 
 
@@ -3872,6 +3910,10 @@ def repair_compiled_split(
     repaired = _restore_front_impugned_judgment(repaired, page_text, page_count)
     repaired = _renest_lower_court_indexes(repaired, page_text, page_count)
     repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
+    # Back-matter recovery may restore a model-provided top-level label on a
+    # reproduced lower-court Index. Re-apply the authoritative outer range as
+    # the final structural correction.
+    repaired = _renest_lower_court_indexes(repaired, page_text, page_count)
     # A standalone custody certificate has no configured slot. Preserve it
     # as Unidentified rather than swallowing it into the preceding bail IA.
     indexed_custody = any(
@@ -3959,9 +4001,28 @@ def _apply_indexed_annexure_ranges(
         "Index" in parts_on_page(names) and "\t" in page_text.get(page, "")
         for page, names in page_parts.items()
     )
+    all_rows = aligned_index_printed_rows(page_parts, page_text)
+    front_end = max(
+        (
+            row.end
+            for row in all_rows
+            if row.kind == "number"
+            and row.mapped_part
+            and family_split_name(row.mapped_part) != ANNEXURE_FAMILY
+            and row.mapped_part
+            in {
+                MAIN_PETITION_PART,
+                "AOR's Declaration",
+                "AOR's Certificate",
+                "Affidavit",
+                "Appendix",
+            }
+        ),
+        default=0,
+    )
     rows = [
         row
-        for row in aligned_index_printed_rows(page_parts, page_text)
+        for row in all_rows
         if row.mapped_part
         and (
             family_split_name(row.mapped_part) == ANNEXURE_FAMILY
@@ -3980,6 +4041,10 @@ def _apply_indexed_annexure_ranges(
         and row.kind == "number"
         and row.start > 0
         and row.end >= row.start
+        and (
+            family_split_name(row.mapped_part) != ANNEXURE_FAMILY
+            or row.start > front_end
+        )
     ]
     if not rows:
         return page_parts

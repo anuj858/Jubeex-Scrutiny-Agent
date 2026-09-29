@@ -11,11 +11,139 @@ import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from itertools import pairwise
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _FOLIO_TOKEN_RE = re.compile(r"(?:\d{1,4}[A-Za-z]?|A\d{1,2}|[A-Z]{1,2})")
+_INDEX_PAGE_SPAN_RE = re.compile(
+    r"(?:\d{1,4}[A-Za-z]?(?:[-–—]\d{1,4}[A-Za-z]?)?|"
+    r"A\d{1,2}(?:[-–—]A?-?\d{1,2})?|[A-Z]{1,2}(?:[-–—][A-Z]{1,2})?)"
+)
+
+
+def _cluster_positions(values: list[float], *, tolerance: float) -> list[float]:
+    clusters: list[list[float]] = []
+    for value in sorted(values):
+        if not clusters or value - clusters[-1][-1] > tolerance:
+            clusters.append([value])
+        else:
+            clusters[-1].append(value)
+    return [sum(cluster) / len(cluster) for cluster in clusters]
+
+
+def index_table_rows_from_tsv(tsv: str) -> str:
+    """Rebuild scanned filing-Index rows from Tesseract word geometry.
+
+    Tesseract's plain text commonly emits the particulars and printed-folio
+    columns as unrelated blocks. The Index parser then sees ``Annexure P-4``
+    without its ``73-144`` range. Scanned Supreme Court indexes retain the
+    table rules in TSV, so use those rules to emit stable three-cell rows.
+    """
+    try:
+        rows = list(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
+    except (csv.Error, TypeError):
+        return ""
+    page_row = next((row for row in rows if row.get("level") == "1"), None)
+    if not page_row:
+        return ""
+    try:
+        page_width = int(page_row.get("width") or 0)
+        page_height = int(page_row.get("height") or 0)
+    except ValueError:
+        return ""
+    if page_width <= 0 or page_height <= 0:
+        return ""
+
+    boxes: list[tuple[int, int, int, int, str]] = []
+    for row in rows:
+        if row.get("level") != "5":
+            continue
+        try:
+            left = int(row.get("left") or 0)
+            top = int(row.get("top") or 0)
+            width = int(row.get("width") or 0)
+            height = int(row.get("height") or 0)
+        except ValueError:
+            continue
+        boxes.append((left, top, width, height, (row.get("text") or "").strip()))
+
+    verticals = _cluster_positions(
+        [
+            left + width / 2
+            for left, _top, width, height, _text in boxes
+            if width <= max(12, page_width * 0.012) and height >= page_height * 0.25
+        ],
+        tolerance=max(8, page_width * 0.008),
+    )
+    horizontals = _cluster_positions(
+        [
+            top + height / 2
+            for _left, top, width, height, _text in boxes
+            if height <= max(12, page_height * 0.012) and width >= page_width * 0.40
+        ],
+        tolerance=max(8, page_height * 0.006),
+    )
+    if len(verticals) < 4 or len(horizontals) < 2:
+        return ""
+
+    # The filing Index begins with serial, particulars, and printed-page
+    # columns. Later columns (file-only page and remarks) are irrelevant.
+    table_left, serial_right, particulars_right, page_right = verticals[:4]
+    if not (
+        table_left < serial_right < particulars_right < page_right
+        and particulars_right - serial_right >= page_width * 0.12
+    ):
+        return ""
+
+    words = [box for box in boxes if box[4]]
+
+    def cell_text(
+        top_bound: float, bottom_bound: float, left_bound: float, right_bound: float
+    ) -> str:
+        selected: list[tuple[float, int, str]] = []
+        for left, top, width, height, text in words:
+            center_x = left + width / 2
+            center_y = top + height / 2
+            if (
+                top_bound < center_y < bottom_bound
+                and left_bound < center_x < right_bound
+            ):
+                selected.append((center_y, left, text))
+        lines: list[list[tuple[float, int, str]]] = []
+        line_tolerance = max(10.0, page_height * 0.010)
+        for word in sorted(selected):
+            if not lines or word[0] - lines[-1][-1][0] > line_tolerance:
+                lines.append([word])
+            else:
+                lines[-1].append(word)
+        return " ".join(
+            text
+            for line in lines
+            for _center_y, _left, text in sorted(line, key=lambda item: item[1])
+        ).strip()
+
+    rebuilt: list[str] = []
+    for top_bound, bottom_bound in pairwise(horizontals):
+        serial_text = cell_text(top_bound, bottom_bound, table_left, serial_right)
+        serial_match = re.search(r"\d{1,3}", serial_text)
+        if not serial_match:
+            continue
+        particulars = cell_text(
+            top_bound, bottom_bound, serial_right, particulars_right
+        )
+        raw_span = re.sub(
+            r"\s+",
+            "",
+            cell_text(top_bound, bottom_bound, particulars_right, page_right),
+        )
+        span_match = _INDEX_PAGE_SPAN_RE.fullmatch(raw_span.strip(".,:;|"))
+        if not particulars or not span_match:
+            continue
+        particulars = re.sub(r"(?i)\b([PR])\s*[-–—]\s*(\d+)\b", r"\1-\2", particulars)
+        rebuilt.append(f"{serial_match.group()}.\t{particulars}\t{span_match.group()}")
+    return "\n".join(rebuilt)
 
 
 def margin_folio_from_tsv(tsv: str) -> str | None:
@@ -119,7 +247,7 @@ def pages_with_large_images(
                     for block in page.get_text("dict").get("blocks", [])
                     if block.get("type") == 1 and block.get("bbox")
                 )
-            except Exception:  # noqa: BLE001 - malformed image blocks fail open
+            except Exception:  # noqa: BLE001, S112 - malformed blocks fail open
                 continue
             if min(image_area / page_area, 1.0) >= minimum_page_coverage:
                 pages.add(number + 1)
@@ -170,6 +298,9 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
                 tsv = output_base.with_suffix(".tsv").read_text(
                     encoding="utf-8", errors="replace"
                 )
+                index_rows = index_table_rows_from_tsv(tsv)
+                if index_rows:
+                    text = text.rstrip() + "\n" + index_rows + "\n"
                 folio = margin_folio_from_tsv(tsv)
                 if folio and (text.rstrip().splitlines()[-1:] != [folio]):
                     text = text.rstrip() + "\n" + folio + "\n"

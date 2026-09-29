@@ -5,6 +5,7 @@ from unittest.mock import patch
 from pypdf import PdfWriter
 
 from extraction_review.split_ocr import (
+    index_table_rows_from_tsv,
     margin_folio_from_tsv,
     ocr_sparse_pages,
     pages_with_large_images,
@@ -28,6 +29,33 @@ def _folio_tsv(token: str, *, left: int, top: int) -> str:
     )
 
 
+def _scanned_index_tsv() -> str:
+    header = (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
+        "left\ttop\twidth\theight\tconf\ttext\n"
+    )
+    records = ["1\t1\t0\t0\t0\t0\t0\t0\t1000\t1400\t-1\t"]
+    # Table borders: serial | particulars | printed page | next column.
+    for left in (100, 170, 620, 790):
+        records.append(f"5\t1\t1\t1\t1\t1\t{left}\t100\t4\t1100\t0\t ")
+    for top in (100, 300):
+        records.append(f"5\t1\t1\t1\t1\t1\t100\t{top}\t800\t4\t0\t ")
+    words = [
+        (120, 160, "16."),
+        (190, 160, "Annexure"),
+        (330, 160, "P"),
+        (355, 160, "-"),
+        (380, 160, "4:"),
+        (190, 210, "A"),
+        (220, 210, "true"),
+        (270, 210, "copy"),
+        (650, 180, "73-144"),
+    ]
+    for word_num, (left, top, text) in enumerate(words, 1):
+        records.append(f"5\t1\t2\t1\t1\t{word_num}\t{left}\t{top}\t50\t24\t95\t{text}")
+    return header + "\n".join(records) + "\n"
+
+
 def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
     assert margin_folio_from_tsv(_folio_tsv("92", left=900, top=35)) == "92"
     assert margin_folio_from_tsv(_folio_tsv("V", left=480, top=35)) == "V"
@@ -36,6 +64,12 @@ def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
 def test_margin_folio_rejects_title_words_and_years():
     assert margin_folio_from_tsv(_folio_tsv("IN", left=60, top=180)) is None
     assert margin_folio_from_tsv(_folio_tsv("2025", left=900, top=35)) is None
+
+
+def test_scanned_index_geometry_rejoins_annexure_and_printed_range():
+    assert index_table_rows_from_tsv(_scanned_index_tsv()) == (
+        "16.\tAnnexure P-4: A true copy\t73-144"
+    )
 
 
 def test_scanned_page_uses_ocr_and_clears_unreadable_flag():

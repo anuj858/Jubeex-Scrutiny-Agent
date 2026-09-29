@@ -179,9 +179,7 @@ def test_repair_keeps_sci_main_petition_and_nests_high_court_writ() -> None:
     assert repaired[76] == ["Annexure P-4"]
     assert repaired[1] == ["Cover Page"]
     # SCI Main Petition first-run survives; HC island was nested away.
-    assert all(
-        repaired.get(page) != ["Main Petition"] for page in range(76, 100)
-    )
+    assert all(repaired.get(page) != ["Main Petition"] for page in range(76, 100))
     # Pre-nest duplicate signal: Llama labeled HC pages as Main Petition.
     main_dupes = [hit for hit in duplicates if hit.part == "Main Petition"]
     assert main_dupes
@@ -311,8 +309,7 @@ def test_fresh_case_report_never_populates_office_report_on_limitation() -> None
     )
 
     assert all(
-        "Office Report on Limitation" not in repaired.get(page, [])
-        for page in (1, 2)
+        "Office Report on Limitation" not in repaired.get(page, []) for page in (1, 2)
     )
     slots = map_slot_pages(type_catalog("SLP_CIVIL"), repaired)
     assert "office_report_on_limitation" not in slots
@@ -384,9 +381,7 @@ def test_repair_demotes_cover_tagged_as_main_and_recovers_petition_body() -> Non
     assert repaired[10] == ["Main Petition"]
     assert repaired[11] == ["Main Petition"]
     assert repaired[12] == ["AOR's Certificate"]
-    assert 1 not in {
-        p for p, names in repaired.items() if names == ["Main Petition"]
-    }
+    assert 1 not in {p for p, names in repaired.items() if names == ["Main Petition"]}
 
 
 def test_cover_allows_numbered_respondent_in_advocate_footer() -> None:
@@ -477,9 +472,7 @@ I, Alakh Pandey, Petitioner, do hereby appoint and retain the Advocate.
 MEMO OF APPEARANCE
 Please enter my appearance on behalf of Petitioner.
 """
-    repaired, _ = repair_compiled_split(
-        {1: ["Main Petition"]}, {1: text}, page_count=1
-    )
+    repaired, _ = repair_compiled_split({1: ["Main Petition"]}, {1: text}, page_count=1)
 
     assert repaired[1] == ["Vakalatnama"]
 
@@ -674,9 +667,7 @@ def test_main_petition_extends_through_grounds_not_one_page() -> None:
     assert repaired[12] == ["Main Petition"]
     assert repaired[14] == ["Main Petition"]
     assert repaired[15] == ["AOR's Certificate"]
-    assert all(
-        repaired.get(page) == ["Main Petition"] for page in range(9, 15)
-    )
+    assert all(repaired.get(page) == ["Main Petition"] for page in range(9, 15))
 
 
 def test_petition_annexure_inventory_sentence_is_not_an_annexure_stamp() -> None:
@@ -745,14 +736,15 @@ def test_lod_annexure_page_cites_are_not_stamps() -> None:
     """Stamped ANNEXURE-E-n is Index Annexure P-n; later Llama P-7+ must survive."""
     from extraction_review.document_parts import annexure_ref_in_heading
 
-    assert annexure_ref_in_heading(
-        "ANNEXURE - E-1 ANDHRA BANK (A Govt of India Undertaking)"
-    ).label == "Annexure P-1"
-    assert annexure_ref_in_heading("ANNEXURE-:-- E-5\nNOTICE").label == "Annexure P-5"
     assert (
         annexure_ref_in_heading(
-            "noise\n·\n@\nANNEXURE - E-4\nMrs. Reema Gupta"
+            "ANNEXURE - E-1 ANDHRA BANK (A Govt of India Undertaking)"
         ).label
+        == "Annexure P-1"
+    )
+    assert annexure_ref_in_heading("ANNEXURE-:-- E-5\nNOTICE").label == "Annexure P-5"
+    assert (
+        annexure_ref_in_heading("noise\n·\n@\nANNEXURE - E-4\nMrs. Reema Gupta").label
         == "Annexure P-4"
     )
 
@@ -867,9 +859,7 @@ def test_repair_keeps_synopsis_out_of_main_petition_when_llama_mislabels() -> No
     assert repaired[13] == ["Main Petition"]
     assert repaired[14] == ["Main Petition"]
     assert repaired[15] == ["AOR's Certificate"]
-    assert all(
-        repaired.get(page) != ["Main Petition"] for page in range(5, 12)
-    )
+    assert all(repaired.get(page) != ["Main Petition"] for page in range(5, 12))
 
 
 def test_repair_keeps_lod_table_continuations_with_high_court_references() -> None:
@@ -1152,9 +1142,7 @@ def test_narrative_filing_vakalatnama_does_not_steal_main_petition() -> None:
     repaired, _ = repair_compiled_split(page_parts, texts, page_count=10)
     assert repaired[7] == ["Main Petition"]
     assert repaired.get(7) != ["Vakalatnama"]
-    assert all(
-        "Vakalatnama" not in (repaired.get(page) or []) for page in range(5, 10)
-    )
+    assert all("Vakalatnama" not in (repaired.get(page) or []) for page in range(5, 10))
 
 
 def test_filing_memo_heading_wins_over_memo_of_appearance_list_item() -> None:
@@ -1447,8 +1435,7 @@ def test_index_places_unstamped_annexure_islands_by_date() -> None:
             "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH:\n1. The petitioner"
         ),
         12: (
-            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\n"
-            "I, the deponent, solemnly affirm"
+            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nI, the deponent, solemnly affirm"
         ),
         13: (
             "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n"
@@ -1524,10 +1511,7 @@ def test_duplicate_stamp_realigns_to_index_particulars() -> None:
         8: ["Affidavit"],
     }
     texts = {
-        1: (
-            "IN THE SUPREME COURT OF INDIA\nPAPER BOOK\n"
-            "(FOR INDEX KINDLY SEE INSIDE)"
-        ),
+        1: ("IN THE SUPREME COURT OF INDIA\nPAPER BOOK\n(FOR INDEX KINDLY SEE INSIDE)"),
         2: (
             "INDEX\n"
             "1. Main Petition\n"
@@ -1707,7 +1691,9 @@ def test_arbitration_preface_is_not_impugned_and_a_series_stamps_stick() -> None
     assert repaired[3] == ["Synopsis"]
     assert repaired[4] == ["List of Dates & Events"]
     assert repaired[5] == ["List of Dates & Events"]
-    assert "Impugned Order" not in {name for names in repaired.values() for name in names}
+    assert "Impugned Order" not in {
+        name for names in repaired.values() for name in names
+    }
     assert repaired[8] == ["Affidavit"]
     assert repaired[9] == ["Affidavit"]
     assert repaired[10] == ["Annexure A-1"]
@@ -1763,18 +1749,28 @@ def test_scanned_synopsis_continues_without_readable_letter_folios():
 def test_index_content_matching_supports_sessions_case_and_ocr_policy_date():
     from extraction_review.split_repair import _score_island_for_index_annexure
 
-    assert _score_island_for_index_annexure(
-        "In the Court of Additional Sessions Judge\nST No. 943/03\nJUDGEMENT",
-        "Order dated 27.05.2006 in S.T. No 943 / 2003", "Annexure P-1",
-    ) >= 9
-    assert _score_island_for_index_annexure(
-        'From:-\nPrincipal Secretary\nLucknow, Date: 28" July, 2021\nPolicy',
-        "Policy dated 28.7.21", "Annexure P-5",
-    ) >= 9
+    assert (
+        _score_island_for_index_annexure(
+            "In the Court of Additional Sessions Judge\nST No. 943/03\nJUDGEMENT",
+            "Order dated 27.05.2006 in S.T. No 943 / 2003",
+            "Annexure P-1",
+        )
+        >= 9
+    )
+    assert (
+        _score_island_for_index_annexure(
+            'From:-\nPrincipal Secretary\nLucknow, Date: 28" July, 2021\nPolicy',
+            "Policy dated 28.7.21",
+            "Annexure P-5",
+        )
+        >= 9
+    )
 
 
 def test_annexure_realign_does_not_read_dates_from_later_bail_application():
-    from extraction_review.split_repair import _realign_annexure_boundaries_to_index_content
+    from extraction_review.split_repair import (
+        _realign_annexure_boundaries_to_index_content,
+    )
 
     texts = {
         1: "INDEX\n1. ANNEXURE P/1\nOrder dated 27.05.2006\n2. ANNEXURE P/2\nOrder dated 21.02.2022",
@@ -1782,7 +1778,12 @@ def test_annexure_realign_does_not_read_dates_from_later_bail_application():
         3: "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\nDate : 21-02-2022\nORDER",
         4: "IN THE SUPREME COURT OF INDIA\nCRL M.P. NO. OF 2023\nAPPLICATION FOR BAIL\nThe order dated 27.05.2006 is discussed again.",
     }
-    parts = {1: ["Index"], 2: ["Annexure P-1"], 3: ["Annexure P-2"], 4: ["Application 1"]}
+    parts = {
+        1: ["Index"],
+        2: ["Annexure P-1"],
+        3: ["Annexure P-2"],
+        4: ["Application 1"],
+    }
     repaired = _realign_annexure_boundaries_to_index_content(parts, texts, 4)
     assert repaired[3] == ["Annexure P-2"]
     assert repaired[4] == ["Application 1"]
@@ -1806,7 +1807,10 @@ def test_ocr_affidavit_numbered_paragraphs_do_not_extend_index():
     assert not _looks_like_index_continuation(affidavit)
     repaired, _ = repair_compiled_split(
         {1: ["Index"], 2: ["Index"]},
-        {1: "INDEX\nSL. NO. PARTICULARS PAGE NO.\n1. Curative Petition with affidavit", 2: affidavit},
+        {
+            1: "INDEX\nSL. NO. PARTICULARS PAGE NO.\n1. Curative Petition with affidavit",
+            2: affidavit,
+        },
         page_count=2,
     )
     assert repaired == {1: ["Index"], 2: ["Affidavit"]}
@@ -1894,19 +1898,29 @@ def test_repair_separates_declaration_and_certificate_pages() -> None:
 def test_noisy_scanned_annexure_stamp_and_index_row_are_distinguished():
     from extraction_review.document_parts import annexure_label_from_text
 
-    assert annexure_label_from_text(
-        "i so ANNEXURE-P-11 as\nCNR No: CHCH020002042022\nPresent: Counsel"
-    ) == "Annexure P-11"
-    assert annexure_label_from_text(
-        "ANNEXURE-P-14 0-185\nIN THE HIGH COURT AT CHANDIGARH\nCivil Writ Petition"
-    ) == "Annexure P-14"
-    assert annexure_label_from_text(
-        "18.\nANNEXURE P/6\nA true copy of Rejoinder\n124-133"
-    ) is None
-    assert annexure_label_from_text(
-        "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nThe petition is confined "
-        "to the pleadings.\nAnnexure-P-18 which is being filed with an application."
-    ) is None
+    assert (
+        annexure_label_from_text(
+            "i so ANNEXURE-P-11 as\nCNR No: CHCH020002042022\nPresent: Counsel"
+        )
+        == "Annexure P-11"
+    )
+    assert (
+        annexure_label_from_text(
+            "ANNEXURE-P-14 0-185\nIN THE HIGH COURT AT CHANDIGARH\nCivil Writ Petition"
+        )
+        == "Annexure P-14"
+    )
+    assert (
+        annexure_label_from_text("18.\nANNEXURE P/6\nA true copy of Rejoinder\n124-133")
+        is None
+    )
+    assert (
+        annexure_label_from_text(
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nThe petition is confined "
+            "to the pleadings.\nAnnexure-P-18 which is being filed with an application."
+        )
+        is None
+    )
 
 
 def test_indexed_high_court_appellant_memo_is_restored_after_filing_memo():
@@ -2004,12 +2018,17 @@ def test_lower_court_memo_heading_variants_map_to_memo_of_parties() -> None:
         assert _outer_anchor_label(caption + heading) == "Memo of Parties"
 
     # A numbered Index entry is a reference, not the start of the memo.
-    assert _outer_anchor_label("INDEX\n21. Memo of Parties 105-106") != "Memo of Parties"
+    assert (
+        _outer_anchor_label("INDEX\n21. Memo of Parties 105-106") != "Memo of Parties"
+    )
     # Wrapped judgment prose is not a document heading.
-    assert _outer_anchor_label(
-        "FAO(OS) 58/2020\n16. As per the Memo of Parties\n"
-        "Memo of Parties extracted herein above, the parties are not the same."
-    ) != "Memo of Parties"
+    assert (
+        _outer_anchor_label(
+            "FAO(OS) 58/2020\n16. As per the Memo of Parties\n"
+            "Memo of Parties extracted herein above, the parties are not the same."
+        )
+        != "Memo of Parties"
+    )
 
 
 def test_numbered_challenged_judgment_is_removed_from_synopsis_and_memo() -> None:
@@ -2081,6 +2100,35 @@ def test_numbered_inner_index_survives_a_corrupted_court_caption() -> None:
         page_count=3,
     )
     assert repaired[2] == ["Annexure P-4"]
+
+
+def test_inner_index_uses_master_index_folio_range_without_annexure_neighbour() -> None:
+    texts = {
+        1: "INDEX\n16.\tAnnexure P-4: A true copy of the plaint\t73-144",
+        2: (
+            "92\nIN THE HIGH COURT OF DELHI\nINDEX-II\n1. Plaint 1-20\n"
+            "Advocate for Plaintiff\nTel.No.22306536\n92"
+        ),
+        3: "101\n4NCTHE HON'BLE HIGH COURT OF DELHI\nINDEX-III\n1. Plaint\n101",
+        4: "104\nIN THE HIGH COURT OF DELHI\nINDEX-IV\n1. Documents\n104",
+    }
+    repaired, _ = repair_compiled_split(
+        {1: ["Index"], 2: ["Index"], 3: ["Index"], 4: ["Index"]},
+        texts,
+        page_count=4,
+    )
+    assert repaired[1] == ["Index"]
+    assert [repaired[page] for page in (2, 3, 4)] == [
+        ["Annexure P-4"],
+        ["Annexure P-4"],
+        ["Annexure P-4"],
+    ]
+
+
+def test_unowned_lower_court_index_is_not_left_as_main_index() -> None:
+    texts = {1: "92\nIN THE HIGH COURT OF DELHI\nINDEX-II\n1. Plaint 1-20"}
+    repaired, _ = repair_compiled_split({1: ["Index"]}, texts, page_count=1)
+    assert 1 not in repaired
 
 
 def test_annexure_does_not_expand_backward_before_its_printed_stamp() -> None:
@@ -2234,10 +2282,15 @@ def test_defect_005_scanned_index_and_late_annexure_boundaries() -> None:
     assert _looks_like_index_continuation(index_continuation)
     assert annexure_label_from_text(index_continuation) is None
 
-    assert annexure_label_from_text("SALE CERTIFICATE\ne 2 .\nAuthorised Officer") is None
-    assert annexure_label_from_text(
-        "@\n— ANNEXURE ~ P-10\nDEBT RECOVERY TRIBUNAL - III, DELHI"
-    ) == "Annexure P-10"
+    assert (
+        annexure_label_from_text("SALE CERTIFICATE\ne 2 .\nAuthorised Officer") is None
+    )
+    assert (
+        annexure_label_from_text(
+            "@\n— ANNEXURE ~ P-10\nDEBT RECOVERY TRIBUNAL - III, DELHI"
+        )
+        == "Annexure P-10"
+    )
 
     texts = {
         69: "ANNEXURE - P-7\nSale Notice",
@@ -2374,9 +2427,7 @@ def test_application_gap_stops_before_lower_court_judgment() -> None:
         ),
         18: "Continuation of the High Court judgment",
     }
-    repaired = _fill_application_gaps(
-        {14: ["Application 1"]}, texts, page_count=18
-    )
+    repaired = _fill_application_gaps({14: ["Application 1"]}, texts, page_count=18)
 
     assert repaired[15] == ["Application 1"]
     assert repaired[16] == ["Application 1"]
