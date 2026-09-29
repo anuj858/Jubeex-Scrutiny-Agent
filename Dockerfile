@@ -27,4 +27,4 @@ RUN uv tool install llamactl
 
 EXPOSE 4501
 
-ENTRYPOINT ["llamactl", "serve", "--host", "0.0.0.0", "--port", "4501"]
+ENTRYPOINT ["/app/scripts/start.sh"]
