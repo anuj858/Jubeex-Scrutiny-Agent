@@ -4,7 +4,7 @@ set -eu
 echo "[startup] Preparing Google WIF credentials..."
 
 # Get WIF JSON from AWS Secrets Manager.
-python3 - <<'PY'
+/app/.venv/bin/python - <<'PY'
 import boto3
 
 client = boto3.client(
@@ -26,7 +26,7 @@ export GOOGLE_APPLICATION_CREDENTIALS=/tmp/google-wif-credentials.json
 
 # Get the current Fargate task-role credentials.
 eval "$(
-python3 - <<'PY'
+/app/.venv/bin/python - <<'PY'
 import json
 import os
 import shlex
