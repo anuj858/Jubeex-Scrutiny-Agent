@@ -75,8 +75,6 @@ env_files = [".env"]
 llama_cloud = true
 required_env_vars = [
     "PINECONE_API_KEY",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
 ]
 
 # Optional runtime defaults. .env overrides these. Do not put secrets here.

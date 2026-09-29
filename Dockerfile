@@ -14,6 +14,11 @@ RUN apt-get update \
 
 COPY . /app/
 
+WORKDIR /app/ui
+RUN npm install
+
+WORKDIR /app
+
 ENV PATH="/root/.local/bin:$PATH"
 
 RUN uv sync --locked
@@ -22,4 +27,4 @@ RUN uv tool install llamactl
 
 EXPOSE 4501
 
-ENTRYPOINT ["llamactl", "serve", "--host", "0.0.0.0", "--port", "4501"]
+ENTRYPOINT ["/app/scripts/start.sh"]
