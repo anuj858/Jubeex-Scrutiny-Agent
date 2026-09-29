@@ -2117,6 +2117,13 @@ def _fill_gaps(
             continue
         if any(name in _NO_BACKWARD_CARRY_PARTS for name in nxt):
             continue
+        # An Annexure begins at its printed ANNEXURE P-n stamp. Do not pull
+        # earlier translated/original sheets into it merely because they are
+        # unlabeled and immediately precede the stamp (for example folios
+        # 23C/23D before Annexure P-1 starts at folio 24). Forward carry from
+        # the stamped page remains unchanged for continuation sheets.
+        if any(family_split_name(name) == ANNEXURE_FAMILY for name in nxt):
+            continue
         text = page_text.get(page, "")
         # Near-blank sheets between LOD and petition are Impugned Order scans.
         if _is_near_blank_page(text):

@@ -2083,6 +2083,29 @@ def test_numbered_inner_index_survives_a_corrupted_court_caption() -> None:
     assert repaired[2] == ["Annexure P-4"]
 
 
+def test_annexure_does_not_expand_backward_before_its_printed_stamp() -> None:
+    texts = {
+        1: (
+            "GOVERNMENT OF MAHARASHTRA\nREGISTRATION CERTIFICATE\n"
+            "True Translated Copy\n23C"
+        ),
+        2: "Original Marathi registration certificate\n23D",
+        3: "24\nANNEXURE P-1\nOffice of the Commissioner for Co-operation",
+        4: "25\nContinuation of the Annexure P-1 record",
+    }
+
+    repaired, _ = repair_compiled_split(
+        {3: ["Annexure P-1"]},
+        texts,
+        page_count=4,
+    )
+
+    assert 1 not in repaired
+    assert 2 not in repaired
+    assert repaired[3] == ["Annexure P-1"]
+    assert repaired[4] == ["Annexure P-1"]
+
+
 def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None:
     texts = {
         1: "INDEX\n#\nDate of Record of Proceeding\nPages\n1\n2\n3",
