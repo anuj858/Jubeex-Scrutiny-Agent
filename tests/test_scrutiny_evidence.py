@@ -17,8 +17,11 @@ from extraction_review.document_parts import (
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import filing_location
 from extraction_review.scrutiny.schema import (
+    BoundingBox,
     DefectResponse,
     EvidenceRef,
+    FindingEvidence,
+    _one_published_evidence,
     apply_evidence_pages,
     apply_status_policy,
 )
@@ -432,3 +435,23 @@ def test_filing_location_states_page_or_page_missing() -> None:
         filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
         == "Page missing — no page was identified in the retrieved excerpts."
     )
+
+
+def test_published_finding_keeps_one_evidence_item() -> None:
+    matched = FindingEvidence(
+        page=1,
+        quote="the line with a box",
+        bounding_boxes=[BoundingBox(page=1, x=0.1, y=0.2, w=0.3, h=0.04)],
+        boxes_status="matched",
+        document_part="Annexure P-4",
+    )
+    page_only = FindingEvidence(
+        page=1,
+        quote="a sentence the page never boxed",
+        boxes_status="page_only",
+        document_part="Annexure P-4",
+    )
+    kept = _one_published_evidence([page_only, matched])
+    assert len(kept) == 1
+    assert kept[0].quote == "the line with a box"
+    assert kept[0].boxes_status == "matched"

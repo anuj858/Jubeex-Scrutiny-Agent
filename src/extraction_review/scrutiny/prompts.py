@@ -89,12 +89,13 @@ in the inspected part, the requirement has not been met.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.6, return \
 needs_review instead.
-7. Each evidence item is {{"chunk_id", "quote"}}. chunk_id is the excerpt \
-label copied exactly, such as c1 from “[c1 | Page 12 — Main Petition]”. \
-Do not invent an id. quote is verbatim text from that excerpt. If the \
-quote is not in an excerpt, set chunk_id and page to null. Never copy a \
-page number from Authority or location_source — those are official-rulebook \
-locators, not pages of this filing.
+7. evidence is a list of exactly one item, {{"chunk_id", "quote"}}. \
+chunk_id is the excerpt label copied exactly, such as c1 from \
+“[c1 | Page 12 — Main Petition]”. Do not invent an id. quote is the one \
+verbatim line that shows this defect. Do not add a second evidence item. \
+If the quote is not in an excerpt, set chunk_id and page to null. Never \
+copy a page number from Authority or location_source — those are \
+official-rulebook locators, not pages of this filing.
 8. Do not quote Index / paper-book listing lines (for example “SLP with \
 Affidavit 1+3”) as proof that a document was filed, sworn, or signed. \
 Quote the document part itself (Affidavit, Main Petition, Declaration, …). \
@@ -830,10 +831,11 @@ def build_defect_prompt(
                 "filing document part and the excerpt, and explain "
                 "whether this defect’s requirement is met. Do not mention "
                 "location_source, SCI_CHECKLIST, handbook PDF pages, or "
-                "check_id. Each evidence item is {chunk_id, quote}. "
-                "chunk_id MUST be copied exactly from the excerpt label "
-                "(“[c1 | Page 12 — Main Petition]” → c1). Quote the "
-                "document part this task inspects — not an Index listing "
+                "check_id. evidence is a list with exactly one item, "
+                "{chunk_id, quote}. chunk_id MUST be copied exactly from "
+                "the excerpt label (“[c1 | Page 12 — Main Petition]” → c1). "
+                "Quote the one line in the document part this task inspects. "
+                "Do not return a second quote. Do not quote an Index listing "
                 "line that merely names that document. If the quote is "
                 "not from an excerpt, set chunk_id and page to null."
             ),

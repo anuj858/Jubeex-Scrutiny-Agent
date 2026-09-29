@@ -481,9 +481,14 @@ def _evidence_from_chunks(
         if not quote:
             continue
         seen.add(page)
-        refs.append(EvidenceRef(page=page, quote=quote))
-        if len(refs) >= 2:
-            break
+        refs.append(
+            EvidenceRef(
+                page=page,
+                quote=quote,
+                chunk_id=str(chunk.get("excerpt_id") or "") or None,
+            )
+        )
+        break
     return refs
 
 
@@ -715,6 +720,22 @@ def attach_evidence_boxes(
     return attached
 
 
+def _one_published_evidence(
+    evidence: list[FindingEvidence],
+) -> list[FindingEvidence]:
+    """The API finding carries one citation. A matched box wins."""
+    if len(evidence) <= 1:
+        return evidence
+
+    def rank(index: int, item: FindingEvidence) -> tuple[int, int, int]:
+        matched = 1 if item.boxes_status == "matched" and item.bounding_boxes else 0
+        has_page = 1 if item.page is not None else 0
+        return (matched, has_page, -index)
+
+    chosen = max(range(len(evidence)), key=lambda index: rank(index, evidence[index]))
+    return [evidence[chosen]]
+
+
 def apply_evidence_pages(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
@@ -906,7 +927,9 @@ def build_finding(
     refs = list(response.evidence)
     if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
-    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
+    evidence = _one_published_evidence(
+        attach_evidence_boxes(refs, layout=layout, chunks=chunks)
+    )
     evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     reviewed_local = _local_pages(layout, reviewed_global)
