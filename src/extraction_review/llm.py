@@ -16,12 +16,8 @@ import random
 import time
 from collections import deque
 from typing import Any
-from urllib.request import Request, urlopen
 
-import boto3
 import httpx
-from google.auth import aws
-from google.auth import exceptions
 from pydantic import BaseModel, ValidationError
 
 from .scrutiny.schema import LlmUsage
@@ -174,45 +170,6 @@ async def acquire_openrouter_slot() -> None:
     await _openrouter_rate_limiter.acquire()
 
 
-class _EcsAwsSecurityCredentialsSupplier(aws.AwsSecurityCredentialsSupplier):
-    """Retrieve temporary AWS credentials from the ECS task-role endpoint."""
-
-    def __init__(self) -> None:
-        self._credentials_uri = os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
-        self._region = (
-            os.getenv("AWS_REGION")
-            or os.getenv("AWS_DEFAULT_REGION")
-            or "ap-south-1"
-        )
-
-    def get_aws_security_credentials(self, context, request):
-        if not self._credentials_uri:
-            raise exceptions.RefreshError(
-                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI is not set"
-            )
-
-        try:
-            url = "http://169.254.170.2" + self._credentials_uri
-            req = Request(url, method="GET")
-
-            with urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode("utf-8"))
-
-            return aws.AwsSecurityCredentials(
-                data["AccessKeyId"],
-                data["SecretAccessKey"],
-                data.get("Token"),
-            )
-        except Exception as exc:
-            raise exceptions.RefreshError(
-                f"Failed to retrieve ECS task credentials: {exc}",
-                retryable=True,
-            ) from exc
-
-    def get_aws_region(self, context, request):
-        return self._region
-
-
 def get_genai_client() -> Any:
     """Lazy Google Gen AI client (Vertex / Agent Platform, ADC or WIF)."""
     global _genai_client
@@ -227,33 +184,10 @@ def get_genai_client() -> Any:
         ) from exc
     project = google_cloud_project()
     location = google_cloud_location()
-    credentials = None
-    if os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"):
-        secret_id = os.getenv(
-            "GOOGLE_WIF_SECRET_ID",
-            "jubeex/google-wif-credentials",
-        )
-        secrets_client = boto3.client(
-            "secretsmanager",
-            region_name=os.getenv("AWS_REGION", "ap-south-1"),
-        )
-        response = secrets_client.get_secret_value(SecretId=secret_id)
-        wif_info = json.loads(response["SecretString"])
-
-        # Generated Google WIF configuration uses EC2 IMDS.
-        # Fargate credentials come from the ECS task-role endpoint,
-        # which is handled by _EcsAwsSecurityCredentialsSupplier.
-        wif_info.pop("credential_source", None)
-
-        credentials = aws.Credentials.from_info(
-            wif_info,
-            aws_security_credentials_supplier=_EcsAwsSecurityCredentialsSupplier(),
-        )
     _genai_client = genai.Client(
         enterprise=True,
         project=project,
         location=location,
-        credentials=credentials,
     )
     logger.info(
         "[LLM] GenAI client ready provider=vertex project=%s location=%s",
