@@ -11,7 +11,8 @@ import io
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from pypdf import PdfReader, PdfWriter
+import pymupdf
+from pypdf import PdfReader
 
 from .document_parts import (
     ANNEXURE_FAMILY,
@@ -23,10 +24,10 @@ from .document_parts import (
     parts_on_page,
 )
 from .split_upload import (
+    _ANNEXURE_SLOT_RE,
     UNDEFINED_SLOT_ID,
     UploadSlot,
     UploadTypeCatalog,
-    _ANNEXURE_SLOT_RE,
     _numbered_slot_sort_key,
     resolve_upload_slot,
 )
@@ -157,24 +158,30 @@ def extract_pdf_pages(
     *,
     reader: PdfReader | None = None,
 ) -> bytes:
-    """Copy 1-indexed pages into a new PDF. pypdf indexes pages from 0."""
+    """Copy 1-indexed pages without flattening or losing layered resources."""
     if not pages or not pdf_bytes:
         return b""
-    local = reader or PdfReader(io.BytesIO(pdf_bytes))
-    writer = PdfWriter()
-    total = len(local.pages)
-    added = 0
-    for page in pages:
-        index = int(page) - 1
-        if index < 0 or index >= total:
-            continue
-        writer.add_page(local.pages[index])
-        added += 1
-    if added == 0:
-        return b""
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
+    # ``reader`` remains in the public signature for existing callers. Page
+    # copying itself uses MuPDF because pypdf's add_page can lose inherited
+    # form/image resources in scanned filings with layered OCR content.
+    del reader
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as source:
+        valid = [
+            int(page) - 1 for page in pages if 0 <= int(page) - 1 < source.page_count
+        ]
+        if not valid:
+            return b""
+        with pymupdf.open() as output:
+            for index in valid:
+                output.insert_pdf(
+                    source,
+                    from_page=index,
+                    to_page=index,
+                    links=True,
+                    annots=True,
+                    widgets=True,
+                )
+            return output.tobytes(garbage=4, deflate=True)
 
 
 def _pages_needing_family_text(

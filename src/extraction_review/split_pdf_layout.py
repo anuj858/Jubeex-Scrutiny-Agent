@@ -90,8 +90,7 @@ def extract_split_layout(
                             # folios in the Part-II (fourth) column while the
                             # normal Part-I page column is blank.
                             page_cells = [
-                                " ".join((cell or "").split())
-                                for cell in cells[2:4]
+                                " ".join((cell or "").split()) for cell in cells[2:4]
                             ]
                             span = next((cell for cell in page_cells if cell), "")
                             if re.fullmatch(r"\d{1,3}[.)]", serial) and body:
@@ -145,6 +144,19 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
     it (``36`` then ``37 to 48``) is not the folio of this sheet.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    # Digitally signed judgments can obscure the corner folio with a stamp,
+    # while retaining an internal footer such as ``Page 1 of 9``. Prefer a
+    # clean isolated outer folio below and use this only as a fallback.
+    page_counter = None
+    for line in reversed(lines[-18:]):
+        match = re.search(
+            r"\b(?:page|pg\.?)\s*(?:no\.?\s*)?(\d{1,4})\s*(?:of|/)\s*\d{1,4}\b",
+            line,
+            re.IGNORECASE,
+        )
+        if match:
+            page_counter = ("number", int(match.group(1)), "")
+            break
     skipped_word = False
     for line in reversed(lines):
         if re.fullmatch(r"[\W_]+", line):
@@ -156,7 +168,7 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
         if numbered:
             number = int(numbered.group("n"))
             if 1900 <= number <= 2099:
-                return None
+                break
             return ("number", number, (numbered.group("suffix") or "").upper())
         if _FOLIO_LETTER_RE.fullmatch(line):
             return ("letter", letter_folio_number(line), "")
@@ -164,5 +176,5 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
         if not skipped_word and re.fullmatch(r"[A-Za-z]{3,}", line):
             skipped_word = True
             continue
-        return None
-    return None
+        break
+    return page_counter

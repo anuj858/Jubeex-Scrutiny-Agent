@@ -753,9 +753,7 @@ def _annexure_mark_from_title_or_stamp(
         if len(line) > 40:
             continue
         prev = lines[index - 1] if index else ""
-        mark = _mark_from_title_line(
-            line, allow_body_tail=False, prev_line=prev
-        )
+        mark = _mark_from_title_line(line, allow_body_tail=False, prev_line=prev)
         if mark is not None:
             return mark
     return None
@@ -822,11 +820,15 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
             _heading_window(text, lines=12),
         )
     )
-    if lower_court_caption and re.search(
-        r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", _heading_window(text, lines=8)
-    ) and not re.search(
-        r"(?i)\bannexure\s*[-–—:/\s]*[pr]\s*[-–—./\s]*\d+\b",
-        _heading_window(text, lines=8),
+    if (
+        lower_court_caption
+        and re.search(
+            r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", _heading_window(text, lines=8)
+        )
+        and not re.search(
+            r"(?i)\bannexure\s*[-–—:/\s]*[pr]\s*[-–—./\s]*\d+\b",
+            _heading_window(text, lines=8),
+        )
     ):
         return None
     return _annexure_mark_from_title_or_stamp(text)
@@ -869,7 +871,10 @@ def _heading_window(text: str, lines: int = 12) -> str:
 def _is_sci_application_start(text: str) -> bool:
     head = _fold(_heading_window(text, lines=20))
     window = _fold((text or "")[:2000])
-    if "in the supreme court of india" not in head and "in the supreme court of india" not in window:
+    if (
+        "in the supreme court of india" not in head
+        and "in the supreme court of india" not in window
+    ):
         return False
     # Paper-book covers list pending I.A.s; that is not an application start.
     if re.search(
@@ -991,10 +996,25 @@ def _memo_of_parties_heading(text: str) -> bool:
         r"memo(?:randum)?\s+of\s+"
         r"(?:part(?:y|ies)|parities|judg(?:e)?ment)\b"
     )
-    if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.I):
+    if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.IGNORECASE):
         return False
-    if re.search(rf"(?m)^\s*{title}", head, re.I):
-        return True
+    for line in head.splitlines():
+        match = re.match(rf"\s*{title}", line, re.IGNORECASE)
+        if not match:
+            continue
+        remainder = line[match.end() :].strip(" \t.:;,-–—()[]")
+        if not remainder:
+            return True
+        # A heading may qualify the memo by court or judgment. Do not accept
+        # ordinary judgment prose merely because OCR wrapped a sentence so
+        # that "Memo of Parties" happens to begin a line.
+        if re.fullmatch(
+            r"(?:(?:before|in)\s+the\s+(?:hon['’]?ble\s+)?high\s+court|"
+            r"of\s+(?:the\s+)?(?:impugned\s+)?judg(?:e)?ment)",
+            remainder,
+            re.IGNORECASE,
+        ):
+            return True
     # Scanning software often prefixes continuation sheets with a filename
     # such as ``RFA_665_2018_MEMO_OF_PARTIES`` rather than repeating the title.
     first_lines = "\n".join((text or "").splitlines()[:4])
@@ -1463,9 +1483,7 @@ def page_parts_from_split(job: Any) -> PagePartMap:
                 numbers.append(int(page))
             except (TypeError, ValueError):
                 continue
-        parts = [
-            part for part in parts_on_page(category) if _is_real_split_label(part)
-        ]
+        parts = [part for part in parts_on_page(category) if _is_real_split_label(part)]
         for part in parts:
             for page in numbers:
                 current = mapping.setdefault(page, [])

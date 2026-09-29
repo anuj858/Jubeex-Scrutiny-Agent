@@ -3,6 +3,7 @@
 import pymupdf
 
 from extraction_review.split_audit import index_rows_with_printed_pages
+from extraction_review.split_pdf_layout import printed_folio
 from extraction_review.structure_split import extract_page_units
 
 
@@ -100,3 +101,9 @@ def test_last_index_page_can_have_only_one_remaining_row():
         units = extract_page_units(pdf.tobytes())
     assert units[1].text.startswith("INDEX\n")
     assert "3.\tVakalatnama\t4" in units[1].text
+
+
+def test_judgment_page_counter_is_a_fallback_folio():
+    signed = "Page 1 of 9\nSignature Not Verified\nSigning Date:11.11.2025"
+    assert printed_folio(signed) == ("number", 1, "")
+    assert printed_folio(signed + "\n92") == ("number", 92, "")

@@ -2005,6 +2005,82 @@ def test_lower_court_memo_heading_variants_map_to_memo_of_parties() -> None:
 
     # A numbered Index entry is a reference, not the start of the memo.
     assert _outer_anchor_label("INDEX\n21. Memo of Parties 105-106") != "Memo of Parties"
+    # Wrapped judgment prose is not a document heading.
+    assert _outer_anchor_label(
+        "FAO(OS) 58/2020\n16. As per the Memo of Parties\n"
+        "Memo of Parties extracted herein above, the parties are not the same."
+    ) != "Memo of Parties"
+
+
+def test_numbered_challenged_judgment_is_removed_from_synopsis_and_memo() -> None:
+    texts = {
+        1: "SYNOPSIS\nBackground and questions presented\nB",
+        2: "LIST OF DATES AND EVENTS\n01.01.2020 Cause arose\nV",
+        3: (
+            "2025:DHC:9725\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "JUDGEMENT (ORAL)\n1. The present appeal is considered.\nPage 1 of 3\n"
+            "Signing Date:11.11.2025"
+        ),
+        4: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "Memo of Parties extracted herein above, the parties differ.\n"
+            "Page 2 of 3\nSigning Date:11.11.2025"
+        ),
+        5: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "For the foregoing reasons the appeal is dismissed.\n"
+            "Page 3 of 3\nSigning Date:11.11.2025"
+        ),
+        6: (
+            "IN THE SUPREME COURT OF INDIA\nPETITION FOR SPECIAL LEAVE\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+    }
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Synopsis"],
+            2: ["List of Dates & Events"],
+            3: ["Synopsis"],
+            4: ["Memo of Parties"],
+            5: ["Impugned Order"],
+            6: ["Main Petition"],
+        },
+        texts,
+        page_count=6,
+    )
+    assert [repaired[page] for page in (3, 4, 5)] == [
+        ["Impugned Order"],
+        ["Impugned Order"],
+        ["Impugned Order"],
+    ]
+
+
+def test_lower_court_index_stays_in_surrounding_annexure() -> None:
+    texts = {
+        1: "ANNEXURE P-4\nIN THE HIGH COURT OF DELHI\nOrder",
+        2: "92\nIN THE HIGH COURT OF DELHI\nINDEX-II\n1. Plaint 1-20",
+        3: "IN THE HIGH COURT OF DELHI\nContinuation of plaint\n93",
+    }
+    repaired, _ = repair_compiled_split(
+        {1: ["Annexure P-4"], 2: ["Index"], 3: ["Annexure P-4"]},
+        texts,
+        page_count=3,
+    )
+    assert repaired[2] == ["Annexure P-4"]
+
+
+def test_numbered_inner_index_survives_a_corrupted_court_caption() -> None:
+    texts = {
+        1: "ANNEXURE P-4\nReproduced record\n100",
+        2: "101\n4NCTHE HON'BLE HIGH COURT OF DELHI\nINDEX-III\n1. Plaint",
+        3: "Reproduced record continues\n102",
+    }
+    repaired, _ = repair_compiled_split(
+        {1: ["Annexure P-4"], 2: ["Index"], 3: ["Annexure P-4"]},
+        texts,
+        page_count=3,
+    )
+    assert repaired[2] == ["Annexure P-4"]
 
 
 def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None:

@@ -13,17 +13,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from .document_parts import (
+    _AFFIDAVIT_HEADING_RE,
+    _CARRY_BLOCKING_PARTS,
     ANNEXURE_FAMILY,
     MAIN_PETITION_PART,
     PagePartMap,
-    _AFFIDAVIT_HEADING_RE,
-    _CARRY_BLOCKING_PARTS,
     _contiguous_groups,
     _heading_window,
     _is_real_split_label,
     _is_sci_application_start,
-    _looks_like_sci_interlocutory,
     _looks_like_index_table,
+    _looks_like_sci_interlocutory,
     _memo_of_parties_heading,
     _vakalatnama_heading,
     annexure_label_from_text,
@@ -239,9 +239,7 @@ _INDEX_CONTINUATION_RE = re.compile(
     r"(?:special leave|petition|annexure|appendix|affidavit|"
     r"vakalat|application|memo of|office report|listing|synopsis)",
 )
-_APPEARANCE_RE = re.compile(
-    r"(?mi)^\s*memo(?:randum)?\s+of\s+app.{0,4}rance\b", re.I
-)
+_APPEARANCE_RE = re.compile(r"(?mi)^\s*memo(?:randum)?\s+of\s+app.{0,4}rance\b", re.I)
 _NEAR_BLANK_RE = re.compile(r"^[\s\d\.]*$")
 
 # Outer SCI paper-book parts: keep the first contiguous run, not the longest.
@@ -322,7 +320,10 @@ class DuplicateSplitHit:
     def as_dict(self) -> dict[str, Any]:
         return {
             "part": self.part,
-            "kept_span": {"start_page": self.kept_span[0], "end_page": self.kept_span[1]},
+            "kept_span": {
+                "start_page": self.kept_span[0],
+                "end_page": self.kept_span[1],
+            },
             "duplicate_spans": [
                 {"start_page": start, "end_page": end}
                 for start, end in self.duplicate_spans
@@ -419,7 +420,6 @@ def _looks_like_court_notice_or_rop(text: str) -> bool:
     return False
 
 
-
 def _is_near_blank_page(text: str) -> bool:
     stripped = (text or "").strip()
     if len(stripped) <= 40 and _NEAR_BLANK_RE.match(stripped or ""):
@@ -434,9 +434,10 @@ def _looks_like_listing_proforma(text: str) -> bool:
     ):
         return True
     folded = _fold(text[:4000])
-    return sum(
-        bool(re.search(pattern, folded, re.I)) for pattern in _LISTING_FIELD_CUES
-    ) >= 3
+    return (
+        sum(bool(re.search(pattern, folded, re.I)) for pattern in _LISTING_FIELD_CUES)
+        >= 3
+    )
 
 
 def _looks_like_sci_checklist(text: str) -> bool:
@@ -458,8 +459,7 @@ def _looks_like_sci_checklist(text: str) -> bool:
     # otherwise the checklist page can be mistaken for an Index continuation.
     compact = re.sub(r"[^a-z0-9]+", "", head.casefold())
     if _SCI_CHECKLIST_RE.search(head) or (
-        "advocateschecklist" in compact
-        and "advocateonrecord" in compact
+        "advocateschecklist" in compact and "advocateonrecord" in compact
     ):
         return True
     # OCR of ticked Advocate's Checklist is often only YES / N.A. answers.
@@ -477,8 +477,14 @@ def _looks_like_sci_checklist(text: str) -> bool:
         return False
     if yes_count >= 4 and len(answers) >= 8:
         return True
-    return yes_count >= 2 and len(answers) >= 3 and (
-        "aor" in folded or "aor code" in folded or "advocate for petitioner" in folded
+    return (
+        yes_count >= 2
+        and len(answers) >= 3
+        and (
+            "aor" in folded
+            or "aor code" in folded
+            or "advocate for petitioner" in folded
+        )
     )
 
 
@@ -524,9 +530,7 @@ def _looks_like_impugned_order_start(text: str) -> bool:
             return False
         if _is_lower_court_caption(text):
             return True
-        if re.search(
-            r"(?mi)certified\s+copy\s+of\s+(?:the\s+)?impugned", head
-        ):
+        if re.search(r"(?mi)certified\s+copy\s+of\s+(?:the\s+)?impugned", head):
             return True
         # Bare title line at the top of the page.
         if re.match(
@@ -542,6 +546,110 @@ def _looks_like_impugned_order_start(text: str) -> bool:
     return False
 
 
+_JUDGMENT_TITLE_RE = re.compile(
+    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*(?:\(\s*oral\s*\))?\s*$"
+)
+
+
+def _restore_front_impugned_judgment(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Restore a challenged judgment placed directly after Synopsis/LOD."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    front_labels = {"Synopsis", "List of Dates & Events"}
+    for start in range(1, page_count + 1):
+        text = page_text.get(start, "")
+        if _printed_folio(text) != ("number", 1, ""):
+            continue
+        if not _is_lower_court_caption(text):
+            continue
+        if not _JUDGMENT_TITLE_RE.search(_heading_window(text, lines=40)):
+            continue
+        if not any(
+            front_labels.intersection(parts_on_page(updated.get(page)))
+            for page in range(max(1, start - 40), start)
+        ):
+            continue
+
+        updated[start] = ["Impugned Order"]
+        last_number = 1
+        pending: list[int] = []
+        for page in range(start + 1, min(page_count, start + 40) + 1):
+            current_text = page_text.get(page, "")
+            current_names = parts_on_page(updated.get(page))
+            if MAIN_PETITION_PART in current_names or _looks_like_sci_main_petition(
+                current_text
+            ):
+                break
+            folio = _printed_folio(current_text)
+            if folio is None:
+                pending.append(page)
+                if len(pending) > 3:
+                    break
+                continue
+            kind, number, suffix = folio
+            if kind != "number" or suffix or number != last_number + len(pending) + 1:
+                break
+            for missing in pending:
+                updated[missing] = ["Impugned Order"]
+            pending.clear()
+            updated[page] = ["Impugned Order"]
+            last_number = number
+        break
+    return updated
+
+
+def _renest_lower_court_indexes(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep reproduced lower-court Index pages in their enclosing Annexure."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        index_heading = re.search(
+            r"(?mi)^\s*index(?:\s*[-–—]?\s*([ivx]+))?\s*$", text[:1800]
+        )
+        if not index_heading:
+            continue
+        qualified_inner_index = len(index_heading.group(1) or "") >= 2
+        if not (_is_lower_court_caption(text) or qualified_inner_index):
+            continue
+        if any(
+            _looks_like_volume_cover(page_text.get(candidate, ""))
+            for candidate in range(max(1, page - 2), min(page_count, page + 2) + 1)
+        ):
+            continue
+        names = parts_on_page(updated.get(page))
+        if not names or not any(
+            name in {"Index", "Record of Proceedings"} for name in names
+        ):
+            continue
+        neighbours: list[str] = []
+        for distance in range(1, 13):
+            for candidate in (page - distance, page + distance):
+                if candidate < 1 or candidate > page_count:
+                    continue
+                annexure = next(
+                    (
+                        name
+                        for name in parts_on_page(updated.get(candidate))
+                        if family_split_name(name) == ANNEXURE_FAMILY
+                    ),
+                    None,
+                )
+                if annexure:
+                    neighbours.append(annexure)
+            if neighbours:
+                break
+        if neighbours and len(set(neighbours)) == 1:
+            updated[page] = [neighbours[0]]
+    return updated
+
+
 def _looks_like_index_continuation(text: str) -> bool:
     """Index pages after the heading often omit the word INDEX."""
     if _looks_like_index_table(text):
@@ -549,7 +657,9 @@ def _looks_like_index_continuation(text: str) -> bool:
     # Sworn numbered paragraphs are not table rows. OCR can put each
     # paragraph number on its own line and defeat the prose-row exclusion.
     if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=24)) and (
-        re.search(r"solemnly\s+affirm|\bdeponent\b|\bverification\b", text, re.IGNORECASE)
+        re.search(
+            r"solemnly\s+affirm|\bdeponent\b|\bverification\b", text, re.IGNORECASE
+        )
     ):
         return False
     folded_body = _fold(text[:2000])
@@ -663,7 +773,9 @@ def _looks_like_checklist_closing_page(text: str) -> bool:
     folded = _fold(text[:1800])
     has_aor_block = bool(
         re.search(r"\b(?:aor|advocate(?:\s+for|\s*-on-record)?)\b", folded)
-        and re.search(r"\b(?:code\s*no\.?|aor\s*code|cc\s*no\.?|signature|date)\b", folded)
+        and re.search(
+            r"\b(?:code\s*no\.?|aor\s*code|cc\s*no\.?|signature|date)\b", folded
+        )
     )
     return has_aor_block and not _looks_like_listing_proforma(text)
 
@@ -742,11 +854,7 @@ def _looks_like_cover_page(text: str) -> bool:
     )
     # Without PAPER BOOK / index footer, appellate + SLP caption alone is too
     # weak — that pattern also opens the Main Petition party schedule.
-    return bool(
-        appellate
-        and has_cover_footer
-        and "questions of law" not in folded
-    )
+    return bool(appellate and has_cover_footer and "questions of law" not in folded)
 
 
 def _looks_like_sci_main_petition(text: str) -> bool:
@@ -911,9 +1019,12 @@ def _outer_anchor_label(text: str) -> str | None:
         and "description" in folded_form
     ):
         return "Filing Memo"
-    if _FILING_MEMO_RE.search(text[:1800]) and not (
-        _looks_like_court_notice_or_rop(text)
-    ) and _is_sci_caption(text) and not _is_lower_court_caption(text):
+    if (
+        _FILING_MEMO_RE.search(text[:1800])
+        and not (_looks_like_court_notice_or_rop(text))
+        and _is_sci_caption(text)
+        and not _is_lower_court_caption(text)
+    ):
         return "Filing Memo"
     # A lower-court report reproduced in an exhibit is not the Supreme Court
     # paper-book's Office Report on Limitation.
@@ -933,13 +1044,13 @@ def _outer_anchor_label(text: str) -> str | None:
         _heading_window(text, lines=8)
     ) and not _is_lower_court_caption(text):
         return "Synopsis"
-    if _LOD_RE.search(
-        _heading_window(text, lines=8)
-    ) and not _is_lower_court_caption(text):
-        return "List of Dates & Events"
-    if _APPENDIX_RE.search(_heading_window(text, lines=6)) and not annexure_ref_in_heading(
+    if _LOD_RE.search(_heading_window(text, lines=8)) and not _is_lower_court_caption(
         text
     ):
+        return "List of Dates & Events"
+    if _APPENDIX_RE.search(
+        _heading_window(text, lines=6)
+    ) and not annexure_ref_in_heading(text):
         return "Appendix"
     # Affidavit before AOR: curative affidavits often say "confined only to the
     # pleadings" and would otherwise steal the AOR Certificate slot.
@@ -1134,10 +1245,7 @@ def _force_annexure_nesting(
                     and _is_sci_caption(text)
                     and not _is_lower_court_caption(text)
                 )
-                or (
-                    _AOR_CERT_RE.search(text[:2500])
-                    and _is_sci_caption(text)
-                )
+                or (_AOR_CERT_RE.search(text[:2500]) and _is_sci_caption(text))
                 or (
                     _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20))
                     and _is_sci_caption(text)
@@ -1161,11 +1269,7 @@ def _force_annexure_nesting(
                 ):
                     continue
             existing_annex = next(
-                (
-                    name
-                    for name in names
-                    if family_split_name(name) == ANNEXURE_FAMILY
-                ),
+                (name for name in names if family_split_name(name) == ANNEXURE_FAMILY),
                 None,
             )
             if existing_annex:
@@ -1346,8 +1450,7 @@ def _apply_outer_anchors(
             continue
         chronology_continuation = _looks_like_lod_continuation(text)
         is_continuation = (
-            active_front_matter == "List of Dates & Events"
-            and chronology_continuation
+            active_front_matter == "List of Dates & Events" and chronology_continuation
         )
         lower_court_reference = _is_lower_court_caption(text)
         # A dated chronology row often names the High Court and the orders in
@@ -1402,10 +1505,9 @@ def _apply_outer_anchors(
             if page in annexure_pages:
                 continue
             text = page_text.get(page, "")
-            if (
-                "List of Dates & Events" in parts_on_page(updated.get(page))
-                and _looks_like_lod_or_synopsis_continuation(text)
-            ):
+            if "List of Dates & Events" in parts_on_page(
+                updated.get(page)
+            ) and _looks_like_lod_or_synopsis_continuation(text):
                 continue
             head = _heading_window(text, lines=20)
             folded = _fold(text[:2500])
@@ -1416,7 +1518,9 @@ def _apply_outer_anchors(
                     "date of decision" in folded
                     or "reserved on" in folded
                     or "pronounced on" in folded
-                    or re.search(r"\b(?:fa[o]?|lpa|w\.p\.|writ petition|civil appeal)\b", folded)
+                    or re.search(
+                        r"\b(?:fa[o]?|lpa|w\.p\.|writ petition|civil appeal)\b", folded
+                    )
                 )
             )
             if not is_judgment_title:
@@ -1553,9 +1657,7 @@ def _demote_unverified_representation_parts(
     for page in sorted(updated):
         names = updated[page]
         text = page_text.get(page, "")
-        trusted = (
-            _is_sci_caption(text) and not _is_lower_court_caption(text)
-        ) or (
+        trusted = (_is_sci_caption(text) and not _is_lower_court_caption(text)) or (
             "Memo of Parties" in names and _memo_of_parties_heading(text)
         )
         if not _is_lower_court_caption(text) and not _outer_anchor_label(text):
@@ -1586,8 +1688,7 @@ def _demote_unverified_office_reports(
         # first 16 extracted lines.
         head = _heading_window(text, lines=24)
         valid_start = bool(_OFFICE_REPORT_HEADING_RE.search(head)) and not (
-            _FRESH_CASE_REPORT_HEADING_RE.search(head)
-            or _is_lower_court_caption(text)
+            _FRESH_CASE_REPORT_HEADING_RE.search(head) or _is_lower_court_caption(text)
         )
         if valid_start:
             active_limitation_report = True
@@ -1717,18 +1818,21 @@ def _demote_front_matter_mislabeled_as_main(
             if _looks_like_sci_main_petition(text):
                 break
             folded = _fold(text[:2500])
-            if any(
-                cue in folded
-                for cue in (
-                    "most respectfully showeth",
-                    "position of parties",
-                    "questions of law",
-                    "declaration in terms",
-                    "main prayer",
-                    "interim prayer",
-                    "humble petition",
+            if (
+                any(
+                    cue in folded
+                    for cue in (
+                        "most respectfully showeth",
+                        "position of parties",
+                        "questions of law",
+                        "declaration in terms",
+                        "main prayer",
+                        "interim prayer",
+                        "humble petition",
+                    )
                 )
-            ) and "synopsis" not in folded[:200]:
+                and "synopsis" not in folded[:200]
+            ):
                 break
             names = parts_on_page(updated.get(page))
             if MAIN_PETITION_PART not in names:
@@ -1918,7 +2022,9 @@ def _fill_gaps(
     page_text: Mapping[int, str],
     page_count: int,
 ) -> PagePartMap:
-    updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
+    updated = {
+        page: list(names) for page, names in page_parts.items() if parts_on_page(names)
+    }
     last_label: list[str] | None = None
     for page in range(1, page_count + 1):
         names = parts_on_page(updated.get(page))
@@ -1971,9 +2077,7 @@ def _fill_gaps(
                 # Do not resume Certificate after leaping an unlabeled island page.
                 last_label = None
                 continue
-        if any(
-            name in {"Vakalatnama", "Memo of Appearance"} for name in last_label
-        ):
+        if any(name in {"Vakalatnama", "Memo of Appearance"} for name in last_label):
             folded = _fold(text[:1800])
             if (
                 "because this" in folded
@@ -2120,8 +2224,10 @@ def _restore_split_preface(
         anchor = _outer_anchor_label(text)
         if anchor not in {None, "List of Dates & Events"}:
             continue
-        if false_lod or (not names and affidavit_body) or (
-            names == ["List of Dates & Events"] and affidavit_body
+        if (
+            false_lod
+            or (not names and affidavit_body)
+            or (names == ["List of Dates & Events"] and affidavit_body)
         ):
             updated[page] = ["Affidavit"]
     return updated
@@ -2152,7 +2258,9 @@ def _label_near_blank_impugned_gap(
     Covers OCR-blank sheets and control-character gibberish from image scans.
     Must not carve real Synopsis letter pages or LOD date columns.
     """
-    updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
+    updated = {
+        page: list(names) for page, names in page_parts.items() if parts_on_page(names)
+    }
     petition_pages = sorted(
         page
         for page, names in updated.items()
@@ -2261,7 +2369,9 @@ def _extend_main_petition_body(
     page_count: int,
 ) -> PagePartMap:
     """Grow Main Petition from its Form-28 start through body pages."""
-    updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
+    updated = {
+        page: list(names) for page, names in page_parts.items() if parts_on_page(names)
+    }
     start = _first_outer_form28_page(page_text, page_count)
     if start is None:
         starts = [
@@ -2336,9 +2446,7 @@ def _extend_main_petition_body(
         ):
             if (
                 petition_body_committed
-                and any(
-                    family_split_name(name) == ANNEXURE_FAMILY for name in names
-                )
+                and any(family_split_name(name) == ANNEXURE_FAMILY for name in names)
                 and not annexure_ref_in_heading(text)
             ):
                 updated[page] = [MAIN_PETITION_PART]
@@ -2491,9 +2599,7 @@ def _preserve_later_llama_annexures(
                 break
             if names and names[0] == label:
                 continue
-            if not names and (
-                _is_near_blank_page(text) or not (text or "").strip()
-            ):
+            if not names and (_is_near_blank_page(text) or not (text or "").strip()):
                 # Do not walk forever into the gap before this annexure.
                 break
             break
@@ -2665,7 +2771,9 @@ def _is_unstamped_annexure_island_start(text: str) -> bool:
         return False
     if _FILING_MEMO_RE.search(_heading_window(text, lines=8)):
         return False
-    if re.search(r"(?im)^\s*[*]?\s*from\s*[:,–-]", text[:500]) or re.search(r"(?i)\bre[.:]\s*compliance\s+(?:letter|chart)", text[:700]):
+    if re.search(r"(?im)^\s*[*]?\s*from\s*[:,–-]", text[:500]) or re.search(
+        r"(?i)\bre[.:]\s*compliance\s+(?:letter|chart)", text[:700]
+    ):
         return True
     if _looks_like_sci_court_rop_extract(text):
         return True
@@ -2706,15 +2814,24 @@ def _score_island_for_index_annexure(
     )
     is_letter = bool(
         re.search(r"(?mi)^\s*[*]?\s*from\s*[:,–-]", (island_text or "")[:500])
-        or bool(re.search(r"\bre[.:]\s*compliance\s+(?:letter|chart)", folded_island[:700]))
+        or bool(
+            re.search(r"\bre[.:]\s*compliance\s+(?:letter|chart)", folded_island[:700])
+        )
         or "sub-divisional" in folded_island
         or "block development" in folded_island
         or "first information report" in folded_island
         or re.search(r"\bfir\s*no", folded_island)
     )
-    structural = is_hc or is_rop or is_letter or (
-        _is_sci_caption(island_text)
-        and re.search(r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", island_text[:900])
+    structural = (
+        is_hc
+        or is_rop
+        or is_letter
+        or (
+            _is_sci_caption(island_text)
+            and re.search(
+                r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", island_text[:900]
+            )
+        )
     )
     if not structural:
         return 0
@@ -2726,7 +2843,9 @@ def _score_island_for_index_annexure(
     # A case number in an Index row must match the record's opening caption,
     # not an incidental citation several pages into another order.
     for number, year in re.findall(r"\b(\d{1,6})\s*/\s*(\d{4})\b", folded_part):
-        if re.search(rf"\b{number}\s*/\s*(?:{year}|{year[-2:]})\b", folded_island[:900]):
+        if re.search(
+            rf"\b{number}\s*/\s*(?:{year}|{year[-2:]})\b", folded_island[:900]
+        ):
             score += 12
             break
 
@@ -2745,7 +2864,9 @@ def _score_island_for_index_annexure(
         if (
             "copy of the writ petition" in folded_part
             and is_hc
-            and re.search(r"humble\s+petition|most\s+respectfully\s+showeth", folded_island)
+            and re.search(
+                r"humble\s+petition|most\s+respectfully\s+showeth", folded_island
+            )
         ):
             score += 12
     if any(word in folded_part for word in ("judgment", "judgement", "final order")):
@@ -2775,7 +2896,9 @@ def _score_island_for_index_annexure(
         if (
             is_review
             and _is_sci_caption(island_text)
-            and re.search(r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", island_text[:1200])
+            and re.search(
+                r"(?mi)^\s*0?\s*r\s*d\s*e\s*r\b|^\s*order\b", island_text[:1200]
+            )
             and not is_rop
         ):
             score += 12
@@ -2827,9 +2950,7 @@ def _score_island_for_index_annexure(
     return score
 
 
-def _annexure_island_may_continue(
-    start_text: str, next_text: str
-) -> bool:
+def _annexure_island_may_continue(start_text: str, next_text: str) -> bool:
     """True when next island is a same-matter RoP twin of a Review/SLP order."""
     if not _looks_like_sci_court_rop_extract(next_text):
         return False
@@ -2882,7 +3003,9 @@ def _place_index_expected_annexures(
         for name in parts_on_page(names)
         if family_split_name(name) == ANNEXURE_FAMILY
     }
-    pending = [(label, particulars) for label, particulars in entries if label not in attached]
+    pending = [
+        (label, particulars) for label, particulars in entries if label not in attached
+    ]
     if not pending:
         return updated
 
@@ -2898,7 +3021,8 @@ def _place_index_expected_annexures(
         text = page_text.get(page, "")
         drop = False
         if "Record of Proceedings" in names and (
-            _looks_like_sci_court_rop_extract(text) or not _looks_like_rop_index_form(text)
+            _looks_like_sci_court_rop_extract(text)
+            or not _looks_like_rop_index_form(text)
         ):
             drop = True
         if "Impugned Order" in names and not _looks_like_impugned_order_start(text):
@@ -2958,7 +3082,9 @@ def _place_index_expected_annexures(
                 for offset in range(page, min(page + 2, page_count + 1))
             )
             score = _score_island_for_index_annexure(window, particulars, label)
-            scored.append((score, page, label, _annexure_number_from_label(label) or 999))
+            scored.append(
+                (score, page, label, _annexure_number_from_label(label) or 999)
+            )
 
     # Prefer strong date/keyword matches first.
     for score, page, label, _number in sorted(
@@ -2996,9 +3122,7 @@ def _place_index_expected_annexures(
             # do not let an earlier Index assignment swallow it (interim→final).
             # Exception: RoP twin of a Review/SLP order sheet for the same matter.
             if page > start and page in candidate_set and page not in assignments:
-                if not _annexure_island_may_continue(
-                    page_text.get(start, ""), text
-                ):
+                if not _annexure_island_may_continue(page_text.get(start, ""), text):
                     break
             if page_starts_application(text):
                 break
@@ -3173,11 +3297,7 @@ def _realign_stamped_annexures_to_index(
     for index, start in enumerate(ordered):
         label = assignments[start]
         stamp_end = run_by_start.get(start, (start, start, label))[1]
-        next_bound = (
-            ordered[index + 1]
-            if index + 1 < len(ordered)
-            else stamp_end + 1
-        )
+        next_bound = ordered[index + 1] if index + 1 < len(ordered) else stamp_end + 1
         end = min(stamp_end, next_bound - 1)
         # If Index says this stamp is really an earlier annexure, stop before
         # the next stamped island that kept/got a different label.
@@ -3213,7 +3333,9 @@ def _realign_annexure_boundaries_to_index_content(
     annexure_pages = {
         page
         for page, names in page_parts.items()
-        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+        if any(
+            family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names)
+        )
     }
     if not annexure_pages:
         return page_parts
@@ -3238,25 +3360,32 @@ def _realign_annexure_boundaries_to_index_content(
     scored: list[tuple[int, int, str]] = []
     for index, start in enumerate(candidates):
         next_candidate = (
-            candidates[index + 1]
-            if index + 1 < len(candidates)
-            else page_count + 1
+            candidates[index + 1] if index + 1 < len(candidates) else page_count + 1
         )
         # Include the full short record where possible, but don't let a later
         # exhibit's date/title contaminate the match for this one.
         window_end = min(next_candidate, start + 25, page_count + 1)
         # Stop at outer back matter, even though it is not an annexure
         # candidate. Bail applications often quote every preceding order.
-        window_end = min(window_end, next((
-            page for page in range(start + 1, window_end)
-            if page_starts_application(page_text.get(page, ""))
-            or _outer_anchor_label(page_text.get(page, "")) in {
-                "Filing Memo", "Vakalatnama", MAIN_PETITION_PART,
-            }
-        ), window_end))
+        window_end = min(
+            window_end,
+            next(
+                (
+                    page
+                    for page in range(start + 1, window_end)
+                    if page_starts_application(page_text.get(page, ""))
+                    or _outer_anchor_label(page_text.get(page, ""))
+                    in {
+                        "Filing Memo",
+                        "Vakalatnama",
+                        MAIN_PETITION_PART,
+                    }
+                ),
+                window_end,
+            ),
+        )
         window = "\n".join(
-            page_text.get(offset, "")
-            for offset in range(start, window_end)
+            page_text.get(offset, "") for offset in range(start, window_end)
         )
         for label, particulars in entries:
             score = _score_island_for_index_annexure(window, particulars, label)
@@ -3265,7 +3394,9 @@ def _realign_annexure_boundaries_to_index_content(
     assignments: dict[int, str] = {}
     used_starts: set[int] = set()
     used_labels: set[str] = set()
-    for score, start, label in sorted(scored, key=lambda row: (-row[0], row[1], row[2])):
+    for score, start, label in sorted(
+        scored, key=lambda row: (-row[0], row[1], row[2])
+    ):
         if score < 9 or start in used_starts or label in used_labels:
             continue
         assignments[start] = label
@@ -3455,9 +3586,7 @@ def _restore_indexed_back_matter_parts(
         previous = page_text.get(page - 1, "")
         if (
             re.search(r"vak[a-z]*nama", previous, re.IGNORECASE)
-            and re.search(
-                r"power\s+of\s+attorney|1\s*\+\s*1", previous, re.IGNORECASE
-            )
+            and re.search(r"power\s+of\s+attorney|1\s*\+\s*1", previous, re.IGNORECASE)
             and prior_filing_context(page)
         ):
             updated[page] = ["Vakalatnama"]
@@ -3488,10 +3617,13 @@ def _restore_indexed_back_matter_parts(
         if page > start and (
             _is_sci_caption(text)
             or annexure_ref_in_heading(text)
-            or _outer_anchor_label(text) in {"Filing Memo", "Vakalatnama", "Memo of Appearance"}
+            or _outer_anchor_label(text)
+            in {"Filing Memo", "Vakalatnama", "Memo of Appearance"}
         ):
             break
-        if page == start or re.search(r"\b(?:opposite\s+parties|respondents?)\b", text, re.I):
+        if page == start or re.search(
+            r"\b(?:opposite\s+parties|respondents?)\b", text, re.I
+        ):
             updated[page] = ["Memo of Parties"]
         else:
             break
@@ -3525,7 +3657,9 @@ def _keep_vakalatnama_with_following_appearance(
             continue
         # Preserve the actual page-level classification while ensuring that
         # the two labels collapse into the existing combined upload document.
-        updated[page + 1] = list(dict.fromkeys([*following_names, "Memo of Appearance"]))
+        updated[page + 1] = list(
+            dict.fromkeys([*following_names, "Memo of Appearance"])
+        )
     return updated
 
 
@@ -3539,7 +3673,9 @@ def _demote_false_affidavit_between_annexures(
     annex_pages = {
         page
         for page, names in updated.items()
-        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+        if any(
+            family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names)
+        )
     }
     if not annex_pages:
         return updated
@@ -3700,9 +3836,7 @@ def repair_compiled_split(
     # unlabeled leftovers → Undefined / Unidentified at slice time.
     repaired = _demote_unmentioned_annexures(repaired, page_text)
     repaired = _apply_index_printed_pages(repaired, page_text, page_count)
-    repaired = _keep_application_party_lists_nested(
-        repaired, page_text, page_count
-    )
+    repaired = _keep_application_party_lists_nested(repaired, page_text, page_count)
     # Keep reproduced High Court documents inside their printed enclosing
     # exhibit even if a later Index-folio reconciliation assigned a top-level
     # heading such as List of Dates & Events.
@@ -3718,9 +3852,7 @@ def repair_compiled_split(
     repaired = _realign_annexure_boundaries_to_index_content(
         repaired, page_text, page_count
     )
-    repaired = _demote_unmatched_local_exhibit_runs(
-        repaired, page_text, page_count
-    )
+    repaired = _demote_unmatched_local_exhibit_runs(repaired, page_text, page_count)
     # A later volume starts a new cover + master Index island. Restore those
     # pages after duplicate collapse so the preceding annexure cannot own them
     # and so printed ranges from every volume participate below.
@@ -3729,9 +3861,9 @@ def repair_compiled_split(
     # over labels assigned from visual/document cues. Apply it after repairs
     # that can split or demote those local exhibit runs.
     repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
-    repaired = _apply_indexed_outer_document_ranges(
-        repaired, page_text, page_count
-    )
+    repaired = _apply_indexed_outer_document_ranges(repaired, page_text, page_count)
+    repaired = _restore_front_impugned_judgment(repaired, page_text, page_count)
+    repaired = _renest_lower_court_indexes(repaired, page_text, page_count)
     repaired = _restore_indexed_back_matter_parts(repaired, page_text, page_count)
     # A standalone custody certificate has no configured slot. Preserve it
     # as Unidentified rather than swallowing it into the preceding bail IA.
@@ -3742,39 +3874,36 @@ def repair_compiled_split(
     )
     if indexed_custody:
         for page in range(1, page_count + 1):
-            if re.search(r"(?im)^\s*custody\s+certificate\s*$", page_text.get(page, "")[:1000]):
-                if any(name.startswith("Application ") for name in parts_on_page(repaired.get(page))):
+            if re.search(
+                r"(?im)^\s*custody\s+certificate\s*$", page_text.get(page, "")[:1000]
+            ):
+                if any(
+                    name.startswith("Application ")
+                    for name in parts_on_page(repaired.get(page))
+                ):
                     repaired.pop(page, None)
 
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
-    repaired = _extend_explicit_memo_of_parties(
-        repaired, page_text, page_count
-    )
-    repaired = _restore_early_record_of_proceedings(
-        repaired, page_text, page_count
-    )
-    repaired = _extend_explicit_affidavit_continuation(
-        repaired, page_text, page_count
-    )
+    repaired = _extend_explicit_memo_of_parties(repaired, page_text, page_count)
+    repaired = _restore_early_record_of_proceedings(repaired, page_text, page_count)
+    repaired = _extend_explicit_affidavit_continuation(repaired, page_text, page_count)
     # A model label alone must never populate the limitation slot. In
     # particular, REPORT OF FRESH CASE is a different Registry document.
-    repaired = _demote_unverified_office_reports(
-        repaired, page_text, page_count
-    )
+    repaired = _demote_unverified_office_reports(repaired, page_text, page_count)
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
     return repaired, duplicates
 
 
-_COURT_FEE_PAGE_RE = re.compile(r"cash\s*&?\s*accounts|bank draft|payment receipt", re.I)
+_COURT_FEE_PAGE_RE = re.compile(
+    r"cash\s*&?\s*accounts|bank draft|payment receipt", re.I
+)
 
 
-def _folio_in_printed_row(
-    folio: tuple[str, int, str], row: IndexPrintedRow
-) -> bool:
+def _folio_in_printed_row(folio: tuple[str, int, str], row: IndexPrintedRow) -> bool:
     kind, number, suffix = folio
     if kind != row.kind or number < row.start or number > row.end:
         return False
@@ -4011,7 +4140,9 @@ def _apply_indexed_outer_document_ranges(
             and certificate_pages
             and "affidavit" in _fold(row.particulars)
         ):
-            after_certificate = [page for page in pages if page > max(certificate_pages)]
+            after_certificate = [
+                page for page in pages if page > max(certificate_pages)
+            ]
             if after_certificate:
                 affidavit_start = min(after_certificate)
         for page in pages:
@@ -4093,11 +4224,7 @@ def _apply_index_printed_pages(
             continue
         names = parts_on_page(updated.get(page))
         current = names[0] if names else None
-        leaked = bool(
-            current
-            and current in anchored
-            and not _in_part(current, folio)
-        )
+        leaked = bool(current and current in anchored and not _in_part(current, folio))
         weak = current in {"PoA/BR"} or (
             current == "Impugned Order" and not _looks_like_impugned_order_start(text)
         )
@@ -4115,7 +4242,9 @@ def _fill_application_gaps(
     page_count: int,
 ) -> PagePartMap:
     """Extend Application n labels across body pages until the next document."""
-    updated = {page: list(names) for page, names in page_parts.items() if parts_on_page(names)}
+    updated = {
+        page: list(names) for page, names in page_parts.items() if parts_on_page(names)
+    }
     last_app: str | None = None
     for page in range(1, page_count + 1):
         names = parts_on_page(updated.get(page))
@@ -4125,9 +4254,7 @@ def _fill_application_gaps(
                 last_app
                 and "Affidavit" in names
                 and _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=24))
-                and re.search(
-                    r"accompanying\s+application", text[:2500], re.IGNORECASE
-                )
+                and re.search(r"accompanying\s+application", text[:2500], re.IGNORECASE)
             ):
                 updated[page] = [last_app]
                 continue

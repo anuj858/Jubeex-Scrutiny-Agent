@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 from pypdf import PdfWriter
 
-from extraction_review.split_ocr import ocr_sparse_pages, pages_with_large_images
+from extraction_review.split_ocr import (
+    margin_folio_from_tsv,
+    ocr_sparse_pages,
+    pages_with_large_images,
+)
 from extraction_review.structure_split import extract_page_units, structure_aware_split
 
 
@@ -14,6 +18,24 @@ def blank_pdf():
     output = io.BytesIO()
     writer.write(output)
     return output.getvalue()
+
+
+def _folio_tsv(token: str, *, left: int, top: int) -> str:
+    return (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+        "1\t1\t0\t0\t0\t0\t0\t0\t1000\t1400\t-1\t\n"
+        f"5\t1\t1\t1\t1\t1\t{left}\t{top}\t40\t30\t95\t{token}\n"
+    )
+
+
+def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
+    assert margin_folio_from_tsv(_folio_tsv("92", left=900, top=35)) == "92"
+    assert margin_folio_from_tsv(_folio_tsv("V", left=480, top=35)) == "V"
+
+
+def test_margin_folio_rejects_title_words_and_years():
+    assert margin_folio_from_tsv(_folio_tsv("IN", left=60, top=180)) is None
+    assert margin_folio_from_tsv(_folio_tsv("2025", left=900, top=35)) is None
 
 
 def test_scanned_page_uses_ocr_and_clears_unreadable_flag():
@@ -44,7 +66,12 @@ def test_ocr_timeout_does_not_invent_text():
 
 
 def test_ocr_keeps_native_annexure_stamp():
-    with patch("extraction_review.structure_split.ocr_sparse_pages", return_value={1: "A scanned judgment with a long body but an unreadable handwritten annexure label."}):
+    with patch(
+        "extraction_review.structure_split.ocr_sparse_pages",
+        return_value={
+            1: "A scanned judgment with a long body but an unreadable handwritten annexure label."
+        },
+    ):
         unit = extract_page_units(blank_pdf(), page_texts={1: "ANNEXURE P-9"})[0]
     assert unit.text.startswith("ANNEXURE P-9\n")
 
