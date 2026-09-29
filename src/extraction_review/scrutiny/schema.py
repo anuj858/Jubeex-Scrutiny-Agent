@@ -638,7 +638,6 @@ class ScrutinyReport(BaseModel):
     catalogue_version: str
     agent_data_id: str | None = None
     file_hash: str | None = None
-    file_name: str | None = None
     petition_type: str | None = None
     model: str | None = None
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

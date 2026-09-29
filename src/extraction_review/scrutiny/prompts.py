@@ -767,18 +767,12 @@ def build_defect_prompt(
     *,
     record: dict[str, Any] | None,
     chunks: list[dict[str, Any]],
-    file_name: str | None = None,
     catalogue: Catalogue | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     search = "\n".join(
         f"{i}. {_search_step(step)}"
         for i, step in enumerate(defect.where_to_look, start=1)
-    )
-    excerpts_label = (
-        f"## Document excerpts from {file_name}"
-        if file_name
-        else "## Document excerpts"
     )
 
     cure_lines: list[str] = []
@@ -832,7 +826,7 @@ def build_defect_prompt(
             "## Structured filing record",
             _format_record(record),
             "",
-            excerpts_label,
+            "## Document excerpts",
             _format_evidence(chunks),
             "",
             "## Output",
