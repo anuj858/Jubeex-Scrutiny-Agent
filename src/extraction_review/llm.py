@@ -234,6 +234,11 @@ def get_genai_client() -> Any:
         )
         with open(credentials_path, encoding="utf-8") as credential_file:
             wif_info = json.load(credential_file)
+
+        # The generated WIF config contains an EC2 credential_source.
+        # ECS/Fargate uses the task-role credentials endpoint instead.
+        wif_info.pop("credential_source", None)
+
         credentials = aws.Credentials.from_info(
             wif_info,
             aws_security_credentials_supplier=_EcsAwsSecurityCredentialsSupplier(),
