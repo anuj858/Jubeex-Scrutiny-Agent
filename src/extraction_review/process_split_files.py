@@ -1060,7 +1060,6 @@ async def _index_split_upload(
     shared_meta = {
         "agent_data_id": item_id,
         "file_id": state.petition_file_id,
-        "file_name": state.filename,
         "file_hash": extracted_data.file_hash,
         "petition_type": filing_type,
         "split_upload": True,

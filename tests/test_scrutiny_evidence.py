@@ -320,8 +320,6 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
         summary="Looks missing but the quote is thin.",
         reasoning="Partial match only.",
         evidence=[],
-        suggested_fix="Add the missing heading.",
-        fix_rationale="Required by the rule.",
     )
     gated = apply_status_policy(weak)
     assert gated.status == "needs_review"
@@ -335,8 +333,6 @@ def test_confident_defect_stays_defect_found() -> None:
         summary="The required declaration is not in the filing.",
         reasoning="Searched the affidavit excerpts; it is not there.",
         evidence=[],
-        suggested_fix="File the declaration.",
-        fix_rationale="The rule requires it.",
     )
     assert apply_status_policy(strong).status == "defect_found"
 
@@ -364,8 +360,6 @@ def test_evidence_pages_snap_to_excerpt_not_rulebook() -> None:
                 quote="Whether the petition is in Form 28  YES",
             )
         ],
-        suggested_fix="File the prescribed checklist.",
-        fix_rationale="Required.",
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page == 2
@@ -388,8 +382,6 @@ def test_invented_evidence_page_becomes_null() -> None:
         summary="Unclear.",
         reasoning="The quote is not in the excerpts.",
         evidence=[EvidenceRef(page=19, quote="something that was never retrieved")],
-        suggested_fix=None,
-        fix_rationale=None,
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page is None
@@ -418,8 +410,6 @@ def test_evidence_keeps_retrieved_page_when_quote_ocr_differs() -> None:
                 quote="Verified at Una on 17/4 day of April, 2026",
             )
         ],
-        suggested_fix="State the drafting date.",
-        fix_rationale="Required.",
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page == 26
@@ -432,13 +422,13 @@ def test_filing_location_states_page_or_page_missing() -> None:
             reviewed_pages=[2],
             document_parts=["Advocate's Checklist"],
         )
-        == "Filing page 2 — Advocate's Checklist."
+        == "Advocate's Checklist, page 2."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[3, 4], document_parts=[])
-        == "Filing page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
+        == "Page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
-        == "Filing page missing — no page was identified in the retrieved excerpts."
+        == "Page missing — no page was identified in the retrieved excerpts."
     )

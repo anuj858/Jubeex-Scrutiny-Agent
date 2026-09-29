@@ -315,8 +315,6 @@ def test_build_finding_does_not_change_status_when_attaching_marks() -> None:
             summary="The last page of the Main Petition has no AOR signature.",
             reasoning="Page 20 was checked and the signature block is blank.",
             evidence=[EvidenceRef(page=20, quote="DRAWN AND FILED BY")],
-            suggested_fix="Sign the last page",
-            fix_rationale="The AOR must sign Form 28",
         )
     )
     finding = build_finding(
@@ -349,8 +347,6 @@ def test_build_finding_does_not_change_status_when_attaching_marks() -> None:
             summary="Cannot see the signature.",
             reasoning="The page is visual.",
             evidence=[],
-            suggested_fix=None,
-            fix_rationale=None,
         ),
         [
             {
