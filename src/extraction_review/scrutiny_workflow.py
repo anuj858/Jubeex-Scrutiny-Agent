@@ -226,9 +226,6 @@ def _sanitize_response(
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
-    if response.status != "defect_found":
-        response.suggested_fix = None
-        response.fix_rationale = None
     return response
 
 

@@ -24,6 +24,7 @@ from extraction_review.scrutiny.rules import (
     rewrite_location_source,
     special_categories_for_catalog,
 )
+from extraction_review.scrutiny.schema import official_source_locations
 
 
 def _defect(
@@ -355,6 +356,20 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "SCI_RULES_2013" in d159.location_source
     assert "Form 28 - SLP.pdf" not in d159.location_source
     assert "2024011691-1.pdf" not in d159.location_source
+
+    rules_pdf = (
+        "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
+        "uploads/2024/01/2024011691-1.pdf"
+    )
+    form_pdf = (
+        "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
+        "uploads/2024/01/2024011779.pdf"
+    )
+    d73_sources = official_source_locations(catalogue.defect("D-73"), catalogue)
+    assert [(item.url, item.page) for item in d73_sources] == [(rules_pdf, 6)]
+    d159_sources = {item.url: item.page for item in official_source_locations(d159, catalogue)}
+    assert d159_sources[rules_pdf] == 30
+    assert d159_sources[form_pdf] is None
 
     d001 = catalogue.defect("D-1")
     assert d001.special_category == "Appeal (Armed Forces)"
