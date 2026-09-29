@@ -60,7 +60,7 @@ from .scrutiny.rules import (
     check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
-    refresh_catalogue,
+    get_catalogue,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -226,6 +226,9 @@ def _sanitize_response(
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
+    if response.status != "defect_found":
+        response.suggested_fix = None
+        response.fix_rationale = None
     return response
 
 
@@ -235,6 +238,7 @@ async def _run_defect(
     catalogue: Catalogue,
     record: dict[str, Any] | None,
     chunks: list[dict[str, Any]],
+    file_name: str | None,
     filing_type: str | None,
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
@@ -253,6 +257,7 @@ async def _run_defect(
             defect,
             record=slice_record_for_defect(record, defect),
             chunks=chunks,
+            file_name=file_name,
             catalogue=catalogue,
         ),
         response_model=DefectResponse,
@@ -508,12 +513,7 @@ class ScrutinyWorkflow(Workflow):
 
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
-        catalogue = refresh_catalogue()
-        logger.info(
-            "[Scrutiny] Using catalogue %s for %s",
-            catalogue.catalogue_version,
-            event.agent_data_id,
-        )
+        catalogue = get_catalogue()
         defects = defects_for_filing_type(
             filing_type,
             special_category=event.special_category,
@@ -591,6 +591,7 @@ class ScrutinyWorkflow(Workflow):
                 catalogue_version=catalogue.catalogue_version,
                 agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
+                file_name=file_name,
                 petition_type=filing_type,
                 model=openrouter_model(),
                 disclaimer=catalogue.disclaimer,
@@ -646,6 +647,7 @@ class ScrutinyWorkflow(Workflow):
                     catalogue=catalogue,
                     record=record,
                     chunks=chunks,
+                    file_name=file_name,
                     filing_type=filing_type,
                     layout=layout,
                     visual_index=visual_index,

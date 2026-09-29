@@ -144,6 +144,7 @@ export interface ScrutinyReport {
   catalogue_version: string;
   agent_data_id: string | null;
   file_hash: string | null;
+  file_name: string | null;
   petition_type: string | null;
   model: string | null;
   generated_at: string;
@@ -295,7 +296,7 @@ export function downloadScrutinyDoc(report: ScrutinyReport) {
 }
 
 function scrutinyFilename(report: ScrutinyReport, ext: string) {
-  const fileName = "filing";
+  const fileName = (report.file_name || "filing").replace(/\.[^.]+$/, "");
   const stamp = (report.generated_at || new Date().toISOString()).slice(0, 10);
   return `${fileName}-scrutiny-${stamp}.${ext}`;
 }
@@ -326,7 +327,7 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
   const generated = report.generated_at
     ? new Date(report.generated_at).toLocaleString()
     : new Date().toLocaleString();
-  const title = "Filing";
+  const title = report.file_name || "Filing";
 
   const usage = report.usage;
   const usageBlock =

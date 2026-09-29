@@ -14,6 +14,7 @@ from typing import Any
 from ..document_parts import (
     filing_type_label,
     format_document_parts,
+    parts_named_in_where_to_look,
     pinecone_queries_for_defect,
 )
 from .rules import (
@@ -85,17 +86,20 @@ missing, return defect_found.
 records stamps and seals as words such as STAMP, SEAL, NOTARY, WELFARE \
 FUND, COURT FEE, Sd/-, digitally signed, or A4. If none of that appears \
 in the inspected part, the requirement has not been met.
-5. Do not add requirements that are not in this task.
+5. Do not add requirements that are not in this task. Do not score sibling or \
+parent defects.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.6, return \
 needs_review instead.
-7. Each evidence item is {{"chunk_id", "quote"}}. chunk_id is the excerpt \
-label copied exactly, such as c1 from “[c1 | Page 12 — Main Petition]”. \
-Do not invent an id. quote is verbatim text from that excerpt. If the \
-quote is not in an excerpt, set chunk_id and page to null. Never copy a \
-page number from Authority or location_source — those are official-rulebook \
-locators, not pages of this filing.
-8. Do not quote Index / paper-book listing lines (for example “SLP with \
+7. suggested_fix is allowed only when status is defect_found. Describe what \
+the filing itself must contain or attach. Follow the cure aims. Never mention \
+Jubeex, auto-generation, uploads, or user-interface options. Otherwise set \
+suggested_fix and fix_rationale to null.
+8. evidence.page is the 1-indexed PDF page of THIS filing, copied from the \
+excerpt header (“[Page 12 — Main Petition]” → 12). Never copy a page number \
+from Authority or location_source — those are official-rulebook locators, \
+not pages of this filing. If the quote is not in an excerpt, set page to null.
+9. Do not quote Index / paper-book listing lines (for example “SLP with \
 Affidavit 1+3”) as proof that a document was filed, sworn, or signed. \
 Quote the document part itself (Affidavit, Main Petition, Declaration, …). \
 If that part is not in the excerpts, return needs_review.
@@ -152,40 +156,31 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
     if not chunks:
         return "No document excerpts could be retrieved."
 
-    for chunk in chunks:
-        chunk.pop("excerpt_id", None)
-
     blocks: list[str] = []
     budget = MAX_EVIDENCE_CHARS
     truncated = 0
-    excerpt_n = 0
 
     for chunk in chunks:
         kind = chunk.get("chunk_kind")
         page = chunk.get("page")
-        label = ""
-        if kind != "summary" and page is not None:
-            excerpt_n += 1
-            label = f"c{excerpt_n}"
         if kind == "summary":
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
             part = format_document_parts(chunk.get("document_part"))
-            loc = f"Page {page}"
-            place = f"{loc} — {part}" if part else loc
-            header = f"[{label} | {place}]" if label else f"[{place}]"
+            page_end = chunk.get("page_end")
+            if page_end is not None and page_end != page:
+                loc = f"Pages {page}–{page_end}"
+            else:
+                loc = f"Page {page}"
+            header = f"[{loc} — {part}]" if part else f"[{loc}]"
         else:
             header = "[Document excerpt]"
 
         text = chunk.get("text") or ""
         block = f"{header}\n{text}"
         if len(block) > budget:
-            if label:
-                excerpt_n -= 1
             truncated += 1
             continue
-        if label:
-            chunk["excerpt_id"] = label
         blocks.append(block)
         budget -= len(block)
 
@@ -463,7 +458,7 @@ def display_cure_steps(steps: list[str] | None) -> list[str]:
     """Catalogue how_to_cure for the finding UI — keep registry wording.
 
     Product chrome ("with Jubeex") is dropped; numbered steps and substance
-    from sci_registry_defects stay intact.
+    from sci_registry_defects stay intact. LLM prompts still use _cure_aim().
     """
     cleaned: list[str] = []
     for step in steps or []:
@@ -575,30 +570,25 @@ def filing_location(
     reviewed_pages: list[int] | None = None,
     document_parts: list[str] | None = None,
 ) -> str:
-    """Page inside the document type, or that the page is missing."""
+    """Where this finding sits in the petition PDF, or that the page is missing."""
     cited = sorted({int(p) for p in (evidence_pages or []) if p is not None})
     parts = [p for p in (document_parts or []) if p]
-    label = ", ".join(parts)
-    if len(cited) == 1 and label:
-        return f"{label}, page {cited[0]}."
-    if cited and label:
-        return f"{label}, pages {', '.join(str(p) for p in cited)}."
+    part_bit = f" — {', '.join(parts)}" if parts else ""
     if len(cited) == 1:
-        return f"Page {cited[0]}."
+        return f"Filing page {cited[0]}{part_bit}."
     if cited:
-        return f"Pages {', '.join(str(p) for p in cited)}."
+        return f"Filing pages {', '.join(str(p) for p in cited)}{part_bit}."
 
     reviewed = sorted({int(p) for p in (reviewed_pages or []) if p is not None})
     if reviewed:
         shown = ", ".join(str(p) for p in reviewed[:8])
         extra = ", …" if len(reviewed) > 8 else ""
-        page_word = "pages" if len(reviewed) > 1 else "page"
-        part_bit = f" — {label}" if label else ""
+        label = "pages" if len(reviewed) > 1 else "page"
         return (
-            f"Page missing — no page number on the citation. "
-            f"Excerpts were reviewed on {page_word} {shown}{extra}{part_bit}."
+            f"Filing page missing — no page number on the citation. "
+            f"Excerpts were reviewed on {label} {shown}{extra}{part_bit}."
         )
-    return "Page missing — no page was identified in the retrieved excerpts."
+    return "Filing page missing — no page was identified in the retrieved excerpts."
 
 
 def finding_location(
@@ -639,8 +629,8 @@ def _filing_page_phrase(
     if cited:
         unique = sorted(set(cited))
         if len(unique) == 1:
-            return f" See page {unique[0]}."
-        return f" See pages {', '.join(str(p) for p in unique)}."
+            return f" See filing page {unique[0]}."
+        return f" See filing pages {', '.join(str(p) for p in unique)}."
     reviewed = [p for p in (pages or []) if p is not None]
     if reviewed:
         unique = sorted(set(reviewed))
@@ -648,11 +638,11 @@ def _filing_page_phrase(
         extra = "" if len(unique) <= 8 else ", …"
         label = "pages" if len(shown) > 1 else "page"
         return (
-            f" Page missing on the citation. "
-            f"Excerpts were reviewed on {label} "
+            f" Filing page missing on the citation. "
+            f"Excerpts were reviewed on filing {label} "
             f"{', '.join(str(p) for p in shown)}{extra}."
         )
-    return " Page missing — no page was identified in the retrieved excerpts."
+    return " Filing page missing — no page was identified in the retrieved excerpts."
 
 
 def fallback_reasoning(
@@ -765,77 +755,123 @@ def _format_parent(defect: Defect) -> str | None:
     return " ".join(lines)
 
 
-def _document_types_for_prompt(defect: Defect) -> str:
-    groups = list(defect.inspect_part_groups or [])
-    lines: list[str] = []
-    for index, name in enumerate(defect.inspect_parts):
-        group = groups[index] if index < len(groups) else ""
-        lines.append(f"- {name} ({group})" if group else f"- {name}")
-    return "\n".join(lines)
-
-
 def build_defect_prompt(
     defect: Defect,
     *,
     record: dict[str, Any] | None,
     chunks: list[dict[str, Any]],
+    file_name: str | None = None,
     catalogue: Catalogue | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
+    filing = _filing_phrase(defect.main_category)
+    category_block = _format_category(defect)
     search = "\n".join(
         f"{i}. {_search_step(step)}"
         for i, step in enumerate(defect.where_to_look, start=1)
     )
+    cues = _trigger_cues(defect.trigger_words)
+    parent = _format_parent(defect)
+    excerpts_label = (
+        f"## Document excerpts from {file_name}"
+        if file_name
+        else "## Document excerpts"
+    )
 
-    document_types = _document_types_for_prompt(defect)
+    cure_lines: list[str] = []
+    seen_topics: set[str] = set()
+    for step in defect.how_to_cure:
+        aim = _cure_aim(step)
+        if not aim:
+            continue
+        topic = aim.split(":", 1)[0].strip().lower()
+        if topic in seen_topics:
+            continue
+        seen_topics.add(topic)
+        cure_lines.append(f"- {aim}")
     sections = [
+        category_block.strip(),
+        "",
         f"# Task {defect.check_id}",
-        "Decide this one defect. Ignore every other defect, even if the excerpts mention it.",
+        (
+            f"For {filing}, decide one registry objection. Ignore every other "
+            "defect, even if the excerpts mention it."
+        ),
         "",
         "## Standard",
         _format_standard(defect),
         "",
-        "## Where to look",
-        search or "Use the document types below.",
-        "",
-        "## Document types to inspect",
-        document_types or "The parts named in where to look.",
-        "",
+        "## Where to search",
+        "Use the structured record and the excerpts. Work through this plan:",
         (
-            "If the excerpts do not include the document type this task is "
-            "inspecting, return needs_review — not defect_found. If those "
-            "parts are in the excerpts and the required content is still "
-            "missing, return defect_found. If you suspect a defect but "
+            f"Inspect these filing parts (match the excerpt labels): "
+            f"{', '.join(parts_named_in_where_to_look(defect)) or 'the parts named below'}. "
+            "Parts listed as inspect targets are required for a decisive result; "
+            "other named parts are context only."
+        ),
+        search,
+        (
+            "A heading without the required content is not compliance. Names "
+            "used only as landmarks (before/after another document) are not "
+            "extra parts you must have in the excerpts. If the excerpts do "
+            "not include the filing part this task is inspecting, return "
+            "needs_review — not defect_found. If those parts are in the "
+            "excerpts and the required content is still missing — including "
+            "a stamp, seal, signature, paper size, margin, numbering, or "
+            "font that this task requires — return defect_found. Do not use "
+            "not_determined for those. If you suspect a defect but "
             "confidence is below 0.6, return needs_review."
         ),
     ]
-    if getattr(defect, "ai_note", None):
-        sections.extend(["", "## Note for AI", defect.ai_note.strip()])
+    if cues:
+        sections.extend(["", "## Recognition cues", cues])
     sections.extend(
         [
+            "",
+            "## Authority",
+            _format_authority(defect, catalogue),
+        ]
+    )
+    if getattr(defect, "notes", None):
+        sections.extend(["", "## Notes", defect.notes.strip()])
+    if parent:
+        sections.extend(["", "## Scope", parent])
+    sections.extend(
+        [
+            "",
+            "## If you find a defect",
+            (
+                "Write suggested_fix as what must appear in or with the filing. "
+                "Use these aims as the substance of the cure — describe the "
+                "document contents, not a product workflow:"
+            ),
+            "\n".join(cure_lines)
+            if cure_lines
+            else ("State the missing or incomplete material in filing terms."),
             "",
             "## Structured filing record",
             _format_record(record),
             "",
-            "## Document excerpts",
+            excerpts_label,
             _format_evidence(chunks),
             "",
             "## Output",
             (
                 f'Return JSON with check_id "{defect.check_id}", status, '
-                "confidence, summary, reasoning, and evidence. "
-                "summary is one plain sentence about this "
+                "confidence, summary, reasoning, evidence, suggested_fix, "
+                "and fix_rationale. summary is one plain sentence about this "
                 "filing and this defect only — do not copy the Standard "
                 "paragraph. reasoning is 2–4 plain sentences: name the "
-                "filing document part and the excerpt, and explain "
+                "filing document part and the excerpt page, and explain "
                 "whether this defect’s requirement is met. Do not mention "
                 "location_source, SCI_CHECKLIST, handbook PDF pages, or "
-                "check_id. Each evidence item is {chunk_id, quote}. "
-                "chunk_id MUST be copied exactly from the excerpt label "
-                "(“[c1 | Page 12 — Main Petition]” → c1). Quote the "
+                "check_id. Each evidence item is {page, quote}. page MUST "
+                "be the integer from the excerpt header (“[Page 12 — "
+                "Main Petition]” → 12; for “Pages 12–13” use 12). Never use a "
+                "page from Authority / the rulebook locator. Quote the "
                 "document part this task inspects — not an Index listing "
                 "line that merely names that document. If the quote is "
-                "not from an excerpt, set chunk_id and page to null."
+                "not from an excerpt, set page to null."
             ),
         ]
     )

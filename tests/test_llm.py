@@ -52,6 +52,8 @@ def test_complete_structured_fields_fills_missing_confidence_and_summary() -> No
             "check_id": "D-73",
             "status": "needs_review",
             "reasoning": "The Vakalatnama was checked on page 40.",
+            "suggested_fix": None,
+            "fix_rationale": None,
         }
     )
     assert completed["confidence"] == 0.5

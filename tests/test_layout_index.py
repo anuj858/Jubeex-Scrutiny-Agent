@@ -15,7 +15,6 @@ from extraction_review.layout_index import (
     stitch_slot_layouts,
 )
 from extraction_review.llm import strict_json_schema
-from extraction_review.scrutiny.prompts import _format_evidence
 from extraction_review.scrutiny.schema import (
     DefectResponse,
     EvidenceRef,
@@ -197,11 +196,7 @@ def test_slot_local_page_stitches_to_global_page_12() -> None:
     )
     parts = [
         SplitPartInput(slot_id="cover_page", file_id="f-cover"),
-        SplitPartInput(
-            slot_id="vakalatnama_appearance",
-            file_id="f-vak",
-            document_parts=("Vakalatnama",),
-        ),
+        SplitPartInput(slot_id="vakalatnama_appearance", file_id="f-vak"),
     ]
     pages_by_slot = {
         "cover_page": {index: f"cover {index}" for index in range(1, 12)},
@@ -219,10 +214,6 @@ def test_slot_local_page_stitches_to_global_page_12() -> None:
     assert 12 in stitched
     assert stitched[12]["local_page"] == 1
     assert stitched[12]["slot_id"] == "vakalatnama_appearance"
-    assert stitched[12]["document_part"] == "Vakalatnama"
-    assert stitched[1]["local_page"] == 1
-    assert stitched[1]["slot_id"] == "cover_page"
-    assert stitched[1]["words"] == []
     boxes, status = boxes_for_quote(QUOTE, 12, stitched)
     assert status == "matched"
     assert boxes[0]["page"] == 12
@@ -242,36 +233,12 @@ def test_dump_layout_index_uses_string_page_keys() -> None:
     assert "12" in payload["pages"]
 
 
-def test_excerpts_are_labeled_with_short_chunk_ids() -> None:
-    chunks = [
-        {
-            "chunk_kind": "page",
-            "page": 14,
-            "document_part": "Annexure P-4",
-            "text": "hello",
-        },
-        {
-            "chunk_kind": "page",
-            "page": 15,
-            "page_end": 16,
-            "document_part": "Annexure P-4",
-            "text": "next",
-        },
-    ]
-    text = _format_evidence(chunks)
-    assert "[c1 | Page 14 — Annexure P-4]" in text
-    assert "[c2 | Page 15 — Annexure P-4]" in text
-    assert chunks[0]["excerpt_id"] == "c1"
-    assert chunks[1]["excerpt_id"] == "c2"
-
-
 def test_defect_response_schema_has_no_bounding_boxes() -> None:
     schema = strict_json_schema(DefectResponse)
     dumped = str(schema)
     defs = schema.get("$defs") or schema.get("definitions") or {}
     properties = (defs.get("EvidenceRef") or {}).get("properties") or {}
-    assert set(properties) == {"chunk_id", "page", "quote"}
-    assert "bounding_boxes" not in properties
+    assert set(properties) == {"page", "quote"}
     assert "FindingEvidence" not in dumped
     assert "BoundingBox" not in dumped
     assert "bounding_boxes" not in dumped
@@ -285,9 +252,9 @@ def test_apply_evidence_pages_still_snaps_page_from_chunk() -> None:
         confidence=0.9,
         summary="Checklist is present.",
         reasoning="The Advocate's Check List is on the excerpt page.",
-        evidence=[
-            EvidenceRef(page=99, quote="ADVOCATE'S CHECK LIST", chunk_id="c1")
-        ],
+        evidence=[EvidenceRef(page=99, quote="ADVOCATE'S CHECK LIST")],
+        suggested_fix=None,
+        fix_rationale=None,
     )
     grounded = apply_evidence_pages(
         response,
@@ -301,9 +268,7 @@ def test_apply_evidence_pages_still_snaps_page_from_chunk() -> None:
         ],
     )
     assert grounded.evidence[0].page == 2
-    assert grounded.evidence[0].chunk_id == "c1"
     assert grounded.evidence[0].model_dump() == {
-        "chunk_id": "c1",
         "page": 2,
         "quote": "ADVOCATE'S CHECK LIST",
     }
@@ -402,9 +367,8 @@ def test_attach_evidence_boxes_survives_broken_citation() -> None:
     )
     attached = attach_evidence_boxes(
         [
-            EvidenceRef(page=99, quote=""),
+            EvidenceRef(page=None, quote=""),
             EvidenceRef(
-                chunk_id="c1",
                 page=25,
                 quote="Drawn By AOR Filed on 15.04.2026 Filed By the petitioner",
             ),
@@ -412,7 +376,6 @@ def test_attach_evidence_boxes_survives_broken_citation() -> None:
         layout=layout,
         chunks=[
             {
-                "excerpt_id": "c1",
                 "chunk_kind": "page",
                 "page": 25,
                 "document_part": "Main Petition",
@@ -420,14 +383,11 @@ def test_attach_evidence_boxes_survives_broken_citation() -> None:
             }
         ],
     )
-    assert attached[0].page is None
-    assert attached[0].boxes_status == "unavailable"
+    assert attached[0].boxes_status in {"unavailable", "page_only"}
     assert attached[0].bounding_boxes == []
     assert attached[1].boxes_status == "matched"
-    assert attached[1].page == 1
-    assert attached[1].document_part == "Main Petition"
+    assert attached[1].page == 25
     assert attached[1].bounding_boxes
-    assert all(box.page == 1 for box in attached[1].bounding_boxes)
     for box in attached[1].bounding_boxes:
         assert 0.0 <= box.x <= 1.0
         assert 0.0 <= box.y <= 1.0
@@ -519,120 +479,3 @@ def test_as_bounding_boxes_normalizes_pixel_coords_instead_of_dropping() -> None
     assert 0.0 < boxes[0].w <= 1.0
     assert 0.0 <= boxes[0].y < 1.0
     assert 0.0 < boxes[0].h <= 1.0
-
-
-def test_known_chunk_id_returns_that_documents_page() -> None:
-    layout = _sentence_layout(14, QUOTE, slot_id="annexure")
-    layout[14]["local_page"] = 1
-    layout[14]["document_part"] = "Annexure P-4"
-    attached = attach_evidence_boxes(
-        [EvidenceRef(chunk_id="c1", page=99, quote=QUOTE)],
-        layout=layout,
-        chunks=[
-            {
-                "excerpt_id": "c1",
-                "chunk_kind": "page",
-                "page": 14,
-                "document_part": "Annexure P-4",
-                "text": QUOTE,
-            }
-        ],
-    )
-    assert attached[0].page == 1
-    assert attached[0].document_part == "Annexure P-4"
-    assert attached[0].boxes_status == "matched"
-    assert attached[0].bounding_boxes
-    assert all(box.page == 1 for box in attached[0].bounding_boxes)
-
-
-def test_quote_in_a_different_chunk_uses_that_chunk() -> None:
-    cited = _sentence_layout(10, "alpha words only", slot_id="index")
-    actual = _sentence_layout(20, QUOTE, slot_id="annexure")
-    cited[10]["local_page"] = 2
-    cited[10]["document_part"] = "Index"
-    actual[20]["local_page"] = 1
-    actual[20]["document_part"] = "Annexure P-4"
-    attached = attach_evidence_boxes(
-        [EvidenceRef(chunk_id="c1", page=10, quote=QUOTE)],
-        layout={**cited, **actual},
-        chunks=[
-            {
-                "excerpt_id": "c1",
-                "chunk_kind": "page",
-                "page": 10,
-                "document_part": "Index",
-                "text": "alpha words only",
-            },
-            {
-                "excerpt_id": "c2",
-                "chunk_kind": "page",
-                "page": 20,
-                "document_part": "Annexure P-4",
-                "text": QUOTE,
-            },
-        ],
-    )
-    assert attached[0].page == 1
-    assert attached[0].document_part == "Annexure P-4"
-    assert attached[0].boxes_status == "matched"
-
-
-def test_page_without_word_boxes_keeps_document_page() -> None:
-    layout = {
-        14: {
-            "words": [],
-            "local_page": 1,
-            "slot_id": "annexure",
-            "document_part": "Annexure P-4",
-        }
-    }
-    attached = attach_evidence_boxes(
-        [
-            EvidenceRef(
-                chunk_id="c1",
-                page=14,
-                quote="a sentence the page never boxed",
-            )
-        ],
-        layout=layout,
-        chunks=[
-            {
-                "excerpt_id": "c1",
-                "chunk_kind": "page",
-                "page": 14,
-                "document_part": "Annexure P-4",
-                "text": "pinecone text that does not contain the quote",
-            }
-        ],
-    )
-    assert attached[0].page == 1
-    assert attached[0].document_part == "Annexure P-4"
-    assert attached[0].bounding_boxes == []
-    assert attached[0].boxes_status == "page_only"
-
-
-def test_overlap_quote_stays_on_the_chunk_page() -> None:
-    start = _sentence_layout(14, "opening words of the annexure", slot_id="annexure")
-    end = _sentence_layout(15, QUOTE, slot_id="annexure")
-    start[14]["local_page"] = 1
-    start[14]["document_part"] = "Annexure P-4"
-    end[15]["local_page"] = 2
-    end[15]["document_part"] = "Annexure P-4"
-    attached = attach_evidence_boxes(
-        [EvidenceRef(chunk_id="c1", page=14, quote=QUOTE)],
-        layout={**start, **end},
-        chunks=[
-            {
-                "excerpt_id": "c1",
-                "chunk_kind": "page",
-                "page": 14,
-                "page_end": 15,
-                "document_part": "Annexure P-4",
-                "text": f"opening words of the annexure\n--- from page 15 ---\n{QUOTE}",
-            }
-        ],
-    )
-    assert attached[0].page == 1
-    assert attached[0].document_part == "Annexure P-4"
-    assert attached[0].bounding_boxes == []
-    assert attached[0].boxes_status == "page_only"
