@@ -14,6 +14,11 @@ RUN apt-get update \
 
 COPY . /app/
 
+WORKDIR /app/ui
+RUN npm install
+
+WORKDIR /app
+
 ENV PATH="/root/.local/bin:$PATH"
 
 RUN uv sync --locked

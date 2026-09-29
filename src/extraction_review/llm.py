@@ -18,6 +18,7 @@ from collections import deque
 from typing import Any
 from urllib.request import Request, urlopen
 
+import boto3
 import httpx
 from google.auth import aws
 from google.auth import exceptions
@@ -228,15 +229,20 @@ def get_genai_client() -> Any:
     location = google_cloud_location()
     credentials = None
     if os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"):
-        credentials_path = os.getenv(
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "/app/google-wif-credentials.json",
+        secret_id = os.getenv(
+            "GOOGLE_WIF_SECRET_ID",
+            "jubeex/google-wif-credentials",
         )
-        with open(credentials_path, encoding="utf-8") as credential_file:
-            wif_info = json.load(credential_file)
+        secrets_client = boto3.client(
+            "secretsmanager",
+            region_name=os.getenv("AWS_REGION", "ap-south-1"),
+        )
+        response = secrets_client.get_secret_value(SecretId=secret_id)
+        wif_info = json.loads(response["SecretString"])
 
-        # The generated WIF config contains an EC2 credential_source.
-        # ECS/Fargate uses the task-role credentials endpoint instead.
+        # Generated Google WIF configuration uses EC2 IMDS.
+        # Fargate credentials come from the ECS task-role endpoint,
+        # which is handled by _EcsAwsSecurityCredentialsSupplier.
         wif_info.pop("credential_source", None)
 
         credentials = aws.Credentials.from_info(

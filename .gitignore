@@ -26,3 +26,5 @@ google-wif-credentials.json
 
 # Local investigation and generated scratch files
 /tmp/
+
+google-wif-credentials*.json
