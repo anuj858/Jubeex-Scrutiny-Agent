@@ -109,6 +109,8 @@ class ScrutinyEvent(StartEvent):
     organization_id: str | None = None
     workspace_id: str | None = None
     special_category: str | None = None
+    filing_type: str | None = None
+    court: str | None = None
 
 
 class Status(Event):
@@ -460,7 +462,11 @@ class ScrutinyWorkflow(Workflow):
                 state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
-        filing_type = metadata.get("classification") or record.get("petition_type")
+        filing_type = (
+            event.filing_type
+            or metadata.get("classification")
+            or record.get("petition_type")
+        )
         layout_url = (
             metadata.get(LAYOUT_ARTIFACT_URL_KEY)
             if isinstance(metadata, dict)
@@ -517,6 +523,7 @@ class ScrutinyWorkflow(Workflow):
         defects = defects_for_filing_type(
             filing_type,
             special_category=event.special_category,
+            court=event.court,
         )
 
         if not defects:

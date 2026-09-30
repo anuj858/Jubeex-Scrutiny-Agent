@@ -651,6 +651,16 @@ def normalize_filing_type(filing_type: str | None) -> str:
     return _CATEGORY_ALIASES.get(collapsed, collapsed)
 
 
+def normalize_court(court: str | None) -> str:
+    """Map a court name or code onto the catalogue court code."""
+    raw = re.sub(r"\s+", " ", (court or "").strip().lower())
+    if not raw:
+        return ""
+    if raw in {"sci", "supreme", "supreme court", "supreme court of india"}:
+        return "sci"
+    return raw.replace(" ", "_")
+
+
 def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
     """Normalized main_category keys that run for this petition type.
 
@@ -895,7 +905,9 @@ def defects_for_filing_type(
     catalogue = get_catalogue()
     allowed = _allowed_check_ids(catalogue)
     specials = _specials_allowed(catalogue, filing_type)
-    court_code = court or ("sci" if catalogue.schema_version == "db" else None)
+    court_code = normalize_court(court) or (
+        "sci" if catalogue.schema_version == "db" else ""
+    )
 
     selected = []
     for defect in catalogue.defects:

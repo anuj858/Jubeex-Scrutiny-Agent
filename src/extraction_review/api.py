@@ -188,6 +188,11 @@ class FilingDocumentsRequest(BaseModel):
         default=None,
         examples=["SLP_CIVIL"],
     )
+    court: str | None = Field(
+        default=None,
+        examples=["sci"],
+        description="Court code. sci is the Supreme Court of India.",
+    )
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
@@ -199,6 +204,7 @@ class FilingDocumentsRequest(BaseModel):
 
     @field_validator(
         "filing_type",
+        "court",
         "organization_id",
         "workspace_id",
         "user_id",
@@ -301,6 +307,16 @@ class CreateScrutinyRequest(BaseModel):
     )
     organization_id: str | None = None
     workspace_id: str | None = None
+    filing_type: str | None = Field(
+        default=None,
+        examples=["SLP_CIVIL"],
+        description="Petition type used to select catalogue defects.",
+    )
+    court: str | None = Field(
+        default=None,
+        examples=["sci"],
+        description="Court code. sci is the Supreme Court of India.",
+    )
     special_category: str | None = Field(
         default=None,
         examples=["Eviction Matters", "N/A"],
@@ -316,6 +332,8 @@ class CreateScrutinyRequest(BaseModel):
         "callback_url",
         "organization_id",
         "workspace_id",
+        "filing_type",
+        "court",
         "special_category",
         mode="before",
     )
@@ -997,7 +1015,9 @@ async def create_scrutiny(
         file_url=(body.file_url if body else None),
         organization_id=(body.organization_id if body else None),
         workspace_id=(body.workspace_id if body else None),
+        filing_type=(body.filing_type if body else None),
         special_category=(body.special_category if body else None),
+        court=(body.court if body else None),
     )
     return _accept_scrutiny(
         event=event,

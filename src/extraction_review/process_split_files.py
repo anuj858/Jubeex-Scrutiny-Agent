@@ -192,6 +192,7 @@ class SplitFilesEvent(StartEvent):
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    court: str | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
     reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
     reuse_parse_job_ids: dict[str, str] = Field(default_factory=dict)
@@ -243,6 +244,7 @@ class SplitFilesState(BaseModel):
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    court: str | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
     parse_artifact_url: str | None = None
@@ -406,6 +408,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.parsed_slots = parsed_slots
             state.agent_data_id = event.agent_data_id
             state.special_category = event.special_category
+            state.court = event.court
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
 
@@ -1401,7 +1404,9 @@ async def _run_nested_scrutiny(
             file_hash=state.file_hash,
             organization_id=state.organization_id or state.org_id,
             workspace_id=state.workspace_id,
+            filing_type=state.filing_type,
             special_category=state.special_category,
+            court=state.court,
         )
     )
     try:
