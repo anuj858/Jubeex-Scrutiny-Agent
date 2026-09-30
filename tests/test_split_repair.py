@@ -2758,6 +2758,45 @@ def test_master_index_restores_long_lod_judgment_affidavit_and_late_annexures():
     assert repaired[14] == ["Annexure P-39"]
 
 
+def test_late_cleanup_restores_multi_page_aor_certificate_continuation() -> None:
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH"
+        ),
+        2: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "I certify that the Curative Petition is confined to the pleadings."
+        ),
+        3: "1. The petitioner had filed the review petition after the judgment.",
+        4: "2. The following substantial questions were considered in chambers.",
+        5: (
+            "3. The requirements have been fulfilled.\n"
+            "I therefore certify that the Curative Petition may be filed.\n"
+            "FILED BY SENIOR ADVOCATE"
+        ),
+        6: "IN THE HIGH COURT OF DELHI AT NEW DELHI\nWRIT PETITION\nORDER",
+    }
+    # The model repeated Main Petition on the unheaded certificate body.
+    # Duplicate cleanup keeps page 1 and removes the later false island.
+    bad = {
+        1: ["Main Petition"],
+        2: ["AOR's Certificate"],
+        3: ["Main Petition"],
+        4: ["Main Petition"],
+        5: ["Main Petition"],
+        6: ["Annexure P-1"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=6)
+
+    assert repaired[2] == ["AOR's Certificate"]
+    assert repaired[3] == ["AOR's Certificate"]
+    assert repaired[4] == ["AOR's Certificate"]
+    assert repaired[5] == ["AOR's Certificate"]
+    assert repaired.get(6) != ["AOR's Certificate"]
+
+
 def test_application_gap_stops_before_lower_court_judgment() -> None:
     from extraction_review.split_repair import _fill_application_gaps
 

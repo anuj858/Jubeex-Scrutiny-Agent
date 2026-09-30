@@ -2435,6 +2435,51 @@ def _fill_gaps(
     return updated
 
 
+def _extend_explicit_aor_certificate_continuation(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Restore certificate body pages exposed by late duplicate cleanup.
+
+    The model can label unheaded continuation sheets as a second Main
+    Petition (or another first-run part). Duplicate collapse removes that
+    incorrect island after the general gap pass has run, leaving the sheets
+    unlabelled. Extend only from an explicit AOR Certificate heading and only
+    into those unlabelled sheets; an existing label or a strong document start
+    remains authoritative.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    certificate_pages = [
+        page
+        for page in range(1, page_count + 1)
+        if _outer_anchor_label(page_text.get(page, "")) == "AOR's Certificate"
+    ]
+    for start in certificate_pages:
+        updated[start] = ["AOR's Certificate"]
+        for page in range(start + 1, page_count + 1):
+            if parts_on_page(updated.get(page)):
+                break
+            text = page_text.get(page, "")
+            if not (text or "").strip():
+                break
+            if (
+                _outer_anchor_label(text)
+                or _looks_like_index_table(text)
+                or _looks_like_index_continuation(text)
+                or page_starts_application(text)
+                or _vakalatnama_heading(text)
+                or _is_lower_court_caption(text)
+                or _looks_like_sci_court_rop_extract(text)
+                or annexure_mark_in_heading(text)
+                or _looks_like_sci_main_petition(text)
+                or _is_unstamped_annexure_island_start(text)
+            ):
+                break
+            updated[page] = ["AOR's Certificate"]
+    return updated
+
+
 def _looks_like_lod_or_synopsis_continuation(text: str) -> bool:
     """True for chronology rows or an explicit Synopsis/LOD heading."""
     head = (text or "")[:500]
@@ -4305,6 +4350,12 @@ def repair_compiled_split(
     # A model label alone must never populate the limitation slot. In
     # particular, REPORT OF FRESH CASE is a different Registry document.
     repaired = _demote_unverified_office_reports(repaired, page_text, page_count)
+    # Duplicate collapse can expose unheaded body sheets after the ordinary
+    # gap pass. Restore only the continuation of an explicitly headed AOR
+    # Certificate, stopping at the next strong document boundary.
+    repaired = _extend_explicit_aor_certificate_continuation(
+        repaired, page_text, page_count
+    )
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
