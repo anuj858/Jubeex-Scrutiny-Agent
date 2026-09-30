@@ -83,7 +83,7 @@ _FRESH_CASE_REPORT_HEADING_RE = re.compile(
 _LISTING_RE = re.compile(
     r"proforma\s+for\s+first\s+listin\.?g?|"
     r"proforma\s+of\s+first\s+listing|"
-    r"listing\s+proforma|listed\s+proforma|first\s+proforma|"
+    r"listing\s+proforma|listed\s+(?:proforma|performa)|first\s+proforma|"
     r"performa\s+for\s+first\s+listing|"
     r"(?m:^\s*(?:proforma|performa)\s*$)",
     re.I,
@@ -390,10 +390,19 @@ def _is_sci_caption(text: str) -> bool:
 
 
 def _is_lower_court_caption(text: str) -> bool:
-    head = _fold(_heading_window(text, lines=14))
+    raw_head = _heading_window(text, lines=14)
+    head = _fold(raw_head)
     if _is_sci_caption(text):
         return False
-    return bool(_HC_CAPTION_RE.search(head) or _TRIBUNAL_CAPTION_RE.search(head))
+    explicit_hc_heading = re.search(
+        r"(?mi)^\s*(?:in\s+the\s+)?(?:hon['’]?ble\s+)?high\s+court\s+of\b",
+        raw_head,
+    )
+    return bool(
+        explicit_hc_heading
+        or _HC_CAPTION_RE.search(head)
+        or _TRIBUNAL_CAPTION_RE.search(head)
+    )
 
 
 def _looks_like_rop_index_form(text: str) -> bool:
@@ -541,11 +550,21 @@ def _looks_like_impugned_order_start(text: str) -> bool:
         return False
     if "matter in issue" in folded or "res judicata" in folded:
         return False
+    # An application's closing prayer can ask for exemption from filing a
+    # "certified copy of the Impugned Judgment".  That sentence is relief
+    # sought, not the title of a newly starting judgment document.
+    head = _heading_window(text, lines=12)
+    if re.search(r"(?mi)^\s*prayer\s*[:-]", head) and re.search(
+        r"allow\s+the\s+application|exempt\s+the\s+petitioner|"
+        r"applicant\s+shall",
+        head,
+        re.IGNORECASE,
+    ):
+        return False
     if _is_sci_caption(text) and (
         "special leave" in folded or "petition for special leave" in folded
     ):
         return False
-    head = _heading_window(text, lines=12)
     if _IMPUGNED_ORDER_RE.search(head):
         if "annexure" in _fold(head) and "true copy" in _fold(head):
             return False
@@ -568,7 +587,8 @@ def _looks_like_impugned_order_start(text: str) -> bool:
 
 
 _JUDGMENT_TITLE_RE = re.compile(
-    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*(?:\(\s*oral\s*\))?\s*$"
+    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order(?:\s+sheet)?)"
+    r"\s*(?:\(\s*oral\s*\))?\s*$"
 )
 
 
@@ -864,9 +884,29 @@ def _looks_like_cover_page(text: str) -> bool:
     if _PARTY_SCHEDULE_RE.search(party_schedule_text):
         return False
     has_cover_footer = bool(_COVER_FOOTER_RE.search(page_head))
+    # Some scan layers destroy only the decorative court heading (for example
+    # ``IN BYE SUPRE Up IA``) while preserving the rest of the one-name-per-side
+    # cover and its PAPER BOOK footer.  That combination is still specific
+    # enough to recover the cover without weakening the Form-28 exclusions
+    # below.  Requiring both the cause-title shape and filing footer prevents a
+    # body page that merely mentions PAPER BOOK from becoming a cover.
+    has_cover_cause_title = all(
+        cue in folded
+        for cue in ("in the matter of", "versus", "petitioner", "respondent")
+    )
+    has_cover_filing_footer = bool(
+        re.search(
+            r"advocate\s+for\s+(?:the\s+)?(?:petitioner|respondent)",
+            folded,
+        )
+        and re.search(r"\bfiled\s+o[nm]\b", folded)
+    )
+    has_degraded_sci_cover = has_cover_cause_title and has_cover_filing_footer
     # Strong paper-book cover stamps win even when caption OCR is noisy.
     if has_cover_footer and (
-        _is_sci_caption(text) or "supreme court of india" in folded
+        _is_sci_caption(text)
+        or "supreme court of india" in folded
+        or has_degraded_sci_cover
     ):
         # Still refuse real Form-28 / OR / Listing bodies.
         if "questions of law" in folded or "form 28" in folded:
@@ -4601,6 +4641,17 @@ def _apply_indexed_annexure_ranges(
             # A truncated range at the end of an uploaded bundle must not
             # swallow later registry/back-matter pages.
             if physical_start < zone_start or physical_end > page_count:
+                continue
+            # The uploaded bundle can omit most of an indexed exhibit and
+            # jump from (for example) printed folio 20 straight to 91.  Do not
+            # project the missing 21-33 sheets onto the physically following
+            # Applications/Filing Memo.  Any explicit folio inside the
+            # projected physical span must still belong to this Index row.
+            if any(
+                folio is not None and not _folio_in_printed_row(folio, row)
+                for page in range(physical_start, physical_end + 1)
+                if (folio := _printed_folio(page_text.get(page, "")))
+            ):
                 continue
             for page in range(physical_start, physical_end + 1):
                 owners[page] = label

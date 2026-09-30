@@ -4,8 +4,8 @@
   "requiresCompatibilities": [
     "FARGATE"
   ],
-  "cpu": "1024",
-  "memory": "2048",
+  "cpu": "2048",
+  "memory": "4096",
   "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
   "containerDefinitions": [

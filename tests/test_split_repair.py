@@ -540,6 +540,50 @@ def test_cover_with_spaced_ocr_prayer_and_ia_list_is_not_application() -> None:
     assert repaired[9] == ["Main Petition"]
 
 
+def test_cover_survives_corrupted_supreme_court_heading() -> None:
+    """Defect file 002: decorative SCI heading is unreadable after OCR."""
+    from extraction_review.split_repair import (
+        _looks_like_cover_page,
+        _outer_anchor_label,
+    )
+
+    cover = """
+IN BYE SUPRE Up IA
+Arising out of the impugned final Judgment and order dated 09.05.2025
+WITH
+PRAYER FOR INTERIM RELIEF
+IN THE MATTER OF:
+TILAK RAJ ..... Petitioner
+VERSUS
+STATE OF U.T. CHANDIGARH & ORS. .... Respondents
+WITH
+I.A. No. ____ OF 2025
+(Application for Permission to file Additional document)
+PAPER BOOK
+(FOR INDEX KINDLY SEE INSIDE)
+ADVOCATE FOR PETITIONER: TINA GARG
+FILED ON: 07.08.2025
+"""
+
+    assert _looks_like_cover_page(cover)
+    assert _outer_anchor_label(cover) == "Cover Page"
+
+
+def test_listed_performa_heading_starts_listing_proforma() -> None:
+    """Defect File_007 uses LISTED PERFORMA rather than LISTING PROFORMA."""
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "Section: IV-B\nLISTED PERFORMA\n"
+        "The case pertains to (Please tick/check the correct box)\n"
+        "Central Act: Bharatiya Nagarik Suraksha Sanhita, 2023\n"
+        "Impugned Interim Order: 01.09.2025\n"
+        "Nature of Matter: Criminal\nPetitioner/Appellant No.1: Mubarak Ali"
+    )
+
+    assert _outer_anchor_label(text) == "Listing Proforma"
+
+
 def test_form28_party_schedule_is_main_petition_not_cover() -> None:
     from extraction_review.split_repair import (
         _looks_like_cover_page,
@@ -2870,6 +2914,85 @@ def test_index_range_offset_relabels_complete_scanned_annexures() -> None:
 
     assert all(repaired[page] == ["Annexure P-1"] for page in range(6, 9))
     assert all(repaired[page] == ["Annexure P-2"] for page in range(9, 12))
+
+
+def test_index_range_offset_does_not_cross_a_printed_folio_jump() -> None:
+    """Defect File_007 omits P-1 folios 21-33 before jumping to folio 91."""
+    from extraction_review.split_repair import _apply_indexed_annexure_ranges
+
+    texts = {
+        16: "LIST OF DATES AND EVENTS\nANNEXURE P-1 (Page 17-33)",
+        33: "Main filing page\n15",
+        34: "Main filing page\n16",
+        35: 'Annexure "P-1"\n17',
+        36: "FIR continuation\n18",
+        37: "FIR continuation\n19",
+        38: "FIR continuation\n20",
+        39: 'Annexure "P-4"\n91',
+        40: "Criminal appeal continuation\n92",
+        41: "Criminal appeal continuation\n93",
+        42: "Criminal appeal continuation\n94",
+        43: "Criminal appeal continuation\n95",
+        44: 'Annexure "P-5"\n96',
+        45: "Suspension application continuation\n97",
+        46: "Suspension application continuation\n98",
+        47: "IN THE SUPREME COURT OF INDIA\nAPPLICATION SEEKING EXEMPTION\n99",
+        48: "Application body\n100",
+        49: "PRAYER: Allow the application\n101",
+        50: "IN THE SUPREME COURT OF INDIA\nFILING INDEX\n112",
+        51: "Rechecking Letter\n119",
+    }
+    parts = {16: ["List of Dates & Events"]}
+    parts.update({page: ["Annexure P-1"] for page in range(35, 39)})
+    parts.update(
+        {
+            39: ["Annexure P-4"],
+            44: ["Annexure P-5"],
+            47: ["Application 1"],
+            48: ["Application 1"],
+            49: ["Application 1"],
+            50: ["Filing Memo"],
+        }
+    )
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, page_count=51)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(35, 39))
+    assert repaired[47] == ["Application 1"]
+    assert repaired[48] == ["Application 1"]
+    assert repaired[49] == ["Application 1"]
+    assert repaired[50] == ["Filing Memo"]
+
+
+def test_order_sheet_after_lod_is_restored_as_impugned_order() -> None:
+    """Defect File_007 labels the challenged decision as an Order Sheet."""
+    from extraction_review.split_repair import _restore_front_impugned_judgment
+
+    texts = {
+        1: "LIST OF DATES AND EVENTS\n01.09.2025 Impugned order was passed\nI",
+        2: (
+            "1\nHIGH COURT OF CHHATTISGARH AT BILASPUR\n"
+            "CRA No. 1520 of 2025\nAppellant Versus Respondent\n"
+            "Order Sheet\n01/09/2025 Heard on I.A. No. 01/2025\n1"
+        ),
+        3: "Continuation of order\n2",
+        4: "Accordingly, I.A. No. 01/2025 stands dismissed.\nJudge\n3",
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH"
+        ),
+    }
+    bad = {
+        1: ["List of Dates & Events"],
+        2: ["List of Dates & Events"],
+        3: ["List of Dates & Events"],
+        4: ["List of Dates & Events"],
+        5: ["Main Petition"],
+    }
+
+    repaired = _restore_front_impugned_judgment(bad, texts, page_count=5)
+
+    assert all(repaired[page] == ["Impugned Order"] for page in range(2, 5))
 
 
 def test_lod_continuation_accepts_ocr_punctuation_before_date() -> None:
