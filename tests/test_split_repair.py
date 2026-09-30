@@ -2180,6 +2180,237 @@ def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None
     assert repaired[5] == ["Office Report on Limitation"]
 
 
+def test_main_petition_index_range_does_not_absorb_blank_rop_table() -> None:
+    """The RoP table's final serial number is not a printed page folio."""
+    from extraction_review.split_repair import (
+        _apply_indexed_outer_document_ranges,
+        _looks_like_rop_index_form,
+    )
+
+    rop = (
+        "RECORD OF PROCEEDINGS\n"
+        "SI.No\nDate of Records of Proceedings\nPage\n"
+        + "\n".join(str(number) for number in range(1, 22))
+    )
+    texts = {
+        2: rop,
+        3: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "11.\tSpecial Leave Petition with affidavit.\t16 – 28\n"
+        ),
+        4: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH\n16"
+        ),
+    }
+    page_parts = {
+        2: ["Record of Proceedings"],
+        3: ["Index"],
+        4: ["Main Petition"],
+    }
+
+    assert _looks_like_rop_index_form(rop)
+    repaired = _apply_indexed_outer_document_ranges(
+        page_parts, texts, page_count=4
+    )
+
+    assert repaired[2] == ["Record of Proceedings"]
+    assert repaired[4] == ["Main Petition"]
+
+
+def test_unrelated_pre_index_court_rop_is_left_unidentified() -> None:
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "VINOD & ORS. ... PETITIONERS\nVERSUS\n"
+            "STATE OF HARYANA & ORS. ... RESPONDENTS\nPAPER BOOK"
+        ),
+        2: (
+            "INDEX\nDate of Record of Proceeding\nPages\n"
+            + "\n".join(str(number) for number in range(1, 11))
+        ),
+        3: (
+            "ITEM NO.42 COURT NO.1 SECTION IV-D\n"
+            "ITEM NO.37\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "SPECIAL LEAVE PETITION Diary No.51554/2025\n"
+            "DHARAMPAL & ORS. Petitioner(s)\nVERSUS\n"
+            "STATE OF HARYANA & ORS. Respondent(s)\n"
+            "UPON hearing the counsel the Court made the following ORDER\n1"
+        ),
+        4: "condoned.\nIssue notice.\nASSISTANT REGISTRAR\n2",
+        5: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "1. Office Report on Limitation A\n"
+            "2. Synopsis and List of Dates B-G"
+        ),
+    }
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Record of Proceedings"],
+        3: ["Record of Proceedings"],
+        4: ["Record of Proceedings"],
+        5: ["Index"],
+    }
+
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=5)
+
+    assert repaired[2] == ["Record of Proceedings"]
+    assert 3 not in repaired
+    assert 4 not in repaired
+    assert repaired[5] == ["Index"]
+
+
+def test_civil_appeal_and_post_annexure_boundaries_are_restored() -> None:
+    """Defect 011: nested NCLAT headings cannot steal outer filing sections."""
+    cover = (
+        "IN THE HON’BLE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\nCIVIL APPEAL NO. OF 2026\n"
+        "IN THE MATTER OF:\nAssets Care ... Appellant\nVERSUS\n"
+        "Mehar Bhoomi ... Respondents\nWITH\nI.A. NO. OF 2026\n"
+        "APPLICATION FOR STAY\nPAPERBOOK\n"
+        "(FOR THE INDEX, PLEASE SEE INSIDE)\nADVOCATE FOR THE APPELLANT"
+    )
+    petition = (
+        "IN THE HON’BLE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\nCIVIL APPEAL NO. OF 2026\n"
+        "IN THE MATTER OF:\nAssets Care\nVERSUS\nMehar Bhoomi\n"
+        "POSITION OF THE PARTIES\nBEFORE THIS HON’BLE COURT"
+    )
+    texts = {
+        1: cover,
+        2: "SYNOPSIS\nThe present Civil Appeal challenges the impugned order.",
+        3: petition,
+        4: "THE HUMBLE APPEAL OF THE APPELLANT\nMOST RESPECTFULLY SHOWETH",
+        5: (
+            "IN THE HON’BLE SUPREME COURT OF INDIA\nCIVIL APPEAL\n"
+            "AFFIDAVIT\nI solemnly affirm\nDEPONENT"
+        ),
+        6: "ANNEXURE A-14\nNCLT order",
+        7: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "MASTER INDEX\nS.NO PARTICULARS PAGE NO\n1. Memo of Parties 1\n"
+            "2. Synopsis 2-9\nANNEXURE A-15\n1876\n303"
+        ),
+        8: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "MEMO OF PARTIES\nMehar Bhoomi ... Appellant\n"
+            "Shashi Bhushan ... Respondent"
+        ),
+        9: "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\nSYNOPSIS",
+        10: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "AFFIDAVIT\nI solemnly affirm\nDEPONENT"
+        ),
+        11: "ITEM NO.13\nSUPREME COURT OF INDIA\nANNEXURE A-16",
+        12: (
+            "IN THE HON’BLE SUPREME COURT OF INDIA\nI.A. NO. OF 2026\n"
+            "IN CIVIL APPEAL NO. OF 2026\n"
+            "APPLICATION SEEKING AD-INTERIM STAY\nMOST RESPECTFULLY SHOWETH"
+        ),
+        13: "Application continuation\nPRAYER",
+        14: (
+            "IN THE HON’BLE SUPREME COURT OF INDIA\nCIVIL APPEAL\n"
+            "FILING INDEX\nS.No. Particulars Court Fee\n1. Appeal with affidavit"
+        ),
+        15: (
+            "IN THE SUPREME COURT OF INDIA\nVAKALATNAMA\n"
+            "MEMO OF APPEARANCE"
+        ),
+        16: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "COMPANY APPEAL NO. 1876 OF 2025\nAMENDED MEMO OF PARTIES\n"
+            "Mehar Bhoomi ... Appellant\nShashi Bhushan ... Respondent No.1"
+        ),
+        17: "Assets Care ... Respondent No.2\nBank of India ... Respondent No.3",
+    }
+
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Index"],
+            3: ["Synopsis"],
+            4: ["Synopsis"],
+            10: ["Affidavit"],
+            12: ["Annexure A-16"],
+            14: ["Annexure A-16"],
+        },
+        texts,
+        page_count=17,
+    )
+
+    assert repaired[1] == ["Cover Page"]
+    assert repaired[2] == ["Synopsis"]
+    assert repaired[3] == ["Main Petition"]
+    assert repaired[4] == ["Main Petition"]
+    assert repaired[5] == ["Affidavit"]
+    assert repaired[7] == ["Annexure A-15"]
+    assert repaired[8] == ["Memo of Parties"]
+    assert repaired[9] == ["Annexure A-15"]
+    assert repaired[10] == ["Annexure A-15"]
+    assert repaired[11] == ["Annexure A-16"]
+    assert repaired[12] == ["Application 1"]
+    assert repaired[13] == ["Application 1"]
+    assert repaired[14] == ["Filing Memo"]
+    assert repaired[15] == ["Vakalatnama"]
+    assert repaired[16] == ["Memo of Parties"]
+    assert repaired[17] == ["Memo of Parties"]
+
+
+def test_defect_011_appellant_annexures_keep_full_printed_runs() -> None:
+    """A-series inventory must not be discarded or replaced by nested labels."""
+    texts = {
+        1: (
+            "IN THE HON'BLE SUPREME COURT OF INDIA\nCIVIL APPEAL\n"
+            "MOST RESPECTFULLY SHOWETH\n"
+            "marked as ANNEXURE A-1 (Pages 10-11); "
+            "ANNEXURE A-2 (Pages 12-13); ANNEXURE A-3 (Pages 14-15); "
+            "ANNEXURE A-4 (Pages 16-17); ANNEXURE A-5 (Pages 18-19)."
+        ),
+        2: "ANNEXURE A-1\nNCLT order",
+        3: "Order continuation",
+        4: "ANNEXURE A-2\nCommittee of Creditors minutes",
+        5: "Minutes continuation",
+        6: "ANNEXURE A-3\nCommittee of Creditors minutes",
+        7: "BOARD RESOLUTION reproduced inside the minutes",
+        8: "ANNEXURE A-4\nNCLT order",
+        9: "Order continuation",
+        10: "ANNEXURE A-5\nNCLT order",
+        11: "Order continuation and signatures",
+    }
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Main Petition"],
+            2: ["Annexure A-18"],
+            4: ["Annexure A-2"],
+            6: ["Annexure A-3"],
+            7: ["PoA/BR"],
+            8: ["Annexure A-4"],
+            10: ["Annexure A-5"],
+        },
+        texts,
+        page_count=11,
+    )
+
+    assert repaired[2] == repaired[3] == ["Annexure A-1"]
+    assert repaired[4] == repaired[5] == ["Annexure A-2"]
+    assert repaired[6] == repaired[7] == ["Annexure A-3"]
+    assert repaired[8] == repaired[9] == ["Annexure A-4"]
+    assert repaired[10] == repaired[11] == ["Annexure A-5"]
+
+
+def test_defect_curing_declaration_signed_for_appellant_is_aor_declaration() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "DECLARATION\nDIARY NO. 7461 OF 2026\n"
+        "I hereby declare that all defects have been duly cured. Whatever has "
+        "been added/modified is the result of curing defects and nothing else. "
+        "Paperbooks are complete in all respects.\n"
+        "Advocate-on-Record-3381\nAdvocate for Appellant"
+    )
+
+    assert _outer_anchor_label(text) == "AOR's Declaration"
+
+
 def test_early_rop_stops_at_following_application_heading() -> None:
     texts = {
         1: (
@@ -2324,6 +2555,119 @@ def test_defect_005_scanned_index_and_late_annexure_boundaries() -> None:
     ]
 
 
+def test_defect_012_recovers_index_omission_and_rejects_wrong_attached_label() -> None:
+    from extraction_review.split_repair import _place_index_expected_annexures
+
+    texts = {
+        1: (
+            "INDEX\nSL. NO. PARTICULARS PAGE NO.\n"
+            "4. ANNEXURE P-1: Copy of Writ Petition No. 60 of 2015 dated 9.1.2015\n"
+            "5. ANNEXURE P-3: Judgment and final order dated 20 February 2015 "
+            "in Writ Petition No. 60 of 2015\n"
+            "7. ANNEXURE P-4: Order dated 16.03.2015 in SLP No. 7595 of 2015\n"
+            "8. ANNEXURE P-5: Order dated 17.08.2015 in SLP No. 7595 of 2015\n"
+            "9. ANNEXURE P-6: Order dated 12.01.2016 in SLP No. 7595 of 2015\n"
+            "10. ANNEXURE P-7: Order dated 12.04.2016 in Review Petition 1512 "
+            "of 2016 in SLP No. 7595 of 2015"
+        ),
+        2: (
+            "CURATIVE PETITION\n"
+            "A copy of the order dated 16.01.2015 passed by the High Court in "
+            "Writ Petition No. 60 of 2015 is annexed herewith and marked as "
+            "ANNEXURE P-2."
+        ),
+        3: "AFFIDAVIT\nDEPONENT\nVERIFICATION",
+        4: (
+            "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n"
+            "WRIT PETITION NO. 60 OF 2015\nMOST RESPECTFULLY SHOWETH\n09.01.2015"
+        ),
+        5: (
+            "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n"
+            "WRIT PETITION NO. 60 OF 2015\nDATE: 16th JANUARY, 2015\nP.C."
+        ),
+        6: "The respondents will not adopt coercive proceedings.\nStand over.",
+        7: (
+            "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n"
+            "WRIT PETITION NO. 60 OF 2015\nDATE: 20th FEBRUARY, 2015\nP.C."
+        ),
+        8: "Accordingly, the petition is dismissed. No order as to costs.",
+        # Simulate the bad model output: this P-4 RoP was called P-7.
+        9: (
+            "ITEM NO.205\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "SLP (C) No. 7595/2015\nDate: 16/03/2015"
+        ),
+        10: (
+            "ITEM NO.19\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "SLP (C) No. 7595/2015\nDate: 17/08/2015"
+        ),
+        11: (
+            "Chamber matter SECTION IIIA\nSUPREME COURT OF INDIA\n"
+            "RECORD OF PROCEEDINGS\n"
+            "SLP (C) No. 7595/2015\nDate: 12/01/2016"
+        ),
+        12: (
+            "IN THE SUPREME COURT OF INDIA\nREVIEW PETITION (CIVIL) NO. "
+            "1512 OF 2016\nORDER\nNew Delhi; 12th April, 2016"
+        ),
+        13: (
+            "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "R.P. (C) No. 1512/2016 in SLP (C) No. 7595/2015\n"
+            "Date: 12/04/2016"
+        ),
+    }
+    initial = {
+        1: ["Index"],
+        2: ["Main Petition"],
+        3: ["Affidavit"],
+        4: ["Annexure P-1"],
+        9: ["Annexure P-7"],
+        10: ["Annexure P-5"],
+        11: ["Annexure P-6"],
+    }
+
+    repaired = _place_index_expected_annexures(initial, texts, 13)
+
+    assert repaired[5] == repaired[6] == ["Annexure P-2"]
+    assert repaired[7] == repaired[8] == ["Annexure P-3"]
+    assert repaired[9] == ["Annexure P-4"]
+    assert repaired[10] == ["Annexure P-5"]
+    assert repaired[11] == ["Annexure P-6"]
+    assert repaired[12] == repaired[13] == ["Annexure P-7"]
+
+
+def test_validated_annexure_start_claims_its_unidentified_final_page() -> None:
+    from extraction_review.split_repair import _place_index_expected_annexures
+
+    texts = {
+        1: (
+            "INDEX\nSL. NO. PARTICULARS PAGE NO.\n"
+            "8. ANNEXURE P-5: Order dated 17.08.2015 in SLP No. 7595 of 2015\n"
+            "9. ANNEXURE P-6: Order dated 12.01.2016 in SLP No. 7595 of 2015"
+        ),
+        2: "AFFIDAVIT\nDEPONENT\nVERIFICATION",
+        3: (
+            "ITEM NO.205\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "SLP (C) No. 7595/2015\nDate: 17/08/2015"
+        ),
+        4: "Fresh hearing was directed.\nCourt Master",
+        5: (
+            "ITEM NO.19\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "SLP (C) No. 7595/2015\nDate: 12/01/2016"
+        ),
+    }
+    initial = {
+        1: ["Index"],
+        2: ["Affidavit"],
+        3: ["Annexure P-5"],
+        5: ["Annexure P-6"],
+    }
+
+    repaired = _place_index_expected_annexures(initial, texts, 5)
+
+    assert repaired[3] == repaired[4] == ["Annexure P-5"]
+    assert repaired[5] == ["Annexure P-6"]
+
+
 def test_volume_two_cover_and_master_index_end_prior_annexure() -> None:
     from extraction_review.split_repair import (
         _annexure_run_bounds,
@@ -2462,3 +2806,96 @@ def test_applications_follow_index_order_when_pdf_order_is_reversed() -> None:
     assert repaired[15] == ["Application 2"]
     assert repaired[120] == ["Application 1"]
     assert repaired[121] == ["Application 1"]
+
+
+def test_index_range_offset_relabels_complete_scanned_annexures() -> None:
+    from extraction_review.split_repair import _apply_indexed_annexure_ranges
+
+    texts = {
+        2: (
+            "INDEX\nANNEXURE P-1\nFirst exhibit\n1-3\n"
+            "ANNEXURE P-2\nSecond exhibit\n4-6"
+        ),
+        6: "Unreadable first exhibit page\n1",
+        7: "Continuation\n2",
+        8: "Continuation\n3",
+        9: "Unreadable second exhibit page\n4",
+        10: "Continuation\n5",
+        11: "Continuation\n6",
+    }
+    parts = {2: ["Index"]}
+    parts.update({page: ["Annexure P-1"] for page in range(6, 12)})
+    parts[9] = ["Application 1"]
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, page_count=11)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(6, 9))
+    assert all(repaired[page] == ["Annexure P-2"] for page in range(9, 12))
+
+
+def test_lod_continuation_accepts_ocr_punctuation_before_date() -> None:
+    from extraction_review.split_repair import _looks_like_lod_continuation
+
+    assert _looks_like_lod_continuation(
+        "·22.01.2025 That the petitioner issued a legal notice"
+    )
+
+
+def test_bare_index_with_copy_and_court_fee_columns_is_filing_memo() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "TRANSFER PETITION (CIVIL) NO. OF 2025\nINDEX\n"
+        "S.NO. PARTICULARS COPY COURT FEE\n"
+        "1. Transfer Petition Civil 520\n"
+        "2. Annexure P-1 to P-6 NIL\n"
+        "3. Application for Stay 100\n"
+        "4. Vakalatnama on behalf of Petitioner 10\n"
+        "Total: Rs.630\nFILED ON:- 06.10.2025"
+    )
+
+    assert _outer_anchor_label(text) == "Filing Memo"
+
+
+def test_master_index_with_page_number_column_remains_index() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE SUPREME COURT OF INDIA\nINDEX\n"
+        "S.NO. PARTICULARS OF DOCUMENTS PAGE NO. OF PART REMARKS\n"
+        "1. Court Fees 1\n2. Listing Proforma A1-A2\n"
+        "3. Annexure P-1 21-27\n4. Filing Memo 65"
+    )
+
+    assert _outer_anchor_label(text) == "Index"
+
+
+def test_defect_003_recovers_scan_only_vakalatnama_after_filing_memo() -> None:
+    """Sparse native text must not leave the representation pair unidentified."""
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. OF 2026\nFILING MEMO\n"
+            "S. No. Particulars Copies\n1. SLP with Affidavit 1+3\n"
+            "2. Annexure P-1 to P-12 1+3\n"
+            "3. Application for Place Additional Document 1+3\n"
+            "5. Vakalatanama and memo of appearance 1+3\nFiled by\n304"
+        ),
+        # These are the only strings available in the embedded text layer;
+        # VAKALATNAMA / MEMO OF APPEARANCE are visible only in the page images.
+        2: "305\n21 January 2026.",
+        3: "306\n21 January 2026.",
+        4: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "FAO(OS) NO. OF 2025\nMEMO OF PARTIES\n"
+            "ADARSH SHARMA ...APPELLANT\nVERSUS\nHARSH SHARMA ...RESPONDENT\n307"
+        ),
+    }
+
+    repaired, _ = repair_compiled_split({}, texts, page_count=4)
+
+    assert repaired[1] == ["Filing Memo"]
+    assert repaired[2] == ["Vakalatnama"]
+    assert repaired[3] == ["Memo of Appearance"]
+    assert repaired[4] == ["Memo of Parties"]

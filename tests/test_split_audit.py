@@ -176,8 +176,8 @@ def test_collect_expected_annexures_from_index_and_main() -> None:
         "stated that allocable area in Annexure 5 to IPS-1"
     )
 
-def test_annexure_series_p_petitioner_r_respondent() -> None:
-    """P = Petitioner, R = Respondent; E exhibit stamps normalize to P."""
+def test_annexure_series_p_petitioner_a_appellant_r_respondent() -> None:
+    """P/A/R retain party series; E exhibit stamps normalize to P."""
     from extraction_review.document_parts import annexure_label_from_text
     from extraction_review.split_audit import normalize_annexure_part_label
 
@@ -186,15 +186,23 @@ def test_annexure_series_p_petitioner_r_respondent() -> None:
     assert normalize_annexure_part_label("E", 3) == "Annexure P-3"
     assert normalize_annexure_part_label("petitioner", 4) == "Annexure P-4"
     assert normalize_annexure_part_label("respondent", 5) == "Annexure R-5"
+    assert normalize_annexure_part_label("A", 6) == "Annexure A-6"
+    assert normalize_annexure_part_label("appellant", 7) == "Annexure A-7"
 
     assert annexure_label_from_text("ANNEXURE R-1\nIN THE HIGH COURT") == "Annexure R-1"
     assert annexure_label_from_text("ANNEXURE-P/2\nWrit Petition") == "Annexure P-2"
     assert annexure_label_from_text("ANNEXURE-E-3\nBank statement") == "Annexure P-3"
 
     labels = annexure_labels_from_text(
-        "marked as ANNEXURE P-1 and ANNEXURE R-1; also ANNEXURE E-2"
+        "marked as ANNEXURE P-1, ANNEXURE A-1 and ANNEXURE R-1; "
+        "also ANNEXURE E-2"
     )
-    assert labels == {"Annexure P-1", "Annexure R-1", "Annexure P-2"}
+    assert labels == {
+        "Annexure P-1",
+        "Annexure A-1",
+        "Annexure R-1",
+        "Annexure P-2",
+    }
 
     page_parts = {2: ["Index"], 10: ["Main Petition"]}
     texts = {
@@ -378,4 +386,30 @@ def test_scanned_index_range_embedded_before_wrapped_particulars():
     assert [(row.mapped_part, row.start, row.end) for row in rows] == [
         ("Annexure P-1", 24, 46),
         ("Application 1", 47, 48),
+    ]
+def test_index_rows_recovers_annexures_from_vertical_scanned_ocr() -> None:
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = """
+14.
+ANNEXURE - P/2
+A true copy of the Transfer Deed.
+66-79
+
+15.
+ANNEXURE - P/3
+A true copy of another Transfer Deed.
+80-90
+
+ANNEXURE - P/4
+Application before the tribunal.
+91-96
+"""
+
+    rows = index_rows_with_printed_pages(text)
+
+    assert [(row.mapped_part, row.start, row.end) for row in rows] == [
+        ("Annexure P-2", 66, 79),
+        ("Annexure P-3", 80, 90),
+        ("Annexure P-4", 91, 96),
     ]

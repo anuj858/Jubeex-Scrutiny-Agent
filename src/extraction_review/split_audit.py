@@ -87,11 +87,12 @@ _SERIES_LABEL_IN_INDEX_RE = re.compile(
     r"(?<![A-Za-z0-9./])([A-Z])\s*[-/]\s*(\d+)\b(?!/\d)"
 )
 
-# SCI paper-book cites use a letter series: P (Petitioner) / R (Respondent) /
-# E (exhibit → P). Bare "Annexure 5" inside an annexed HC writ is not an
-# inventory row for the outer petition.
+# SCI paper-book cites use a letter series: P (Petitioner), A (Appellant),
+# R (Respondent), or E (exhibit → P). Bare "Annexure 5" inside an annexed
+# lower-court record is not an inventory row for the outer petition.
 _SCI_ANNEXURE_MENTION_RE = re.compile(
-    r"\bannexure\s*[-–—:/\s]*(petitioner|respondent|[per])\s*[-–—./\s]*(\d+)\b",
+    r"\bannexure\s*[-–—:/\s]*(petitioner|appellant|respondent|[aper])"
+    r"\s*[-–—./\s]*(\d+)\b",
     re.IGNORECASE,
 )
 _APPLICATION_IN_INDEX_RE = re.compile(
@@ -496,6 +497,53 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                     )
                 )
         return result
+    # Scanned Index tables sometimes lose every vertical rule during OCR.  In
+    # that form the serial, particulars and printed span arrive as separate
+    # paragraphs instead of one row.  Annexure headings are still reliable
+    # row boundaries, so recover their first standalone span before applying
+    # the generic row parser below.
+    annexure_rows: list[IndexPrintedRow] = []
+    annexure_heading_re = re.compile(
+        r"(?i)\bannexure\s*[-–—:./|~]*\s*([PRAE])\s*[-–—:./|~]*\s*(\d{1,3})\b"
+    )
+    headings = list(annexure_heading_re.finditer(index_text or ""))
+    for position, heading in enumerate(headings):
+        body_end = (
+            headings[position + 1].start()
+            if position + 1 < len(headings)
+            else len(index_text)
+        )
+        body = (index_text or "")[heading.end() : body_end]
+        span = next(
+            (
+                spans[0]
+                for line in body.splitlines()
+                if not re.fullmatch(r"\d{1,3}[.)]", line.strip())
+                and len(spans := _span_only_line(line.strip())) == 1
+                and spans[0].kind == "number"
+            ),
+            None,
+        )
+        if span is None:
+            continue
+        annexure_rows.append(
+            IndexPrintedRow(
+                mapped_part=normalize_annexure_part_label(
+                    heading.group(1), int(heading.group(2))
+                ),
+                particulars=(heading.group(0) + " " + body).strip(),
+                kind="number",
+                start=span.start,
+                end=span.end,
+                end_suffix=span.end_suffix,
+            )
+        )
+    # One apparent row can be a detached page-number column accidentally
+    # paired with its last heading. Require repetition before trusting this
+    # geometry-free recovery path.
+    if len(annexure_rows) < 2:
+        annexure_rows = []
+
     kept: list[str] = []
     orphans: list[IndexPrintedRow] = []
     for line in (index_text or "").splitlines():
@@ -509,7 +557,7 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
         kept.append(stripped)
     rows = parse_index_rows("\n".join(kept))
     if not rows:
-        return []
+        return annexure_rows
 
     printed: list[IndexPrintedRow | None] = [None] * len(rows)
     unassigned: list[int] = []
@@ -586,6 +634,15 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                 end_suffix=suffix,
             )
         )
+    seen = {
+        (row.mapped_part, row.kind, row.start, row.end, row.end_suffix)
+        for row in aligned
+    }
+    for row in annexure_rows:
+        key = (row.mapped_part, row.kind, row.start, row.end, row.end_suffix)
+        if key not in seen:
+            aligned.append(row)
+            seen.add(key)
     return aligned
 
 
@@ -594,10 +651,27 @@ def aligned_index_printed_rows(
     page_text: Mapping[int, str],
 ) -> list[IndexPrintedRow]:
     """Printed-folio rows from the paper-book Index, when that Index is present."""
-    index_text = _index_pages_text(page_parts, page_text)
-    if not index_text.strip():
+    index_pages = [
+        page_text.get(page, "")
+        for page, names in sorted(page_parts.items())
+        if "Index" in parts_on_page(names) and page_text.get(page, "").strip()
+    ]
+    if not index_pages:
         return []
-    return index_rows_with_printed_pages(index_text)
+    # Some pages have reconstructed TSV rows while adjacent scanned pages only
+    # have vertical plain text. Parse both the complete Index and each page so
+    # the TSV fast path on one page cannot hide rows recovered on another.
+    candidates = index_rows_with_printed_pages("\n".join(index_pages))
+    for text in index_pages:
+        candidates.extend(index_rows_with_printed_pages(text))
+    unique: list[IndexPrintedRow] = []
+    seen: set[tuple[str | None, str, int, int, str]] = set()
+    for row in candidates:
+        key = (row.mapped_part, row.kind, row.start, row.end, row.end_suffix)
+        if key not in seen:
+            unique.append(row)
+            seen.add(key)
+    return unique
 
 
 def normalize_annexure_part_label(series: str | None, number: int) -> str:
@@ -622,7 +696,7 @@ def normalize_annexure_part_label(series: str | None, number: int) -> str:
 
 
 def annexure_labels_from_text(text: str) -> set[str]:
-    """Extract SCI ``Annexure P-n`` / ``Annexure R-n`` labels from prose."""
+    """Extract SCI ``Annexure P/A/R-n`` labels from petition prose."""
     found: set[str] = set()
     for match in _SCI_ANNEXURE_MENTION_RE.finditer(text or ""):
         found.add(normalize_annexure_part_label(match.group(1), int(match.group(2))))

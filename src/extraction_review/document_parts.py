@@ -556,7 +556,10 @@ _ANNEXURE_CITATION_PREV_RE = re.compile(
     r"annexed\s+herewith|marked\s+as|true\s+cop(?:y|ies)\s+of",
     re.IGNORECASE,
 )
-_APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+_APPLICATION_CAUSE_RE = re.compile(
+    r"in\s+the\s+(?:hon['’]?ble\s+)?supreme\s+court\s+of\s+india",
+    re.IGNORECASE,
+)
 _AFFIDAVIT_HEADING_RE = re.compile(
     r"(?m)^(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)\b",
     re.IGNORECASE,
@@ -661,7 +664,11 @@ def _annexure_mark_from_title_or_stamp(
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return None
-    if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
+    # An outer paper-book stamp can be printed in the top-right margin of a
+    # reproduced lower-court Index. PyMuPDF commonly emits that margin stamp
+    # at the end of the text stream. Keep scanning Index pages: the guards
+    # below reject numbered Index rows, while accepting a standalone stamp.
+    if _looks_like_sci_interlocutory(text):
         return None
 
     # Image OCR can put folio noise before a real first-line stamp
@@ -769,8 +776,16 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         r"\s*[-~–—/:.\s]*\d+\b",
         scan_head,
     )
+    index_table = _looks_like_index_table(text)
+    explicit_index_stamp = (
+        _annexure_mark_from_title_or_stamp(text, require_series=True)
+        if index_table
+        else None
+    )
+    if explicit_index_stamp is not None:
+        return explicit_index_stamp
     if (
-        _looks_like_index_table(text)
+        index_table
         or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
         or _looks_like_sci_interlocutory(text)
         or "list of dates" in folded_head
@@ -871,16 +886,16 @@ def _heading_window(text: str, lines: int = 12) -> str:
 def _is_sci_application_start(text: str) -> bool:
     head = _fold(_heading_window(text, lines=20))
     window = _fold((text or "")[:2000])
-    if (
-        "in the supreme court of india" not in head
-        and "in the supreme court of india" not in window
+    if not (
+        _APPLICATION_CAUSE_RE.search(head)
+        or _APPLICATION_CAUSE_RE.search(window)
     ):
         return False
     # Paper-book covers list pending I.A.s; that is not an application start.
     if re.search(
-        r"for index\s+(?:kindly|please)\s+see\s+inside|"
+        r"for\s+(?:the\s+)?index\s*,?\s*(?:kindly|please)\s+see\s+inside|"
         r"\{\s*cover\s+page\s*\}|"
-        r"\bpaper\s+book\b",
+        r"\bpaper\s*book\b",
         text[:2200] or "",
         re.I,
     ):
@@ -991,9 +1006,11 @@ def _looks_like_sci_interlocutory(text: str) -> bool:
 
 def _memo_of_parties_heading(text: str) -> bool:
     """True for an explicit party/judgment memo title, never an Index row."""
-    head = _heading_window(text, lines=12)
+    # Tribunal captions and impugned-case particulars can consume many lines
+    # before the title (for example AMENDED MEMO OF PARTIES on line 20).
+    head = _heading_window(text, lines=30)
     title = (
-        r"memo(?:randum)?\s+of\s+"
+        r"(?:amended\s+)?memo(?:randum)?\s+of\s+"
         r"(?:part(?:y|ies)|parities|judg(?:e)?ment)\b"
     )
     if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.IGNORECASE):
