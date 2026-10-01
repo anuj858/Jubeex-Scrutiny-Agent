@@ -167,7 +167,6 @@ CATALOG_JOB_TYPES = [
     "extract_only",
     "index_parsed",
 ]
-DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
 SWAGGER_PLACEHOLDERS = frozenset({"string", "str", "none", "null"})
 _ANNEXURE_SLOT_RE = re.compile(r"annexure_([a-z])_?(\d+)")
 _APPLICATION_SLOT_RE = re.compile(r"application_?(\d+)")
@@ -423,27 +422,18 @@ def resolve_document_slot(
 
 def resolve_compiled_filing_type(
     classified: str,
-    requested: str | None,
+    requested: str | None = None,
 ) -> tuple[str, Any]:
-    """Pick a slice catalog. Prefer a classified type that we can slice."""
+    """Use the classified petition type. An unknown result is an error."""
+    del requested
     classified_key = (classified or "").strip()
-    requested_key = (requested or "").strip()
     try:
         return classified_key, type_catalog(classified_key)
-    except SplitUploadError:
-        pass
-    if requested_key:
-        try:
-            return requested_key, type_catalog(requested_key)
-        except SplitUploadError:
-            pass
-    try:
-        return DEFAULT_COMPILED_FILING_TYPE, type_catalog(DEFAULT_COMPILED_FILING_TYPE)
     except SplitUploadError:
         allowed = ", ".join(sorted(ui_catalog()))
     raise SplitUploadError(
         f"Classified as {classified_key or '(unknown)'}, which cannot be sliced. "
-        f"Send filing_type as one of: {allowed}"
+        f"Expected one of: {allowed}"
     )
 
 
@@ -1720,7 +1710,12 @@ class ProcessFileWorkflow(Workflow):
             state.source_documents = source_docs
             state.started_at = started_at
 
-        override = compiled_catalog_override(event.filing_type)
+        job = (event.job_type or "").strip().lower()
+        override = (
+            None
+            if job in PETITION_SPLIT_JOB_TYPES
+            else compiled_catalog_override(event.filing_type)
+        )
         if override is not None:
             ctx.write_event_to_stream(
                 Status(
@@ -1773,22 +1768,10 @@ class ProcessFileWorkflow(Workflow):
         confidence = result.confidence
         reasoning = result.reasoning
         try:
-            filing_type, catalog = resolve_compiled_filing_type(
-                classified, event.filing_type
-            )
+            filing_type, catalog = resolve_compiled_filing_type(classified)
         except SplitUploadError as exc:
             ctx.write_event_to_stream(Status(level="error", message=str(exc)))
             raise RuntimeError(str(exc)) from exc
-        if filing_type != classified:
-            ctx.write_event_to_stream(
-                Status(
-                    level="warning",
-                    message=(
-                        f"Classified as {classified}; using filing_type "
-                        f"{filing_type} for slicing"
-                    ),
-                )
-            )
 
         logger.info(
             "Classified %s as %s (confidence: %s, reasoning: %s)",

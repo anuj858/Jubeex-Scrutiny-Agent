@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from extraction_review.split_upload import SplitUploadError
 
 from extraction_review.process_file import (
     FileEvent,
@@ -301,20 +302,17 @@ def test_upload_separate_documents_payload() -> None:
     assert petition.filename == "01_Petition.pdf"
 
 
-def test_compiled_uses_requested_type_when_classified_unknown() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
-    assert filing_type == "SLP_CIVIL"
-    assert catalog.filing_type == "SLP_CIVIL"
+def test_compiled_unknown_classification_is_an_error() -> None:
+    with pytest.raises(SplitUploadError, match="cannot be sliced"):
+        resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
+    with pytest.raises(SplitUploadError, match="cannot be sliced"):
+        resolve_compiled_filing_type("NOT_A_FILING_TYPE", None)
+    with pytest.raises(SplitUploadError, match="cannot be sliced"):
+        resolve_compiled_filing_type("NOT_A_FILING_TYPE", "TRANSFER_PETITION_CRIMINAL")
 
 
 def test_compiled_keeps_classified_slp_civil() -> None:
     filing_type, catalog = resolve_compiled_filing_type("SLP_CIVIL", "SLP_CRIMINAL")
-    assert filing_type == "SLP_CIVIL"
-    assert catalog.filing_type == "SLP_CIVIL"
-
-
-def test_compiled_unknown_without_filing_type_defaults_to_slp_civil() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", None)
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -341,7 +339,7 @@ def test_compiled_accepts_transfer_petition_types() -> None:
     assert civil_catalog.filing_type == "TRANSFER_PETITION_CIVIL"
     assert "filing_memo" in {slot.id for slot in civil_catalog.slots}
     criminal_type, criminal_catalog = resolve_compiled_filing_type(
-        "NOT_A_FILING_TYPE", "TRANSFER_PETITION_CRIMINAL"
+        "TRANSFER_PETITION_CRIMINAL", None
     )
     assert criminal_type == "TRANSFER_PETITION_CRIMINAL"
     assert criminal_catalog.filing_type == "TRANSFER_PETITION_CRIMINAL"
