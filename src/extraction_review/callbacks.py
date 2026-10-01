@@ -71,6 +71,15 @@ def callback_url_candidates(url: str) -> list[str]:
     return candidates
 
 
+def _has_backend_acknowledgement(response: httpx.Response) -> bool:
+    """Reject a frontend/proxy HTML 200 masquerading as webhook success."""
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("status") in {"ok", "duplicate"}
+
+
 async def notify_job_finished(
     *,
     callback_url: str | None,
@@ -155,6 +164,19 @@ async def notify_job_finished(
                         )
                         break  # next candidate
                     response.raise_for_status()
+                    if not _has_backend_acknowledgement(response):
+                        logger.warning(
+                            "Callback endpoint returned HTTP %s without a valid "
+                            "backend acknowledgement for job %s at %s; trying the "
+                            "next candidate",
+                            response.status_code,
+                            job_id,
+                            candidate,
+                        )
+                        last_error = RuntimeError(
+                            f"Invalid webhook acknowledgement from {candidate}"
+                        )
+                        break  # a successful HTML/proxy response will not improve on retry
                 if candidate != url:
                     logger.info(
                         "Callback for job %s succeeded at fallback URL %s "

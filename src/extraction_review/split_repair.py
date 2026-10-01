@@ -4748,6 +4748,95 @@ def _apply_indexed_annexure_ranges(
             for page in range(physical_start, physical_end + 1):
                 owners[page] = label
 
+    # Some scanned paper-books have no machine-readable folio on any of the
+    # Annexure continuation sheets.  Defect File_008 is such a case: the
+    # filing Index reliably says P-1 is 24-46 (23 sheets), the first sheet is
+    # the dated District Court order named by that row, and the very next page
+    # starts an outer Supreme Court Application.  Use that exact, bounded
+    # structure when a numeric offset cannot be established.  Requiring a
+    # unique candidate, matching row date/title evidence, the exact indexed
+    # length, and a hard outer boundary prevents a generic lower-court record
+    # from being expanded speculatively.
+    annexure_rows: dict[str, list[IndexPrintedRow]] = {}
+    for row in rows:
+        if row.mapped_part and family_split_name(row.mapped_part) == ANNEXURE_FAMILY:
+            annexure_rows.setdefault(row.mapped_part, []).append(row)
+    for label, label_rows in annexure_rows.items():
+        spans = {(row.start, row.end) for row in label_rows if not row.end_suffix}
+        if len(spans) != 1:
+            continue
+        printed_start, printed_end = next(iter(spans))
+        span_length = printed_end - printed_start + 1
+        if span_length < 1 or span_length > page_count:
+            continue
+        row = next(
+            row
+            for row in label_rows
+            if (row.start, row.end) == (printed_start, printed_end)
+        )
+        row_dates = _extract_date_keys(row.particulars)
+        candidates: list[int] = []
+        last_start = page_count - span_length + 1
+        index_end = max(
+            (
+                int(page)
+                for page, names in page_parts.items()
+                if "Index" in parts_on_page(names)
+            ),
+            default=0,
+        )
+        # ``zone_start`` can itself be wrong when one Annexure continuation
+        # was mislabeled Main Petition. Dated lower-court evidence is strong
+        # enough to search from the end of the filing Index; undated stamps
+        # remain constrained to the ordinary post-petition zone.
+        for physical_start in range(max(1, index_end + 1), last_start + 1):
+            start_text = page_text.get(physical_start, "")
+            matching_stamp = bool(
+                physical_start >= zone_start
+                and annexure_label_from_text(start_text) == label
+            )
+            matching_record = bool(
+                _is_lower_court_caption(start_text)
+                and row_dates
+                and row_dates & _extract_island_match_date_keys(start_text)
+            )
+            if not (matching_stamp or matching_record):
+                continue
+            physical_end = physical_start + span_length - 1
+            # Do not project through another explicit outer filing document.
+            if any(
+                page_starts_application(page_text.get(page, ""))
+                or (
+                    (anchor := _outer_anchor_label(page_text.get(page, "")))
+                    and anchor
+                    in {
+                        MAIN_PETITION_PART,
+                        "AOR's Declaration",
+                        "AOR's Certificate",
+                        "Filing Memo",
+                        "Vakalatnama",
+                        "Memo of Appearance",
+                    }
+                )
+                for page in range(physical_start + 1, physical_end + 1)
+            ):
+                continue
+            after = physical_end + 1
+            if after <= page_count:
+                after_text = page_text.get(after, "")
+                hard_boundary = bool(
+                    page_starts_application(after_text)
+                    or _outer_anchor_label(after_text)
+                    or annexure_label_from_text(after_text)
+                )
+                if not hard_boundary:
+                    continue
+            candidates.append(physical_start)
+        if len(candidates) == 1:
+            physical_start = candidates[0]
+            for page in range(physical_start, physical_start + span_length):
+                owners[page] = label
+
     for page in range(zone_start, page_count + 1):
         folio = _printed_folio(page_text.get(page, ""))
         if not folio:

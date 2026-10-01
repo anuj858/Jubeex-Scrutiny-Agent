@@ -66,6 +66,9 @@ async def test_notify_retries_port_8000_after_404(monkeypatch) -> None:
                     response=httpx.Response(self.status_code, request=self.request),
                 )
 
+        def json(self):
+            return {"status": "ok"}
+
     class FakeClient:
         def __init__(self, timeout: object = None) -> None:
             pass
@@ -112,6 +115,9 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
 
         status_code = 200
 
+        def json(self):
+            return {"status": "ok"}
+
     class FakeClient:
         def __init__(self, timeout: object = None) -> None:
             pass
@@ -154,3 +160,56 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     assert body["organization_id"] == "org-1"
     assert body["artifacts"]["extract"]["url"].endswith("extract.json")
     assert body["result"]["artifacts"]["extract"]["url"].endswith("extract.json")
+
+
+@pytest.mark.asyncio
+async def test_notify_retries_port_8000_after_frontend_html_200(monkeypatch) -> None:
+    hits: list[str] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, url: str, *, backend: bool) -> None:
+            self.request = httpx.Request("POST", url)
+            self._backend = backend
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            if not self._backend:
+                raise json.JSONDecodeError("HTML response", "<html>", 0)
+            return {"status": "ok"}
+
+    class FakeClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            hits.append(url)
+            return FakeResponse(url, backend=":8000" in url)
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
+    await notify_job_finished(
+        callback_url="http://3.111.86.61/api/v1/webhooks/ai-agent",
+        job_id="job-html-200",
+        kind="process_file",
+        status="completed",
+        agent_data_id="agd-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        error=None,
+        result={},
+        artifacts={},
+        event_id="evt-html-200",
+    )
+    assert hits == [
+        "http://3.111.86.61/api/v1/webhooks/ai-agent",
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
+    ]
