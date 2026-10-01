@@ -83,7 +83,7 @@ _FRESH_CASE_REPORT_HEADING_RE = re.compile(
 _LISTING_RE = re.compile(
     r"proforma\s+for\s+first\s+listin\.?g?|"
     r"proforma\s+of\s+first\s+listing|"
-    r"listing\s+proforma|listed\s+proforma|first\s+proforma|"
+    r"listing\s+proforma|listed\s+(?:proforma|performa)|first\s+proforma|"
     r"performa\s+for\s+first\s+listing|"
     r"(?m:^\s*(?:proforma|performa)\s*$)",
     re.I,
@@ -390,10 +390,19 @@ def _is_sci_caption(text: str) -> bool:
 
 
 def _is_lower_court_caption(text: str) -> bool:
-    head = _fold(_heading_window(text, lines=14))
+    raw_head = _heading_window(text, lines=14)
+    head = _fold(raw_head)
     if _is_sci_caption(text):
         return False
-    return bool(_HC_CAPTION_RE.search(head) or _TRIBUNAL_CAPTION_RE.search(head))
+    explicit_hc_heading = re.search(
+        r"(?mi)^\s*(?:in\s+the\s+)?(?:hon['’]?ble\s+)?high\s+court\s+of\b",
+        raw_head,
+    )
+    return bool(
+        explicit_hc_heading
+        or _HC_CAPTION_RE.search(head)
+        or _TRIBUNAL_CAPTION_RE.search(head)
+    )
 
 
 def _looks_like_rop_index_form(text: str) -> bool:
@@ -541,11 +550,21 @@ def _looks_like_impugned_order_start(text: str) -> bool:
         return False
     if "matter in issue" in folded or "res judicata" in folded:
         return False
+    # An application's closing prayer can ask for exemption from filing a
+    # "certified copy of the Impugned Judgment".  That sentence is relief
+    # sought, not the title of a newly starting judgment document.
+    head = _heading_window(text, lines=12)
+    if re.search(r"(?mi)^\s*prayer\s*[:-]", head) and re.search(
+        r"allow\s+the\s+application|exempt\s+the\s+petitioner|"
+        r"applicant\s+shall",
+        head,
+        re.IGNORECASE,
+    ):
+        return False
     if _is_sci_caption(text) and (
         "special leave" in folded or "petition for special leave" in folded
     ):
         return False
-    head = _heading_window(text, lines=12)
     if _IMPUGNED_ORDER_RE.search(head):
         if "annexure" in _fold(head) and "true copy" in _fold(head):
             return False
@@ -568,7 +587,8 @@ def _looks_like_impugned_order_start(text: str) -> bool:
 
 
 _JUDGMENT_TITLE_RE = re.compile(
-    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*(?:\(\s*oral\s*\))?\s*$"
+    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order(?:\s+sheet)?)"
+    r"\s*(?:\(\s*oral\s*\))?\s*$"
 )
 
 
@@ -864,9 +884,29 @@ def _looks_like_cover_page(text: str) -> bool:
     if _PARTY_SCHEDULE_RE.search(party_schedule_text):
         return False
     has_cover_footer = bool(_COVER_FOOTER_RE.search(page_head))
+    # Some scan layers destroy only the decorative court heading (for example
+    # ``IN BYE SUPRE Up IA``) while preserving the rest of the one-name-per-side
+    # cover and its PAPER BOOK footer.  That combination is still specific
+    # enough to recover the cover without weakening the Form-28 exclusions
+    # below.  Requiring both the cause-title shape and filing footer prevents a
+    # body page that merely mentions PAPER BOOK from becoming a cover.
+    has_cover_cause_title = all(
+        cue in folded
+        for cue in ("in the matter of", "versus", "petitioner", "respondent")
+    )
+    has_cover_filing_footer = bool(
+        re.search(
+            r"advocate\s+for\s+(?:the\s+)?(?:petitioner|respondent)",
+            folded,
+        )
+        and re.search(r"\bfiled\s+o[nm]\b", folded)
+    )
+    has_degraded_sci_cover = has_cover_cause_title and has_cover_filing_footer
     # Strong paper-book cover stamps win even when caption OCR is noisy.
     if has_cover_footer and (
-        _is_sci_caption(text) or "supreme court of india" in folded
+        _is_sci_caption(text)
+        or "supreme court of india" in folded
+        or has_degraded_sci_cover
     ):
         # Still refuse real Form-28 / OR / Listing bodies.
         if "questions of law" in folded or "form 28" in folded:
@@ -1239,13 +1279,14 @@ def _annexure_run_bounds(
                 if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not _is_lower_court_caption(text):
                     end = page - 1
                     break
                 if (
@@ -1264,13 +1305,14 @@ def _annexure_run_bounds(
                     break
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not _is_lower_court_caption(text):
                     break
                 if (
                     _FILING_MEMO_RE.search(_heading_window(text, lines=8))
@@ -1383,7 +1425,10 @@ def _force_annexure_nesting(
                 if not annexure_ref_in_heading(text):
                     continue
             if not names or any(
-                name in _NESTED_STEAL_PARTS or name == "Appendix" for name in names
+                name in _NESTED_STEAL_PARTS
+                or name == "Appendix"
+                or family_split_name(name) == "Application"
+                for name in names
             ):
                 updated[page] = [label]
                 continue
@@ -1702,9 +1747,21 @@ def _extend_explicit_memo_of_parties(
 ) -> PagePartMap:
     """Keep party-list continuation pages with an explicitly headed memo."""
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     active = False
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
+        # A lower-court Memo of Parties reproduced between two printed
+        # Annexure stamps belongs to that exhibit.  Reopening it here after
+        # the nesting pass would create a false outer Memo and split the
+        # annexure body into Unidentified fragments.
+        if page in annexure_pages:
+            active = False
+            continue
         if _memo_of_parties_heading(text):
             updated[page] = ["Memo of Parties"]
             active = True
@@ -2432,6 +2489,51 @@ def _fill_gaps(
         if prev_labeled and (set(nxt) & set(prev_labeled) & _FIRST_RUN_PARTS):
             continue
         updated[page] = list(nxt)
+    return updated
+
+
+def _extend_explicit_aor_certificate_continuation(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Restore certificate body pages exposed by late duplicate cleanup.
+
+    The model can label unheaded continuation sheets as a second Main
+    Petition (or another first-run part). Duplicate collapse removes that
+    incorrect island after the general gap pass has run, leaving the sheets
+    unlabelled. Extend only from an explicit AOR Certificate heading and only
+    into those unlabelled sheets; an existing label or a strong document start
+    remains authoritative.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    certificate_pages = [
+        page
+        for page in range(1, page_count + 1)
+        if _outer_anchor_label(page_text.get(page, "")) == "AOR's Certificate"
+    ]
+    for start in certificate_pages:
+        updated[start] = ["AOR's Certificate"]
+        for page in range(start + 1, page_count + 1):
+            if parts_on_page(updated.get(page)):
+                break
+            text = page_text.get(page, "")
+            if not (text or "").strip():
+                break
+            if (
+                _outer_anchor_label(text)
+                or _looks_like_index_table(text)
+                or _looks_like_index_continuation(text)
+                or page_starts_application(text)
+                or _vakalatnama_heading(text)
+                or _is_lower_court_caption(text)
+                or _looks_like_sci_court_rop_extract(text)
+                or annexure_mark_in_heading(text)
+                or _looks_like_sci_main_petition(text)
+                or _is_unstamped_annexure_island_start(text)
+            ):
+                break
+            updated[page] = ["AOR's Certificate"]
     return updated
 
 
@@ -3891,6 +3993,11 @@ def _restore_indexed_back_matter_parts(
     distinct from a memo reproduced inside an Annexure.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     index_text = "\n".join(
         page_text.get(page, "")
         for page, names in page_parts.items()
@@ -3910,13 +4017,17 @@ def _restore_indexed_back_matter_parts(
     filing_anchor_pages = [
         page
         for page in range(1, page_count + 1)
-        if _outer_anchor_label(page_text.get(page, "")) == "Filing Memo"
-        or _looks_like_filing_memo_continuation(page_text.get(page, ""))
+        if page not in annexure_pages
+        and (
+            _outer_anchor_label(page_text.get(page, "")) == "Filing Memo"
+            or _looks_like_filing_memo_continuation(page_text.get(page, ""))
+        )
     ]
     filing_pages = filing_anchor_pages or [
         page
         for page in range(1, page_count + 1)
-        if "Filing Memo" in parts_on_page(updated.get(page))
+        if page not in annexure_pages
+        and "Filing Memo" in parts_on_page(updated.get(page))
     ]
     if not filing_pages:
         return updated
@@ -3993,7 +4104,8 @@ def _restore_indexed_back_matter_parts(
         (
             page
             for page in range(filing_end + 1, page_count + 1)
-            if _is_lower_court_caption(page_text.get(page, ""))
+            if page not in annexure_pages
+            and _is_lower_court_caption(page_text.get(page, ""))
             and re.search(
                 r"\b(?:petitioner|appellant|opposite\s+parties|respondents?)\b",
                 page_text.get(page, ""),
@@ -4118,6 +4230,11 @@ def _extend_explicit_affidavit_continuation(
     DEPONENT, or explicitly continues the affidavit.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     active = False
     continuation = re.compile(
         r"(?mi)^\s*verification\s*[:-]?|\bdeponent\b|"
@@ -4127,6 +4244,12 @@ def _extend_explicit_affidavit_continuation(
     )
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
+        # An affidavit inside a printed annexure range verifies the enclosed
+        # lower-court document.  It must not reopen or extend the standalone
+        # affidavit that supports the current Supreme Court petition.
+        if page in annexure_pages:
+            active = False
+            continue
         anchor = _outer_anchor_label(text)
         if anchor == "Affidavit":
             # An affidavit expressly verifying an I.A. is intentionally part
@@ -4305,6 +4428,12 @@ def repair_compiled_split(
     # A model label alone must never populate the limitation slot. In
     # particular, REPORT OF FRESH CASE is a different Registry document.
     repaired = _demote_unverified_office_reports(repaired, page_text, page_count)
+    # Duplicate collapse can expose unheaded body sheets after the ordinary
+    # gap pass. Restore only the continuation of an explicitly headed AOR
+    # Certificate, stopping at the next strong document boundary.
+    repaired = _extend_explicit_aor_certificate_continuation(
+        repaired, page_text, page_count
+    )
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
@@ -4550,6 +4679,17 @@ def _apply_indexed_annexure_ranges(
             # A truncated range at the end of an uploaded bundle must not
             # swallow later registry/back-matter pages.
             if physical_start < zone_start or physical_end > page_count:
+                continue
+            # The uploaded bundle can omit most of an indexed exhibit and
+            # jump from (for example) printed folio 20 straight to 91.  Do not
+            # project the missing 21-33 sheets onto the physically following
+            # Applications/Filing Memo.  Any explicit folio inside the
+            # projected physical span must still belong to this Index row.
+            if any(
+                folio is not None and not _folio_in_printed_row(folio, row)
+                for page in range(physical_start, physical_end + 1)
+                if (folio := _printed_folio(page_text.get(page, "")))
+            ):
                 continue
             for page in range(physical_start, physical_end + 1):
                 owners[page] = label

@@ -8,7 +8,9 @@ from extraction_review.structure_split import (
     build_logical_documents,
     classify_page,
     detect_boundaries,
+    extract_page_units,
     structure_aware_split,
+    structure_aware_split_from_units,
 )
 
 
@@ -88,8 +90,9 @@ def test_logical_documents_preserve_page_ranges() -> None:
 
 def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
     """End-to-end: Llama tags Synopsis as Main; structure + repair must separate."""
-    from pypdf import PdfWriter
     import io
+
+    from pypdf import PdfWriter
 
     # Build a tiny multi-page PDF with extractable text via reportlab-less path:
     # structure_aware_split accepts page_texts override, so empty PDF pages + texts.
@@ -140,6 +143,32 @@ def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
     report = result.report()
     assert report["architecture"] == "structure_aware_v1"
     assert "logical_documents" in report
+
+
+def test_preextracted_units_preserve_structure_split_result() -> None:
+    pdf_bytes = _blank_pdf(2)
+    texts = {
+        1: "SYNOPSIS\nThe petitioner seeks special leave.",
+        2: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH"
+        ),
+    }
+    llama = {1: ["Synopsis"], 2: ["Main Petition"]}
+    units = extract_page_units(pdf_bytes, page_texts=texts)
+
+    direct = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts=llama,
+        page_texts=texts,
+    )
+    preextracted = structure_aware_split_from_units(
+        units,
+        llama_page_parts=llama,
+    )
+
+    assert preextracted.page_parts == direct.page_parts
+    assert preextracted.logical_documents == direct.logical_documents
 
 
 def test_structure_split_cuts_sci_application_out_of_annexure_carry() -> None:

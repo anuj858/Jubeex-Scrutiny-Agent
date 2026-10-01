@@ -24,6 +24,29 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def worker_kinds() -> tuple[str, ...]:
+    """Return the queues this worker instance is allowed to consume.
+
+    Production can run ingestion and scrutiny as separate ECS services by
+    setting ``JUBEEX_WORKER_KIND`` to ``ingestion`` or ``scrutiny``.  The
+    default remains backward compatible for local and existing deployments.
+    """
+    configured = (os.getenv("JUBEEX_WORKER_KIND") or "both").strip().lower()
+    aliases = {
+        "both": ("process_file", "scrutiny"),
+        "all": ("process_file", "scrutiny"),
+        "ingestion": ("process_file",),
+        "process_file": ("process_file",),
+        "process-file": ("process_file",),
+        "scrutiny": ("scrutiny",),
+    }
+    kinds = aliases.get(configured)
+    if kinds is None:
+        allowed = "both, ingestion, process_file, or scrutiny"
+        raise RuntimeError(f"Invalid JUBEEX_WORKER_KIND={configured!r}; use {allowed}")
+    return kinds
+
+
 def _job_from_message(message: dict[str, Any]) -> JobState:
     job_id = str(message.get("job_id") or uuid.uuid4())
     kind = str(message.get("kind") or "process_file")
@@ -70,11 +93,12 @@ async def run_worker(*, once: bool = False) -> None:
         raise RuntimeError(
             "SQS is not configured. Set JUBEEX_SQS_ENABLED=true or a queue URL."
         )
-    if not shutil.which("tesseract"):
+    kinds = worker_kinds()
+    if "process_file" in kinds and not shutil.which("tesseract"):
         raise RuntimeError(
             "Split OCR is unavailable: install tesseract-ocr in the worker image."
         )
-    kinds = ("process_file", "scrutiny")
+    logger.info("SQS worker consuming queue kind(s): %s", ", ".join(kinds))
     while True:
         received = False
         for kind in kinds:

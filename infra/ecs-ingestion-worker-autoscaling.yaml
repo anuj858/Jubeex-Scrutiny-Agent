@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Scale an existing JubeeX ECS ingestion-worker service from SQS backlog while
+  keeping one CPU/OCR-heavy petition job in each task.
+
+Parameters:
+  EcsClusterName:
+    Type: String
+    Description: ECS cluster containing the ingestion worker service.
+  EcsServiceName:
+    Type: String
+    Description: Existing ECS service that runs jubeex-sqs-worker.
+  IngestionQueueName:
+    Type: String
+    Default: jubeex-ingestion-jobs
+  MinTasks:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  MaxTasks:
+    Type: Number
+    Default: 4
+    MinValue: 1
+
+Resources:
+  IngestionWorkerScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinTasks
+      MaxCapacity: !Ref MaxTasks
+      ResourceId: !Sub service/${EcsClusterName}/${EcsServiceName}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ScaleOutPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EcsServiceName}-queue-scale-out
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref IngestionWorkerScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 30
+        MetricAggregationType: Maximum
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            MetricIntervalUpperBound: 1
+            ScalingAdjustment: 1
+          - MetricIntervalLowerBound: 1
+            MetricIntervalUpperBound: 3
+            ScalingAdjustment: 2
+          - MetricIntervalLowerBound: 3
+            ScalingAdjustment: 3
+
+  ScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Add ingestion workers while compiled petitions are queued.
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: visible
+          ReturnData: true
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateNumberOfMessagesVisible
+              Dimensions:
+                - Name: QueueName
+                  Value: !Ref IngestionQueueName
+            Period: 60
+            Stat: Maximum
+      AlarmActions:
+        - !Ref ScaleOutPolicy
+
+  ScaleInPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EcsServiceName}-queue-scale-in
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref IngestionWorkerScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 300
+        MetricAggregationType: Maximum
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  ScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        Remove an ingestion worker only after the queue and all in-flight jobs
+        have remained empty for fifteen minutes.
+      ComparisonOperator: LessThanThreshold
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 1
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: backlog
+          Expression: visible + running
+          Label: Visible and in-flight ingestion jobs
+          ReturnData: true
+        - Id: visible
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateNumberOfMessagesVisible
+              Dimensions:
+                - Name: QueueName
+                  Value: !Ref IngestionQueueName
+            Period: 300
+            Stat: Maximum
+        - Id: running
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/SQS
+              MetricName: ApproximateNumberOfMessagesNotVisible
+              Dimensions:
+                - Name: QueueName
+                  Value: !Ref IngestionQueueName
+            Period: 300
+            Stat: Maximum
+      AlarmActions:
+        - !Ref ScaleInPolicy
+
+Outputs:
+  WorkerCapacity:
+    Description: Configured ingestion worker task range.
+    Value: !Sub ${MinTasks}-${MaxTasks}

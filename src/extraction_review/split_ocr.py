@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import pairwise
 from pathlib import Path
@@ -21,6 +22,30 @@ _INDEX_PAGE_SPAN_RE = re.compile(
     r"(?:\d{1,4}[A-Za-z]?(?:[-–—]\d{1,4}[A-Za-z]?)?|"
     r"A\d{1,2}(?:[-–—]A?-?\d{1,2})?|[A-Z]{1,2}(?:[-–—][A-Z]{1,2})?)"
 )
+
+DEFAULT_SPLIT_OCR_WORKERS = 2
+DEFAULT_SPLIT_OCR_DPI = 180
+
+
+def _positive_int_env(name: str, default: int, *, maximum: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        value = default
+    return min(max(value, 1), maximum)
+
+
+def split_ocr_workers() -> int:
+    """Number of single-threaded Tesseract processes to run concurrently."""
+    return _positive_int_env(
+        "SPLIT_OCR_WORKERS", DEFAULT_SPLIT_OCR_WORKERS, maximum=16
+    )
+
+
+def split_ocr_dpi() -> int:
+    """Render resolution used by split-only OCR."""
+    return _positive_int_env("SPLIT_OCR_DPI", DEFAULT_SPLIT_OCR_DPI, maximum=300)
 
 
 def _cluster_positions(values: list[float], *, tolerance: float) -> list[float]:
@@ -265,6 +290,10 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
         return {}
     import pymupdf
 
+    started = time.perf_counter()
+    workers = split_ocr_workers()
+    dpi = split_ocr_dpi()
+
     # Render on one thread: PyMuPDF documents must not be shared across threads.
     # Only subprocess OCR runs concurrently, with one OpenMP thread per process.
     with tempfile.TemporaryDirectory(prefix="split-ocr-") as directory:
@@ -317,20 +346,25 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
 
         with (
             pymupdf.open(stream=pdf_bytes, filetype="pdf") as document,
-            ThreadPoolExecutor(max_workers=2) as pool,
+            ThreadPoolExecutor(max_workers=workers) as pool,
         ):
             # Batches bound rendered-image storage and outstanding work.
-            for offset in range(0, len(pages), 4):
-                batch = pages[offset : offset + 4]
+            batch_size = max(4, workers * 2)
+            for offset in range(0, len(pages), batch_size):
+                batch = pages[offset : offset + batch_size]
                 for number in batch:
                     page = document[number - 1]
-                    page.get_pixmap(dpi=180, colorspace=pymupdf.csGRAY).save(
+                    page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY).save(
                         root / f"{number}.png"
                     )
                 results.update(pool.map(recognize, batch))
         logger.info(
-            "Split OCR read %d/%d sparse pages",
+            "Split OCR read %d/%d sparse pages in %.1fs "
+            "(workers=%d dpi=%d)",
             sum(bool(t.strip()) for t in results.values()),
             len(pages),
+            time.perf_counter() - started,
+            workers,
+            dpi,
         )
         return results
