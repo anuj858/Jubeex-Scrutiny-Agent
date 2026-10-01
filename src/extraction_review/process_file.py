@@ -30,7 +30,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pypdf import PdfReader
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -48,8 +47,6 @@ from .document_parts import (
     page_parts_from_split,
     parts_on_page,
 )
-from .split_audit import audit_compiled_split
-from .structure_split import structure_aware_split
 from .job_timing import (
     attach_timing,
     elapsed_seconds,
@@ -64,12 +61,17 @@ from .llama_usage import (
     usage_status_message,
 )
 from .s3_artifacts import STEP_SPLIT, upload_step_json
+from .split_audit import audit_compiled_split
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
     dynamic_upload_slot,
     type_catalog,
     ui_catalog,
+)
+from .structure_split import (
+    extract_page_units,
+    structure_aware_split_from_units,
 )
 
 logger = logging.getLogger(__name__)
@@ -1850,12 +1852,50 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        page_parts, split_job_id, llama_split = await _split_page_parts(
-            llama_cloud_client,
-            file_id=state.file_id,
-            split_config=split_config,
-            filename=state.filename,
+        # LlamaSplit and local PDF layout/OCR are independent.  Previously the
+        # worker waited for the remote split to finish before starting OCR,
+        # making total latency roughly ``remote split + local OCR``.  Start the
+        # remote job first, load the cached/source PDF, and extract page units
+        # concurrently so latency is governed by the slower branch instead.
+        split_task = asyncio.create_task(
+            _split_page_parts(
+                llama_cloud_client,
+                file_id=state.file_id,
+                split_config=split_config,
+                filename=state.filename,
+            ),
+            name="compiled-llama-split",
         )
+        units_task: asyncio.Task[Any] | None = None
+        try:
+            pdf_bytes = await _load_bundle_pdf(
+                llama_cloud_client,
+                file_id=state.file_id,
+                source_documents=state.source_documents,
+            )
+            units_task = asyncio.create_task(
+                asyncio.to_thread(
+                    extract_page_units,
+                    pdf_bytes,
+                    source_pdf=state.filename or "bundle.pdf",
+                ),
+                name="compiled-local-page-analysis",
+            )
+            split_result, extracted_units = await asyncio.gather(
+                split_task,
+                units_task,
+            )
+        except BaseException:
+            split_task.cancel()
+            if units_task is not None:
+                units_task.cancel()
+            await asyncio.gather(
+                split_task,
+                *((units_task,) if units_task is not None else ()),
+                return_exceptions=True,
+            )
+            raise
+        page_parts, split_job_id, llama_split = split_result
         split_usage = await collect_optional_usage(
             llama_cloud_client,
             product="split",
@@ -1865,21 +1905,13 @@ class ProcessFileWorkflow(Workflow):
         usage_summary = summarize_llamacloud_usage(usage_jobs)
         logger.info("[Usage] %s", usage_status_message(usage_summary))
         ctx.write_event_to_stream(
-            Status(level="info", message=usage_status_message(usage_summary))
-        )
-
-        ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=f"Loading {state.filename} to slice labeled pages",
+                message="LlamaSplit complete; validating document boundaries",
             )
         )
-        pdf_bytes = await _load_bundle_pdf(
-            llama_cloud_client,
-            file_id=state.file_id,
-            source_documents=state.source_documents,
-        )
-        pdf_page_count = len(PdfReader(io.BytesIO(pdf_bytes)).pages) if pdf_bytes else 0
+
+        pdf_page_count = len(extracted_units)
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
             "index_rows": [],
@@ -1897,11 +1929,9 @@ class ProcessFileWorkflow(Workflow):
             # Structure-aware path: page units → classify → boundaries →
             # logical docs → hybrid repair. LlamaSplit is a warm-start hint.
             # Physical slot PDFs are created only after boundaries are final.
-            structured = await asyncio.to_thread(
-                structure_aware_split,
-                pdf_bytes,
+            structured = structure_aware_split_from_units(
+                extracted_units,
                 llama_page_parts=page_parts,
-                source_pdf=state.filename or "bundle.pdf",
                 run_hybrid_repair=True,
             )
             page_parts = structured.page_parts

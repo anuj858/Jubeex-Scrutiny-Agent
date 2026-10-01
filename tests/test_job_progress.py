@@ -9,6 +9,22 @@ def test_progress_for_status_is_monotonic_by_stage() -> None:
     assert progress_for_status("Pinecone indexing complete")[0] == 82
 
 
+def test_compiled_split_reports_real_post_llama_phases() -> None:
+    assert progress_for_status("LlamaSplit complete; validating document boundaries") == (
+        52,
+        "split_analyze",
+    )
+    assert progress_for_status("Structure-aware split found 14 logical documents") == (
+        66,
+        "split_repair",
+    )
+    assert progress_for_status("Sliced 14 document files") == (78, "split_slice")
+    assert progress_for_status("Split JSON ready (14 document parts)") == (
+        94,
+        "split_finalize",
+    )
+
+
 def test_scrutiny_progress_uses_defect_stages() -> None:
     pct, stage = progress_for_status("Checking defect D001", kind="scrutiny")
     assert pct == 40

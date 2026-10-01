@@ -111,6 +111,145 @@ _ANNEXURE_INVENTORY_PARTS = frozenset(
     }
 )
 
+_UNIDENTIFIED_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:record\s+of\s+proceedings|index|synopsis|list\s+of\s+dates|"
+    r"affidavit|certificate|application|memo\s+of\s+parties|vakalatnama|"
+    r"office\s+report|listing\s+proforma|judg(?:e)?ment|order)\b"
+)
+
+
+def _caption_petitioner(text: str) -> tuple[str, str] | None:
+    """Return a stable petitioner key and a short display name from a caption."""
+    for raw_line in (text or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        match = re.search(
+            r"(?i)^(.{2,120}?)\s*(?:\.{2,}|…+)?\s*petitioner(?:s|\s*\(\s*s\s*\))?\s*$",
+            line,
+        )
+        if not match:
+            continue
+        display = re.sub(r"\s+", " ", match.group(1)).strip(" .:-")
+        tokens = [
+            token
+            for token in re.findall(r"[a-z]{3,}", display.casefold())
+            if token
+            not in {
+                "and",
+                "another",
+                "anr",
+                "anrs",
+                "other",
+                "others",
+                "ors",
+                "petitioner",
+                "petitioners",
+            }
+        ]
+        if tokens:
+            return tokens[0], display
+    return None
+
+
+def _main_filing_petitioner(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> tuple[str, str] | None:
+    for page in sorted(page_parts):
+        names = set(parts_on_page(page_parts.get(page)))
+        if not ({"Cover Page", "Main Petition"} & names):
+            continue
+        if petitioner := _caption_petitioner(page_text.get(page, "")):
+            return petitioner
+    return None
+
+
+def _unidentified_reason(
+    excerpt: str,
+    *,
+    main_petitioner: tuple[str, str] | None,
+) -> tuple[str, str]:
+    """Classify why an unlabeled continuous page run was kept for review."""
+    candidate_petitioner = _caption_petitioner(excerpt)
+    is_rop = bool(
+        re.search(r"(?i)record\s+of\s+proceedings|item\s+no\.?\s*\d+", excerpt)
+    )
+    if (
+        is_rop
+        and main_petitioner
+        and candidate_petitioner
+        and candidate_petitioner[0] != main_petitioner[0]
+    ):
+        return (
+            "different_case_or_party",
+            (
+                "Different case or party: this Record of Proceedings names "
+                f"{candidate_petitioner[1]} as the petitioner, while the main filing names "
+                f"{main_petitioner[1]}. It was kept Unidentified to avoid attaching another "
+                "matter's order to this filing."
+            ),
+        )
+
+    has_annexure = bool(re.search(r"(?i)\bannexure\b", excerpt))
+    is_lower_court = bool(
+        re.search(
+            r"(?i)\b(?:high\s+court|district\s+court|tribunal|writ\s+petition)\b",
+            excerpt,
+        )
+    )
+    if has_annexure and is_lower_court:
+        return (
+            "unconfirmed_lower_court_annexure",
+            (
+                "Unconfirmed annexure boundary: these reproduced lower-court pages contain "
+                "an internal Annexure label, but the corresponding outer paper-book annexure "
+                "could not be confirmed from the main Index. The continuous pages were kept "
+                "together to avoid splitting inside the reproduced document."
+            ),
+        )
+    if has_annexure:
+        return (
+            "unconfirmed_annexure_boundary",
+            (
+                "Unconfirmed annexure boundary: an Annexure reference was detected, but its "
+                "outer label or complete page range could not be verified from the main Index "
+                "or surrounding filing documents."
+            ),
+        )
+
+    readable = len(re.sub(r"\W+", "", excerpt))
+    if readable < 80:
+        return (
+            "insufficient_readable_text",
+            (
+                "Insufficient readable text: OCR could not recover enough reliable text or a "
+                "document heading to classify these pages safely."
+            ),
+        )
+    if _UNIDENTIFIED_HEADING_RE.search(excerpt):
+        return (
+            "conflicting_document_evidence",
+            (
+                "Conflicting document evidence: a possible document heading was detected, "
+                "but its case context or page boundary did not provide enough confidence for "
+                "a filing section."
+            ),
+        )
+    if is_lower_court:
+        return (
+            "unlinked_reproduced_proceeding",
+            (
+                "Unlinked reproduced proceeding: these appear to be lower-court or tribunal "
+                "pages, but no verified outer annexure range links them to this filing."
+            ),
+        )
+    return (
+        "no_reliable_document_heading",
+        (
+            "No reliable document heading or verified continuation was found, so these "
+            "pages were kept Unidentified instead of being assigned to the wrong section."
+        ),
+    )
+
 
 @dataclass(frozen=True)
 class IndexRow:
@@ -1216,6 +1355,7 @@ def audit_compiled_split(
         )
 
     unidentified_reasons: list[dict[str, Any]] = []
+    main_petitioner = _main_filing_petitioner(page_parts, page_text)
     unlabeled = [page for page in range(1, page_count + 1) if page not in page_parts]
     if unlabeled:
         starts = [unlabeled[0]]
@@ -1227,22 +1367,17 @@ def audit_compiled_split(
         ends.append(unlabeled[-1])
         for start, end in zip(starts, ends, strict=True):
             excerpt = "\n".join(page_text.get(page, "") for page in range(start, end + 1))
-            if re.search(r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", excerpt) and re.search(
-                r"(?i)\b(?:high\s+court|district\s+court|tribunal|writ\s+petition)\b",
+            reason_type, reason = _unidentified_reason(
                 excerpt,
-            ):
-                unidentified_reasons.append(
-                    {
-                        "page_span": {"start": start, "end": end},
-                        "reason": (
-                            "This continuous document is Unidentified because its reproduced "
-                            "lower-court pages use a local Annexure No. label that may conflict "
-                            "with the Supreme Court paper-book Index. The full run was kept "
-                            "together because the outer exhibit boundary could not be confirmed "
-                            "without risking a split inside the document."
-                        ),
-                    }
-                )
+                main_petitioner=main_petitioner,
+            )
+            unidentified_reasons.append(
+                {
+                    "page_span": {"start": start, "end": end},
+                    "type": reason_type,
+                    "reason": reason,
+                }
+            )
 
     return {
         "index_rows": [row.as_dict() for row in rows],

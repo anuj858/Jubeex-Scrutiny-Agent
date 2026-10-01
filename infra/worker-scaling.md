@@ -12,7 +12,15 @@ Set the existing ingestion worker task definition environment variable:
 JUBEEX_WORKER_KIND=ingestion
 ```
 
-Keep at least 2 vCPU and 4 GB memory per ingestion task. Deploy the queue-based
+For the sub-two-minute target on typical 100-page scanned petitions, use 4 vCPU
+and 8 GB memory per ingestion task and set:
+
+```text
+SPLIT_OCR_WORKERS=4
+SPLIT_OCR_DPI=180
+```
+
+The OCR worker count should match the task vCPU count. Deploy the queue-based
 autoscaling stack with the actual cluster and service names:
 
 ### Replace the legacy 0/1 policies first

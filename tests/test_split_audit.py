@@ -413,3 +413,60 @@ Application before the tribunal.
         ("Annexure P-3", 80, 90),
         ("Annexure P-4", 91, 96),
     ]
+
+
+def test_unidentified_reason_explains_mismatched_record_of_proceedings() -> None:
+    result = audit_compiled_split(
+        {1: ["Cover Page"], 4: ["Index"]},
+        {
+            1: (
+                "IN THE SUPREME COURT OF INDIA\n"
+                "VINOD & ORS. Petitioners\nVERSUS\nSTATE OF HARYANA"
+            ),
+            2: (
+                "ITEM NO.42 COURT NO.1\nRECORD OF PROCEEDINGS\n"
+                "DHARAMPAL & ORS. Petitioner(s)\nVERSUS\nSTATE OF HARYANA"
+            ),
+            3: "Issue notice.\nASSISTANT REGISTRAR",
+            4: "INDEX\nParticulars of Document",
+        },
+        page_count=4,
+    )
+
+    assert result["unidentified_reasons"] == [
+        {
+            "page_span": {"start": 2, "end": 3},
+            "type": "different_case_or_party",
+            "reason": (
+                "Different case or party: this Record of Proceedings names "
+                "DHARAMPAL & ORS as the petitioner, while the main filing names "
+                "VINOD & ORS. It was kept Unidentified to avoid attaching another "
+                "matter's order to this filing."
+            ),
+        }
+    ]
+
+
+def test_every_unidentified_run_gets_a_specific_reason_type() -> None:
+    result = audit_compiled_split(
+        {1: ["Index"], 3: ["Application 1"], 6: ["Main Petition"]},
+        {
+            1: "INDEX\nParticulars of Document",
+            2: "scanned marks",
+            3: "IN THE SUPREME COURT OF INDIA\nAPPLICATION FOR DIRECTIONS",
+            4: (
+                "IN THE DISTRICT COURT\nAnnexure No. 4\n"
+                "Reproduced judgment from the earlier proceeding"
+            ),
+            5: "Continuation of reproduced judgment",
+            6: "IN THE SUPREME COURT OF INDIA\nMAIN PETITION",
+        },
+        page_count=6,
+    )
+
+    reasons = result["unidentified_reasons"]
+    assert [item["type"] for item in reasons] == [
+        "insufficient_readable_text",
+        "unconfirmed_lower_court_annexure",
+    ]
+    assert all(item["reason"] for item in reasons)

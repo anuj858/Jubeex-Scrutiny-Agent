@@ -4,8 +4,8 @@
   "requiresCompatibilities": [
     "FARGATE"
   ],
-  "cpu": "2048",
-  "memory": "4096",
+  "cpu": "4096",
+  "memory": "8192",
   "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
   "containerDefinitions": [
@@ -86,6 +86,14 @@
         {
           "name": "SLOT_UPLOAD_CONCURRENCY",
           "value": "8"
+        },
+        {
+          "name": "SPLIT_OCR_WORKERS",
+          "value": "4"
+        },
+        {
+          "name": "SPLIT_OCR_DPI",
+          "value": "180"
         },
         {
           "name": "SKIP_SLOT_PDF_UPLOAD",

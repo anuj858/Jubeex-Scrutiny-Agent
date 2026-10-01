@@ -3061,3 +3061,167 @@ def test_defect_003_recovers_scan_only_vakalatnama_after_filing_memo() -> None:
     assert repaired[2] == ["Vakalatnama"]
     assert repaired[3] == ["Memo of Appearance"]
     assert repaired[4] == ["Memo of Parties"]
+
+
+def test_defect_003_lower_court_headings_and_applications_stay_in_annexure_p1() -> None:
+    """An enclosed Delhi HC case must not split P-1 into outer documents."""
+    texts = {
+        1: (
+            "ANNEXURE-P1\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "C.S. (OS) No. 1251/2009\nINDEX\n"
+            "2. Memo of Parties B-K\n3. Plaint 1-15\n"
+            "5. Application under Order 39 Rules 1 and 2 19-28"
+        ),
+        2: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "C.S. (OS) No. 1251/2009\nMEMO OF PARTIES\n"
+            "Plaintiffs Versus Defendants"
+        ),
+        # The model called this continuation page an outer Application even
+        # though it is paragraph 32 of the plaint enclosed in P-1.
+        3: "32. The defendant was not entitled to any share.\nPrinted folio 44",
+        4: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "I.A. No. 8717/2009 in C.S. (OS) No. 1251/2009\n"
+            "APPLICATION UNDER ORDER 39 RULES 1 AND 2 CPC"
+        ),
+        5: "Continuation of the enclosed application and prayer",
+        6: (
+            "ANNEXURE-P2\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) 1251/2009\nORDER\n15.07.2009"
+        ),
+    }
+    bad = {
+        1: ["Annexure P-1"],
+        2: ["Memo of Parties"],
+        3: ["Application 1"],
+        4: ["Application 2"],
+        6: ["Annexure P-2"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=6)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(1, 6))
+    assert repaired[6] == ["Annexure P-2"]
+
+
+def test_defect_003_lower_court_memo_does_not_truncate_annexure_p4() -> None:
+    """P-4 includes its HC memo, vakalatnama, MOU and sparse tail pages."""
+    texts = {
+        1: (
+            "ANNEXURE-P4\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) No. 59 of 2020\nMASTER INDEX"
+        ),
+        2: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) No. 59 of 2020\nMEMO OF PARTIES\n"
+            "Plaintiff Versus Defendant"
+        ),
+        3: (
+            "VAKALATNAMA\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) No. 59 of 2020"
+        ),
+        4: "MEMORANDUM OF UNDERSTANDING\nFamily settlement terms",
+        5: "Continuation of settlement terms\nPrinted folio 141",
+        6: (
+            "ANNEXURE-P5\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) 59/2020\nORDER\n20.05.2022"
+        ),
+    }
+    bad = {
+        1: ["Annexure P-4"],
+        2: ["Memo of Parties"],
+        3: ["Vakalatnama"],
+        6: ["Annexure P-5"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=6)
+
+    assert all(repaired[page] == ["Annexure P-4"] for page in range(1, 6))
+    assert repaired[6] == ["Annexure P-5"]
+
+
+def test_defect_003_internal_filing_list_cannot_reopen_hc_memo_inside_p4() -> None:
+    """Back-matter recovery must ignore filing-list lookalikes enclosed in P-4."""
+    from extraction_review.split_repair import _restore_indexed_back_matter_parts
+
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nINDEX\n"
+            "S.NO. PARTICULARS PAGE NO.\n21. Memo of Parties in High Court 307"
+        ),
+        2: (
+            "ANNEXURE-P4\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) No. 59 of 2020\nMASTER INDEX"
+        ),
+        3: (
+            "1. Petition 1+1 copies\n2. Annexure 1+1 copies\n"
+            "3. Application 1+1 copies\n101"
+        ),
+        4: (
+            "VAKALATNAMA\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) No. 59 of 2020"
+        ),
+        5: "Continuation of the enclosed High Court record",
+        6: (
+            "ANNEXURE-P5\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CS(OS) 59/2020\nORDER"
+        ),
+    }
+    nested = {
+        1: ["Index"],
+        2: ["Annexure P-4"],
+        3: ["Annexure P-4"],
+        4: ["Annexure P-4"],
+        5: ["Annexure P-4"],
+        6: ["Annexure P-5"],
+    }
+
+    repaired = _restore_indexed_back_matter_parts(nested, texts, page_count=6)
+
+    assert all(repaired[page] == ["Annexure P-4"] for page in range(2, 6))
+
+
+def test_defect_006_annexure_p2_affidavit_stays_with_complete_annexure() -> None:
+    """The lower-court verifying affidavit is P-2, not the main affidavit."""
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. OF 2024\n"
+            "AFFIDAVIT\nI, Ajay Rawat, do hereby solemnly affirm"
+        ),
+        2: "VERIFICATION\nVerified at Shimla\nDEPONENT",
+        3: (
+            "ANNEXURE P-2\n"
+            "IN THE COURT OF LEARNED APPELLATE AUTHORITY\n"
+            "RENT APPEAL NO.4-S/13 (b) OF 2020\n"
+            "Application under Sections 152 and 151 CPC"
+        ),
+        4: "Continuation of the lower-court application",
+        5: "Prayer and signature of respondents through counsel",
+        6: (
+            "IN THE COURT OF LEARNED APPELLATE AUTHORITY\n"
+            "Affidavit of Shri Sanjay Sood\n"
+            "the enclosed Section 152 and 151 CPC application was drafted "
+            "under my instructions\nVerified at Shimla\nDeponent"
+        ),
+        7: (
+            "ANNEXURE P-3\nIN THE COURT OF LD. ADDITIONAL DISTRICT JUDGE\n"
+            "Reply to application under Sections 152 and 151 CPC"
+        ),
+    }
+    bad = {
+        1: ["Affidavit"],
+        2: ["Affidavit"],
+        3: ["Annexure P-2"],
+        4: ["Annexure P-2"],
+        5: ["Annexure P-2"],
+        6: ["Affidavit"],
+        7: ["Annexure P-3"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=7)
+
+    assert repaired[1] == repaired[2] == ["Affidavit"]
+    assert all(repaired[page] == ["Annexure P-2"] for page in range(3, 7))
+    assert repaired[7] == ["Annexure P-3"]

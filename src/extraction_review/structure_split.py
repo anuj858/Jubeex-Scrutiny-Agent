@@ -649,6 +649,29 @@ def structure_aware_split(
     units = extract_page_units(
         pdf_bytes, source_pdf=source_pdf, page_texts=page_texts
     )
+    return structure_aware_split_from_units(
+        units,
+        llama_page_parts=llama_page_parts,
+        run_hybrid_repair=run_hybrid_repair,
+    )
+
+
+def structure_aware_split_from_units(
+    units: Sequence[PageUnit],
+    *,
+    llama_page_parts: PagePartMap
+    | Mapping[int, Sequence[str] | str | None]
+    | None = None,
+    run_hybrid_repair: bool = True,
+) -> StructureSplitResult:
+    """Classify and repair page units that have already been extracted.
+
+    Keeping extraction separate lets the compiled-petition workflow run local
+    layout/OCR work while the independent LlamaSplit job is processing.  The
+    public :func:`structure_aware_split` wrapper remains synchronous for tests
+    and non-workflow callers.
+    """
+    units = list(units)
     texts = {unit.pdf_page: unit.text for unit in units}
 
     classifications = classify_pages(units, llama_page_parts=llama_page_parts)

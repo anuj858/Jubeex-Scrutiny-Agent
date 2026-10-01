@@ -1279,13 +1279,14 @@ def _annexure_run_bounds(
                 if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not _is_lower_court_caption(text):
                     end = page - 1
                     break
                 if (
@@ -1304,13 +1305,14 @@ def _annexure_run_bounds(
                     break
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not _is_lower_court_caption(text):
                     break
                 if (
                     _FILING_MEMO_RE.search(_heading_window(text, lines=8))
@@ -1423,7 +1425,10 @@ def _force_annexure_nesting(
                 if not annexure_ref_in_heading(text):
                     continue
             if not names or any(
-                name in _NESTED_STEAL_PARTS or name == "Appendix" for name in names
+                name in _NESTED_STEAL_PARTS
+                or name == "Appendix"
+                or family_split_name(name) == "Application"
+                for name in names
             ):
                 updated[page] = [label]
                 continue
@@ -1742,9 +1747,21 @@ def _extend_explicit_memo_of_parties(
 ) -> PagePartMap:
     """Keep party-list continuation pages with an explicitly headed memo."""
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     active = False
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
+        # A lower-court Memo of Parties reproduced between two printed
+        # Annexure stamps belongs to that exhibit.  Reopening it here after
+        # the nesting pass would create a false outer Memo and split the
+        # annexure body into Unidentified fragments.
+        if page in annexure_pages:
+            active = False
+            continue
         if _memo_of_parties_heading(text):
             updated[page] = ["Memo of Parties"]
             active = True
@@ -3976,6 +3993,11 @@ def _restore_indexed_back_matter_parts(
     distinct from a memo reproduced inside an Annexure.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     index_text = "\n".join(
         page_text.get(page, "")
         for page, names in page_parts.items()
@@ -3995,13 +4017,17 @@ def _restore_indexed_back_matter_parts(
     filing_anchor_pages = [
         page
         for page in range(1, page_count + 1)
-        if _outer_anchor_label(page_text.get(page, "")) == "Filing Memo"
-        or _looks_like_filing_memo_continuation(page_text.get(page, ""))
+        if page not in annexure_pages
+        and (
+            _outer_anchor_label(page_text.get(page, "")) == "Filing Memo"
+            or _looks_like_filing_memo_continuation(page_text.get(page, ""))
+        )
     ]
     filing_pages = filing_anchor_pages or [
         page
         for page in range(1, page_count + 1)
-        if "Filing Memo" in parts_on_page(updated.get(page))
+        if page not in annexure_pages
+        and "Filing Memo" in parts_on_page(updated.get(page))
     ]
     if not filing_pages:
         return updated
@@ -4078,7 +4104,8 @@ def _restore_indexed_back_matter_parts(
         (
             page
             for page in range(filing_end + 1, page_count + 1)
-            if _is_lower_court_caption(page_text.get(page, ""))
+            if page not in annexure_pages
+            and _is_lower_court_caption(page_text.get(page, ""))
             and re.search(
                 r"\b(?:petitioner|appellant|opposite\s+parties|respondents?)\b",
                 page_text.get(page, ""),
@@ -4203,6 +4230,11 @@ def _extend_explicit_affidavit_continuation(
     DEPONENT, or explicitly continues the affidavit.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_pages = {
+        page
+        for start, end, _label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     active = False
     continuation = re.compile(
         r"(?mi)^\s*verification\s*[:-]?|\bdeponent\b|"
@@ -4212,6 +4244,12 @@ def _extend_explicit_affidavit_continuation(
     )
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
+        # An affidavit inside a printed annexure range verifies the enclosed
+        # lower-court document.  It must not reopen or extend the standalone
+        # affidavit that supports the current Supreme Court petition.
+        if page in annexure_pages:
+            active = False
+            continue
         anchor = _outer_anchor_label(text)
         if anchor == "Affidavit":
             # An affidavit expressly verifying an I.A. is intentionally part
