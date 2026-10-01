@@ -2229,6 +2229,33 @@ def test_annexure_does_not_expand_backward_before_its_printed_stamp() -> None:
     assert repaired[4] == ["Annexure P-1"]
 
 
+def test_early_rop_keeps_llamasplit_labels_when_page_text_is_missing() -> None:
+    """A scanned book with no OCR must not turn every page after RoP into RoP."""
+    page_parts = {
+        1: ["Advocate's Checklist"],
+        2: ["Cover Page"],
+        3: ["Record of Proceedings"],
+        4: ["Index"],
+        5: ["Listing Proforma"],
+        6: ["Synopsis"],
+        7: ["List of Dates & Events"],
+        8: ["Main Petition"],
+        9: ["Affidavit"],
+        10: ["Annexures"],
+        11: ["Vakalatnama"],
+        12: ["AOR's Declaration"],
+    }
+    repaired, _ = repair_compiled_split(
+        page_parts,
+        {page: "" for page in page_parts},
+        page_count=12,
+    )
+
+    assert repaired[3] == ["Record of Proceedings"]
+    for page, label in page_parts.items():
+        assert repaired.get(page) == label, page
+
+
 def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None:
     texts = {
         1: "INDEX\n#\nDate of Record of Proceeding\nPages\n1\n2\n3",

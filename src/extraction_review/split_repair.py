@@ -1805,6 +1805,9 @@ def _demote_unverified_representation_parts(
     for page in sorted(updated):
         names = updated[page]
         text = page_text.get(page, "")
+        # Unread pages have no caption to verify. Keep LlamaSplit's label.
+        if not (text or "").strip():
+            continue
         trusted = (_is_sci_caption(text) and not _is_lower_court_caption(text)) or (
             "Memo of Parties" in names and _memo_of_parties_heading(text)
         )
@@ -2196,7 +2199,16 @@ def _restore_early_record_of_proceedings(
         # starts a lower-court judgment/order.  Do not carry the RoP label into
         # that challenged decision merely because its scanned heading was not
         # recognized as another outer filing document.
-        if _is_lower_court_caption(text) or _looks_like_impugned_order_start(text):
+        # No page text: keep the label LlamaSplit already chose. Extending RoP
+        # here replaced Index, Synopsis, and the petition on scanned books.
+        if (
+            _is_lower_court_caption(text)
+            or _looks_like_impugned_order_start(text)
+            or (
+                not (text or "").strip()
+                and any(name != "Record of Proceedings" for name in names)
+            )
+        ):
             active = False
             continue
         anchor = _outer_anchor_label(text)
@@ -2905,9 +2917,12 @@ def _extend_main_petition_body(
                 updated[page] = [MAIN_PETITION_PART]
                 continue
             # Allow overwriting weak wrong labels inside the petition body.
+            # An unread page keeps the label LlamaSplit already assigned.
             if any(name == MAIN_PETITION_PART for name in names):
                 continue
             if any(name in _NESTED_STEAL_PARTS for name in names):
+                if not (text or "").strip():
+                    break
                 updated[page] = [MAIN_PETITION_PART]
                 continue
             break
@@ -2978,9 +2993,13 @@ def _demote_false_advocate_checklist(
                 else:
                     updated[page] = ["Annexure P-1"]
             elif not _looks_like_sci_checklist(text):
-                # Blank / OCR-empty sheets are not the SCI Advocate's Check List.
+                # No extracted text means the page was not read. Keep LlamaSplit's
+                # checklist label instead of treating the whole page as blank.
+                if not (text or "").strip():
+                    continue
+                # Blank sheets are not the SCI Advocate's Check List.
                 # Listing Proforma often continues on the next (image-only) page.
-                if _is_near_blank_page(text) or not (text or "").strip():
+                if _is_near_blank_page(text):
                     prev = parts_on_page(updated.get(page - 1))
                     nxt = parts_on_page(updated.get(page + 1))
                     if "Listing Proforma" in prev or "Listing Proforma" in nxt:

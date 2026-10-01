@@ -36,10 +36,20 @@ def _is_loopback_url(url: str) -> bool:
     )
 
 
+def _running_in_ecs() -> bool:
+    return bool(
+        (os.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") or "").strip()
+        or (os.getenv("ECS_CONTAINER_METADATA_URI") or "").strip()
+        or (os.getenv("ECS_CONTAINER_METADATA_URI_V4") or "").strip()
+    )
+
+
 def resolve_callback_url(callback_url: str | None) -> str:
-    """Prefer a public URL. Request localhost must not override ECS env."""
+    """Prefer a public URL on ECS. Locally, use JUBEEX_CALLBACK_URL."""
     requested = (callback_url or "").strip()
     configured = (os.getenv("JUBEEX_CALLBACK_URL") or "").strip()
+    if configured and _is_loopback_url(configured) and not _running_in_ecs():
+        return configured
     if requested and not _is_loopback_url(requested):
         return requested
     if configured and not _is_loopback_url(configured):
@@ -97,7 +107,7 @@ async def notify_job_finished(
     url = resolve_callback_url(callback_url)
     if not url:
         return
-    if _is_loopback_url(url):
+    if _is_loopback_url(url) and _running_in_ecs():
         logger.error(
             "Skipping callback for job %s — URL %s is not reachable from this "
             "worker. Set JUBEEX_CALLBACK_URL / callback_url to a public backend "

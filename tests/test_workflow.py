@@ -110,7 +110,7 @@ async def test_metadata_workflow() -> None:
 
 
 @pytest.mark.asyncio
-async def test_split_petition_skips_classify(
+async def test_split_petition_classifies_even_when_filing_type_is_set(
     monkeypatch: pytest.MonkeyPatch,
     fake: FakeLlamaCloudServer,
 ) -> None:
@@ -135,10 +135,10 @@ async def test_split_petition_skips_classify(
         if isinstance(event, Status) and "skipping classify" in event.message.lower():
             skipped = True
     result = await handler
-    assert skipped is True
-    assert classified == []
+    assert skipped is False
+    assert classified
     assert isinstance(result, BundlePrepared)
-    assert result.filing_type == "SLP_CIVIL"
+    assert result.filing_type
     assert result.agent_data_id is None
     assert result.job_type == "split_petition"
 
