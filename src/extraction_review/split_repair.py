@@ -3689,6 +3689,37 @@ def _place_index_expected_annexures(
     # this repairs P-4/P-5 final sheets that the model left Unidentified.
     for start, label in attached_starts.items():
         assignments.setdefault(start, label)
+    candidate_set = set(candidates)
+
+    # The model can identify the dated Record of Proceedings as an Annexure
+    # while missing the signed order immediately before it.  Both sheets form
+    # one annexed Supreme Court order, but marking the later RoP as already
+    # attached removes the label from ``pending`` and previously prevented the
+    # earlier signed-order candidate from being considered.  Move only a
+    # validated existing start back by one physical page when that page is a
+    # document-start candidate, both sheets describe the same proceeding, and
+    # the combined evidence strongly matches the same Index entry.
+    for start, label in sorted(attached_starts.items()):
+        prior = start - 1
+        if (
+            assignments.get(start) != label
+            or prior < zone_start
+            or prior not in candidate_set
+            or prior in assignments
+        ):
+            continue
+        particulars = entry_particulars.get(label)
+        if not particulars or not _annexure_island_may_continue(
+            page_text.get(prior, ""), page_text.get(start, "")
+        ):
+            continue
+        window = "\n".join(
+            page_text.get(page, "") for page in range(prior, start + 1)
+        )
+        if _score_island_for_index_annexure(window, particulars, label) < 12:
+            continue
+        assignments.pop(start, None)
+        assignments[prior] = label
 
     # Unmatched captions are not evidence for an annexure identity. Leave
     # them unresolved instead of pairing unrelated documents by position.
@@ -3697,7 +3728,6 @@ def _place_index_expected_annexures(
         return updated
 
     ordered_starts = sorted(assignments)
-    candidate_set = set(candidates)
     for index, start in enumerate(ordered_starts):
         label = assignments[start]
         end = (

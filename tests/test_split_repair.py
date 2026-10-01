@@ -2739,6 +2739,45 @@ def test_defect_012_recovers_index_omission_and_rejects_wrong_attached_label() -
     assert repaired[12] == repaired[13] == ["Annexure P-7"]
 
 
+def test_defect_012_p7_existing_rop_includes_preceding_signed_order() -> None:
+    """An existing P-7 RoP label must include its signed order first page."""
+    from extraction_review.split_repair import _place_index_expected_annexures
+
+    texts = {
+        1: (
+            "INDEX\n10. ANNEXURE P-7: A copy of the order dated 12.04.2016 "
+            "passed in Review Petition (Civil) No. 1512 of 2016 in "
+            "Special Leave Petition (C) No. 7595 of 2015"
+        ),
+        2: "IN THE SUPREME COURT OF INDIA\nCURATIVE PETITION",
+        3: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nVERIFICATION",
+        12: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "REVIEW PETITION (CIVIL) NO. 1512 OF 2016\n"
+            "IN SLP (CIVIL) NO. 7595 OF 2015\nORDER\n"
+            "The Review Petition is dismissed.\nNew Delhi; 12th April, 2016."
+        ),
+        13: (
+            "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "R.P. (C) No. 1512/2016 in SLP (C) No. 7595/2015\n"
+            "Date: 12/04/2016\nThe review petition is dismissed in terms "
+            "of the signed order."
+        ),
+    }
+    # Production recognized only the later RoP sheet as P-7. The signed order
+    # immediately before it consequently fell into Unidentified.
+    initial = {
+        1: ["Index"],
+        2: ["Main Petition"],
+        3: ["Affidavit"],
+        13: ["Annexure P-7"],
+    }
+
+    repaired = _place_index_expected_annexures(initial, texts, 13)
+
+    assert repaired[12] == repaired[13] == ["Annexure P-7"]
+
+
 def test_defect_012_reclaims_p1_after_certificate_from_stale_petition_label() -> None:
     """The indexed HC writ on page 56 starts P-1, not more Main Petition."""
     from extraction_review.split_repair import _place_index_expected_annexures
