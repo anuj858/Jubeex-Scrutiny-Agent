@@ -706,7 +706,7 @@ class ScrutinyWorkflow(Workflow):
         if persist_tasks:
             await asyncio.gather(*persist_tasks, return_exceptions=True)
         await persist_report(report)
-        defects_payload = report.model_dump(mode="json")
+        defects_payload = report.public_payload()
         if isinstance(defects_payload, dict):
             defects_payload.setdefault("organization_id", event.organization_id)
             defects_payload.setdefault("workspace_id", event.workspace_id)
@@ -770,7 +770,7 @@ class ScrutinyWorkflow(Workflow):
 
         updated = dict(payload)
         metadata = dict(updated.get("metadata") or {})
-        metadata["scrutiny_report"] = report.model_dump(mode="json")
+        metadata["scrutiny_report"] = report.public_payload()
         updated["metadata"] = metadata
 
         try:

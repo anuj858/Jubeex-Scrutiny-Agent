@@ -648,6 +648,113 @@ class ScrutinyReport(BaseModel):
     planned_checks: int | None = None
     stopped_early: bool = False
 
+    def public_payload(self) -> dict[str, Any]:
+        """JSON the filing screen reads. Evidence pages are local to the part."""
+        payload = self.model_dump(mode="json")
+        payload["findings"] = [
+            public_finding(item) for item in self.findings
+        ]
+        return payload
+
+
+def _official_sources(check_id: str) -> list[dict[str, Any]]:
+    """Catalogue links for this check: [{url, page}, ...]."""
+    import re
+
+    catalogue = get_catalogue()
+    defect = catalogue.defect_by_id(check_id)
+    if defect is None:
+        return []
+    page_match = re.search(
+        r"pages?\s+(\d+)", defect.location_source or "", flags=re.IGNORECASE
+    )
+    page = int(page_match.group(1)) if page_match else None
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in catalogue.sources_cited_by(defect):
+        url = (source.url or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        item: dict[str, Any] = {"url": url}
+        if page is not None:
+            item["page"] = page
+        sources.append(item)
+    return sources
+
+
+def _public_location(finding: DefectFinding, official: str | None) -> str:
+    evidence = finding.evidence[0] if finding.evidence else None
+    part = None
+    local = None
+    if evidence is not None:
+        part = (evidence.document_part or evidence.slot_id or "").strip() or None
+        local = evidence.local_page or evidence.page
+    bits: list[str] = []
+    if part and local is not None:
+        bits.append(f"{part}, page {local}")
+    elif local is not None:
+        bits.append(f"page {local}")
+    if official:
+        bits.append(official)
+    if bits:
+        return ". ".join(bits)
+    return finding.location or ""
+
+
+def public_finding(finding: DefectFinding) -> dict[str, Any]:
+    """One finding in the shape the filing screen stores and highlights."""
+    official = (finding.location_source or "").strip() or None
+    evidence: list[dict[str, Any]] = []
+    for item in finding.evidence:
+        page = item.local_page or item.page
+        boxes = []
+        for box in item.bounding_boxes:
+            dumped = box.model_dump(mode="json")
+            if page is not None:
+                dumped["page"] = page
+            boxes.append(dumped)
+        evidence.append(
+            {
+                "page": page,
+                "quote": item.quote,
+                "document_part": item.document_part,
+                "slot_id": item.slot_id,
+                "boxes_status": item.boxes_status,
+                "bounding_boxes": boxes,
+            }
+        )
+    coverage = finding.coverage.model_dump(mode="json")
+    local_pages = [
+        item["page"] for item in evidence if isinstance(item.get("page"), int)
+    ]
+    if local_pages:
+        coverage["pages_reviewed"] = local_pages
+    return {
+        "check_id": finding.check_id,
+        "defect": finding.defect,
+        "requirement": finding.requirement,
+        "main_category": finding.main_category,
+        "special_category": finding.special_category,
+        "status": finding.status,
+        "summary": finding.summary,
+        "confidence": finding.confidence,
+        "reasoning": finding.reasoning,
+        "how_to_cure": list(finding.how_to_cure),
+        "applicable_rule": finding.applicable_rule,
+        "location": _public_location(finding, official),
+        "location_source": _official_sources(finding.check_id),
+        "evidence_ids": list(finding.evidence_ids),
+        "evidence": evidence,
+        "visual_localizations": [
+            item.model_dump(mode="json") for item in finding.visual_localizations
+        ],
+        "coverage": coverage,
+        "usage": finding.usage.model_dump(mode="json") if finding.usage else None,
+        "error": finding.error,
+        "defect_version": 1,
+    }
+
 
 def _pages_from_chunks(chunks: list[dict[str, Any]] | None) -> list[int]:
     pages: list[int] = []

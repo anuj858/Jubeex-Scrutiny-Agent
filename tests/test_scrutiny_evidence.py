@@ -17,10 +17,15 @@ from extraction_review.document_parts import (
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import filing_location
 from extraction_review.scrutiny.schema import (
+    BoundingBox,
+    Coverage,
+    DefectFinding,
     DefectResponse,
     EvidenceRef,
+    FindingEvidence,
     apply_evidence_pages,
     apply_status_policy,
+    public_finding,
 )
 from extraction_review.vector_store import build_page_records
 
@@ -442,3 +447,40 @@ def test_filing_location_states_page_or_page_missing() -> None:
         filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
         == "Filing page missing — no page was identified in the retrieved excerpts."
     )
+
+
+def test_public_finding_uses_the_part_page_and_source_links() -> None:
+    finding = DefectFinding(
+        check_id="D-6",
+        title="old title",
+        defect="Names and addresses of appointed arbitrators are missing.",
+        requirement="A Section 11 petition must name appointed arbitrators.",
+        main_category="Arbitration Petition",
+        status="compliant",
+        summary="The petition names the arbitrator.",
+        confidence=0.95,
+        reasoning="See the main petition.",
+        evidence=[
+            FindingEvidence(
+                page=35,
+                local_page=9,
+                quote="Mr. Justice Jayant Nath",
+                document_part="Main Petition",
+                slot_id="petition",
+                boxes_status="matched",
+                bounding_boxes=[BoundingBox(page=35, x=0.19, y=0.24, w=0.63, h=0.01)],
+            )
+        ],
+        location="Filing page 35 — Main Petition.",
+        location_source="Official source (not a page of this filing): Handbook, page 62",
+        coverage=Coverage(chunks_reviewed=2, pages_reviewed=[35]),
+    )
+    published = public_finding(finding)
+    assert "title" not in published
+    assert published["location"].startswith("Main Petition, page 9")
+    assert published["evidence"][0]["page"] == 9
+    assert published["evidence"][0]["bounding_boxes"][0]["page"] == 9
+    assert "local_page" not in published["evidence"][0]
+    assert isinstance(published["location_source"], list)
+    assert published["defect_version"] == 1
+    assert published["coverage"]["pages_reviewed"] == [9]

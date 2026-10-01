@@ -1417,7 +1417,9 @@ async def _run_nested_scrutiny(
     report = getattr(result, "report", None)
     if report is None and isinstance(result, dict):
         report = result.get("report")
-    if hasattr(report, "model_dump"):
+    if hasattr(report, "public_payload"):
+        dumped = report.public_payload()
+    elif hasattr(report, "model_dump"):
         dumped = report.model_dump(mode="json")
         if isinstance(dumped, dict):
             return dumped
