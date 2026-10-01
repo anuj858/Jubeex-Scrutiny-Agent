@@ -2083,6 +2083,47 @@ def _prefer_form28_main_island(
     return updated
 
 
+def _repair_main_petition_holes_inside_annexures(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Remove isolated false Main Petition labels inside one Annexure run.
+
+    A continuation sheet may repeat petition-like phrases such as ``Because``
+    or ``the petitioners`` and be labelled Main Petition by the model.  When
+    both immediately adjacent physical pages already have the same Annexure
+    identity, that isolated label would split the Annexure into two islands and
+    can survive later first-run collapsing.  Rejoin only this tightly bounded
+    one-page hole, and never override a page that independently looks like the
+    Supreme Court Main Petition or starts another outer filing document.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in range(2, page_count):
+        names = parts_on_page(updated.get(page))
+        if MAIN_PETITION_PART not in names:
+            continue
+
+        previous = parts_on_page(updated.get(page - 1))
+        following = parts_on_page(updated.get(page + 1))
+        if len(previous) != 1 or previous != following:
+            continue
+        owner = previous[0]
+        if family_split_name(owner) != ANNEXURE_FAMILY:
+            continue
+
+        text = page_text.get(page, "")
+        if _looks_like_sci_main_petition(text):
+            continue
+        anchor = _outer_anchor_label(text)
+        if anchor and anchor != MAIN_PETITION_PART:
+            continue
+        if page_starts_application(text):
+            continue
+        updated[page] = [owner]
+    return updated
+
+
 def _demote_annexed_sci_rop(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -3444,6 +3485,50 @@ def _place_index_expected_annexures(
         return page_parts
 
     zone_start = _post_petition_zone_start(page_parts, page_count)
+
+    # A model can carry ``Main Petition`` onto the first enclosed lower-court
+    # record even after a separately identified affidavit/certificate.  That
+    # makes _post_petition_zone_start() begin after the real Annexure start and
+    # prevents the Index inventory from reclaiming it.  Reopen the search only
+    # when a post-front-matter record start strongly matches an Index Annexure.
+    # The boundary and candidate pages are derived from each filing; no page
+    # number, case number, filename, or Annexure label is hard-coded here.
+    reliable_front_end = max(
+        (
+            int(page)
+            for page, names in page_parts.items()
+            if set(parts_on_page(names))
+            & {
+                "Affidavit",
+                "AOR's Declaration",
+                "AOR's Certificate",
+                "Appendix",
+            }
+        ),
+        default=0,
+    )
+    if reliable_front_end:
+        strong_index_starts: list[int] = []
+        for page in range(reliable_front_end + 1, page_count + 1):
+            text = page_text.get(page, "")
+            if not _is_unstamped_annexure_island_start(text):
+                continue
+            window = "\n".join(
+                page_text.get(offset, "")
+                for offset in range(page, min(page + 2, page_count + 1))
+            )
+            if max(
+                (
+                    _score_island_for_index_annexure(window, particulars, label)
+                    for label, particulars in entries
+                ),
+                default=0,
+            ) >= 9:
+                strong_index_starts.append(page)
+        if strong_index_starts:
+            first_strong_start = min(strong_index_starts)
+            zone_start = min(zone_start or first_strong_start, first_strong_start)
+
     if zone_start is None:
         return page_parts
 
@@ -3545,7 +3630,6 @@ def _place_index_expected_annexures(
         if names and any(
             name
             in {
-                MAIN_PETITION_PART,
                 "Affidavit",
                 "AOR's Declaration",
                 "AOR's Certificate",
@@ -3557,6 +3641,12 @@ def _place_index_expected_annexures(
                 "Index",
             }
             for name in names
+        ):
+            continue
+        if (
+            names
+            and MAIN_PETITION_PART in names
+            and _looks_like_sci_main_petition(text)
         ):
             continue
         if _is_unstamped_annexure_island_start(text):
@@ -3635,7 +3725,6 @@ def _place_index_expected_annexures(
             if names and any(
                 name
                 in {
-                    MAIN_PETITION_PART,
                     "Affidavit",
                     "AOR's Declaration",
                     "AOR's Certificate",
@@ -3645,6 +3734,12 @@ def _place_index_expected_annexures(
                     "Filing Memo",
                 }
                 for name in names
+            ):
+                break
+            if (
+                names
+                and MAIN_PETITION_PART in names
+                and _looks_like_sci_main_petition(text)
             ):
                 break
             if names and any(
@@ -4326,6 +4421,9 @@ def repair_compiled_split(
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _extend_main_petition_body(updated, page_text, page_count)
     updated = _demote_annexed_sci_rop(updated, page_text, page_count)
+    updated = _repair_main_petition_holes_inside_annexures(
+        updated, page_text, page_count
+    )
 
     exploded = explode_repeating_split_parts(updated, page_text)
     exploded = _force_annexure_nesting(exploded, page_text, page_count)
@@ -4444,6 +4542,17 @@ def repair_compiled_split(
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
+    repaired = _repair_main_petition_holes_inside_annexures(
+        repaired, page_text, page_count
+    )
+    # Late outer-document and back-matter repairs can leave a model-provided
+    # Main Petition label as a one-page hole inside an otherwise authoritative
+    # indexed Annexure range.  Defect File_008 produced P-1 on pages 42-44 and
+    # 46-64 but retained page 45 as Main Petition. Reapply the same bounded
+    # Index reconciliation at the output boundary so the emitted slices cannot
+    # contain that stale label. The operation is deterministic and only acts on
+    # Annexure ranges supported by the filing Index plus physical-page evidence.
+    repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
     return repaired, duplicates
 
 

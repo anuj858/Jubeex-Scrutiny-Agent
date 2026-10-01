@@ -2739,6 +2739,53 @@ def test_defect_012_recovers_index_omission_and_rejects_wrong_attached_label() -
     assert repaired[12] == repaired[13] == ["Annexure P-7"]
 
 
+def test_defect_012_reclaims_p1_after_certificate_from_stale_petition_label() -> None:
+    """The indexed HC writ on page 56 starts P-1, not more Main Petition."""
+    from extraction_review.split_repair import _place_index_expected_annexures
+
+    texts = {
+        3: (
+            "INDEX\nSL. NO. PARTICULARS PAGE NO.\n"
+            "4. ANNEXURE P-1: A copy of Writ Petition No. 60 of 2015 filed "
+            "before the Bombay High Court dated 9.1.2015"
+        ),
+        50: "IN THE SUPREME COURT OF INDIA\nCURATIVE PETITION\nPRAYER",
+        51: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nVERIFICATION",
+        52: "IN THE SUPREME COURT OF INDIA\nCERTIFICATE OF SENIOR ADVOCATE",
+        53: "Certificate continuation",
+        54: "Certificate continuation",
+        55: "I certify that the Curative Petition is maintainable.\nSENIOR ADVOCATE",
+        56: (
+            "IN THE HIGH COURT OF JUDICATURE AT BOMBAY\n"
+            "ORDINARY ORIGINAL CIVIL JURISDICTION\n"
+            "WRIT PETITION NO. 60 OF 2015"
+        ),
+        57: (
+            "TO THE HON'BLE CHIEF JUSTICE\nTHE HUMBLE PETITION OF THE "
+            "PETITIONER ABOVE NAMED MOST RESPECTFULLY SHOWETH"
+        ),
+        58: "Continuation of the enclosed Bombay High Court writ petition.",
+    }
+    bad = {
+        3: ["Index"],
+        50: ["Main Petition"],
+        51: ["Affidavit"],
+        52: ["AOR's Certificate"],
+        53: ["AOR's Certificate"],
+        54: ["AOR's Certificate"],
+        55: ["AOR's Certificate"],
+        # Upstream carry error that previously pushed zone_start past page 56.
+        56: ["Main Petition"],
+        57: ["Main Petition"],
+        58: ["Main Petition"],
+    }
+
+    repaired = _place_index_expected_annexures(bad, texts, 58)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(56, 59))
+    assert repaired[50] == ["Main Petition"]
+
+
 def test_defect_012_front_rop_cannot_occupy_annexure_p7() -> None:
     """The blank filing RoP is page 2; P-7 is the dated Review order at the end."""
     texts = {
@@ -3153,6 +3200,99 @@ def test_indexed_annexure_uses_exact_dated_record_span_without_readable_folios()
 
     assert all(repaired[page] == ["Annexure P-1"] for page in range(42, 65))
     assert repaired[65] == ["Application 1"]
+
+
+def test_defect_008_final_repair_removes_main_petition_hole_from_annexure() -> None:
+    """A stale model label cannot survive inside the final indexed P-1 span."""
+    texts = {
+        5: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "11. Special Leave Petition with affidavit 15-23\n"
+            "12. Annexure P-1: A copy of order dated 04.03.2014 passed by "
+            "the Additional District Judge Rohtak in Land Acquisition Case "
+            "No 1209 of 2010 24-46\n"
+            "13. Application for permission to file the SLP 47-48"
+        ),
+        30: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION",
+        36: "PRAYER / RELIEF",
+        41: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT",
+        42: (
+            "IN THE COURT OF JAGJIT SINGH ADDITIONAL DISTRICT JUDGE ROHTAK\n"
+            "Land Acquisition Case No. 1209/2010\nDate of Order: 04.03.2014"
+        ),
+        **{
+            page: "Lower-court land-acquisition judgment continuation"
+            for page in range(43, 65)
+        },
+        65: (
+            "IN THE SUPREME COURT OF INDIA\nI.A. No. of 2025\n"
+            "APPLICATION FOR PERMISSION TO FILE THE SPECIAL LEAVE PETITION"
+        ),
+    }
+    bad = {5: ["Index"], 41: ["Affidavit"], 45: ["Main Petition"]}
+    bad.update({page: ["Main Petition"] for page in range(30, 37)})
+    bad.update({page: ["Annexure P-1"] for page in range(42, 65) if page != 45})
+    bad[65] = ["Application 1"]
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=65)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(42, 65))
+    assert [
+        page for page, labels in repaired.items() if labels == ["Main Petition"]
+    ] == list(range(30, 37))
+
+
+def test_defect_008_repairs_annexure_hole_when_index_range_ocr_is_missing() -> None:
+    """Neighbouring P-1 pages repair the false Main label without Index OCR."""
+    from extraction_review.split_repair import (
+        _repair_main_petition_holes_inside_annexures,
+    )
+
+    texts = {
+        44: "Lower-court land-acquisition judgment continuation",
+        45: (
+            "is near to National Highway No. 10, Rohtak-Delhi Road "
+            "and the Land Acquisition Collector failed to appreciate the value"
+        ),
+        46: "Lower-court land-acquisition judgment continuation",
+    }
+    bad = {
+        44: ["Annexure P-1"],
+        45: ["Main Petition"],
+        46: ["Annexure P-1"],
+    }
+
+    repaired = _repair_main_petition_holes_inside_annexures(
+        bad, texts, page_count=74
+    )
+
+    assert repaired[45] == ["Annexure P-1"]
+
+
+def test_annexure_hole_repair_does_not_override_real_main_petition_start() -> None:
+    """A strong SCI petition heading remains authoritative despite neighbours."""
+    from extraction_review.split_repair import (
+        _repair_main_petition_holes_inside_annexures,
+    )
+
+    parts = {
+        10: ["Annexure P-1"],
+        11: ["Main Petition"],
+        12: ["Annexure P-1"],
+    }
+    texts = {
+        11: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL)\n"
+            "THE HUMBLE PETITION OF THE PETITIONER"
+        )
+    }
+
+    repaired = _repair_main_petition_holes_inside_annexures(
+        parts, texts, page_count=12
+    )
+
+    assert repaired[11] == ["Main Petition"]
 
 
 def test_order_sheet_after_lod_is_restored_as_impugned_order() -> None:
