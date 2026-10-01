@@ -2151,6 +2151,13 @@ def _restore_early_record_of_proceedings(
             continue
         if not active:
             continue
+        # The blank RoP Index is a single front-matter form when the next page
+        # starts a lower-court judgment/order.  Do not carry the RoP label into
+        # that challenged decision merely because its scanned heading was not
+        # recognized as another outer filing document.
+        if _is_lower_court_caption(text) or _looks_like_impugned_order_start(text):
+            active = False
+            continue
         anchor = _outer_anchor_label(text)
         # Any explicit outer-document heading ends the early RoP run.  This
         # repair is deliberately late in the pipeline, so carrying RoP past a
@@ -4660,6 +4667,27 @@ def _apply_indexed_annexure_ranges(
     }
     offset = _dominant_numeric_folio_offset(page_text, page_count)
     if offset is not None:
+        # A stray model label can put one Annexure continuation into Main
+        # Petition and consequently move ``zone_start`` beyond the exhibit's
+        # real beginning.  Let a reliable Index projection reopen the zone
+        # only when its first sheet is visibly an Annexure/lower-court start.
+        projected_starts = [
+            (row.start + offset, row)
+            for row in rows
+            if row.mapped_part
+            and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+            and 1 <= row.start + offset <= page_count
+        ]
+        supported_starts = [
+            physical_start
+            for physical_start, row in projected_starts
+            if annexure_label_from_text(page_text.get(physical_start, ""))
+            == row.mapped_part
+            or _is_lower_court_caption(page_text.get(physical_start, ""))
+        ]
+        if supported_starts:
+            zone_start = min(zone_start, min(supported_starts))
+
         spans_by_label: dict[str, set[tuple[int, int]]] = {}
         for row in rows:
             if (
@@ -4685,10 +4713,36 @@ def _apply_indexed_annexure_ranges(
             # project the missing 21-33 sheets onto the physically following
             # Applications/Filing Memo.  Any explicit folio inside the
             # projected physical span must still belong to this Index row.
-            if any(
-                folio is not None and not _folio_in_printed_row(folio, row)
+            conflicts = [
+                (page, folio)
                 for page in range(physical_start, physical_end + 1)
                 if (folio := _printed_folio(page_text.get(page, "")))
+                and not _folio_in_printed_row(folio, row)
+            ]
+            # Handwritten folios can turn 27 into 22.  Tolerate one nearby
+            # same-decade digit error only when the projected first page is a
+            # matching Annexure/lower-court start.  Large jumps (the omitted
+            # folio regression handled above) remain hard boundaries.
+            start_is_supported = (
+                annexure_label_from_text(page_text.get(physical_start, ""))
+                == label
+                or _is_lower_court_caption(page_text.get(physical_start, ""))
+            )
+            tolerable_conflicts = [
+                page
+                for page, folio in conflicts
+                if folio[0] == "number"
+                and not folio[2]
+                and (expected := page - offset) >= row.start
+                and expected <= row.end
+                and expected // 10 == folio[1] // 10
+                and abs(expected - folio[1]) <= 5
+                and _index_heading_part(page_text.get(page, "")) is None
+            ]
+            if conflicts and (
+                not start_is_supported
+                or len(conflicts) != 1
+                or tolerable_conflicts != [conflicts[0][0]]
             ):
                 continue
             for page in range(physical_start, physical_end + 1):

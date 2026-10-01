@@ -2255,6 +2255,35 @@ def test_rop_index_order_sheet_and_continuation_stay_before_main_index() -> None
     assert repaired[5] == ["Office Report on Limitation"]
 
 
+def test_rop_index_stops_before_lower_court_impugned_order() -> None:
+    """A blank RoP table must not absorb the challenged High Court judgment."""
+    texts = {
+        1: "INDEX\nDate of Record of Proceeding\nPages\n1\n2\n3\n10",
+        2: (
+            "IN THE HIGH COURT OF PUNJAB AND HARYANA AT CHANDIGARH\n"
+            "RFA-665-2018 (O&M)\nReserved on: 22.04.2025\n"
+            "Date of Decision: 01.05.2025\nVINOD AND ORS. Appellants\n"
+            "Versus\nSTATE OF HARYANA AND ANR. Respondents\n"
+            "CORAM: HON'BLE MR. JUSTICE ANIL KSHETARPAL"
+        ),
+        3: "RFA No.8145 of 2014 (O&M)\nContinuation of the judgment",
+    }
+
+    repaired, _ = repair_compiled_split(
+        {
+            1: ["Impugned Order"],
+            2: ["Impugned Order"],
+            3: ["Impugned Order"],
+        },
+        texts,
+        page_count=3,
+    )
+
+    assert repaired[1] == ["Record of Proceedings"]
+    assert repaired[2] == ["Impugned Order"]
+    assert repaired[3] == ["Impugned Order"]
+
+
 def test_main_petition_index_range_does_not_absorb_blank_rop_table() -> None:
     """The RoP table's final serial number is not a printed page folio."""
     from extraction_review.split_repair import (
@@ -2993,6 +3022,37 @@ def test_index_range_offset_does_not_cross_a_printed_folio_jump() -> None:
     assert repaired[48] == ["Application 1"]
     assert repaired[49] == ["Application 1"]
     assert repaired[50] == ["Filing Memo"]
+
+
+def test_indexed_annexure_repairs_false_main_label_and_one_folio_ocr_error() -> None:
+    """Defect File_008: handwritten Annexure folio 27 was read as 22."""
+    from extraction_review.split_repair import _apply_indexed_annexure_ranges
+
+    texts = {
+        5: (
+            "INDEX\n"
+            "12.\tAnnexure P-1: order dated 04.03.2014 passed by the "
+            "Additional District Judge, Rohtak\t24-46"
+        ),
+        42: (
+            "IN THE COURT OF JAGJIT SINGH, ADDITIONAL DISTRICT JUDGE, ROHTAK\n"
+            "Land Acquisition Case No. 1209/2010\n"
+            "Date of Order: 04.03.2014"
+        ),
+        43: "Lower-court judgment continuation\n25",
+        44: "Lower-court judgment continuation\n26",
+        45: "Lower-court judgment continuation\n22",  # OCR of handwritten 27
+        46: "Lower-court judgment continuation\n28",
+        47: "Lower-court judgment continuation\n29",
+        48: "Lower-court judgment continuation\n30",
+    }
+    parts = {5: ["Index"]}
+    parts.update({page: ["Main Petition"] for page in range(30, 37)})
+    parts[45] = ["Main Petition"]
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, page_count=64)
+
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(42, 65))
 
 
 def test_order_sheet_after_lod_is_restored_as_impugned_order() -> None:

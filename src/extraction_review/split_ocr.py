@@ -27,6 +27,19 @@ DEFAULT_SPLIT_OCR_WORKERS = 2
 DEFAULT_SPLIT_OCR_DPI = 180
 
 
+def _needs_table_ocr_retry(text: str) -> bool:
+    """Retry sparse Index/table OCR with a column-aware page mode.
+
+    Automatic segmentation (PSM 3) can see ``INDEX`` and ``Pages`` while
+    dropping the wide middle header cell entirely.  That cell identifies the
+    blank Record of Proceedings table, so retry only this narrow sparse-table
+    shape rather than doubling OCR work for every scanned page.
+    """
+    folded = re.sub(r"\s+", " ", text or "").strip().casefold()
+    readable = len(re.sub(r"[^a-z0-9]+", "", folded))
+    return readable < 80 and "index" in folded and "pages" in folded
+
+
 def _positive_int_env(name: str, default: int, *, maximum: int) -> int:
     raw = (os.getenv(name) or "").strip()
     try:
@@ -302,16 +315,18 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
 
         def recognize(number: int) -> tuple[int, str]:
             output_base = root / f"{number}-ocr"
-            try:
+            output_bases = [output_base]
+
+            def run_tesseract(base: Path, *, psm: int) -> tuple[str, str]:
                 subprocess.run(
                     [
                         executable,
                         str(root / f"{number}.png"),
-                        str(output_base),
+                        str(base),
                         "-l",
                         "eng",
                         "--psm",
-                        "3",
+                        str(psm),
                         "txt",
                         "tsv",
                     ],
@@ -321,12 +336,31 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
                     env={**os.environ, "OMP_THREAD_LIMIT": "1"},
                     check=True,
                 )
-                text = output_base.with_suffix(".txt").read_text(
-                    encoding="utf-8", errors="replace"
+                return (
+                    base.with_suffix(".txt").read_text(
+                        encoding="utf-8", errors="replace"
+                    ),
+                    base.with_suffix(".tsv").read_text(
+                        encoding="utf-8", errors="replace"
+                    ),
                 )
-                tsv = output_base.with_suffix(".tsv").read_text(
-                    encoding="utf-8", errors="replace"
-                )
+
+            try:
+                text, tsv = run_tesseract(output_base, psm=3)
+                if _needs_table_ocr_retry(text):
+                    table_base = root / f"{number}-table-ocr"
+                    output_bases.append(table_base)
+                    try:
+                        table_text, table_tsv = run_tesseract(table_base, psm=4)
+                    except (subprocess.SubprocessError, OSError):
+                        pass
+                    else:
+                        primary_score = len(re.sub(r"[^A-Za-z0-9]+", "", text))
+                        table_score = len(
+                            re.sub(r"[^A-Za-z0-9]+", "", table_text)
+                        )
+                        if table_score > primary_score:
+                            text, tsv = table_text, table_tsv
                 index_rows = index_table_rows_from_tsv(tsv)
                 if index_rows:
                     text = text.rstrip() + "\n" + index_rows + "\n"
@@ -341,8 +375,9 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
                 return number, ""
             finally:
                 (root / f"{number}.png").unlink(missing_ok=True)
-                output_base.with_suffix(".txt").unlink(missing_ok=True)
-                output_base.with_suffix(".tsv").unlink(missing_ok=True)
+                for base in output_bases:
+                    base.with_suffix(".txt").unlink(missing_ok=True)
+                    base.with_suffix(".tsv").unlink(missing_ok=True)
 
         with (
             pymupdf.open(stream=pdf_bytes, filetype="pdf") as document,
