@@ -34,7 +34,7 @@ from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import map_slot_pages, slice_bundle_pdf
+from .bundle_slicer import extract_pdf_pages, map_slot_pages, slice_bundle_pdf
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
@@ -128,6 +128,9 @@ def upload_sliced_slot_pdfs() -> bool:
 
 CLASSIFY_POLL_INTERVAL_S = 1.0
 CLASSIFY_POLL_MAX_S = 600.0
+# First page only. If that page does not verify, classify again through this
+# many leading pages and then stop. VERIFY_MAX_PAGES overrides the default.
+VERIFY_MAX_PAGES_DEFAULT = 2
 PARSE_POLL_INTERVAL_S = 2.0
 PARSE_POLL_MAX_S = 600.0
 SPLIT_POLL_INTERVAL_S = 2.0
@@ -439,13 +442,30 @@ def resolve_compiled_filing_type(
     )
 
 
+def verify_max_pages() -> int:
+    """Leading pages a verify classify may read. Default 2."""
+    raw = (os.getenv("VERIFY_MAX_PAGES") or "").strip()
+    if not raw:
+        return VERIFY_MAX_PAGES_DEFAULT
+    try:
+        parsed = int(raw)
+    except ValueError:
+        logger.warning(
+            "VERIFY_MAX_PAGES=%r is not an integer; using %s",
+            raw,
+            VERIFY_MAX_PAGES_DEFAULT,
+        )
+        return VERIFY_MAX_PAGES_DEFAULT
+    return max(1, parsed)
+
+
 def split_labels_match_expected_slot(
     *,
     expected_slot: str | None,
     catalog: Any,
     page_parts: Mapping[int, Sequence[str] | str | None],
 ) -> bool:
-    """True when LlamaSplit's dominant known slot is the named document type."""
+    """True when the dominant known slot is the named document type."""
     expected = (expected_slot or "").strip()
     if not expected or expected == UNDEFINED_SLOT_ID:
         return False
@@ -1170,13 +1190,14 @@ async def _upload_slot_pdf(
     filename: str,
     pdf_bytes: bytes,
     external_file_id: str | None = None,
+    purpose: str = "extract",
 ) -> str:
     name = _upload_filename(filename)
     external = (external_file_id or "").strip() or None
 
     create_kwargs: dict[str, Any] = {
         "file": (name, io.BytesIO(pdf_bytes), "application/pdf"),
-        "purpose": "extract",
+        "purpose": purpose,
         "project_id": project_id,
     }
     if external:
@@ -1192,7 +1213,7 @@ async def _upload_slot_pdf(
         )
         uploaded = await client.files.create(
             file=(name, io.BytesIO(pdf_bytes), "application/pdf"),
-            purpose="extract",
+            purpose=purpose,
             project_id=project_id,
         )
     file_id = getattr(uploaded, "id", None)
@@ -1225,6 +1246,280 @@ async def _upload_sliced_slots(
     return list(await asyncio.gather(*[_one(item) for item in slices]))
 
 
+# Classify is a first-page check of an already-split file. It gets a short
+# description per Split category. The long Split write-up is not sent.
+_CLASSIFY_DESCRIPTION_MIN = 10
+_CLASSIFY_DESCRIPTION_MAX = 2000
+_CLASSIFY_FALLBACK_MAX = 400
+_CLASSIFY_TYPE_MAX = 50
+_CLASSIFY_TYPE_RE = re.compile(r"[^A-Za-z0-9 _-]+")
+_VERIFY_CLASSIFY_DESCRIPTIONS = {
+    "Advocate's Checklist": (
+        "Supreme Court advocate checklist of YES/NO/N.A. filing questions, "
+        "often headed ADVOCATE'S CHECK LIST and certified by the Advocate on Record."
+    ),
+    "Cover Page": (
+        "Outer title sheet headed IN THE SUPREME COURT OF INDIA, with "
+        "jurisdiction and the advocate's name at the foot. Often marked PAPER BOOK or COVER PAGE."
+    ),
+    "Record of Proceedings": (
+        "Table of hearing dates and orders headed RECORD OF PROCEEDING or RECORD OF PROCEEDINGS."
+    ),
+    "AOR's Declaration": (
+        "Advocate-on-Record declaration that defects have been cured. "
+        "Headed DECLARATION. This is not the AOR certificate."
+    ),
+    "AOR's Certificate": (
+        "Advocate-on-Record certificate placed after the cause title and headed CERTIFICATE, "
+        "stating the petition is confined to the pleadings before the court below."
+    ),
+    "Index": (
+        "Paper-book index: a table of particulars of documents and page numbers, headed INDEX."
+    ),
+    "Office Report on Limitation": (
+        "Supreme Court registry report headed OFFICE REPORT ON LIMITATION, "
+        "stating whether the petition is within time."
+    ),
+    "Listing Proforma": (
+        "First-listing proforma form of numbered prompts for the act, impugned order, "
+        "nature of matter, and party names. Headed PROFORMA or LISTING PROFORMA."
+    ),
+    "Synopsis": (
+        "Narrative synopsis of this case, headed SYNOPSIS, written in prose rather than a date table."
+    ),
+    "List of Dates & Events": (
+        "Chronological list headed LIST OF DATES, LIST OF DATES AND EVENTS, or LIST OF EVENTS, "
+        "with a date before each event."
+    ),
+    "Main Petition": (
+        "This case's main Supreme Court petition, with the cause title, parties, grounds, and prayer."
+    ),
+    "Affidavit": (
+        "Affidavit headed AFFIDAVIT, with a deponent, verification, and attestation."
+    ),
+    "Annexures": (
+        "Supporting exhibit marked as an Annexure, such as a true copy of a judgment, order, or other record."
+    ),
+    "Application": (
+        "Separate interlocutory application headed APPLICATION or I.A., "
+        "usually beginning with RESPECTFULLY SHOWETH."
+    ),
+    "Appendix": "Appendix section headed APPENDIX.",
+    "Memo of Parties": (
+        "Standalone memo of parties for this Supreme Court case, listing petitioners and respondents."
+    ),
+    "Memo of Appearance": (
+        "Memo of appearance for this Supreme Court case, headed MEMO OF APPEARANCE."
+    ),
+    "Impugned Order": (
+        "The challenged judgment or order: a copy of the High Court, tribunal, or authority decision under challenge."
+    ),
+    "Vakalatnama": (
+        "Vakalatnama authorizing the advocate for this Supreme Court case, headed VAKALATNAMA."
+    ),
+    "PoA/BR": "Power of attorney or board resolution. Not a vakalatnama.",
+    "Filing Memo": (
+        "Filing memo or index of filing for this Supreme Court petition, "
+        "headed FILING MEMO or INDEX OF FILING."
+    ),
+    "Court Fees": "Court fee stamps or a court-fee endorsement page.",
+}
+
+
+def _classify_api_type(name: str) -> str:
+    """Split category name in the character set Classify accepts."""
+    cleaned = name.replace("&", " and ")
+    cleaned = cleaned.replace("/", "-")
+    cleaned = _CLASSIFY_TYPE_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:_CLASSIFY_TYPE_MAX]
+
+
+def _classify_rule_description(name: str, split_description: str) -> str:
+    """Short classify text. The long Split description is only a last resort."""
+    alternate = _VERIFY_CLASSIFY_DESCRIPTIONS.get(name)
+    if alternate:
+        text = alternate.strip()
+    else:
+        sentence = re.split(r"(?<=[.])\s", split_description.strip(), maxsplit=1)[0]
+        text = sentence[:_CLASSIFY_FALLBACK_MAX].rstrip()
+    if len(text) < _CLASSIFY_DESCRIPTION_MIN:
+        text = f"{name} section of the Supreme Court paper book."
+    return text[:_CLASSIFY_DESCRIPTION_MAX]
+
+
+def verify_classify_type_map(split_config: SplitConfig) -> dict[str, str]:
+    """Classify rule type → original Split category name."""
+    mapping: dict[str, str] = {}
+    for rule in verify_classify_rules(split_config):
+        mapping[rule["type"]] = rule["category"]
+    return mapping
+
+
+def split_category_for_classify_type(
+    label: str | None, split_config: SplitConfig
+) -> str | None:
+    text = (label or "").strip()
+    if not text:
+        return None
+    return verify_classify_type_map(split_config).get(text, text)
+
+
+def verify_classify_rules(split_config: SplitConfig) -> list[dict[str, str]]:
+    """One short Classify rule per Split category.
+
+    ``category`` is the original Split name and is not sent to the API.
+    """
+    dumped = _split_api_configuration(split_config)
+    rules: list[dict[str, str]] = []
+    used: set[str] = set()
+    for item in dumped.get("categories") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        api_type = _classify_api_type(name) or "Document"
+        if api_type in used:
+            suffix = 2
+            while f"{api_type[: _CLASSIFY_TYPE_MAX - 2]} {suffix}" in used:
+                suffix += 1
+            api_type = (
+                f"{api_type[: _CLASSIFY_TYPE_MAX - len(str(suffix)) - 1]} {suffix}"
+            )
+        used.add(api_type)
+        description = _classify_rule_description(
+            name, str(item.get("description") or name)
+        )
+        rules.append({"type": api_type, "description": description, "category": name})
+    return rules
+
+
+def verify_classify_configuration(
+    split_config: SplitConfig, *, pages: int
+) -> dict[str, Any]:
+    """Standard Classify of the leading pages, using the split category rules.
+
+    ``mode`` is omitted. Sending ``FAST`` is the cheap path and is not used.
+    """
+    page_count = max(1, int(pages))
+    target = "1" if page_count == 1 else f"1-{page_count}"
+    rules = [
+        {"type": rule["type"], "description": rule["description"]}
+        for rule in verify_classify_rules(split_config)
+    ]
+    if not rules:
+        raise RuntimeError(
+            "Split categories are empty, so documents cannot be verified."
+        )
+    return {
+        "rules": rules,
+        "parsing_configuration": {
+            "max_pages": page_count,
+            "target_pages": target,
+        },
+    }
+
+
+def _leading_pdf_pages(pdf_bytes: bytes, max_pages: int) -> tuple[bytes, int]:
+    """Keep only the first ``max_pages`` pages. Later pages are not read."""
+    import pymupdf
+
+    limit = max(1, int(max_pages))
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as source:
+        count = int(source.page_count)
+    if count <= 0:
+        raise ValueError("PDF has no pages to verify")
+    kept = min(count, limit)
+    if kept == count:
+        return pdf_bytes, kept
+    sliced = extract_pdf_pages(pdf_bytes, range(1, kept + 1))
+    if not sliced.startswith(b"%PDF"):
+        raise ValueError("Could not read the leading pages for verify")
+    return sliced, kept
+
+
+def _label_matches_expected_slot(
+    label: str | None,
+    *,
+    expected_slot: str,
+    catalog: Any,
+) -> bool:
+    text = (label or "").strip()
+    if not text:
+        return False
+    expected = (expected_slot or "").strip()
+    folded = text.casefold()
+    # Split has one Annexures / Application category. A file already named
+    # annexure_a5.pdf matches when that page is an annexure.
+    if expected.startswith("annexure_") and expected not in {"annexures"}:
+        if folded in {"annexures", "annexure"} or folded.startswith("annexure "):
+            return True
+    if expected.startswith("application_") and expected not in {"applications"}:
+        if folded in {"application", "applications"} or folded.startswith(
+            "application "
+        ):
+            return True
+    return split_labels_match_expected_slot(
+        expected_slot=expected,
+        catalog=catalog,
+        page_parts={1: [text]},
+    )
+
+
+async def _classify_document_label(
+    client: AsyncLlamaCloud,
+    *,
+    file_id: str,
+    split_config: SplitConfig,
+    pages: int,
+) -> str | None:
+    """Classify the leading pages. Returns the matched split category, or None."""
+    configuration = verify_classify_configuration(split_config, pages=pages)
+    job = await client.classify.create(
+        file_input=file_id,
+        configuration=configuration,
+        project_id=project_id,
+    )
+    completed = await _wait_for_classify(client, job.id)
+    status = str(getattr(completed, "status", "") or "").upper()
+    if status == "FAILED" or getattr(completed, "result", None) is None:
+        detail = getattr(completed, "error_message", None) or status
+        logger.error("Verify classify failed for %s: %s", file_id, detail)
+        return None
+    result = completed.result
+    if isinstance(result, dict):
+        label = result.get("type")
+    else:
+        label = getattr(result, "type", None)
+    return split_category_for_classify_type(str(label or ""), split_config)
+
+
+async def _verify_source_pdf(
+    client: AsyncLlamaCloud,
+    item: FilingPartIn,
+    *,
+    filename: str | None,
+) -> tuple[bytes, str]:
+    """Download the already-split PDF. The full file is not uploaded."""
+    name = (filename or "").strip() or "filing.pdf"
+    file_id = (item.file_id or "").strip()
+    if file_id:
+        return await _download_file_bytes(client, file_id), name
+    url = (item.file_url or "").strip()
+    if not url:
+        raise ValueError("file_url is empty")
+    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+        data = response.content
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+    _require_pdf_bytes(data, url)
+    return data, name or _filename_from_url(url)
+
+
 async def _verify_one_document(
     client: AsyncLlamaCloud,
     *,
@@ -1233,30 +1528,56 @@ async def _verify_one_document(
     split_config: SplitConfig,
     semaphore: asyncio.Semaphore,
 ) -> VerifiedDocument:
+    """Classify page 1 against the split categories.
+
+    When that page does not match, classify the leading pages again, up to
+    ``VERIFY_MAX_PAGES`` (default 2), and then stop.
+    """
     name = item.filename or item.document_id or item.slot_id
     expected = (item.slot_id or "").strip()
     try:
         async with semaphore:
-            file_id = (item.file_id or "").strip() or None
             filename = (item.filename or "").strip() or None
-            if not file_id:
-                file_id, _digest, filename = await ingest_remote_file(
-                    client,
-                    item.file_url or "",
-                    filename=filename,
-                    external_file_id=item.document_id or item.file_hash,
-                )
-            page_parts, _job_id, _exchange = await _split_page_parts(
-                client,
-                file_id=file_id,
-                split_config=split_config,
-                filename=filename or name,
+            pdf_bytes, filename = await _verify_source_pdf(
+                client, item, filename=filename
             )
-        matched = split_labels_match_expected_slot(
-            expected_slot=expected,
-            catalog=catalog,
-            page_parts=page_parts,
-        )
+            max_pages = verify_max_pages()
+            short_pdf, kept_pages = _leading_pdf_pages(pdf_bytes, max_pages)
+            file_id = await _upload_slot_pdf(
+                client,
+                filename=filename or name or "filing.pdf",
+                pdf_bytes=short_pdf,
+                external_file_id=item.document_id or item.file_hash,
+                purpose="classify",
+            )
+            try:
+                label = await _classify_document_label(
+                    client,
+                    file_id=file_id,
+                    split_config=split_config,
+                    pages=1,
+                )
+            except Exception:
+                logger.exception("Verify classify failed on page 1 of %s", name)
+                label = None
+            matched = _label_matches_expected_slot(
+                label, expected_slot=expected, catalog=catalog
+            )
+            if not matched and kept_pages > 1:
+                logger.info(
+                    "Verify page 1 did not match %s; classifying leading %s page(s)",
+                    name,
+                    kept_pages,
+                )
+                label = await _classify_document_label(
+                    client,
+                    file_id=file_id,
+                    split_config=split_config,
+                    pages=kept_pages,
+                )
+                matched = _label_matches_expected_slot(
+                    label, expected_slot=expected, catalog=catalog
+                )
         return VerifiedDocument(name=name, match=matched)
     except Exception:
         logger.exception("Verify failed for %s", name)
@@ -1274,7 +1595,10 @@ async def _run_verify_from_file_event(
     ctx.write_event_to_stream(
         Status(
             level="info",
-            message=f"Verifying {len(event.documents)} named document(s)",
+            message=(
+                f"Verifying {len(event.documents)} named document(s) "
+                "from the first page"
+            ),
         )
     )
     semaphore = asyncio.Semaphore(slot_upload_concurrency())

@@ -626,7 +626,10 @@ def _accept_process_file(
         job.callback_kind = callback_kind
     JOBS[job_id] = job
     job.persist(force=True)
-    if sqs_enabled():
+    # Verify classifies a couple of pages with the split rules in this process.
+    # A queued worker can still be running an older image and mark every file false.
+    run_here = normalize_job_type(event.job_type) == "verify" or not sqs_enabled()
+    if not run_here:
         enqueue_job(
             {
                 "job_id": job_id,
