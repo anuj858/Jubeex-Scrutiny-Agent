@@ -5,6 +5,7 @@ from unittest.mock import patch
 from pypdf import PdfWriter
 
 from extraction_review.split_ocr import (
+    _needs_table_ocr_retry,
     index_table_rows_from_tsv,
     margin_folio_from_tsv,
     ocr_sparse_pages,
@@ -71,6 +72,13 @@ def test_margin_folio_rejects_title_words_and_years():
 def test_scanned_index_geometry_rejoins_annexure_and_printed_range():
     assert index_table_rows_from_tsv(_scanned_index_tsv()) == (
         "16.\tAnnexure P-4: A true copy\t73-144"
+    )
+
+
+def test_sparse_index_with_pages_retries_table_ocr() -> None:
+    assert _needs_table_ocr_retry("INDEX\nPages\n10")
+    assert not _needs_table_ocr_retry(
+        "INDEX\nS.No. Particulars Page No.\n1. Listing Proforma 6-7"
     )
 
 

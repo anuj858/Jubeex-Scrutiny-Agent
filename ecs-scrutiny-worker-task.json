@@ -11,7 +11,7 @@
   "containerDefinitions": [
     {
       "name": "jubeex-scrutiny-worker",
-      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-452c864-amd64",
+      "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:2089f8f-20261001-amd64",
       "essential": true,
       "entryPoint": [
         "uv",
@@ -120,6 +120,10 @@
           "value": "true"
         },
         {
+          "name": "JUBEEX_WORKER_KIND",
+          "value": "both"
+        },
+        {
           "name": "JUBEEX_SQS_INGESTION_QUEUE_URL",
           "value": "https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-ingestion-jobs"
         },
@@ -129,7 +133,7 @@
         },
         {
           "name": "JUBEEX_CALLBACK_URL",
-          "value": "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+          "value": "http://3.111.86.61/api/v1/webhooks/ai-agent"
         },
         {
           "name": "AWS_S3_BUCKET",

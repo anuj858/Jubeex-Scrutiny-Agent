@@ -2083,6 +2083,47 @@ def _prefer_form28_main_island(
     return updated
 
 
+def _repair_main_petition_holes_inside_annexures(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Remove isolated false Main Petition labels inside one Annexure run.
+
+    A continuation sheet may repeat petition-like phrases such as ``Because``
+    or ``the petitioners`` and be labelled Main Petition by the model.  When
+    both immediately adjacent physical pages already have the same Annexure
+    identity, that isolated label would split the Annexure into two islands and
+    can survive later first-run collapsing.  Rejoin only this tightly bounded
+    one-page hole, and never override a page that independently looks like the
+    Supreme Court Main Petition or starts another outer filing document.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in range(2, page_count):
+        names = parts_on_page(updated.get(page))
+        if MAIN_PETITION_PART not in names:
+            continue
+
+        previous = parts_on_page(updated.get(page - 1))
+        following = parts_on_page(updated.get(page + 1))
+        if len(previous) != 1 or previous != following:
+            continue
+        owner = previous[0]
+        if family_split_name(owner) != ANNEXURE_FAMILY:
+            continue
+
+        text = page_text.get(page, "")
+        if _looks_like_sci_main_petition(text):
+            continue
+        anchor = _outer_anchor_label(text)
+        if anchor and anchor != MAIN_PETITION_PART:
+            continue
+        if page_starts_application(text):
+            continue
+        updated[page] = [owner]
+    return updated
+
+
 def _demote_annexed_sci_rop(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -2150,6 +2191,13 @@ def _restore_early_record_of_proceedings(
             active = True
             continue
         if not active:
+            continue
+        # The blank RoP Index is a single front-matter form when the next page
+        # starts a lower-court judgment/order.  Do not carry the RoP label into
+        # that challenged decision merely because its scanned heading was not
+        # recognized as another outer filing document.
+        if _is_lower_court_caption(text) or _looks_like_impugned_order_start(text):
+            active = False
             continue
         anchor = _outer_anchor_label(text)
         # Any explicit outer-document heading ends the early RoP run.  This
@@ -3437,6 +3485,50 @@ def _place_index_expected_annexures(
         return page_parts
 
     zone_start = _post_petition_zone_start(page_parts, page_count)
+
+    # A model can carry ``Main Petition`` onto the first enclosed lower-court
+    # record even after a separately identified affidavit/certificate.  That
+    # makes _post_petition_zone_start() begin after the real Annexure start and
+    # prevents the Index inventory from reclaiming it.  Reopen the search only
+    # when a post-front-matter record start strongly matches an Index Annexure.
+    # The boundary and candidate pages are derived from each filing; no page
+    # number, case number, filename, or Annexure label is hard-coded here.
+    reliable_front_end = max(
+        (
+            int(page)
+            for page, names in page_parts.items()
+            if set(parts_on_page(names))
+            & {
+                "Affidavit",
+                "AOR's Declaration",
+                "AOR's Certificate",
+                "Appendix",
+            }
+        ),
+        default=0,
+    )
+    if reliable_front_end:
+        strong_index_starts: list[int] = []
+        for page in range(reliable_front_end + 1, page_count + 1):
+            text = page_text.get(page, "")
+            if not _is_unstamped_annexure_island_start(text):
+                continue
+            window = "\n".join(
+                page_text.get(offset, "")
+                for offset in range(page, min(page + 2, page_count + 1))
+            )
+            if max(
+                (
+                    _score_island_for_index_annexure(window, particulars, label)
+                    for label, particulars in entries
+                ),
+                default=0,
+            ) >= 9:
+                strong_index_starts.append(page)
+        if strong_index_starts:
+            first_strong_start = min(strong_index_starts)
+            zone_start = min(zone_start or first_strong_start, first_strong_start)
+
     if zone_start is None:
         return page_parts
 
@@ -3538,7 +3630,6 @@ def _place_index_expected_annexures(
         if names and any(
             name
             in {
-                MAIN_PETITION_PART,
                 "Affidavit",
                 "AOR's Declaration",
                 "AOR's Certificate",
@@ -3550,6 +3641,12 @@ def _place_index_expected_annexures(
                 "Index",
             }
             for name in names
+        ):
+            continue
+        if (
+            names
+            and MAIN_PETITION_PART in names
+            and _looks_like_sci_main_petition(text)
         ):
             continue
         if _is_unstamped_annexure_island_start(text):
@@ -3628,7 +3725,6 @@ def _place_index_expected_annexures(
             if names and any(
                 name
                 in {
-                    MAIN_PETITION_PART,
                     "Affidavit",
                     "AOR's Declaration",
                     "AOR's Certificate",
@@ -3638,6 +3734,12 @@ def _place_index_expected_annexures(
                     "Filing Memo",
                 }
                 for name in names
+            ):
+                break
+            if (
+                names
+                and MAIN_PETITION_PART in names
+                and _looks_like_sci_main_petition(text)
             ):
                 break
             if names and any(
@@ -4319,6 +4421,9 @@ def repair_compiled_split(
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _extend_main_petition_body(updated, page_text, page_count)
     updated = _demote_annexed_sci_rop(updated, page_text, page_count)
+    updated = _repair_main_petition_holes_inside_annexures(
+        updated, page_text, page_count
+    )
 
     exploded = explode_repeating_split_parts(updated, page_text)
     exploded = _force_annexure_nesting(exploded, page_text, page_count)
@@ -4437,6 +4542,17 @@ def repair_compiled_split(
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
+    repaired = _repair_main_petition_holes_inside_annexures(
+        repaired, page_text, page_count
+    )
+    # Late outer-document and back-matter repairs can leave a model-provided
+    # Main Petition label as a one-page hole inside an otherwise authoritative
+    # indexed Annexure range.  Defect File_008 produced P-1 on pages 42-44 and
+    # 46-64 but retained page 45 as Main Petition. Reapply the same bounded
+    # Index reconciliation at the output boundary so the emitted slices cannot
+    # contain that stale label. The operation is deterministic and only acts on
+    # Annexure ranges supported by the filing Index plus physical-page evidence.
+    repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
     return repaired, duplicates
 
 
@@ -4660,6 +4776,27 @@ def _apply_indexed_annexure_ranges(
     }
     offset = _dominant_numeric_folio_offset(page_text, page_count)
     if offset is not None:
+        # A stray model label can put one Annexure continuation into Main
+        # Petition and consequently move ``zone_start`` beyond the exhibit's
+        # real beginning.  Let a reliable Index projection reopen the zone
+        # only when its first sheet is visibly an Annexure/lower-court start.
+        projected_starts = [
+            (row.start + offset, row)
+            for row in rows
+            if row.mapped_part
+            and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+            and 1 <= row.start + offset <= page_count
+        ]
+        supported_starts = [
+            physical_start
+            for physical_start, row in projected_starts
+            if annexure_label_from_text(page_text.get(physical_start, ""))
+            == row.mapped_part
+            or _is_lower_court_caption(page_text.get(physical_start, ""))
+        ]
+        if supported_starts:
+            zone_start = min(zone_start, min(supported_starts))
+
         spans_by_label: dict[str, set[tuple[int, int]]] = {}
         for row in rows:
             if (
@@ -4685,13 +4822,128 @@ def _apply_indexed_annexure_ranges(
             # project the missing 21-33 sheets onto the physically following
             # Applications/Filing Memo.  Any explicit folio inside the
             # projected physical span must still belong to this Index row.
-            if any(
-                folio is not None and not _folio_in_printed_row(folio, row)
+            conflicts = [
+                (page, folio)
                 for page in range(physical_start, physical_end + 1)
                 if (folio := _printed_folio(page_text.get(page, "")))
+                and not _folio_in_printed_row(folio, row)
+            ]
+            # Handwritten folios can turn 27 into 22.  Tolerate one nearby
+            # same-decade digit error only when the projected first page is a
+            # matching Annexure/lower-court start.  Large jumps (the omitted
+            # folio regression handled above) remain hard boundaries.
+            start_is_supported = (
+                annexure_label_from_text(page_text.get(physical_start, ""))
+                == label
+                or _is_lower_court_caption(page_text.get(physical_start, ""))
+            )
+            tolerable_conflicts = [
+                page
+                for page, folio in conflicts
+                if folio[0] == "number"
+                and not folio[2]
+                and (expected := page - offset) >= row.start
+                and expected <= row.end
+                and expected // 10 == folio[1] // 10
+                and abs(expected - folio[1]) <= 5
+                and _index_heading_part(page_text.get(page, "")) is None
+            ]
+            if conflicts and (
+                not start_is_supported
+                or len(conflicts) != 1
+                or tolerable_conflicts != [conflicts[0][0]]
             ):
                 continue
             for page in range(physical_start, physical_end + 1):
+                owners[page] = label
+
+    # Some scanned paper-books have no machine-readable folio on any of the
+    # Annexure continuation sheets.  Defect File_008 is such a case: the
+    # filing Index reliably says P-1 is 24-46 (23 sheets), the first sheet is
+    # the dated District Court order named by that row, and the very next page
+    # starts an outer Supreme Court Application.  Use that exact, bounded
+    # structure when a numeric offset cannot be established.  Requiring a
+    # unique candidate, matching row date/title evidence, the exact indexed
+    # length, and a hard outer boundary prevents a generic lower-court record
+    # from being expanded speculatively.
+    annexure_rows: dict[str, list[IndexPrintedRow]] = {}
+    for row in rows:
+        if row.mapped_part and family_split_name(row.mapped_part) == ANNEXURE_FAMILY:
+            annexure_rows.setdefault(row.mapped_part, []).append(row)
+    for label, label_rows in annexure_rows.items():
+        spans = {(row.start, row.end) for row in label_rows if not row.end_suffix}
+        if len(spans) != 1:
+            continue
+        printed_start, printed_end = next(iter(spans))
+        span_length = printed_end - printed_start + 1
+        if span_length < 1 or span_length > page_count:
+            continue
+        row = next(
+            row
+            for row in label_rows
+            if (row.start, row.end) == (printed_start, printed_end)
+        )
+        row_dates = _extract_date_keys(row.particulars)
+        candidates: list[int] = []
+        last_start = page_count - span_length + 1
+        index_end = max(
+            (
+                int(page)
+                for page, names in page_parts.items()
+                if "Index" in parts_on_page(names)
+            ),
+            default=0,
+        )
+        # ``zone_start`` can itself be wrong when one Annexure continuation
+        # was mislabeled Main Petition. Dated lower-court evidence is strong
+        # enough to search from the end of the filing Index; undated stamps
+        # remain constrained to the ordinary post-petition zone.
+        for physical_start in range(max(1, index_end + 1), last_start + 1):
+            start_text = page_text.get(physical_start, "")
+            matching_stamp = bool(
+                physical_start >= zone_start
+                and annexure_label_from_text(start_text) == label
+            )
+            matching_record = bool(
+                _is_lower_court_caption(start_text)
+                and row_dates
+                and row_dates & _extract_island_match_date_keys(start_text)
+            )
+            if not (matching_stamp or matching_record):
+                continue
+            physical_end = physical_start + span_length - 1
+            # Do not project through another explicit outer filing document.
+            if any(
+                page_starts_application(page_text.get(page, ""))
+                or (
+                    (anchor := _outer_anchor_label(page_text.get(page, "")))
+                    and anchor
+                    in {
+                        MAIN_PETITION_PART,
+                        "AOR's Declaration",
+                        "AOR's Certificate",
+                        "Filing Memo",
+                        "Vakalatnama",
+                        "Memo of Appearance",
+                    }
+                )
+                for page in range(physical_start + 1, physical_end + 1)
+            ):
+                continue
+            after = physical_end + 1
+            if after <= page_count:
+                after_text = page_text.get(after, "")
+                hard_boundary = bool(
+                    page_starts_application(after_text)
+                    or _outer_anchor_label(after_text)
+                    or annexure_label_from_text(after_text)
+                )
+                if not hard_boundary:
+                    continue
+            candidates.append(physical_start)
+        if len(candidates) == 1:
+            physical_start = candidates[0]
+            for page in range(physical_start, physical_start + span_length):
                 owners[page] = label
 
     for page in range(zone_start, page_count + 1):
@@ -4934,7 +5186,18 @@ def _apply_index_printed_pages(
             continue
         names = parts_on_page(updated.get(page))
         current = names[0] if names else None
-        leaked = bool(current and current in anchored and not _in_part(current, folio))
+        # A printed folio can be wrong or reused by the filing advocate.  Do
+        # not erase a page whose own explicit heading confirms its current
+        # document merely because that folio falls outside the Index range.
+        # Defect File_007, for example, prints A1 on a page headed LISTED
+        # PERFORMA even though the Index lists the form at pages 6-7.
+        explicitly_confirmed = bool(current and heading == current)
+        leaked = bool(
+            current
+            and current in anchored
+            and not _in_part(current, folio)
+            and not explicitly_confirmed
+        )
         weak = current in {"PoA/BR"} or (
             current == "Impugned Order" and not _looks_like_impugned_order_start(text)
         )
