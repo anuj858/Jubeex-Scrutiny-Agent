@@ -584,6 +584,37 @@ def test_listed_performa_heading_starts_listing_proforma() -> None:
     assert _outer_anchor_label(text) == "Listing Proforma"
 
 
+def test_explicit_listed_performa_survives_conflicting_printed_folio() -> None:
+    """Defect File_007 prints A1 although its Index lists the form at 6-7."""
+    texts = {
+        1: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "1. Listing Proforma 6-7\n"
+            "2. Special Leave Petition with Affidavit A1-A2"
+        ),
+        2: (
+            "A1\nSection: IV-B\nLISTED PERFORMA\n"
+            "The case pertains to (Please tick/check the correct box)\n"
+            "Central Act: Bharatiya Nagarik Suraksha Sanhita, 2023\n"
+            "Impugned Interim Order: 01.09.2025\n"
+            "Nature of Matter: Criminal"
+        ),
+        3: (
+            "LISTED PERFORMA\n6\nSimilar disposed of matter, if any\n"
+            "Not to be listed before: N.A."
+        ),
+    }
+
+    repaired, _ = repair_compiled_split(
+        {1: ["Index"], 2: ["Listing Proforma"], 3: ["Listing Proforma"]},
+        texts,
+        page_count=3,
+    )
+
+    assert repaired[2] == ["Listing Proforma"]
+    assert repaired[3] == ["Listing Proforma"]
+
+
 def test_form28_party_schedule_is_main_petition_not_cover() -> None:
     from extraction_review.split_repair import (
         _looks_like_cover_page,

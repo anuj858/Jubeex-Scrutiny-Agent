@@ -4934,7 +4934,18 @@ def _apply_index_printed_pages(
             continue
         names = parts_on_page(updated.get(page))
         current = names[0] if names else None
-        leaked = bool(current and current in anchored and not _in_part(current, folio))
+        # A printed folio can be wrong or reused by the filing advocate.  Do
+        # not erase a page whose own explicit heading confirms its current
+        # document merely because that folio falls outside the Index range.
+        # Defect File_007, for example, prints A1 on a page headed LISTED
+        # PERFORMA even though the Index lists the form at pages 6-7.
+        explicitly_confirmed = bool(current and heading == current)
+        leaked = bool(
+            current
+            and current in anchored
+            and not _in_part(current, folio)
+            and not explicitly_confirmed
+        )
         weak = current in {"PoA/BR"} or (
             current == "Impugned Order" and not _looks_like_impugned_order_start(text)
         )
