@@ -620,7 +620,6 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "page": page,
         "page_end": page_end,
         "chunk_kind": fields.get("chunk_kind"),
-        "file_name": fields.get("file_name"),
         "document_part": fields.get("document_part"),
     }
 
@@ -668,7 +667,6 @@ def search_filing_chunks(
                 "chunk_kind",
                 "page_start",
                 "page_end",
-                "file_name",
                 "document_part",
             ],
         )

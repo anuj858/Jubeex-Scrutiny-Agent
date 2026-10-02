@@ -60,7 +60,7 @@ from .scrutiny.rules import (
     check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
-    get_catalogue,
+    refresh_catalogue,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -109,6 +109,8 @@ class ScrutinyEvent(StartEvent):
     organization_id: str | None = None
     workspace_id: str | None = None
     special_category: str | None = None
+    filing_type: str | None = None
+    court: str | None = None
 
 
 class Status(Event):
@@ -226,9 +228,6 @@ def _sanitize_response(
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
-    if response.status != "defect_found":
-        response.suggested_fix = None
-        response.fix_rationale = None
     return response
 
 
@@ -238,7 +237,6 @@ async def _run_defect(
     catalogue: Catalogue,
     record: dict[str, Any] | None,
     chunks: list[dict[str, Any]],
-    file_name: str | None,
     filing_type: str | None,
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
@@ -257,7 +255,6 @@ async def _run_defect(
             defect,
             record=slice_record_for_defect(record, defect),
             chunks=chunks,
-            file_name=file_name,
             catalogue=catalogue,
         ),
         response_model=DefectResponse,
@@ -465,7 +462,11 @@ class ScrutinyWorkflow(Workflow):
                 state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
-        filing_type = metadata.get("classification") or record.get("petition_type")
+        filing_type = (
+            event.filing_type
+            or metadata.get("classification")
+            or record.get("petition_type")
+        )
         layout_url = (
             metadata.get(LAYOUT_ARTIFACT_URL_KEY)
             if isinstance(metadata, dict)
@@ -513,10 +514,16 @@ class ScrutinyWorkflow(Workflow):
 
         assert_filing_ready_for_scrutiny(review_status, file_name)
 
-        catalogue = get_catalogue()
+        catalogue = refresh_catalogue()
+        logger.info(
+            "[Scrutiny] Using catalogue %s for %s",
+            catalogue.catalogue_version,
+            event.agent_data_id,
+        )
         defects = defects_for_filing_type(
             filing_type,
             special_category=event.special_category,
+            court=event.court,
         )
 
         if not defects:
@@ -591,7 +598,6 @@ class ScrutinyWorkflow(Workflow):
                 catalogue_version=catalogue.catalogue_version,
                 agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
-                file_name=file_name,
                 petition_type=filing_type,
                 model=openrouter_model(),
                 disclaimer=catalogue.disclaimer,
@@ -647,7 +653,6 @@ class ScrutinyWorkflow(Workflow):
                     catalogue=catalogue,
                     record=record,
                     chunks=chunks,
-                    file_name=file_name,
                     filing_type=filing_type,
                     layout=layout,
                     visual_index=visual_index,

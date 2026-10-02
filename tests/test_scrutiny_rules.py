@@ -24,6 +24,7 @@ from extraction_review.scrutiny.rules import (
     rewrite_location_source,
     special_categories_for_catalog,
 )
+from extraction_review.scrutiny.schema import official_source_locations
 
 
 def _defect(
@@ -320,12 +321,12 @@ OPAQUE_SOURCE_FILES = {
 
 
 def test_imported_csv_catalogue(monkeypatch) -> None:
-    rules_mod.get_catalogue.cache_clear()
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
 
-    catalogue = rules_mod.get_catalogue()
-    assert catalogue.catalogue_version == "2.8.0"
-    assert len(catalogue.defects) == 327
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
+    assert catalogue.catalogue_version == "3.0.1"
+    assert len(catalogue.defects) == 321
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
         json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
@@ -355,6 +356,20 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "SCI_RULES_2013" in d159.location_source
     assert "Form 28 - SLP.pdf" not in d159.location_source
     assert "2024011691-1.pdf" not in d159.location_source
+
+    rules_pdf = (
+        "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
+        "uploads/2024/01/2024011691-1.pdf"
+    )
+    form_pdf = (
+        "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
+        "uploads/2024/01/2024011779.pdf"
+    )
+    d73_sources = official_source_locations(catalogue.defect("D-73"), catalogue)
+    assert [(item.url, item.page) for item in d73_sources] == [(rules_pdf, 6)]
+    d159_sources = {item.url: item.page for item in official_source_locations(d159, catalogue)}
+    assert d159_sources[rules_pdf] == 30
+    assert d159_sources[form_pdf] is None
 
     d001 = catalogue.defect("D-1")
     assert d001.special_category == "Appeal (Armed Forces)"
@@ -393,15 +408,20 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     motor = [
         d.check_id
         for d in catalogue.defects
-        if d.special_category == "Motor Vehical Act"
+        if d.special_category == "Motor Vehicle Act"
     ]
     assert motor
     assert not (set(motor) & civil)
 
     noted = next(d for d in catalogue.defects if d.notes)
     prompt = build_defect_prompt(noted, record={}, chunks=[], catalogue=catalogue)
-    assert "## Notes" in prompt
-    assert noted.notes.splitlines()[0][:20] in prompt
+    assert "## Notes" not in prompt
+    assert "## Review comment" not in prompt
+    assert "## Standard" in prompt
+    with_note = noted.model_copy(update={"ai_note": "Look for the court stamp."})
+    noted_prompt = build_defect_prompt(with_note, record={}, chunks=[], catalogue=catalogue)
+    assert "## Note for AI" in noted_prompt
+    assert "Look for the court stamp." in noted_prompt
     assert "This task is in the area" not in prompt
 
     for defect in catalogue.defects:
@@ -413,8 +433,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
 
 def test_rewrite_location_source_maps_opaque_pdf_names() -> None:
-    rules_mod.get_catalogue.cache_clear()
-    catalogue = rules_mod.get_catalogue()
+    catalogue = rules_mod._load_file_catalogue()
     for filename, source_id in OPAQUE_SOURCE_FILES.items():
         rewritten = rewrite_location_source(
             f"Page 30 of the PDF {filename}",
@@ -519,13 +538,13 @@ def test_miscellaneous_application_overlay_from_special(monkeypatch) -> None:
 
 
 def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
-    rules_mod.get_catalogue.cache_clear()
     monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
-    catalogue = rules_mod.get_catalogue()
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
     motor_ids = {
         d.check_id
         for d in catalogue.defects
-        if d.special_category == "Motor Vehical Act"
+        if d.special_category == "Motor Vehicle Act"
     }
     armed = {
         d.check_id
