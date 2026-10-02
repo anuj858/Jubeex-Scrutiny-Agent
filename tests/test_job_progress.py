@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 from extraction_review.job_progress import progress_for_status
 
 
@@ -28,3 +30,18 @@ def test_scrutiny_partial_progress_scales_with_completed() -> None:
     assert job.progress == 20 + int(72 * 5 / 20)
     assert job.stage == "checking"
     assert job.stage_message == "Checked 5/20 defects"
+
+
+def test_process_stage_transition_is_persisted_without_throttle() -> None:
+    from extraction_review.api import JobState, _apply_event_progress
+
+    job = JobState(job_id="test-stage-transition", kind="process_file")
+    job.stage = "running"
+    job.persist = Mock()  # type: ignore[method-assign]
+
+    event = type("_Status", (), {"message": "Splitting file petition.pdf"})()
+    _apply_event_progress(job, event)
+
+    assert job.stage == "split"
+    assert job.stage_message == "Splitting file petition.pdf"
+    job.persist.assert_called_once_with(force=True)

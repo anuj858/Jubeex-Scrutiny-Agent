@@ -485,7 +485,15 @@ def _apply_event_progress(job: JobState, event: Any) -> None:
     percent, stage = progress_for_status(
         message, kind=job.callback_kind or job.kind
     )
-    job.bump_progress(percent, stage=stage, message=message)
+    # Persist stage transitions immediately. The normal S3 write throttle can
+    # otherwise retain a short-lived message such as "skipping classify" for
+    # the entire LlamaSplit wait, even though the job has moved to splitting.
+    job.bump_progress(
+        percent,
+        stage=stage,
+        message=message,
+        force=stage != job.stage,
+    )
 
 
 def _serialize_result(result: Any) -> dict[str, Any]:

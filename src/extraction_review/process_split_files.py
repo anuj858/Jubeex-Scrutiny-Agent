@@ -616,9 +616,6 @@ class ProcessSplitFilesWorkflow(Workflow):
             [*(state.llamacloud_jobs or []), extract_usage]
         )
         logger.info("[Usage] %s", usage_status_message(usage_summary))
-        ctx.write_event_to_stream(
-            Status(level="info", message=usage_status_message(usage_summary))
-        )
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent

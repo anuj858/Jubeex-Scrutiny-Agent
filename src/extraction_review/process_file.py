@@ -1873,9 +1873,6 @@ class ProcessFileWorkflow(Workflow):
         usage_jobs = [*(state.llamacloud_jobs or []), split_usage]
         usage_summary = summarize_llamacloud_usage(usage_jobs)
         logger.info("[Usage] %s", usage_status_message(usage_summary))
-        ctx.write_event_to_stream(
-            Status(level="info", message=usage_status_message(usage_summary))
-        )
 
         ctx.write_event_to_stream(
             Status(
