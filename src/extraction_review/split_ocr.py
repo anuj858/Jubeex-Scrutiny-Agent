@@ -22,6 +22,15 @@ _INDEX_PAGE_SPAN_RE = re.compile(
     r"(?:\d{1,4}[A-Za-z]?(?:[-–—]\d{1,4}[A-Za-z]?)?|"
     r"A\d{1,2}(?:[-–—]A?-?\d{1,2})?|[A-Z]{1,2}(?:[-–—][A-Z]{1,2})?)"
 )
+_ANNEXURE_MARGIN_TOKEN_RE = re.compile(
+    r"^(?P<series>[PRE])[-/]?(?P<number>\d{1,3})$", re.IGNORECASE
+)
+_LOWER_COURT_START_RE = re.compile(
+    r"\b(?:high\s+court|district\s+court|national\s+company\s+law\s+"
+    r"(?:appellate\s+)?tribunal|nclat|nclt|consumer\s+(?:commission|forum)|"
+    r"court\s+of\s+the\s+\w+)\b",
+    re.IGNORECASE,
+)
 
 DEFAULT_SPLIT_OCR_WORKERS = 2
 DEFAULT_SPLIT_OCR_DPI = 180
@@ -252,6 +261,81 @@ def margin_folio_from_tsv(tsv: str) -> str | None:
     return min(candidates, key=lambda item: item[0])[1]
 
 
+def annexure_stamp_from_margin_tsv(tsv: str) -> str | None:
+    """Recover an isolated handwritten ``P2``/``P-2`` above a court title.
+
+    Tesseract often reads the small handwritten ``Annx.`` prefix as arbitrary
+    text while still recognizing its P/R/E number.  Accept that number only
+    from a short line above an ``IN THE ... COURT/TRIBUNAL`` caption.  This
+    geometry guard prevents petition references and ordinary body text from
+    being promoted to outer paper-book Annexure stamps.
+    """
+    try:
+        rows = list(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
+    except (csv.Error, TypeError):
+        return None
+
+    lines: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+    for row in rows:
+        text = (row.get("text") or "").strip()
+        if row.get("level") != "5" or not text:
+            continue
+        key = (
+            row.get("block_num") or "",
+            row.get("par_num") or "",
+            row.get("line_num") or "",
+        )
+        lines.setdefault(key, []).append(row)
+
+    ordered: list[tuple[int, list[dict[str, str]]]] = []
+    for words in lines.values():
+        try:
+            top = min(int(word.get("top") or 0) for word in words)
+        except ValueError:
+            continue
+        ordered.append(
+            (top, sorted(words, key=lambda word: int(word.get("left") or 0)))
+        )
+    ordered.sort(key=lambda item: item[0])
+
+    caption_top: int | None = None
+    for top, words in ordered:
+        line = " ".join((word.get("text") or "").strip() for word in words)
+        folded = re.sub(r"\s+", " ", line).casefold()
+        if "in the" in folded and ("court" in folded or "tribunal" in folded):
+            caption_top = top
+            break
+    if caption_top is None:
+        return None
+
+    for top, words in ordered:
+        if top >= caption_top or len(words) > 4:
+            continue
+        tokens = [(word.get("text") or "").strip(" .,:;|_()[]{}") for word in words]
+        line = " ".join(tokens).casefold()
+        if re.search(r"\b(?:page|part|petition|para|item|form|case|no)\b", line):
+            continue
+        for token in tokens:
+            match = _ANNEXURE_MARGIN_TOKEN_RE.fullmatch(token)
+            if not match:
+                continue
+            series = match.group("series").upper()
+            number = int(match.group("number"))
+            if number >= 1:
+                return f"ANNEXURE {series}-{number}"
+    return None
+
+
+def _needs_annexure_margin_retry(text: str) -> bool:
+    """Use expensive handwriting recovery only on plausible record starts."""
+    folded = re.sub(r"\s+", " ", text or "").strip()
+    return bool(
+        folded
+        and not re.search(r"\b(?:annexure|annx\.?)\b", folded, re.IGNORECASE)
+        and _LOWER_COURT_START_RE.search(folded[:1600])
+    )
+
+
 def pages_with_large_images(
     pdf_bytes: bytes, *, minimum_page_coverage: float = 0.40
 ) -> set[int]:
@@ -317,11 +401,13 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
             output_base = root / f"{number}-ocr"
             output_bases = [output_base]
 
-            def run_tesseract(base: Path, *, psm: int) -> tuple[str, str]:
+            def run_tesseract(
+                base: Path, *, psm: int, image_path: Path | None = None
+            ) -> tuple[str, str]:
                 subprocess.run(
                     [
                         executable,
-                        str(root / f"{number}.png"),
+                        str(image_path or root / f"{number}.png"),
                         str(base),
                         "-l",
                         "eng",
@@ -347,6 +433,35 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
 
             try:
                 text, tsv = run_tesseract(output_base, psm=3)
+                if _needs_annexure_margin_retry(text):
+                    margin_image = root / f"{number}-margin.png"
+                    margin_base = root / f"{number}-margin-ocr"
+                    output_bases.append(margin_base)
+                    try:
+                        # Re-render only a plausible lower-court record start
+                        # at higher resolution. PSM 3 misses faint handwritten
+                        # paper-book stamps such as ``Annx. P2`` even when it
+                        # reads the body perfectly. Keep the whole page for
+                        # PSM 11 because its layout context materially improves
+                        # recognition of the small marginal number.
+                        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as source:
+                            page = source[number - 1]
+                            page.get_pixmap(
+                                dpi=max(300, dpi),
+                                colorspace=pymupdf.csGRAY,
+                            ).save(margin_image)
+                        _margin_text, margin_tsv = run_tesseract(
+                            margin_base, psm=11, image_path=margin_image
+                        )
+                        margin_stamp = annexure_stamp_from_margin_tsv(margin_tsv)
+                        if margin_stamp:
+                            text = margin_stamp + "\n" + text.lstrip()
+                    except (subprocess.SubprocessError, OSError, RuntimeError):
+                        # The ordinary OCR result remains usable when the
+                        # optional handwriting pass cannot be completed.
+                        pass
+                    finally:
+                        margin_image.unlink(missing_ok=True)
                 if _needs_table_ocr_retry(text):
                     table_base = root / f"{number}-table-ocr"
                     output_bases.append(table_base)

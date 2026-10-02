@@ -6,6 +6,7 @@ from pypdf import PdfWriter
 
 from extraction_review.split_ocr import (
     _needs_table_ocr_retry,
+    annexure_stamp_from_margin_tsv,
     index_table_rows_from_tsv,
     margin_folio_from_tsv,
     ocr_sparse_pages,
@@ -59,6 +60,27 @@ def _scanned_index_tsv() -> str:
     return header + "\n".join(records) + "\n"
 
 
+def _handwritten_annexure_margin_tsv(*, candidate_line: str = "fore P2") -> str:
+    header = (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
+        "left\ttop\twidth\theight\tconf\ttext\n"
+    )
+    records = ["1\t1\t0\t0\t0\t0\t0\t0\t2560\t756\t-1\t"]
+    for word_num, text in enumerate(candidate_line.split(), 1):
+        records.append(
+            f"5\t1\t1\t1\t1\t{word_num}\t{1050 + word_num * 180}\t80\t"
+            f"160\t90\t25\t{text}"
+        )
+    for word_num, text in enumerate(
+        ["IN", "THE", "HIGH", "COURT", "OF", "JUDICATURE"], 1
+    ):
+        records.append(
+            f"5\t1\t2\t1\t1\t{word_num}\t{350 + word_num * 180}\t360\t"
+            f"160\t50\t95\t{text}"
+        )
+    return header + "\n".join(records) + "\n"
+
+
 def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
     assert margin_folio_from_tsv(_folio_tsv("92", left=900, top=35)) == "92"
     assert margin_folio_from_tsv(_folio_tsv("V", left=480, top=35)) == "V"
@@ -67,6 +89,22 @@ def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
 def test_margin_folio_rejects_title_words_and_years():
     assert margin_folio_from_tsv(_folio_tsv("IN", left=60, top=180)) is None
     assert margin_folio_from_tsv(_folio_tsv("2025", left=900, top=35)) is None
+
+
+def test_margin_ocr_recovers_handwritten_annexure_number_above_court_title():
+    assert (
+        annexure_stamp_from_margin_tsv(_handwritten_annexure_margin_tsv())
+        == "ANNEXURE P-2"
+    )
+
+
+def test_margin_ocr_rejects_page_or_petition_reference():
+    assert (
+        annexure_stamp_from_margin_tsv(
+            _handwritten_annexure_margin_tsv(candidate_line="Page P2")
+        )
+        is None
+    )
 
 
 def test_scanned_index_geometry_rejoins_annexure_and_printed_range():
