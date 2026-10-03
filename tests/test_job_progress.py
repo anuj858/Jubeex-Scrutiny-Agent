@@ -27,9 +27,27 @@ def test_scrutiny_partial_progress_scales_with_completed() -> None:
     job = JobState(job_id="test-scrutiny-progress", kind="scrutiny")
     job.progress = 5
     _apply_event_progress(job, _Partial())
-    assert job.progress == 20 + int(72 * 5 / 20)
+    assert job.progress == 20 + int(68 * 5 / 20)
     assert job.stage == "checking"
     assert job.stage_message == "Checked 5/20 defects"
+
+
+def test_completed_defect_checks_leave_room_for_report_generation() -> None:
+    from extraction_review.api import JobState, _apply_event_progress
+
+    partial = type("_Partial", (), {"completed": 20, "total": 20})()
+    job = JobState(job_id="test-scrutiny-report-progress", kind="scrutiny")
+
+    _apply_event_progress(job, partial)
+
+    assert job.progress == 88
+    assert job.stage == "checking"
+
+    status = type("_Status", (), {"message": "Writing final scrutiny report"})()
+    _apply_event_progress(job, status)
+
+    assert job.progress == 92
+    assert job.stage == "report"
 
 
 def test_process_stage_transition_is_persisted_without_throttle() -> None:

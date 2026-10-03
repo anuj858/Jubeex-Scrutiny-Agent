@@ -472,7 +472,10 @@ def _apply_event_progress(job: JobState, event: Any) -> None:
         and total > 0
     ):
         ratio = min(max(completed, 0), total) / total
-        percent = 20 + int(72 * ratio)  # 20% → 92% across checks
+        # Keep report generation distinct from defect execution. Reaching 92%
+        # while checks or snapshot writes are still active makes the UI look
+        # stalled, so checks occupy 20% → 88% and the report stage owns 92%.
+        percent = 20 + int(68 * ratio)
         job.bump_progress(
             percent,
             stage="checking",

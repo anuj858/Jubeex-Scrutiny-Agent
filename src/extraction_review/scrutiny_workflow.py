@@ -616,6 +616,12 @@ class ScrutinyWorkflow(Workflow):
                 await self._persist(llama_cloud_client, item, payload, report, ctx)
 
         def schedule_persist(report: ScrutinyReport) -> None:
+            # Do not queue a remote Agent Data write for every interval while
+            # an earlier write is still running. With a large catalogue that
+            # produced a long serialized backlog after all checks had already
+            # completed. The final report is always persisted below.
+            if any(not task.done() for task in persist_tasks):
+                return
             task = asyncio.create_task(persist_report(report))
             persist_tasks.add(task)
             task.add_done_callback(persist_tasks.discard)
@@ -631,7 +637,7 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             done = stopped_early or len(current) >= planned
-            if done or len(current) % persist_every == 0:
+            if not done and len(current) % persist_every == 0:
                 schedule_persist(report)
 
         async def run_one(defect: Defect) -> DefectFinding:
@@ -708,6 +714,9 @@ class ScrutinyWorkflow(Workflow):
             on_update=publish,
         )
         report = build_report(findings, stopped_early=stopped_early)
+        ctx.write_event_to_stream(
+            Status(level="info", message="Writing final scrutiny report")
+        )
         if persist_tasks:
             await asyncio.gather(*persist_tasks, return_exceptions=True)
         await persist_report(report)
