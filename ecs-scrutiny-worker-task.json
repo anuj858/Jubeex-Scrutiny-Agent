@@ -64,10 +64,6 @@
           "value": "JubeeX Scrutiny"
         },
         {
-          "name": "CATALOGUE_DATABASE_URL",
-          "value": ""
-        },
-        {
           "name": "SCRUTINY_ENABLED",
           "value": "true"
         },
@@ -133,6 +129,10 @@
         }
       ],
       "secrets": [
+        {
+          "name": "CATALOGUE_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:CATALOGUE_DATABASE_URL::"
+        },
         {
           "name": "JUBEEX_CALLBACK_SECRET",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:JUBEEX_CALLBACK_SECRET::"
