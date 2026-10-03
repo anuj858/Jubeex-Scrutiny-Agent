@@ -89,6 +89,46 @@ async def test_classify_v2_assigns_filing_type(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not FAKE_HAS_CLASSIFY_V2,
+    reason="llama-cloud-fake < 0.1.1 does not mock classify v2",
+)
+async def test_upload_compiled_classifies_instead_of_trusting_provided_type(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeLlamaCloudServer,
+) -> None:
+    monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
+    file_id = fake.files.preload(path="tests/files/test.pdf")
+
+    async def fake_extract(*_args: object, **_kwargs: object) -> str:
+        return "agd-compiled-1"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    handler = process_file_workflow.run(
+        start_event=FileEvent(
+            job_type="upload_compiled",
+            filing_type="SLP_CIVIL",
+            file_id=file_id,
+        )
+    )
+    classified = False
+    skipped = False
+    async for event in handler.stream_events():
+        if not isinstance(event, Status):
+            continue
+        classified = classified or event.message.startswith("Classified as ")
+        skipped = skipped or "skipping classify" in event.message.lower()
+    result = await handler
+
+    assert classified is True
+    assert skipped is False
+    assert isinstance(result, BundlePrepared)
+
+
+@pytest.mark.asyncio
 async def test_metadata_workflow() -> None:
     result = await metadata_workflow.run(start_event=StartEvent())
     assert isinstance(result, MetadataResponse)

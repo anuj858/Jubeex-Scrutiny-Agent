@@ -154,6 +154,7 @@ FULL_JOB_TYPES = (
     )
     | PETITION_SPLIT_JOB_TYPES
 )
+CLASSIFY_COMPILED_JOB_TYPES = FULL_JOB_TYPES - PETITION_SPLIT_JOB_TYPES
 SPLIT_JOB_TYPES = (
     frozenset({"split", "parts", "upload_separate", "upload_split"})
     | EXTRACT_ONLY_JOB_TYPES
@@ -1724,10 +1725,13 @@ class ProcessFileWorkflow(Workflow):
 
         job = (event.job_type or "").strip().lower()
         # Compiled bundles must be classified from the PDF. A caller-supplied
-        # filing_type is only a fallback when classify cannot be sliced.
+        # filing_type is only a fallback when classify cannot be sliced.  The
+        # split_petition endpoint is the exception: it is used after the user
+        # has selected a petition type and intentionally avoids another
+        # classification call.
         override = (
             None
-            if job in PETITION_SPLIT_JOB_TYPES
+            if job in CLASSIFY_COMPILED_JOB_TYPES
             else compiled_catalog_override(event.filing_type)
         )
         if override is not None:
