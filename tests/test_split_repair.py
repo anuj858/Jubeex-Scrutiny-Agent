@@ -35,6 +35,24 @@ def test_order_prose_with_application_references_is_not_index() -> None:
     )
 
 
+def test_numbered_judgment_paragraphs_are_not_index_continuation() -> None:
+    from extraction_review.split_repair import _looks_like_index_continuation
+
+    text = (
+        "33\nWP1230 OF 2024-F.DOC\n"
+        "80. Applying the above proposition to the matter in hand, the Court "
+        "must prevent a miscarriage of justice.\n"
+        "81. Plaintiff/petitioner was thrown out as having no locus to "
+        "challenge the secured creditor.\n"
+        "82. Application filed before the trial Court is only on the ground "
+        "that the suit is barred by law.\n"
+        "83. Secondly, the application was not filed on any other grounds.\n"
+        "33"
+    )
+
+    assert not _looks_like_index_continuation(text)
+
+
 def test_explicit_outer_stamp_wins_over_local_annexure_number() -> None:
     from extraction_review.document_parts import annexure_label_from_text
 
@@ -117,6 +135,34 @@ def test_layout_ranges_keep_annexure_body_and_close_at_outer_applications() -> N
     assert repaired[7] == ["Annexure P-7"]
     assert all(repaired[p] == ["Application 1"] for p in (8, 9))
     assert all(repaired[p] == ["Application 2"] for p in (10, 11))
+
+
+def test_annexure_range_reclaims_internal_tribunal_application() -> None:
+    texts = {
+        1: (
+            "ANNEXURE P-29\n"
+            "BEFORE THE DEBTS RECOVERY APPELLATE TRIBUNAL AT MUMBAI\n"
+            "INTERIM APPLICATION NO. 5 OF 2023\n423"
+        ),
+        2: ("INTERIM APPLICATION FOR WITHDRAWAL\nMAY IT PLEASE YOUR LORDSHIP\n424"),
+        3: "1. The Applicant filed the present appeal.\n425",
+        4: "PRAYERS\nAdvocate for the Applicant\n426",
+        5: "VERIFICATION\nApplicant\n427",
+        6: "ANNEXURE P-30\nORDER DATED 02.01.2024\n428",
+    }
+    bad = {
+        1: ["Annexure P-29"],
+        2: ["Application 1"],
+        3: ["Application 1"],
+        4: ["Application 1"],
+        5: ["Application 1"],
+        6: ["Annexure P-30"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=6)
+
+    assert all(repaired[page] == ["Annexure P-29"] for page in range(1, 6))
+    assert repaired[6] == ["Annexure P-30"]
 
 
 def test_repair_keeps_sci_main_petition_and_nests_high_court_writ() -> None:
@@ -406,6 +452,64 @@ def test_master_index_impugned_range_overrides_stray_index_scan_label() -> None:
 
     assert all(repaired[page] == ["Impugned Order"] for page in range(2, 7))
     assert repaired[7] == ["Main Petition"]
+
+
+def test_two_page_judgment_heading_restores_complete_impugned_order() -> None:
+    texts = {
+        1: "INDEX\nS.No. Particulars of Documents Page No.",
+        2: "SYNOPSIS\nThe challenged judgment is summarized below.\nB",
+        3: "LIST OF DATES\n15.10.2024 Judgment pronounced.\nEE",
+        4: (
+            "1\nIN THE HIGH COURT OF BOMBAY AT GOA\n"
+            "WRIT PETITION NO.1230 OF 2024-F\n"
+            "Shashikant Gangar ... Petitioner\nVersus\n"
+            "Aditya Birla Finance Limited ... Respondent\n1"
+        ),
+        5: (
+            "2\nWP1230 OF 2024-F.DOC\nCORAM: BHARAT P. DESHPANDE, J\n"
+            "RESERVED ON: 26 SEPTEMBER 2024\n"
+            "PRONOUNCED ON: 15 OCTOBER 2024\nJUDGMENT:\n2"
+        ),
+        39: (
+            "36\nIN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION\nPOSITION OF PARTIES\n"
+            "MOST RESPECTFULLY SHOWETH\n36"
+        ),
+    }
+    for folio in range(3, 36):
+        texts[folio + 3] = (
+            f"{folio}\nWP1230 OF 2024-F.DOC\n"
+            f"Judgment paragraph continues on folio {folio}.\n{folio}"
+        )
+    texts[22] = (
+        "419\nWP1230 OF 2024-F.DOC\n"
+        "Judgment paragraph continues on folio 19.\n"
+        "Page 19 of 34\n419"
+    )
+    texts[36] = (
+        "33\nWP1230 OF 2024-F.DOC\n"
+        "80. Applying the above proposition, relief must prevent injustice.\n"
+        "81. Plaintiff/petitioner was thrown out at the initial stage.\n"
+        "82. Application filed before the trial Court is barred by law.\n"
+        "83. Secondly, the application raised no other ground.\n33"
+    )
+    texts[38] = "35\nCERTIFIED COPY\nSection Officer\n35"
+    bad = {
+        1: ["Index"],
+        2: ["Synopsis"],
+        3: ["List of Dates & Events"],
+        4: ["Synopsis"],
+        5: ["Impugned Order"],
+        36: ["Index"],
+        39: ["Main Petition"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=39)
+
+    assert repaired[2] == ["Synopsis"]
+    assert repaired[3] == ["List of Dates & Events"]
+    assert all(repaired[page] == ["Impugned Order"] for page in range(4, 39))
+    assert repaired[39] == ["Main Petition"]
 
 
 def test_annexure_narrative_citations_do_not_open_outer_annexure_runs() -> None:

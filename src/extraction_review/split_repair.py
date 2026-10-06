@@ -16,6 +16,7 @@ from .document_parts import (
     _AFFIDAVIT_HEADING_RE,
     _CARRY_BLOCKING_PARTS,
     ANNEXURE_FAMILY,
+    APPLICATION_FAMILY,
     MAIN_PETITION_PART,
     PagePartMap,
     _contiguous_groups,
@@ -561,7 +562,8 @@ def _looks_like_impugned_order_start(text: str) -> bool:
 
 
 _JUDGMENT_TITLE_RE = re.compile(
-    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*(?:\(\s*oral\s*\))?\s*$"
+    r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*"
+    r"(?:\(\s*oral\s*\))?\s*:?[ \t]*$"
 )
 _HC_ORDER_SHEET_RE = re.compile(r"(?mi)^\s*order\s+sheet\s*$")
 _HC_APPEAL_CASE_RE = re.compile(
@@ -585,6 +587,22 @@ def _restore_front_impugned_judgment(
             continue
         heading = _heading_window(text, lines=40)
         titled_judgment = bool(_JUDGMENT_TITLE_RE.search(heading))
+        # Certified judgments commonly put only the cause title and parties on
+        # folio 1, then print CORAM / dates / JUDGMENT on folio 2. Treat those
+        # two pages as one strong start instead of requiring every signal on
+        # the first sheet (Defect File_004, physical pages 39-40).
+        following_text = page_text.get(start + 1, "") if start < page_count else ""
+        following_heading = _heading_window(following_text, lines=40)
+        following_folio = _printed_folio(following_text)
+        two_page_judgment_start = bool(
+            following_folio == ("number", 2, "")
+            and _JUDGMENT_TITLE_RE.search(following_heading)
+            and re.search(
+                r"\b(?:coram|reserved\s+on|pronounced\s+on|date\s+of\s+decision)\b",
+                following_heading,
+                re.IGNORECASE,
+            )
+        )
         # High Court bail/suspension orders are often exported as an ``Order
         # Sheet`` rather than titled ``Order``.  In the outer paper-book
         # position (after LOD, before Form 28), a dated CRA/Cr.A order sheet
@@ -592,11 +610,9 @@ def _restore_front_impugned_judgment(
         dated_appeal_order_sheet = bool(
             _HC_ORDER_SHEET_RE.search(heading)
             and _HC_APPEAL_CASE_RE.search(heading)
-            and re.search(
-                r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", heading
-            )
+            and re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", heading)
         )
-        if not (titled_judgment or dated_appeal_order_sheet):
+        if not (titled_judgment or dated_appeal_order_sheet or two_page_judgment_start):
             continue
         if not any(
             front_labels.intersection(parts_on_page(updated.get(page)))
@@ -615,13 +631,24 @@ def _restore_front_impugned_judgment(
             ):
                 break
             folio = _printed_folio(current_text)
+            expected_number = last_number + len(pending) + 1
+            page_of_total = re.search(
+                r"\bpage\s+(\d{1,3})\s+of\s+\d{1,3}\b",
+                current_text,
+                re.IGNORECASE,
+            )
+            # Margin OCR can prefix noise to a folio (19 -> 419). The court's
+            # own "Page 19 of 34" footer is stronger when it supplies exactly
+            # the next expected judgment page.
+            if page_of_total and int(page_of_total.group(1)) == expected_number:
+                folio = ("number", expected_number, "")
             if folio is None:
                 pending.append(page)
                 if len(pending) > 3:
                     break
                 continue
             kind, number, suffix = folio
-            if kind != "number" or suffix or number != last_number + len(pending) + 1:
+            if kind != "number" or suffix or number != expected_number:
                 break
             for missing in pending:
                 updated[missing] = ["Impugned Order"]
@@ -777,6 +804,29 @@ def _looks_like_index_continuation(text: str) -> bool:
     if re.search(r"(?m)^\s*\d{1,2}\.\s+that\s+the\b", text or "", re.I):
         return False
     if "anticipatory bail" in folded and "prayer" in folded:
+        return False
+    # Numbered judgment paragraphs can mention petitions/applications often
+    # enough to satisfy the loose Index-row matcher below. Legal-discourse
+    # openings, without actual catalogue-document cues, identify prose rather
+    # than an Index continuation (Defect File_004 judgment page 33).
+    numbered_legal_paragraphs = re.findall(
+        r"(?mi)^\s*\d{1,3}[.)]\s+(?:"
+        r"applying\b|plaintiff\b|defendant\b|firstly\b|secondly\b|"
+        r"besides\b|however\b|therefore\b|once\b|"
+        r"application\s+filed\b|the\s+(?:court|plaintiff|defendant|"
+        r"petitioner|respondent)\b)",
+        head,
+    )
+    has_catalogue_cues = bool(
+        document_rows
+        or re.search(
+            r"(?mi)^\s*(?:page\s+no\.?|particulars|filing\s+memo|"
+            r"vakalatnama|annexure\s*[-–—:]?\s*[per]?\s*[-–—/]?\s*\d+)",
+            head,
+        )
+        or re.search(r"(?m)^\s*\d{1,4}\s*[-–—]\s*\d{1,4}\s*$", head)
+    )
+    if len(numbered_legal_paragraphs) >= 2 and not has_catalogue_cues:
         return False
     hits = _INDEX_CONTINUATION_RE.findall(head)
     if len(hits) >= 3:
@@ -1377,6 +1427,15 @@ def _force_annexure_nesting(
                 continue
             if any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
                 updated[page] = [label]
+                continue
+            # A lower-court/tribunal application reproduced inside a stamped
+            # paper-book Annexure is part of that Annexure, even when the
+            # upstream splitter promotes its continuation pages to Application
+            # N. A real outer SCI application was already excluded above by
+            # its Supreme Court caption/start evidence.
+            if any(family_split_name(name) == APPLICATION_FAMILY for name in names):
+                if not _is_sci_caption(text):
+                    updated[page] = [label]
                 continue
             if _is_lower_court_caption(text) or annexure_ref_in_heading(text):
                 updated[page] = [label]
