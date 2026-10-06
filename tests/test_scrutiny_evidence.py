@@ -27,6 +27,7 @@ from extraction_review.scrutiny.schema import (
     apply_evidence_pages,
     apply_status_policy,
 )
+from extraction_review.scrutiny_workflow import _add_layout_fallback_chunks
 from extraction_review.vector_store import build_page_records
 
 
@@ -350,6 +351,124 @@ def test_single_annexure_check_keeps_narrow_budget() -> None:
     )
 
     assert max_chunks_for_defect(defect, ceiling=12) == 3
+
+
+def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it() -> None:
+    defect = SimpleNamespace(
+        inspect_parts=["Vakalatnama"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check the Vakalatnama execution date and signatures."],
+    )
+    layout = {
+        88: {
+            "document_part": "Memo of Appearance, Vakalatnama",
+            "local_page": 1,
+            "words": [
+                {"t": "VAKALATNAMA", "line": 1},
+                {"t": "Dated", "line": 2},
+                {"t": "9", "line": 2},
+                {"t": "June", "line": 2},
+                {"t": "2024", "line": 2},
+            ],
+        }
+    }
+
+    chunks = _add_layout_fallback_chunks(
+        defect, [], layout=layout, max_chunks=3
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0]["page"] == 88
+    assert chunks[0]["document_part"] == ["Memo of Appearance", "Vakalatnama"]
+    assert "Dated 9 June 2024" in chunks[0]["text"]
+
+
+def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
+    defect = SimpleNamespace(
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check the opening cause title and drafting date at the end."],
+    )
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, text in ((12, "CAUSE TITLE"), (13, "BODY"), (28, "DATED PRAYER"))
+    }
+
+    chunks = _add_layout_fallback_chunks(
+        defect, [], layout=layout, max_chunks=3
+    )
+
+    assert [chunk["page"] for chunk in chunks] == [12, 28]
+
+
+def test_layout_boundaries_replace_incomplete_semantic_excerpt_set() -> None:
+    defect = SimpleNamespace(
+        defect="The drafting date is missing",
+        requirement="The drafting date must appear at the end of the petition",
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check the date of drafting below the prayer."],
+    )
+    retrieved = [
+        {
+            "record_id": "semantic-middle",
+            "chunk_kind": "page",
+            "page": 18,
+            "document_part": "Main Petition",
+            "text": "A middle ground paragraph",
+        }
+    ]
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, text in ((12, "CAUSE TITLE"), (18, "BODY"), (28, "DATED PRAYER"))
+    }
+
+    chunks = _add_layout_fallback_chunks(
+        defect, retrieved, layout=layout, max_chunks=3
+    )
+
+    assert [chunk["page"] for chunk in chunks] == [12, 18, 28]
+    assert any(chunk["text"] == "DATED PRAYER" for chunk in chunks)
+
+
+def test_main_petition_check_uses_petition_affidavit_not_application_affidavit() -> None:
+    defect = SimpleNamespace(
+        defect="The petition affidavit omits required particulars",
+        requirement="The affidavit supporting the Main Petition must be complete",
+        inspect_parts=["Main Petition", "Affidavit"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check the Affidavit filed after the Main Petition."],
+    )
+    layout = {
+        12: {"document_part": "Main Petition", "words": [{"t": "OPEN", "line": 1}]},
+        28: {"document_part": "Main Petition", "words": [{"t": "PRAYER", "line": 1}]},
+        29: {"document_part": "Affidavit", "words": [{"t": "PETITION", "line": 1}]},
+        30: {"document_part": "Affidavit", "words": [{"t": "VERIFY", "line": 1}]},
+        82: {"document_part": "Application 1", "words": [{"t": "I.A.", "line": 1}]},
+        85: {"document_part": "Affidavit", "words": [{"t": "APPLICATION", "line": 1}]},
+        86: {"document_part": "Affidavit", "words": [{"t": "VERIFY", "line": 1}]},
+    }
+
+    chunks = _add_layout_fallback_chunks(
+        defect, [], layout=layout, max_chunks=6
+    )
+    affidavit_pages = [
+        chunk["page"]
+        for chunk in chunks
+        if "Affidavit" in chunk["document_part"]
+    ]
+
+    assert affidavit_pages == [29, 30]
 
 
 def test_common_index_pagination_check_reads_all_index_pages() -> None:

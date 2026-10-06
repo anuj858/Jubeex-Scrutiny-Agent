@@ -12,6 +12,8 @@ import re
 from typing import Any
 
 from ..document_parts import (
+    catalogue_inspect_parts,
+    family_split_name,
     filing_type_label,
     format_document_parts,
     pinecone_queries_for_defect,
@@ -215,6 +217,59 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
             f"was reached. Treat coverage as incomplete.]"
         )
     return "\n\n".join(blocks)
+
+
+def _visual_part_matches(document_type: str, targets: list[str]) -> bool:
+    found = family_split_name(document_type)
+    for target in targets:
+        if document_type.casefold() == target.casefold():
+            return True
+        if found == family_split_name(target):
+            return True
+    return False
+
+
+def _format_visual_observations(
+    defect: Defect, visual_index: dict[str, Any] | None
+) -> str:
+    """Format positive stored visual detections for the inspected parts."""
+    if not isinstance(visual_index, dict):
+        return "No stored visual observations are available."
+    targets = catalogue_inspect_parts(defect)
+    lines: list[str] = []
+    for mark in visual_index.get("marks") or []:
+        if not isinstance(mark, dict):
+            continue
+        document_type = str(mark.get("document_type") or "").strip()
+        if targets and not _visual_part_matches(document_type, targets):
+            continue
+        marking_type = str(mark.get("marking_type") or "").strip()
+        if not document_type or not marking_type:
+            continue
+        page = mark.get("local_page") or mark.get("page")
+        details = [marking_type.replace("_", " ")]
+        role = str(mark.get("signature_role") or "").strip()
+        if role and role not in {"not_applicable", "unknown"}:
+            details.append(f"role: {role}")
+        label = str(mark.get("associated_label") or "").strip()
+        if label:
+            details.append(f"near label: {label}")
+        visible = str(mark.get("visible_text") or "").strip()
+        if visible:
+            details.append(f"visible text: {visible}")
+        lines.append(f"- {document_type}, page {page}: " + "; ".join(details))
+        if len(lines) >= 20:
+            break
+    if not lines:
+        return (
+            "No positive visual mark relevant to these document parts was stored. "
+            "This absence is not proof that a signature, stamp, seal, or handwritten "
+            "value is missing."
+        )
+    return (
+        "These are positive detections only; absence from this list is not proof of "
+        "absence. Do not infer authenticity or signer identity.\n" + "\n".join(lines)
+    )
 
 
 def _strip_annotation(text: str) -> str:
@@ -800,6 +855,7 @@ def build_defect_prompt(
     record: dict[str, Any] | None,
     chunks: list[dict[str, Any]],
     catalogue: Catalogue | None = None,
+    visual_index: dict[str, Any] | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     search = "\n".join(
@@ -842,6 +898,9 @@ def build_defect_prompt(
             "",
             "## Document excerpts",
             _format_evidence(chunks),
+            "",
+            "## Stored visual observations",
+            _format_visual_observations(defect, visual_index),
             "",
             "## Output",
             (

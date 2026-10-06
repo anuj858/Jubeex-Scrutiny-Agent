@@ -287,6 +287,152 @@ def test_repair_index_continuation_and_blank_impugned_before_petition() -> None:
     assert repaired[15] == ["Annexure P-1"]
 
 
+def test_index_main_range_does_not_absorb_explicit_appendix_continuation() -> None:
+    texts = {
+        1: ("INDEX\n1.\tSpecial Leave Petition with affidavit and Appendix\t1-11"),
+        2: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL)\n"
+            "MOST RESPECTFULLY SHOWETH\n1"
+        ),
+        11: (
+            "APPENDIX\n"
+            "I. Section 2 of the governing Act\n"
+            "II. Section 8 of the governing Act\n10"
+        ),
+        12: (
+            "III. 4. Application for registration shall be made in the "
+            "prescribed form.\n11"
+        ),
+    }
+    for page in range(3, 11):
+        texts[page] = f"Petition body paragraph {page}.\n{page - 1}"
+
+    repaired, _ = repair_compiled_split(
+        {page: ["Main Petition"] for page in range(2, 13)} | {1: ["Index"]},
+        texts,
+        page_count=12,
+    )
+
+    assert all(repaired[page] == ["Main Petition"] for page in range(2, 11))
+    assert repaired[11] == ["Appendix"]
+    assert repaired[12] == ["Appendix"]
+
+
+def test_explicit_appendix_reclaims_main_labeled_final_sheet_without_index() -> None:
+    texts = {page: f"Petition body paragraph {page}." for page in range(1, 10)}
+    texts[1] = (
+        "IN THE SUPREME COURT OF INDIA\n"
+        "SPECIAL LEAVE PETITION (CIVIL)\n"
+        "MOST RESPECTFULLY SHOWETH"
+    )
+    texts[9] = "PRAYER FOR INTERIM RELIEF\nAdvocate for the Petitioner"
+    texts[10] = (
+        "APPENDIX\n"
+        "I. Section 2 [(16), Maharashtra Cooperative Societies Act]\n"
+        "II. Section 8 - Application for registration"
+    )
+    texts[11] = (
+        "III. 4. Application for registration and registration fees shall "
+        "be submitted to the Registrar."
+    )
+
+    repaired, _ = repair_compiled_split(
+        {page: ["Main Petition"] for page in range(1, 12)},
+        texts,
+        page_count=11,
+    )
+
+    assert all(repaired[page] == ["Main Petition"] for page in range(1, 10))
+    assert repaired[10] == ["Appendix"]
+    assert repaired[11] == ["Appendix"]
+
+
+def test_index_range_uses_observed_end_folio_before_physical_length() -> None:
+    from extraction_review.split_repair import _apply_indexed_outer_document_ranges
+
+    texts = {
+        1: "INDEX\n1.\tSpecial Leave Petition alongwith Affidavit\t36-66",
+        2: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nSHOWETH\n36",
+        3: "Petition grounds continue.\n42",
+        4: "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nAOR certificate\n64",
+        5: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nDEPONENT\n65",
+        6: "Affidavit continuation.\n66",
+        7: "ANNEXURE P-1\nFacility Agreement\n67",
+    }
+    repaired = _apply_indexed_outer_document_ranges(
+        {
+            1: ["Index"],
+            2: ["Main Petition"],
+            3: ["Main Petition"],
+            4: ["AOR's Certificate"],
+            5: ["Affidavit"],
+            6: ["Affidavit"],
+            7: ["Annexure P-1"],
+        },
+        texts,
+        page_count=7,
+    )
+
+    assert repaired[6] == ["Affidavit"]
+    assert repaired[7] == ["Annexure P-1"]
+
+
+def test_master_index_impugned_range_overrides_stray_index_scan_label() -> None:
+    from extraction_review.split_repair import _apply_indexed_outer_document_ranges
+
+    texts = {
+        1: "INDEX\n10.\tCopy of the impugned final Judgment and Order\t1-35",
+        2: "1",
+        3: "2",
+        4: "33",
+        5: "34",
+        6: "35",
+        7: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nSHOWETH\n36",
+    }
+    repaired = _apply_indexed_outer_document_ranges(
+        {
+            1: ["Index"],
+            2: ["Synopsis"],
+            3: ["Impugned Order"],
+            4: ["Index"],
+            5: ["Unidentified"],
+            6: ["Unidentified"],
+            7: ["Main Petition"],
+        },
+        texts,
+        page_count=7,
+    )
+
+    assert all(repaired[page] == ["Impugned Order"] for page in range(2, 7))
+    assert repaired[7] == ["Main Petition"]
+
+
+def test_annexure_narrative_citations_do_not_open_outer_annexure_runs() -> None:
+    from extraction_review.document_parts import annexure_label_from_text
+
+    assert (
+        annexure_label_from_text(
+            "as ANNEXURE-P8 is a copy of the order dated\n01-02-2024."
+        )
+        is None
+    )
+    assert (
+        annexure_label_from_text(
+            "The judgment is annexed to the Petition Annexure\nP-1.\n"
+            "The reply continues on this page."
+        )
+        is None
+    )
+    assert (
+        annexure_label_from_text(
+            "The judgment is annexed with the Petition as\nAnnexure P-1.\n"
+            "The reply continues on this page."
+        )
+        is None
+    )
+
+
 def test_fresh_case_report_never_populates_office_report_on_limitation() -> None:
     from extraction_review.bundle_slicer import map_slot_pages
     from extraction_review.split_upload import type_catalog

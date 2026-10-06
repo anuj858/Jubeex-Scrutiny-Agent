@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -23,12 +24,17 @@ from workflows.resource import Resource
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
 from .document_parts import (
+    APPLICATION_FAMILY,
+    chunks_cover_part,
     expand_parts_for_retrieval,
+    family_split_name,
     filing_type_label,
     max_chunks_for_defect,
     missing_required_parts,
     parts_named_in_where_to_look,
+    parts_on_page,
     preferred_parts_for_defect,
+    required_parts_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
 )
@@ -60,6 +66,8 @@ from .scrutiny.rules import (
     check_id_sort_key,
     defects_for_filing_type,
     enabled_defect_ids,
+    normalize_filing_type,
+    normalize_special_category,
     refresh_catalogue,
 )
 from .scrutiny.schema import (
@@ -256,6 +264,7 @@ async def _run_defect(
             record=slice_record_for_defect(record, defect),
             chunks=chunks,
             catalogue=catalogue,
+            visual_index=visual_index,
         ),
         response_model=DefectResponse,
     )
@@ -280,16 +289,19 @@ async def _chunks_for_defect(
     file_hash: str | None,
     max_chunks: int,
     use_pinecone: bool,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
+    page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
     if not use_pinecone or not file_hash:
-        return []
+        return _add_layout_fallback_chunks(
+            defect, [], layout=layout, max_chunks=page_budget
+        )
 
     queries = build_evidence_queries(defect)
     targets = expand_parts_for_retrieval(
         parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     )
-    page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
     gather_cap = max(
         max_chunks,
         len(queries) * 3,
@@ -309,9 +321,273 @@ async def _chunks_for_defect(
             defect.check_id,
             e,
         )
-        return []
+        return _add_layout_fallback_chunks(
+            defect, [], layout=layout, max_chunks=page_budget
+        )
 
-    return select_chunks_for_defect(pool, defect, max_chunks=page_budget)
+    selected = select_chunks_for_defect(pool, defect, max_chunks=page_budget)
+    return _add_layout_fallback_chunks(
+        defect,
+        selected,
+        layout=layout,
+        max_chunks=page_budget,
+    )
+
+
+def _layout_document_parts(value: Any) -> list[str]:
+    """Read both current list metadata and legacy comma-joined layout labels."""
+    if isinstance(value, str) and "," in value:
+        found: list[str] = []
+        for item in value.split(","):
+            for name in parts_on_page(item.strip()):
+                if name not in found:
+                    found.append(name)
+        return found
+    return parts_on_page(value)
+
+
+def _layout_page_text(page: dict[str, Any]) -> str:
+    """Rebuild conservative OCR lines from the stored grounded word boxes."""
+    words = page.get("words") or []
+    if not isinstance(words, list):
+        return ""
+    lines: list[str] = []
+    current: list[str] = []
+    current_line: Any = object()
+    for word in words:
+        if not isinstance(word, dict):
+            continue
+        token = str(word.get("t") or "").strip()
+        if not token:
+            continue
+        line = word.get("line")
+        if current and line != current_line:
+            lines.append(" ".join(current))
+            current = []
+        current.append(token)
+        current_line = line
+    if current:
+        lines.append(" ".join(current))
+    return "\n".join(lines).strip()
+
+
+def _add_layout_fallback_chunks(
+    defect: Defect,
+    chunks: list[dict[str, Any]],
+    *,
+    layout: dict[int, dict[str, Any]] | None,
+    max_chunks: int,
+) -> list[dict[str, Any]]:
+    """Use stored split/layout OCR to guarantee required document boundaries.
+
+    Pinecone excerpts remain preferred when they cover the same page. Stored
+    OCR guarantees that opening captions and closing dates/signatures are not
+    lost merely because semantic retrieval selected an interior page.
+    """
+    if not layout or max_chunks <= 0:
+        return chunks
+
+    summary = [chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"][:1]
+    pages = [chunk for chunk in chunks if chunk.get("chunk_kind") != "summary"]
+    required = required_parts_for_defect(defect)
+    if not required:
+        return chunks
+
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    for part in required:
+        found: list[dict[str, Any]] = []
+        for page_number, page in sorted(layout.items()):
+            if not isinstance(page, dict):
+                continue
+            names = _layout_document_parts(page.get("document_part"))
+            if not names or not chunks_cover_part(
+                [{"document_part": names, "chunk_kind": "page"}], part
+            ):
+                continue
+            text = _layout_page_text(page)
+            if not text:
+                continue
+            found.append(
+                {
+                    "record_id": f"layout:{page_number}:{part}",
+                    "score": 0.0,
+                    "chunk_kind": "page",
+                    "page": page_number,
+                    "page_end": page_number,
+                    "document_part": names,
+                    "text": text,
+                    "layout_fallback": True,
+                }
+            )
+        # A filing can contain a petition affidavit and a later application
+        # affidavit under the same Split label. Main-petition checks must use
+        # the first affidavit run immediately after the petition, not the last
+        # affidavit in the paper book.
+        if part == "Affidavit" and "Main Petition" in required and found:
+            main_pages = [
+                page_number
+                for page_number, page in sorted(layout.items())
+                if isinstance(page, dict)
+                and chunks_cover_part(
+                    [
+                        {
+                            "document_part": _layout_document_parts(
+                                page.get("document_part")
+                            ),
+                            "chunk_kind": "page",
+                        }
+                    ],
+                    "Main Petition",
+                )
+            ]
+            if main_pages:
+                after = [row for row in found if int(row["page"]) > max(main_pages)]
+                if after:
+                    first_run = [after[0]]
+                    for row in after[1:]:
+                        if int(row["page"]) != int(first_run[-1]["page"]) + 1:
+                            break
+                        first_run.append(row)
+                    found = first_run
+        if found:
+            candidates[part] = found
+
+    if not candidates:
+        return chunks
+
+    target_pages = [
+        chunk
+        for chunk in pages
+        if any(chunks_cover_part([chunk], part) for part in required)
+    ]
+    other_pages = [chunk for chunk in pages if chunk not in target_pages]
+    chosen: list[dict[str, Any]] = []
+    capacity = max(0, max_chunks - len(summary))
+
+    wording = " ".join(
+        [
+            str(getattr(defect, "defect", "") or ""),
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    ).casefold()
+    last_first = bool(
+        re.search(
+            r"last\s+page|end\s+of|below\s+the\s+prayer|date\s+of\s+drafting|"
+            r"execution\s+date|signature",
+            wording,
+        )
+    )
+    boundaries = ("last", "first") if last_first else ("first", "last")
+
+    # First guarantee the most relevant boundary for every required part,
+    # then add the opposite boundary when the evidence budget permits.
+    for boundary in boundaries:
+        for part in required:
+            if len(chosen) >= capacity:
+                break
+            if chunks_cover_part(chosen, part) and boundary == boundaries[0]:
+                continue
+            options = candidates.get(part) or []
+            if not options:
+                continue
+            fallback = options[0] if boundary == "first" else options[-1]
+            candidate = next(
+                (
+                    chunk
+                    for chunk in target_pages
+                    if chunk.get("page") == fallback.get("page")
+                    and chunks_cover_part([chunk], part)
+                ),
+                fallback,
+            )
+            if any(
+                chunk.get("page") == candidate.get("page")
+                and chunks_cover_part([chunk], part)
+                for chunk in chosen
+            ):
+                continue
+            chosen.append(candidate)
+
+    for chunk in target_pages:
+        if len(chosen) >= capacity:
+            break
+        if chunk not in chosen:
+            chosen.append(chunk)
+
+    for chunk in other_pages:
+        if len(chosen) >= capacity:
+            break
+        chosen.append(chunk)
+
+    chosen.sort(key=lambda chunk: (chunk.get("page") is None, chunk.get("page") or 0))
+    return summary + chosen
+
+
+def _special_categories_for_filing(
+    *,
+    supplied: str | None,
+    metadata: dict[str, Any] | None,
+    record: dict[str, Any] | None,
+    layout: dict[int, dict[str, Any]] | None,
+    filing_type: str | None,
+) -> list[str]:
+    """Combine explicit and structurally certain special-category overlays."""
+    found: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not normalize_special_category(text):
+            return
+        if text not in found:
+            found.append(text)
+
+    add(supplied)
+    add((metadata or {}).get("special_category"))
+    add((record or {}).get("special_category"))
+
+    pages = layout or {}
+    part_names = {
+        name
+        for page in pages.values()
+        if isinstance(page, dict)
+        for name in _layout_document_parts(page.get("document_part"))
+    }
+    if any(family_split_name(name) == APPLICATION_FAMILY for name in part_names):
+        add("Interlocutory Applications")
+
+    filing = normalize_filing_type(filing_type)
+    if filing in {"writ_petition_civil", "writ_petition_criminal"}:
+        for page_number, page in sorted(pages.items()):
+            if page_number > 30 or not isinstance(page, dict):
+                continue
+            if "public interest litigation" in _layout_page_text(page).casefold():
+                add("PIL")
+                break
+    return found
+
+
+def _defects_for_special_categories(
+    filing_type: str | None,
+    *,
+    special_categories: list[str],
+    court: str | None,
+) -> list[Defect]:
+    """Union base checks with every applicable filing overlay."""
+    categories: list[str | None] = special_categories or [None]
+    found: list[Defect] = []
+    seen: set[str] = set()
+    for category in categories:
+        for defect in defects_for_filing_type(
+            filing_type,
+            special_category=category,
+            court=court,
+        ):
+            if defect.check_id in seen:
+                continue
+            seen.add(defect.check_id)
+            found.append(defect)
+    return found
 
 
 async def collect_defect_findings(
@@ -520,9 +796,16 @@ class ScrutinyWorkflow(Workflow):
             catalogue.catalogue_version,
             event.agent_data_id,
         )
-        defects = defects_for_filing_type(
+        special_categories = _special_categories_for_filing(
+            supplied=event.special_category,
+            metadata=metadata if isinstance(metadata, dict) else None,
+            record=record if isinstance(record, dict) else None,
+            layout=layout,
+            filing_type=filing_type,
+        )
+        defects = _defects_for_special_categories(
             filing_type,
-            special_category=event.special_category,
+            special_categories=special_categories,
             court=event.court,
         )
 
@@ -546,8 +829,9 @@ class ScrutinyWorkflow(Workflow):
                 Status(
                     level="warning",
                     message=(
-                        "Pinecone is disabled, so checks will run against the "
-                        "extracted record only. Coverage will be incomplete."
+                        "Pinecone is disabled, so checks will use the extracted "
+                        "record plus stored split-page OCR. Semantic context may "
+                        "be less complete."
                     ),
                 )
             )
@@ -556,8 +840,9 @@ class ScrutinyWorkflow(Workflow):
                 Status(
                     level="warning",
                     message=(
-                        "No file hash is available, so checks will run against "
-                        "the extracted record only. Coverage will be incomplete."
+                        "No file hash is available, so checks will use the "
+                        "extracted record plus stored split-page OCR. Semantic "
+                        "context may be less complete."
                     ),
                 )
             )
@@ -582,7 +867,8 @@ class ScrutinyWorkflow(Workflow):
                     f"Checking {file_name or 'filing'} "
                     f"({filing_type_label(filing_type)}) against "
                     f"{len(defects)} defect(s) in {category_labels} "
-                    f"({concurrency} at a time)"
+                    f"(overlays: {', '.join(special_categories) or 'none'}; "
+                    f"{concurrency} at a time)"
                 ),
             )
         )
@@ -653,6 +939,7 @@ class ScrutinyWorkflow(Workflow):
                     file_hash=file_hash,
                     max_chunks=max_chunks,
                     use_pinecone=use_pinecone,
+                    layout=layout,
                 )
                 finding = await _run_defect(
                     defect,

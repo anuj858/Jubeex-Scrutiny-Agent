@@ -2584,6 +2584,46 @@ def _extend_main_petition_body(
     return updated
 
 
+def _extend_explicit_appendix_continuation(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep captionless pages after an explicit APPENDIX heading together.
+
+    Appendix provisions commonly continue on the next sheet without repeating
+    the heading.  A model-carried Main Petition label on those sheets is weak;
+    an explicit new outer heading, Annexure stamp, or Application start ends
+    the Appendix instead.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    active = False
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        anchor = _outer_anchor_label(text)
+        if anchor == "Appendix":
+            updated[page] = ["Appendix"]
+            active = True
+            continue
+        if not active:
+            continue
+        if (
+            anchor is not None
+            or annexure_mark_in_heading(text)
+            or page_starts_application(text)
+        ):
+            active = False
+            continue
+        names = parts_on_page(updated.get(page))
+        if names and any(
+            name not in {MAIN_PETITION_PART, "Appendix"} for name in names
+        ):
+            active = False
+            continue
+        updated[page] = ["Appendix"]
+    return updated
+
+
 def _demote_false_advocate_checklist(
     page_parts: PagePartMap, page_text: Mapping[int, str]
 ) -> PagePartMap:
@@ -4145,6 +4185,9 @@ def repair_compiled_split(
     # Some front-matter range propagation can revisit an otherwise recovered
     # Index continuation. Its bracketed table structure is the final authority.
     repaired = _restore_index_bridge_pages(repaired, page_text)
+    # Run last: Index reconciliation and duplicate collapse can otherwise undo
+    # the explicit Appendix boundary or leave its captionless final sheet empty.
+    repaired = _extend_explicit_appendix_continuation(repaired, page_text, page_count)
     return repaired, duplicates
 
 
@@ -4393,7 +4436,24 @@ def _apply_indexed_outer_document_ranges(
             ),
             None,
         )
-        if exact_start is not None and row.kind == "number":
+        exact_end = next(
+            (
+                page
+                for page, folio in reversed(list(folios.items()))
+                if folio
+                and folio[0] == row.kind
+                and folio[1] == row.end
+                and (not row.end_suffix or folio[2] == row.end_suffix)
+            ),
+            None,
+        )
+        if exact_start is not None and exact_end is not None:
+            # Printed folios may jump because sheets are omitted or several
+            # folios were scanned into one PDF page.  The observed end folio
+            # is authoritative; a numeric length estimate would spill into
+            # the next document (Defect File_004: Main 36-66, Annexure at 67).
+            matched.extend(range(exact_start, exact_end + 1))
+        elif exact_start is not None and row.kind == "number":
             expected_length = row.end - row.start + 1
             physical_end = min(page_count, exact_start + expected_length - 1)
             matched.extend(range(exact_start, physical_end + 1))
@@ -4456,6 +4516,37 @@ def _apply_indexed_outer_document_ranges(
     if len(main_rows) == 1:
         row = main_rows[0]
         pages = physical_pages(row)
+        # Some Indexes describe the petition and its Appendix in one printed
+        # range.  The explicit APPENDIX heading is still an authoritative
+        # document boundary.  Without retaining that boundary here, this
+        # late Index reconciliation turns both the heading page and its
+        # captionless continuation pages back into Main Petition, undoing
+        # _apply_outer_anchors().
+        explicit_appendix = [
+            page
+            for page in pages
+            if _outer_anchor_label(page_text.get(page, "")) == "Appendix"
+        ]
+        appendix_start = min(explicit_appendix, default=page_count + 1)
+        appendix_end = page_count + 1
+        if appendix_start <= page_count:
+            appendix_end = next(
+                (
+                    page
+                    for page in pages
+                    if page > appendix_start
+                    and (
+                        (
+                            (anchor := _outer_anchor_label(page_text.get(page, "")))
+                            is not None
+                            and anchor not in {"Appendix", MAIN_PETITION_PART}
+                        )
+                        or annexure_mark_in_heading(page_text.get(page, ""))
+                        or page_starts_application(page_text.get(page, ""))
+                    )
+                ),
+                page_count + 1,
+            )
         certificate_pages = [
             page
             for page in pages
@@ -4481,9 +4572,11 @@ def _apply_indexed_outer_document_ranges(
             anchor = _outer_anchor_label(page_text.get(page, ""))
             if anchor == "AOR's Certificate":
                 updated[page] = ["AOR's Certificate"]
+            elif appendix_start <= page < appendix_end:
+                updated[page] = ["Appendix"]
             elif page >= affidavit_start:
                 updated[page] = ["Affidavit"]
-            elif anchor not in {"Affidavit"}:
+            elif anchor not in {"Affidavit", "Appendix"}:
                 updated[page] = [MAIN_PETITION_PART]
     return updated
 

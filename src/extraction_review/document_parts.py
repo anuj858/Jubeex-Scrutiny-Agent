@@ -556,7 +556,8 @@ _ANNEXURE_PAGE_CITE_RE = re.compile(
     re.IGNORECASE,
 )
 _ANNEXURE_CITATION_PREV_RE = re.compile(
-    r"annexed\s+herewith|marked\s+as|true\s+cop(?:y|ies)\s+of",
+    r"annexed\s+(?:herewith|hereto|to|with)\b|hereto\s+annexed|"
+    r"marked\s+as|true\s+cop(?:y|ies)\s+of",
     re.IGNORECASE,
 )
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
@@ -688,10 +689,21 @@ def _annexure_mark_from_title_or_stamp(
         if re.match(r"^\s*\d{1,3}[.)]", line):
             continue
         mark = _annexure_mark_from_match(match)
-        if mark is not None and (
+        if mark is None or not (
             match.groupdict().get("series") or match.groupdict().get("bare_series")
         ):
-            return mark
+            continue
+        # A carried sentence can begin a new PDF page with text such as
+        # ``as ANNEXURE-P8 is a copy ...``.  Its early position is a page-break
+        # artifact, not an outer paper-book stamp. Keep noisy real stamps such
+        # as ``i so ANNEXURE-P-11 as`` and stamps followed by a document title.
+        prefix = line[: match.start()].strip()
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        if prefix.casefold() == "as" and re.match(
+            r"(?i)^is\s+a\s+copy\b", remainder
+        ):
+            continue
+        return mark
 
     def _mark_from_title_line(
         line: str, *, allow_body_tail: bool, prev_line: str = ""

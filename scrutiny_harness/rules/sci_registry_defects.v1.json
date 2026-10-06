@@ -1784,8 +1784,10 @@
         "1. Check if any IA or MA are being filed 30 days after the order or the cause arose.                                                                  2. Check the Applications placed after the Annexures for an application for condonation of delay filed along with an IA or MA."
       ],
       "inspect_parts": [
-        "Annexures",
         "Application"
+      ],
+      "context_parts": [
+        "Annexures"
       ],
       "how_to_cure": [
         "1. Prompt the User to confirm whether the interlocutory application or miscellaneous application is being filed beyond the prescribed period. If so, Jubeex will auto-generate the application for condonation of delay",
@@ -1838,7 +1840,9 @@
         "2. CHECK THE DRAWN ON DATE; IT CANNOT BE BEFORE THE DATE ON WHICH THE VAKALATNAMA WAS SIGNED"
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -1917,8 +1921,10 @@
       ],
       "inspect_parts": [
         "Main Petition",
+        "Vakalatnama"
+      ],
+      "context_parts": [
         "Memo of Parties",
-        "Vakalatnama",
         "Filing Memo"
       ],
       "how_to_cure": [
@@ -1979,9 +1985,7 @@
         "3. Check that the declaration is signed by the AOR and dated."
       ],
       "inspect_parts": [
-        "Advocate's Checklist",
-        "Cover Page",
-        "Main Petition"
+        "Advocate's Checklist"
       ],
       "how_to_cure": [
         "1. Advocate's Check List",
@@ -2039,11 +2043,7 @@
         "2. Check whether it is in the prescribed format, i.e. the numbered list of requirements each marked YES/NO/N.A., followed by the AOR's declaration."
       ],
       "inspect_parts": [
-        "Advocate's Checklist",
-        "Cover Page",
-        "AOR's Certificate",
-        "Office Report on Limitation",
-        "Main Petition"
+        "Advocate's Checklist"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to auto-generate the Advocate's Check List in the prescribed format.",
@@ -2356,9 +2356,11 @@
         "3. Check the Vakalatnama for the AOR’s name, registered address and e-mail address."
       ],
       "inspect_parts": [
-        "Cover Page",
         "Main Petition",
         "Vakalatnama"
+      ],
+      "context_parts": [
+        "Cover Page"
       ],
       "how_to_cure": [
         "1. Details of the Court Appealed From",
@@ -2393,8 +2395,10 @@
         "2. Check that it has been accepted by the AOR ( Check for this line - Satisfied, certified, identified and accepted in the Vakalatnama)"
       ],
       "inspect_parts": [
-        "Memo of Parties",
         "Vakalatnama"
+      ],
+      "context_parts": [
+        "Memo of Parties"
       ],
       "how_to_cure": [
         "1. Execution of the Vakalatnama by the Petitioner(s)",
@@ -2949,9 +2953,11 @@
         "4. Also verify the status of the parties, as the roles of petitioner and respondent may change depending on which party has challenged the Impugned Judgment."
       ],
       "inspect_parts": [
-        "Synopsis",
         "Main Petition",
         "Impugned Order"
+      ],
+      "context_parts": [
+        "Synopsis"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to compare the Memo of Parties with the impugned judgment, identify any discrepancies in the names of the parties, and, upon confirmation by the User, update the Cause Title accordingly.",
@@ -3393,11 +3399,11 @@
         "3. Go through all the Applications placed after the Annexures and look for an application with the subject “Application for Exemption”"
       ],
       "inspect_parts": [
-        "List of Dates & Events",
-        "Application"
+        "List of Dates & Events"
       ],
       "context_parts": [
-        "Synopsis"
+        "Synopsis",
+        "Application"
       ],
       "how_to_cure": [
         "1. Brief List of Dates and Events",
@@ -3556,8 +3562,10 @@
         "2. Check the designation below the Advocate’s name/signature at the end of the Memo of Appearance."
       ],
       "inspect_parts": [
+        "Memo of Appearance"
+      ],
+      "context_parts": [
         "Memo of Parties",
-        "Memo of Appearance",
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -3724,8 +3732,10 @@
         "5. Verify that the Power of Attorney is attached to the filing and corresponds to the person/entity on whose behalf the Vakalatnama is executed."
       ],
       "inspect_parts": [
-        "Index",
         "Vakalatnama"
+      ],
+      "context_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to auto-edit the vakalatnama to disclose execution by the Power of Attorney holder",
@@ -5661,7 +5671,9 @@
         "2.If these particulars are not stated, check the Impugned Judgment/Order and the other documents filed to see whether they can be ascertained from the record."
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -6301,7 +6313,9 @@
         "Check the portion headed 'DECLARATION IN TERMS OF RULE 3(2)' in the SLP (placed after the questions of law and before the grounds) for a statement as to whether any petition seeking leave to appeal was filed earlier against the same impugned order/judgment, and if so, the result thereof."
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -6331,9 +6345,11 @@
         "Main Petition",
         "Affidavit",
         "Annexures",
-        "Appendix",
         "Application",
         "Impugned Order"
+      ],
+      "context_parts": [
+        "Appendix"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to automatically arrange the documents in the prescribed order.",
@@ -7350,6 +7366,7 @@
         "2. Check the Affidavit filed after the SLP"
       ],
       "inspect_parts": [
+        "Main Petition",
         "Affidavit"
       ],
       "how_to_cure": [
@@ -9006,8 +9023,10 @@
         "1. Check for Impugned judgement on page following the Synopsis & LOD"
       ],
       "inspect_parts": [
-        "Synopsis",
         "Impugned Order"
+      ],
+      "context_parts": [
+        "Synopsis"
       ],
       "how_to_cure": [
         "1. Option for user to upload the impugned judgement/order with Jubeex"
@@ -9059,8 +9078,10 @@
         "2. Verify that the relevant Annexures are referred to against the corresponding dates/events in the List of Dates & Events, wherever applicable."
       ],
       "inspect_parts": [
+        "List of Dates & Events"
+      ],
+      "context_parts": [
         "Synopsis",
-        "List of Dates & Events",
         "Annexures",
         "Impugned Order"
       ],

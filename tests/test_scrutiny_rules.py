@@ -26,6 +26,10 @@ from extraction_review.scrutiny.rules import (
     special_categories_for_catalog,
 )
 from extraction_review.scrutiny.schema import official_source_locations
+from extraction_review.scrutiny_workflow import (
+    _defects_for_special_categories,
+    _special_categories_for_filing,
+)
 
 
 def _defect(
@@ -57,6 +61,79 @@ def test_normalize_slp_aliases() -> None:
     assert normalize_filing_type("SLP") == "slp"
     assert normalize_filing_type("General/Global") == "global"
     assert normalize_filing_type("Global/General") == "global"
+
+
+def test_defect_prompt_includes_relevant_stored_visual_observations() -> None:
+    defect = _defect("D-57", "General/Global").model_copy(
+        update={
+            "inspect_parts": ["Main Petition", "Vakalatnama"],
+            "where_to_look": ["Check the Vakalatnama execution date."],
+        }
+    )
+    prompt = build_defect_prompt(
+        defect,
+        record={},
+        chunks=[],
+        visual_index={
+            "marks": [
+                {
+                    "page": 88,
+                    "local_page": 1,
+                    "document_type": "Vakalatnama",
+                    "marking_type": "handwritten_field_value",
+                    "signature_role": "not_applicable",
+                    "associated_label": "Dated this day of",
+                    "visible_text": "9 June 2024",
+                },
+                {
+                    "page": 31,
+                    "document_type": "Annexure P-1",
+                    "marking_type": "image",
+                },
+            ]
+        },
+    )
+
+    assert "## Stored visual observations" in prompt
+    assert "Vakalatnama, page 1" in prompt
+    assert "visible text: 9 June 2024" in prompt
+    assert "Annexure P-1" not in prompt
+
+
+def test_writ_pil_with_application_runs_both_special_overlays(monkeypatch) -> None:
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
+    layout = {
+        2: {
+            "document_part": "Main Petition",
+            "words": [
+                {"t": "WRIT PETITION", "line": 1},
+                {"t": "PUBLIC INTEREST LITIGATION", "line": 2},
+            ],
+        },
+        82: {
+            "document_part": "Application 1",
+            "words": [{"t": "I.A. INTERIM RELIEF", "line": 1}],
+        },
+    }
+
+    categories = _special_categories_for_filing(
+        supplied=None,
+        metadata={},
+        record={},
+        layout=layout,
+        filing_type="WRIT_PETITION_CIVIL",
+    )
+    defects = _defects_for_special_categories(
+        "WRIT_PETITION_CIVIL",
+        special_categories=categories,
+        court=None,
+    )
+    check_ids = {defect.check_id for defect in defects}
+
+    assert categories == ["Interlocutory Applications", "PIL"]
+    assert {"D-206", "D-317", "D-319", "D-320", "D-322"} <= check_ids
 
 
 def test_slp_civil_runs_global_family_and_civil_side() -> None:
@@ -346,7 +423,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "serial_no" not in Defect.model_fields
     assert "category_id" not in Defect.model_fields
     assert not finding_title(d061, catalogue).startswith("61")
-    assert "Advocate's Checklist" in d061.inspect_parts
+    assert d061.inspect_parts == ["Advocate's Checklist"]
     assert "SCI_CHECKLIST_2025" in d061.location_source
     assert "Defect List.pdf" not in d061.location_source
 
@@ -368,13 +445,32 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "Synopsis",
         "List of Dates & Events",
     ]
-    assert catalogue.defect("D-111").inspect_parts == [
-        "List of Dates & Events",
+    assert catalogue.defect("D-52").inspect_parts == ["Application"]
+    assert catalogue.defect("D-52").context_parts == ["Annexures"]
+    assert catalogue.defect("D-54").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-57").inspect_parts == [
+        "Main Petition",
+        "Vakalatnama",
+    ]
+    assert catalogue.defect("D-59").inspect_parts == ["Advocate's Checklist"]
+    assert catalogue.defect("D-72").context_parts == ["Cover Page"]
+    assert catalogue.defect("D-73").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-94").context_parts == ["Synopsis"]
+    assert catalogue.defect("D-111").inspect_parts == ["List of Dates & Events"]
+    assert catalogue.defect("D-111").context_parts == [
+        "Synopsis",
         "Application",
     ]
     assert catalogue.defect("D-114").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-115").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-120").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-123").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-224").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-225").context_parts == ["Appendix"]
+    assert catalogue.defect("D-264").inspect_parts == [
+        "Main Petition",
+        "Affidavit",
+    ]
     assert catalogue.defect("D-126").inspect_parts == ["Annexures"]
     assert catalogue.defect("D-127").inspect_parts == [
         "Index",
@@ -405,6 +501,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert catalogue.defect("D-180").inspect_parts == ["Impugned Order"]
     assert catalogue.defect("D-194").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-324").inspect_parts == ["AOR's Certificate"]
+    assert catalogue.defect("D-325").inspect_parts == ["Impugned Order"]
+    assert catalogue.defect("D-327").inspect_parts == ["List of Dates & Events"]
     rules_pdf = (
         "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
         "uploads/2024/01/2024011691-1.pdf"
