@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "ec466139-1f53-47d0-b1d9-a1102041530c",
     "name": "JubeeX Parse API",
-    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited: true`, then omit `parsed_slots` and re-parse every PDF), parse the rest, Pinecone, then scrutiny defects. Optional `special_category` (`null` skips tagged specials). Poll `completed` → `result.report`. Findings use `check_id`; there is no `serial_no`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.\n\nWhile a job is in process, `GET /v1/jobs/{job_id}` returns HTTP 200 with `status: \"running\"` and `result: null`. Keep polling until `completed` or `failed`.",
+    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited: true`, then omit `parsed_slots` and re-parse every PDF), parse the rest, Pinecone, then scrutiny defects. Optional `special_category` (`null` skips tagged specials). Poll `completed` → `result.report`. Findings use `check_id`; there is no `serial_no`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n6. `POST /v1/filings/{{agent_data_id}}/annexure-index` — after defects, describe the annexures named in `annexures`. Poll → `result.annexures` with `source`, `source_location`, `confidence`, and `description`.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.\n\nWhile a job is in process, `GET /v1/jobs/{job_id}` returns HTTP 200 with `status: \"running\"` and `result: null`. Keep polling until `completed` or `failed`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -1617,6 +1617,93 @@
               "cookie": [],
               "body": "{\n  \"job_id\": \"77777777-7777-4777-8777-777777777777\",\n  \"kind\": \"scrutiny\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": null,\n  \"agent_data_id\": null,\n  \"result\": null,\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
               "description": "HTTP 200 on the poll; job `status` is `failed`. Stop polling. Read `error`. This is not success. `result` is null unless noted."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 Annexure index",
+      "description": "Last step, after Pinecone indexing and defect scrutiny. Body is only the annexure ids. Poll until `result.annexures` has one row per id: `annexure`, `source`, `source_location`, `confidence`, `description`. `description` has no annexure label and no page number. `source_location` is the exact wording that sentence was taken from.",
+      "item": [
+        {
+          "name": "Describe annexures",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"annexures\": [\"annexure_p1\", \"annexure_p2\", \"annexure_p3\"]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/annexure-index",
+            "description": "Call only after `POST /v1/filings/{{agent_data_id}}/index` or `/scrutiny` has finished and saved defects. Returns 202. Poll `GET /v1/jobs/{{job_id}}`.\n\n`annexures` is required. One annexure is a one-item list.\n\nCompleted `result.annexures[]`:\n- `annexure` — the id you sent\n- `source` — `list_of_dates` or `annexure`\n- `source_location` — exact wording the description was taken from\n- `confidence` — 0 to 1\n- `description` — particulars sentence only. No `ANNEXURE P-1:` prefix and no page number. Parties or a case number appear only when the source names them.\n\n409 if scrutiny has not been saved. 404 if the filing is unknown. 422 if `annexures` is missing or empty."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"annexures\": [\"annexure_p1\", \"annexure_p2\", \"annexure_p3\"]\n}"
+                },
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/annexure-index"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"3c1f0a2e-7b44-4d1a-9e20-6f0c8a91b2d4\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/3c1f0a2e-7b44-4d1a-9e20-6f0c8a91b2d4\"\n}"
+            },
+            {
+              "name": "Poll completed — GET /v1/jobs/{job_id}",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": "{{baseUrl}}/v1/jobs/{{job_id}}"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"3c1f0a2e-7b44-4d1a-9e20-6f0c8a91b2d4\",\n  \"kind\": \"annexure_index\",\n  \"status\": \"completed\",\n  \"agent_data_id\": \"agd-8f3c1a\",\n  \"result\": {\n    \"annexures\": [\n      {\n        \"annexure\": \"annexure_p1\",\n        \"source\": \"list_of_dates\",\n        \"source_location\": \"A true copy of the Facility Agreement dated 29.11.2020 executed between the Petitioner and Respondent No. 2 to 4. (Pg. 37-48)\",\n        \"confidence\": 0.94,\n        \"description\": \"A true copy of the Facility Agreement dated 29.11.2020 executed between the Petitioner and Respondent No. 2 to 4.\"\n      },\n      {\n        \"annexure\": \"annexure_p2\",\n        \"source\": \"annexure\",\n        \"source_location\": \"IN THE HIGH COURT OF DELHI CS(COMM) 112/2020. Order dated 12.03.2021. Certified copy.\",\n        \"confidence\": 0.81,\n        \"description\": \"A certified copy of the order dated 12.03.2021 passed by the High Court of Delhi in CS(COMM) 112/2020.\"\n      },\n      {\n        \"annexure\": \"annexure_p3\",\n        \"source\": \"list_of_dates\",\n        \"source_location\": \"15.08.2021 Board Resolution. True copy. (Pages 70-72)\",\n        \"confidence\": 0.9,\n        \"description\": \"A true copy of the Board Resolution dated 15.08.2021.\"\n      }\n    ]\n  }\n}"
             }
           ]
         }

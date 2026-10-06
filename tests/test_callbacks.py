@@ -154,3 +154,55 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     assert body["organization_id"] == "org-1"
     assert body["artifacts"]["extract"]["url"].endswith("extract.json")
     assert body["result"]["artifacts"]["extract"]["url"].endswith("extract.json")
+
+
+@pytest.mark.asyncio
+async def test_annexure_index_callback_event(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            captured["body"] = json.loads(content)
+            return FakeResponse()
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
+    await notify_job_finished(
+        callback_url="https://backend.example/api/v1/webhooks/ai-agent",
+        job_id="job-annex",
+        kind="annexure_index",
+        status="completed",
+        agent_data_id="agd-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        error=None,
+        result={
+            "annexures": [
+                {
+                    "annexure": "annexure_p1",
+                    "source": "list_of_dates",
+                    "source_location": "A true copy. (Pg. 37-48)",
+                    "confidence": 0.9,
+                    "description": "A true copy.",
+                }
+            ]
+        },
+        event_id="evt-annex",
+    )
+    body = captured["body"]
+    assert body["event"] == "ANNEXURE_INDEX_COMPLETED"
+    assert body["result"]["annexures"][0]["description"] == "A true copy."

@@ -54,6 +54,13 @@ _SCRUTINY_RULES: list[tuple[int, str, tuple[str, ...]]] = [
     ),
 ]
 
+_ANNEXURE_INDEX_RULES: list[tuple[int, str, tuple[str, ...]]] = [
+    (15, "loading", ("loading", "starting", "agent data")),
+    (45, "retrieve", ("pinecone", "fetching", "list of dates")),
+    (80, "describe", ("describ", "llm")),
+    (92, "finalize", ("complete",)),
+]
+
 _last_write_at: dict[str, float] = {}
 _WRITE_MIN_INTERVAL_S = 2.0
 
@@ -61,7 +68,12 @@ _WRITE_MIN_INTERVAL_S = 2.0
 def progress_for_status(message: str, *, kind: str = "process_file") -> tuple[int, str]:
     """Map a workflow Status message to (percent, stage). Never decreases."""
     text = (message or "").casefold()
-    rules = _SCRUTINY_RULES if kind == "scrutiny" else _PROCESS_RULES
+    if kind == "scrutiny":
+        rules = _SCRUTINY_RULES
+    elif kind == "annexure_index":
+        rules = _ANNEXURE_INDEX_RULES
+    else:
+        rules = _PROCESS_RULES
     best_pct = 5
     best_stage = "running"
     for pct, stage, keywords in rules:
@@ -78,10 +90,9 @@ def job_status_key(job_id: str) -> str:
 
 
 def _bucket() -> str:
-    return (
-        (os.getenv("AWS_S3_BUCKET") or "").strip()
-        or (os.getenv("JUBEEX_ARTIFACT_BUCKET") or "").strip()
-    )
+    return (os.getenv("AWS_S3_BUCKET") or "").strip() or (
+        os.getenv("JUBEEX_ARTIFACT_BUCKET") or ""
+    ).strip()
 
 
 def _s3_client():

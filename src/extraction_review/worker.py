@@ -11,6 +11,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from .annexure_index import AnnexureIndexEvent
+from .annexure_index import workflow as annexure_index_workflow
 from .api import JOBS, JobState, _run_workflow
 from .job_progress import load_job_status
 from .process_file import FileEvent
@@ -28,9 +30,15 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
     job_id = str(message.get("job_id") or uuid.uuid4())
     kind = str(message.get("kind") or "process_file")
     event = message.get("event") if isinstance(message.get("event"), dict) else {}
+    if kind == "scrutiny":
+        job_kind = "scrutiny"
+    elif kind == "annexure_index":
+        job_kind = "annexure_index"
+    else:
+        job_kind = "process_file"
     job = JobState(
         job_id=job_id,
-        kind="scrutiny" if kind == "scrutiny" else "process_file",
+        kind=job_kind,
         organization_id=event.get("organization_id") or message.get("organization_id"),
         workspace_id=event.get("workspace_id") or message.get("workspace_id"),
         user_id=event.get("user_id") or message.get("user_id"),
@@ -38,7 +46,7 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
     job.callback_url = message.get("callback_url")
     job.event_id = str(message.get("event_id") or uuid.uuid4())
     callback_kind = str(message.get("callback_kind") or "").strip()
-    if callback_kind in {"scrutiny", "process_file"}:
+    if callback_kind in {"scrutiny", "process_file", "annexure_index"}:
         job.callback_kind = callback_kind  # type: ignore[assignment]
     prior = load_job_status(job_id)
     if prior:
@@ -59,6 +67,8 @@ async def process_message(message: dict[str, Any]) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     if job.kind == "scrutiny":
         handler = scrutiny_workflow.run(start_event=ScrutinyEvent(**event))
+    elif job.kind == "annexure_index":
+        handler = annexure_index_workflow.run(start_event=AnnexureIndexEvent(**event))
     else:
         handler = process_file_workflow.run(start_event=FileEvent(**event))
     await _run_workflow(job, handler)

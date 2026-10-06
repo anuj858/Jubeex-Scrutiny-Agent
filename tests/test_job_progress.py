@@ -11,6 +11,15 @@ def test_progress_for_status_is_monotonic_by_stage() -> None:
     assert progress_for_status("Pinecone indexing complete")[0] == 82
 
 
+def test_annexure_index_progress_uses_its_own_stages() -> None:
+    pct, stage = progress_for_status(
+        "Describing 2 annexure(s) with the LLM",
+        kind="annexure_index",
+    )
+    assert pct == 80
+    assert stage == "describe"
+
+
 def test_scrutiny_progress_uses_defect_stages() -> None:
     pct, stage = progress_for_status("Checking defect D001", kind="scrutiny")
     assert pct == 40
