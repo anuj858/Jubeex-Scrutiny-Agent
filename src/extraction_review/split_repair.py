@@ -4715,7 +4715,11 @@ def _apply_index_printed_pages(
         if owner and (not current or weak or leaked or current == owner):
             updated[page] = [owner]
             continue
-        if leaked and not owner:
+        # A directly recognized heading is stronger than a conflicting or
+        # OCR-misaligned Index folio.  Defect File_007 prints LISTED PERFORMA
+        # on folio A1, while its Index cells can be extracted as numeric 6-7;
+        # deleting the headed page here leaves only the continuation pages.
+        if leaked and not owner and not heading:
             updated.pop(page, None)
     return updated
 

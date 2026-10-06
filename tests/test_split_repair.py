@@ -2787,11 +2787,49 @@ def test_defect_007_restores_order_sheet_listing_and_annexure_boundaries() -> No
     assert repaired[18] == ["Application 1"]
 
 
-def test_defect_007_listed_performa_heading_is_a_direct_listing_anchor() -> None:
-    """The source spells the first-page heading LISTED PERFORMA."""
+def test_defect_007_listed_heading_is_a_direct_listing_anchor() -> None:
+    """Accept both printed variants as the canonical Listing Proforma."""
     from extraction_review.split_repair import _looks_like_listing_proforma
 
-    assert _looks_like_listing_proforma("A1\nSection: IV-B\nLISTED PERFORMA")
+    for heading in ("LISTED PERFORMA", "LISTED PROFORMA"):
+        assert _looks_like_listing_proforma(f"A1\nSection: IV-B\n{heading}")
+
+
+def test_defect_007_index_reconciliation_keeps_listed_performa_heading(
+    monkeypatch,
+) -> None:
+    """A misread Index folio must not delete the directly headed first page."""
+    import extraction_review.split_repair as split_repair
+    from extraction_review.split_audit import IndexPrintedRow
+
+    monkeypatch.setattr(
+        split_repair,
+        "aligned_index_printed_rows",
+        lambda _parts, _text: [
+            IndexPrintedRow(
+                mapped_part="Listing Proforma",
+                particulars="Listing Proforma",
+                kind="number",
+                start=6,
+                end=7,
+            )
+        ],
+    )
+    page_parts = {
+        8: ["Listing Proforma"],
+        9: ["Listing Proforma"],
+    }
+    page_text = {
+        8: "A1\nSection: IV-B\nLISTED PERFORMA\nThe case pertains to",
+        9: "6\nSimilar disposed matter\n7 Criminal Matter: Yes",
+    }
+
+    repaired = split_repair._apply_index_printed_pages(
+        page_parts, page_text, page_count=9
+    )
+
+    assert repaired[8] == ["Listing Proforma"]
+    assert repaired[9] == ["Listing Proforma"]
 
 
 def test_defect_007_keeps_p5_signature_continuation_out_of_applications() -> None:
