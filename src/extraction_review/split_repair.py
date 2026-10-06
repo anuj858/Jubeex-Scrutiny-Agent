@@ -80,7 +80,8 @@ _FRESH_CASE_REPORT_HEADING_RE = re.compile(
 _LISTING_RE = re.compile(
     r"proforma\s+for\s+first\s+listin\.?g?|"
     r"proforma\s+of\s+first\s+listing|"
-    r"listing\s+proforma|listed\s+proforma|first\s+proforma|"
+    r"listing\s+(?:proforma|performa)|listed\s+(?:proforma|performa)|"
+    r"first\s+(?:proforma|performa)|"
     r"performa\s+for\s+first\s+listing|"
     r"(?m:^\s*(?:proforma|performa)\s*$)",
     re.I,
@@ -4132,6 +4133,12 @@ def repair_compiled_split(
     # adjacent application is valid only when its first page actually carries
     # an application-start heading/caption.
     repaired = _merge_spurious_application_splits(repaired, page_text)
+    # A lower-court bail application enclosed as an Annexure may have its last
+    # numbered/signature page relabelled as a new top-level Application even
+    # though the printed folio continues the Annexure range.
+    repaired = _reclaim_annexure_continuations_mislabeled_as_applications(
+        repaired, page_text
+    )
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
@@ -4680,6 +4687,76 @@ def _merge_spurious_application_splits(
         active_app = app
         prior_page = page
 
+    return updated
+
+
+def _reclaim_annexure_continuations_mislabeled_as_applications(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Keep a lower-court application continuation inside its Annexure.
+
+    LlamaSplit can interpret numbered body paragraphs on the final page of an
+    annexed bail/suspension application as a new top-level Application.  A
+    consecutive printed folio following a numbered Annexure is continuation
+    evidence; a real SCI application still needs its own application heading
+    or Supreme Court caption.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page in sorted(updated):
+        names = parts_on_page(updated.get(page))
+        application = next(
+            (
+                name
+                for name in names
+                if re.fullmatch(r"(?i)application\s+\d+", name)
+            ),
+            None,
+        )
+        if application is None:
+            continue
+        previous = next(
+            (
+                name
+                for name in parts_on_page(updated.get(page - 1))
+                if family_split_name(name) == ANNEXURE_FAMILY
+                and re.fullmatch(r"Annexure P-\d+", name)
+            ),
+            None,
+        )
+        if previous is None:
+            continue
+
+        text = page_text.get(page, "")
+        if (
+            page_starts_application(text)
+            or _is_sci_caption(text)
+            or annexure_mark_in_heading(text)
+        ):
+            continue
+        prior_folio = _printed_folio(page_text.get(page - 1, ""))
+        current_folio = _printed_folio(text)
+        consecutive = bool(
+            prior_folio
+            and current_folio
+            and prior_folio[0] == current_folio[0] == "number"
+            and not prior_folio[2]
+            and not current_folio[2]
+            and current_folio[1] == prior_folio[1] + 1
+        )
+        if not consecutive:
+            continue
+        continuation = bool(
+            re.search(r"(?mi)^\s*\d{1,2}[.)]\s+that\b", text[:2500])
+            or re.search(
+                r"counsel\s+for\s+the\s+(?:appellant|applicant|petitioner)|"
+                r"\bsd\s*/-",
+                text[:3000],
+                re.IGNORECASE,
+            )
+        )
+        if continuation:
+            updated[page] = [previous if name == application else name for name in names]
     return updated
 
 

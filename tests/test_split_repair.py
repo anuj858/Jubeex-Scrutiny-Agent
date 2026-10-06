@@ -2537,6 +2537,59 @@ def test_defect_007_restores_order_sheet_listing_and_annexure_boundaries() -> No
     assert repaired[18] == ["Application 1"]
 
 
+def test_defect_007_listed_performa_heading_is_a_direct_listing_anchor() -> None:
+    """The source spells the first-page heading LISTED PERFORMA."""
+    from extraction_review.split_repair import _looks_like_listing_proforma
+
+    assert _looks_like_listing_proforma("A1\nSection: IV-B\nLISTED PERFORMA")
+
+
+def test_defect_007_keeps_p5_signature_continuation_out_of_applications() -> None:
+    """The real P-5 page 98 is continuation text, not a new SCI application."""
+    texts = {
+        1: (
+            "INDEX\n15. ANNEXURE P-5: application for suspension of sentence "
+            "and grant of bail 96-98\n"
+            "16. I.A. Application for exemption from certified copy 99-101"
+        ),
+        2: (
+            "A1\nSection: IV-B\nLISTED PERFORMA\n"
+            "Central Act: Bharatiya Nagarik Suraksha Sanhita, 2023\n"
+            "Impugned Interim Order: 01.09.2025\nHigh Court: Chhattisgarh"
+        ),
+        3: "6 (A) Similar disposed matter: No\n7 Criminal Matter: Yes\nA2",
+        4: 'Annexure “P-5”\n96',
+        5: (
+            "BEFORE THE HON'BLE HIGH COURT OF CHHATTISGARH AT BILASPUR\n"
+            "APPLICATION FOR SUSPENSION OF SENTENCE & GRANT OF BAIL\n"
+            "1. That he has filed the annexed appeal.\n2. That the appellant "
+            "was convicted.\n97"
+        ),
+        6: (
+            "3. That, the appellant has deposited the fine imposed upon him.\n"
+            "4. That, during the course of trial, the appellant was granted bail.\n"
+            "Sd/-\nCOUNSEL FOR THE APPELLANT\n98"
+        ),
+        7: (
+            "IN THE SUPREME COURT OF INDIA\nI.A OF 2025\n"
+            "APPLICATION SEEKING EXEMPTION FROM FILING CERTIFIED COPY\n99"
+        ),
+    }
+    bad = {
+        1: ["Index"],
+        3: ["Listing Proforma"],
+        4: ["Annexure P-5"],
+        5: ["Annexure P-5"],
+        6: ["Application 1"],
+        7: ["Application 2"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=7)
+
+    assert repaired[6] == ["Annexure P-5"]
+    assert repaired[7] == ["Application 1"]
+
+
 def test_defect_005_scanned_index_and_late_annexure_boundaries() -> None:
     from extraction_review.document_parts import annexure_label_from_text
     from extraction_review.split_repair import (
