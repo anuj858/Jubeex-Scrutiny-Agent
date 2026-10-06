@@ -17,6 +17,15 @@ def test_scrutiny_progress_uses_defect_stages() -> None:
     assert stage == "checking"
 
 
+def test_incomplete_coverage_warning_does_not_jump_to_report_progress() -> None:
+    pct, stage = progress_for_status(
+        "Coverage will be incomplete because Pinecone is disabled",
+        kind="scrutiny",
+    )
+    assert pct == 28
+    assert stage == "retrieve"
+
+
 def test_scrutiny_partial_progress_scales_with_completed() -> None:
     from extraction_review.api import JobState, _apply_event_progress
 

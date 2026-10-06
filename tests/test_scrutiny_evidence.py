@@ -9,10 +9,12 @@ from extraction_review.document_parts import (
     documents_from_page_parts,
     explode_repeating_split_parts,
     keep_nearby_scores,
+    max_chunks_for_defect,
     overlay_split_documents,
     page_parts_from_split,
     parts_named_in_text,
     pool_search_queries,
+    select_chunks_for_defect,
 )
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import filing_location
@@ -303,6 +305,83 @@ def test_keep_nearby_scores_drops_far_neighbours() -> None:
     ]
     kept = keep_nearby_scores(chunks, max_n=8)
     assert [c["record_id"] for c in kept] == ["a", "b", "c"]
+
+
+def test_each_annexure_check_uses_full_budget_and_distinct_annexures() -> None:
+    defect = SimpleNamespace(
+        defect="Annexures are not true copies",
+        requirement="Each Annexure must be a true copy",
+        where_to_look=["Check each Annexure for a true copy endorsement."],
+        inspect_parts=["Annexures"],
+        context_parts=[],
+        exclude_parts=None,
+        trigger_words="ANNEXURE P; TRUE COPY",
+        parent_check_id=None,
+    )
+    pool = [
+        {
+            "record_id": f"p{number}",
+            "score": 0.99 - number / 100,
+            "chunk_kind": "page",
+            "page": number,
+            "document_part": f"Annexure P-{number}",
+            "text": "TRUE COPY" if number != 2 else "ANNEXURE P-2 order",
+        }
+        for number in range(1, 7)
+    ]
+
+    assert max_chunks_for_defect(defect, ceiling=12) == 12
+    chosen = select_chunks_for_defect(pool, defect, max_chunks=12)
+    assert {chunk["document_part"] for chunk in chosen} == {
+        f"Annexure P-{number}" for number in range(1, 7)
+    }
+
+
+def test_single_annexure_check_keeps_narrow_budget() -> None:
+    defect = SimpleNamespace(
+        defect="Annexure P-1 heading is missing",
+        requirement="Annexure P-1 must have a heading",
+        where_to_look=["Check Annexures for the heading."],
+        inspect_parts=["Annexures"],
+        context_parts=[],
+        exclude_parts=None,
+        trigger_words=None,
+        parent_check_id=None,
+    )
+
+    assert max_chunks_for_defect(defect, ceiling=12) == 3
+
+
+def test_common_index_pagination_check_reads_all_index_pages() -> None:
+    defect = SimpleNamespace(
+        defect="The common index lacks running pagination",
+        requirement="The paper book shall have one common index with pagination",
+        where_to_look=["Check the Index and its page numbers."],
+        inspect_parts=["Index"],
+        context_parts=["Application"],
+        exclude_parts=None,
+        trigger_words=None,
+        parent_check_id=None,
+    )
+    pool = [
+        {
+            "record_id": f"index-{page}",
+            "score": score,
+            "chunk_kind": "page",
+            "page": page,
+            "document_part": "Index",
+            "text": text,
+        }
+        for page, score, text in (
+            (3, 0.99, "INDEX PART I PAGE NO"),
+            (4, 0.20, "ANNEXURE P-1 32-81"),
+            (5, 0.10, "FILING MEMO 304 VAKALATNAMA 305-306"),
+        )
+    ]
+
+    assert max_chunks_for_defect(defect, ceiling=12) == 12
+    chosen = select_chunks_for_defect(pool, defect, max_chunks=12)
+    assert [chunk["page"] for chunk in chosen] == [3, 4, 5]
 
 
 def test_split_nicknames_come_from_config_not_a_python_map() -> None:

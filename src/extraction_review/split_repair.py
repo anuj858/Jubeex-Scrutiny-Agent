@@ -51,6 +51,8 @@ _SCI_CAPTION_OCR_RE = re.compile(
     re.IGNORECASE,
 )
 _HC_CAPTION_RE = re.compile(
+    r"^(?:\d{1,4}\s+)?(?:(?:in|before)\s+the\s+"
+    r"(?:hon['’]?ble\s+)?)?high court of\b|"
     r"in the (?:hon['’]?ble\s+)?high court|"
     r"high court of judicature|"
     r"in the court of.{0,100}?(?:(?:additional|addl\.?)\s+)?"
@@ -127,6 +129,12 @@ _SCI_COURT_ROP_RE = re.compile(
 _FILING_MEMO_RE = re.compile(
     r"(?m)^\s*(?:filing memo|index of filing|filing index|index of documents)\b",
     re.I,
+)
+_SCI_FILING_INDEX_RE = re.compile(
+    r"(?mis)^.*?\bin\s+the\s+supreme\s+court\s+of\s+india\b"
+    r".*?^\s*index\s*$"
+    r".*?\bs\.?\s*no\.?\s+particulars\b"
+    r".*?\bcopy\s+court\s+fee\b",
 )
 _EFILE_COURT_FEE_RE = re.compile(
     r"supreme\s+court\s+of\s+india.{0,120}acknowledgement|"
@@ -554,6 +562,10 @@ def _looks_like_impugned_order_start(text: str) -> bool:
 _JUDGMENT_TITLE_RE = re.compile(
     r"(?mi)^\s*[%*#-]*\s*(?:judg(?:e)?ment|order)\s*(?:\(\s*oral\s*\))?\s*$"
 )
+_HC_ORDER_SHEET_RE = re.compile(r"(?mi)^\s*order\s+sheet\s*$")
+_HC_APPEAL_CASE_RE = re.compile(
+    r"(?i)\b(?:cra|cr\.?\s*a\.?|criminal\s+appeal)\s*(?:no\.?)?\s*\d+"
+)
 
 
 def _restore_front_impugned_judgment(
@@ -570,7 +582,20 @@ def _restore_front_impugned_judgment(
             continue
         if not _is_lower_court_caption(text):
             continue
-        if not _JUDGMENT_TITLE_RE.search(_heading_window(text, lines=40)):
+        heading = _heading_window(text, lines=40)
+        titled_judgment = bool(_JUDGMENT_TITLE_RE.search(heading))
+        # High Court bail/suspension orders are often exported as an ``Order
+        # Sheet`` rather than titled ``Order``.  In the outer paper-book
+        # position (after LOD, before Form 28), a dated CRA/Cr.A order sheet
+        # starting at printed folio 1 is the challenged order.
+        dated_appeal_order_sheet = bool(
+            _HC_ORDER_SHEET_RE.search(heading)
+            and _HC_APPEAL_CASE_RE.search(heading)
+            and re.search(
+                r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", heading
+            )
+        )
+        if not (titled_judgment or dated_appeal_order_sheet):
             continue
         if not any(
             front_labels.intersection(parts_on_page(updated.get(page)))
@@ -912,7 +937,10 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     if (
         _is_sci_caption(text)
         and "position of parties" in folded
-        and re.search(r"\b(?:s\.?\s*l\.?\s*p\.?|special leave petition)\b", folded)
+        and re.search(
+            r"\b(?:s\.?\s*l\.?\s*p\.?|special\s+lea\s*ve\s+petition)\b",
+            folded,
+        )
     ):
         return True
     if page_starts_application(text):
@@ -1016,6 +1044,13 @@ def _outer_anchor_label(text: str) -> str | None:
         and not _is_lower_court_caption(text)
     ):
         return "Filing Memo"
+    # Some filing lists are headed only ``INDEX``.  The SCI caption plus the
+    # COPY / COURT FEE columns identifies the filing-stage index and separates
+    # it from the paper-book Index, whose table maps documents to page ranges.
+    if _SCI_FILING_INDEX_RE.search(text[:3000]) and not _is_lower_court_caption(
+        text
+    ):
+        return "Filing Memo"
     # SCI e-filing acknowledgement/payment receipt is court-fee evidence,
     # not the filing list described by the Filing Memo category.
     if _EFILE_COURT_FEE_RE.search(text[:3000]):
@@ -1029,6 +1064,11 @@ def _outer_anchor_label(text: str) -> str | None:
     # NO. structure is stronger than that generic catalogue signal.
     if _looks_like_sci_court_rop_extract(text):
         return "Record of Proceedings"
+    # Form-28 can cite an I.A. number in its "arising out of" line. Detect
+    # its SLP party schedule before the generic indexed-application heuristic,
+    # otherwise the Main Petition boundary is shifted one page forward.
+    if _looks_like_sci_main_petition(text):
+        return MAIN_PETITION_PART
     # Likewise, a misspelled scanned heading such as LIMITAION is still an
     # Office Report boundary, not a numbered continuation of the prior Index.
     if _OFFICE_REPORT_RE.search(text[:2000]) and not _is_lower_court_caption(text):
@@ -3358,6 +3398,76 @@ def _realign_stamped_annexures_to_index(
     return updated
 
 
+def _restore_unique_forward_annexure_stamps(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Restore trustworthy unique P-n boundaries after Index reconciliation.
+
+    A degraded Index row can incorrectly paint a later explicit ``ANNEXURE
+    P-5`` run as P-3.  Conversely, reproduced records often contain local
+    stamps that restart at a lower number (for example P-5 inside outer P-38),
+    which must stay nested.  A backward stamp is restored only when both labels
+    are present in the outer Index and it immediately follows another unique,
+    indexed stamped run.  That covers swapped Index rows such as P-2 followed
+    by P-1 without promoting an internal P-5 stamp from an outer P-38 record.
+    Duplicate stamps remain subject to the Index-content realignment above.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    runs = _annexure_run_bounds(page_text, page_count)
+    stamp_counts: dict[str, int] = {}
+    for _start, _end, stamp_label in runs:
+        stamp_counts[stamp_label] = stamp_counts.get(stamp_label, 0) + 1
+
+    indexed_labels = {
+        label for label, _particulars in collect_index_annexure_entries(
+            page_parts, page_text
+        )
+    }
+    run_index = {start: index for index, (start, _end, _label) in enumerate(runs)}
+
+    for start, end, stamp_label in runs:
+        if stamp_counts.get(stamp_label, 0) != 1:
+            continue
+        assigned_label = next(
+            (
+                name
+                for name in parts_on_page(updated.get(start))
+                if family_split_name(name) == ANNEXURE_FAMILY
+            ),
+            None,
+        )
+        stamp_number = _annexure_number_from_label(stamp_label)
+        assigned_number = (
+            _annexure_number_from_label(assigned_label) if assigned_label else None
+        )
+        if stamp_number is None or assigned_number is None:
+            continue
+        restore = stamp_number > assigned_number
+        if stamp_number < assigned_number:
+            index = run_index[start]
+            previous = runs[index - 1] if index > 0 else None
+            restore = bool(
+                previous
+                and previous[1] == start - 1
+                and previous[2] in indexed_labels
+                and stamp_label in indexed_labels
+                and assigned_label in indexed_labels
+                and stamp_counts.get(previous[2], 0) == 1
+            )
+        if not restore:
+            continue
+        for page in range(start, end + 1):
+            names = parts_on_page(updated.get(page))
+            if not any(
+                family_split_name(name) == ANNEXURE_FAMILY for name in names
+            ):
+                break
+            updated[page] = [stamp_label]
+    return updated
+
+
 def _realign_annexure_boundaries_to_index_content(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -3570,6 +3680,18 @@ def _restore_indexed_back_matter_parts(
         for page in range(1, page_count + 1)
         if "Filing Memo" in parts_on_page(updated.get(page))
     ]
+
+    # The visible title on a signed/scanned Vakalatnama is often absent from
+    # embedded PDF text.  The master Index and matching printed folio still
+    # identify that outer back-matter page unambiguously.
+    for row in aligned_index_printed_rows(updated, page_text):
+        if row.kind != "number" or row.mapped_part != "Vakalatnama":
+            continue
+        for page in range(1, page_count + 1):
+            folio = _printed_folio(page_text.get(page, ""))
+            if folio and _folio_in_printed_row(folio, row):
+                updated[page] = ["Vakalatnama"]
+
     if not filing_pages:
         return updated
     filing_end = max(filing_pages)
@@ -3708,6 +3830,24 @@ def _keep_vakalatnama_with_following_appearance(
     return updated
 
 
+def _add_same_page_representation_labels(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Keep both labels when Vakalatnama and Memo of Appearance share a page."""
+    updated = {page: list(names) for page, names in page_parts.items()}
+    vakalatnama = re.compile(r"(?i)\bvak[a-z]{0,3}lat[a-z]*nam[a-z]?\b")
+    appearance = re.compile(r"(?i)\bmemo(?:randum)?\s+of\s+app[a-z0-9]{0,6}rance\b")
+    for page, text in page_text.items():
+        names = parts_on_page(updated.get(page))
+        if "Vakalatnama" not in names:
+            continue
+        if not (vakalatnama.search(text or "") and appearance.search(text or "")):
+            continue
+        updated[page] = list(dict.fromkeys([*names, "Memo of Appearance"]))
+    return updated
+
+
 def _demote_false_affidavit_between_annexures(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -3725,19 +3865,27 @@ def _demote_false_affidavit_between_annexures(
     if not annex_pages:
         return updated
     first_ann = min(annex_pages)
+    outer_rows = aligned_index_printed_rows(updated, page_text)
     for page in range(first_ann, page_count + 1):
         names = parts_on_page(updated.get(page))
         if "Affidavit" not in names:
             continue
         text = page_text.get(page, "")
-        # Keep a real SCI petition affidavit (rare after annexures start).
-        if _is_sci_caption(text) and _AFFIDAVIT_HEADING_RE.search(
-            _heading_window(text, lines=20)
-        ):
-            if not _is_lower_court_caption(text) and "in the court of" not in _fold(
-                text[:800]
-            ):
-                continue
+        # An enclosed affidavit can reproduce a Supreme Court caption and all
+        # the usual DEPONENT / VERIFICATION language.  That content does not
+        # make it the paper-book's standalone Affidavit.  Preserve a late main
+        # affidavit only when the outer Index explicitly places this printed
+        # folio inside the Main Petition-with-affidavit range.
+        folio = _printed_folio(text)
+        indexed_main_affidavit = any(
+            row.mapped_part == MAIN_PETITION_PART
+            and "affidavit" in _fold(row.particulars)
+            and folio is not None
+            and _folio_in_printed_row(folio, row)
+            for row in outer_rows
+        )
+        if indexed_main_affidavit:
+            continue
         prior_ann = max((p for p in annex_pages if p < page), default=0)
         next_ann = min((p for p in annex_pages if p > page), default=0)
         if prior_ann and (next_ann or annexure_label_from_text(text)):
@@ -3779,11 +3927,32 @@ def _extend_explicit_affidavit_continuation(
     )
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
+        names = parts_on_page(updated.get(page))
         anchor = _outer_anchor_label(text)
+        annexure_owned = any(
+            family_split_name(name) == ANNEXURE_FAMILY for name in names
+        )
         if anchor == "Affidavit":
             # An affidavit expressly verifying an I.A. is intentionally part
             # of that Application output, not the standalone petition slot.
             if re.search(r"accompanying\s+application", text[:3000], re.I):
+                active = False
+                continue
+            # A stale Annexure carry is allowed to yield only at the normal
+            # outer-filing boundary (immediately after petition front matter)
+            # or while that already-established main affidavit is continuing.
+            # Otherwise the Annexure owner is structural evidence and wins.
+            prior_names = parts_on_page(updated.get(page - 1))
+            starts_after_front_matter = bool(
+                set(prior_names)
+                & {
+                    MAIN_PETITION_PART,
+                    "AOR's Declaration",
+                    "AOR's Certificate",
+                    "Appendix",
+                }
+            )
+            if annexure_owned and not (active or starts_after_front_matter):
                 active = False
                 continue
             updated[page] = ["Affidavit"]
@@ -3796,6 +3965,9 @@ def _extend_explicit_affidavit_continuation(
             continue
         if continuation.search(text[:3000]):
             updated[page] = ["Affidavit"]
+            continue
+        if annexure_owned:
+            active = False
             continue
         active = False
     return updated
@@ -3829,6 +4001,7 @@ def repair_compiled_split(
     updated = _demote_false_advocate_checklist(updated, page_text)
     updated = _demote_cover_mislabeled_as_main(updated, page_text)
     updated = _apply_outer_anchors(updated, page_text, page_count)
+    updated = _restore_index_bridge_pages(updated, page_text)
     updated = _demote_unverified_office_reports(updated, page_text, page_count)
     updated = _extend_explicit_memo_of_parties(updated, page_text, page_count)
     updated = _restore_split_preface(updated, page_text, page_count)
@@ -3902,6 +4075,7 @@ def repair_compiled_split(
     # pages after duplicate collapse so the preceding annexure cannot own them
     # and so printed ranges from every volume participate below.
     repaired = _restore_master_volume_sections(repaired, page_text, page_count)
+    repaired = _restore_index_bridge_pages(repaired, page_text)
     # The outer Index range wins over conflicting local High Court stamps and
     # over labels assigned from visual/document cues. Apply it after repairs
     # that can split or demote those local exhibit runs.
@@ -3914,6 +4088,11 @@ def repair_compiled_split(
     # reproduced lower-court Index. Re-apply the authoritative outer range as
     # the final structural correction.
     repaired = _renest_lower_court_indexes(repaired, page_text, page_count)
+    # Index OCR/range reconciliation must not erase a later, unique outer
+    # Annexure boundary (P-3 followed by an explicit P-5 in the source).
+    repaired = _restore_unique_forward_annexure_stamps(
+        repaired, page_text, page_count
+    )
     # A standalone custody certificate has no configured slot. Preserve it
     # as Unidentified rather than swallowing it into the preceding bail IA.
     indexed_custody = any(
@@ -3935,15 +4114,30 @@ def repair_compiled_split(
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
+    repaired = _add_same_page_representation_labels(repaired, page_text)
     repaired = _extend_explicit_memo_of_parties(repaired, page_text, page_count)
     repaired = _restore_early_record_of_proceedings(repaired, page_text, page_count)
     repaired = _extend_explicit_affidavit_continuation(repaired, page_text, page_count)
+    # The continuation repair intentionally trusts affidavit language. Re-run
+    # the structural annexure guard afterwards so an enclosed affidavit cannot
+    # be promoted back into the standalone filing Affidavit slot.
+    repaired = _demote_false_affidavit_between_annexures(
+        repaired, page_text, page_count
+    )
     # A model label alone must never populate the limitation slot. In
     # particular, REPORT OF FRESH CASE is a different Registry document.
     repaired = _demote_unverified_office_reports(repaired, page_text, page_count)
+    # LlamaSplit can assign a new Application number to a continuation,
+    # signature, or supporting-affidavit page of the same I.A. A distinct
+    # adjacent application is valid only when its first page actually carries
+    # an application-start heading/caption.
+    repaired = _merge_spurious_application_splits(repaired, page_text)
     # Repairs can remove false internal applications. Prefer the Index order
     # when distinct titles allow a reliable match; otherwise use physical order.
     repaired = _renumber_outer_applications(repaired, page_text)
+    # Some front-matter range propagation can revisit an otherwise recovered
+    # Index continuation. Its bracketed table structure is the final authority.
+    repaired = _restore_index_bridge_pages(repaired, page_text)
     return repaired, duplicates
 
 
@@ -4127,6 +4321,38 @@ def _restore_master_volume_sections(
     return updated
 
 
+def _restore_index_bridge_pages(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Restore an omitted continuation sheet bracketed by outer Index pages.
+
+    Long Index particulars can continue at the top of the middle sheet, so it
+    need not repeat either the INDEX title or the table header.  Requiring two
+    numbered paper-book rows keeps this narrow and avoids treating a reproduced
+    lower-court page as an outer Index merely because it mentions an annexure.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    last_page = max(max(updated, default=0), max(page_text, default=0))
+    for page in range(2, last_page):
+        current = set(parts_on_page(updated.get(page)))
+        if current and not current <= {
+            "Listing Proforma",
+            "Synopsis",
+            "List of Dates & Events",
+        }:
+            continue
+        if "Index" not in parts_on_page(updated.get(page - 1)):
+            continue
+        if "Index" not in parts_on_page(updated.get(page + 1)):
+            continue
+        text = page_text.get(page, "")
+        numbered_rows = re.findall(r"(?m)^\s*\d{1,3}[.)]\s+\S", text)
+        if len(numbered_rows) >= 2:
+            updated[page] = ["Index"]
+    return updated
+
+
 def _apply_indexed_outer_document_ranges(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -4141,6 +4367,30 @@ def _apply_indexed_outer_document_ranges(
         for page in range(1, page_count + 1)
     }
     updated = {page: list(names) for page, names in page_parts.items()}
+
+    def physical_pages(row: IndexPrintedRow) -> list[int]:
+        """Map an Index folio span even when an interior scan has no OCR folio."""
+        matched = [
+            page
+            for page, folio in folios.items()
+            if folio and _folio_in_printed_row(folio, row)
+        ]
+        exact_start = next(
+            (
+                page
+                for page, folio in folios.items()
+                if folio
+                and folio[0] == row.kind
+                and folio[1] == row.start
+                and not folio[2]
+            ),
+            None,
+        )
+        if exact_start is not None and row.kind == "number":
+            expected_length = row.end - row.start + 1
+            physical_end = min(page_count, exact_start + expected_length - 1)
+            matched.extend(range(exact_start, physical_end + 1))
+        return sorted(set(matched))
 
     # A combined Synopsis/LOD row is authoritative only for its outer folio
     # range. The explicit LIST OF DATES heading decides the internal boundary.
@@ -4167,6 +4417,12 @@ def _apply_indexed_outer_document_ranges(
             None,
         )
         if lod_start is None:
+            # Some paper books use one continuous "Synopsis and List of
+            # Dates" section without printing a second heading.  Preserve
+            # both searchable identities instead of making every LOD check
+            # report a retrieval gap.
+            for page in pages:
+                updated[page] = ["Synopsis", "List of Dates & Events"]
             continue
         for page in pages:
             updated[page] = [
@@ -4180,9 +4436,10 @@ def _apply_indexed_outer_document_ranges(
     ]
     if len(impugned_rows) == 1:
         row = impugned_rows[0]
-        for page, folio in folios.items():
-            if folio and _folio_in_printed_row(folio, row):
-                updated[page] = ["Impugned Order"]
+        for page in physical_pages(row):
+            if _looks_like_sci_main_petition(page_text.get(page, "")):
+                break
+            updated[page] = ["Impugned Order"]
 
     main_rows = [
         row
@@ -4191,11 +4448,7 @@ def _apply_indexed_outer_document_ranges(
     ]
     if len(main_rows) == 1:
         row = main_rows[0]
-        pages = [
-            page
-            for page, folio in folios.items()
-            if folio and _folio_in_printed_row(folio, row)
-        ]
+        pages = physical_pages(row)
         certificate_pages = [
             page
             for page in pages
@@ -4376,6 +4629,57 @@ def _fill_application_gaps(
                 last_app = None
                 continue
         updated[page] = [last_app]
+    return updated
+
+
+def _merge_spurious_application_splits(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Merge a renamed continuation page back into the preceding Application.
+
+    Numbered Application labels from the model are not themselves evidence of
+    a document boundary. Consecutive labels may differ only when the later page
+    has a real application start; otherwise a prayer or verification page can
+    be incorrectly emitted as a second application.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    active_app: str | None = None
+    prior_page: int | None = None
+
+    for page in sorted(updated):
+        names = parts_on_page(updated.get(page))
+        app = next(
+            (
+                name
+                for name in names
+                if re.fullmatch(r"(?i)application\s+\d+", name)
+            ),
+            None,
+        )
+        if not app:
+            active_app = None
+            prior_page = page
+            continue
+
+        text = page_text.get(page, "")
+        distinct_application_start = bool(
+            page_starts_application(text)
+            and not _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=24))
+        )
+        if (
+            active_app
+            and app != active_app
+            and prior_page is not None
+            and page == prior_page + 1
+            and not distinct_application_start
+        ):
+            updated[page] = [active_app if name == app else name for name in names]
+            app = active_app
+
+        active_app = app
+        prior_page = page
+
     return updated
 
 

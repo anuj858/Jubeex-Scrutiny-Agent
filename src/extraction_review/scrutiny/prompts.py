@@ -54,11 +54,11 @@ are not the Registry and you do not decide legal validity.
 Decide exactly one defect. Return one status:
 
 - defect_found: the excerpts for the document part you were told to search \
-show the required material is missing or incomplete. If you searched those \
-parts and the required material is not there, that is a defect (not found). \
-This includes stamps, seals, signatures, wet-ink marks, paper size, \
-margins, duplex printing, font, and numbering — if they are not in the \
-excerpts, they have not been found
+show the required material is missing or incomplete. For textual content, \
+stamps, seals, signatures, and numbering, absence from readable excerpts of \
+the correct part may establish the defect. Physical layout properties such \
+as paper size, margins, duplex printing, font size, and spacing require \
+actual layout or visual evidence; do not infer them from OCR silence
 - compliant: the excerpts show the required material is present and complete
 - not_applicable: this defect does not apply to this filing
 - not_determined: do not use this because a stamp, seal, signature, paper \
@@ -70,10 +70,11 @@ parts this task is inspecting appear in the excerpts
 
 Rules:
 
-1. Quote the filing. If you cannot quote the required material from the \
-parts you were given, it has not been found in those excerpts — including \
-stamps, seals, signatures, paper size, and margins. That is defect_found, \
-not not_determined.
+1. Quote the filing. If you cannot quote required textual material from the \
+correct parts you were given, it has not been found in those excerpts. For \
+paper size, margins, duplex printing, font size, spacing, or other visual \
+layout, return needs_review unless the excerpts include affirmative visual or \
+layout evidence of compliance or noncompliance.
 2. If the excerpts do not include the document part this task is inspecting \
 (listed under Where to search), return needs_review — not defect_found. \
 Missing excerpts are a retrieval gap, not proof the filing lacks that \
@@ -81,10 +82,10 @@ document. Names used only as landmarks (for example “before the Cover \
 Page”) are not extra parts you must have.
 3. If those parts ARE in the excerpts and the required content is still \
 missing, return defect_found.
-4. Search the extracted text for the required mark or layout. OCR often \
-records stamps and seals as words such as STAMP, SEAL, NOTARY, WELFARE \
-FUND, COURT FEE, Sd/-, digitally signed, or A4. If none of that appears \
-in the inspected part, the requirement has not been met.
+4. Search the extracted text for required marks. OCR often records stamps \
+and seals as words such as STAMP, SEAL, NOTARY, WELFARE FUND, COURT FEE, \
+Sd/-, or digitally signed. Do not treat absence of the word A4, a margin \
+measurement, or a font name in OCR as proof of a physical-layout defect.
 5. Do not add requirements that are not in this task.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.6, return \
@@ -100,6 +101,24 @@ official-rulebook locators, not pages of this filing.
 Affidavit 1+3”) as proof that a document was filed, sworn, or signed. \
 Quote the document part itself (Affidavit, Main Petition, Declaration, …). \
 If that part is not in the excerpts, return needs_review.
+9. A reproduced document from a lower-court record or an Annexure cannot \
+satisfy a requirement for the current Supreme Court filing document. Use \
+such material only as context. For example, an affidavit inside an Annexure \
+is not the affidavit accompanying the petition, and a lower-court memo of \
+parties is not the Supreme Court Memo of Parties.
+10. Decide applicability before searching for a defect. For standards that \
+apply only “if”, “where”, or “in case” a condition exists (for example a \
+particular application, power-of-attorney arrangement, multiple signatories, \
+or a special case category), return not_applicable when the filing evidence \
+shows that condition does not exist. Do not return needs_review merely because \
+an inapplicable conditional document is absent. A form field marked N.A. is \
+not a defect when the field does not apply to this filing.
+11. When the standard says each, every, or all Annexures, one compliant \
+Annexure is not proof that the entire set complies. Inspect the distinct \
+numbered Annexure excerpts supplied. If any inspected Annexure lacks the \
+required endorsement or conflicts with the Index/List of Dates, report the \
+defect and cite that Annexure. If the excerpts are only a sample and none \
+shows a defect, return needs_review rather than compliant.
 
 Respond with JSON matching the required schema. No prose outside the JSON."""
 
@@ -812,6 +831,9 @@ def build_defect_prompt(
     ]
     if getattr(defect, "ai_note", None):
         sections.extend(["", "## Note for AI", defect.ai_note.strip()])
+    trigger_note = _trigger_cues(defect.trigger_words)
+    if trigger_note:
+        sections.extend(["", "## Recognition cues", trigger_note])
     sections.extend(
         [
             "",

@@ -9,6 +9,7 @@ from extraction_review.split_audit import (
     check_index_consistency,
     collect_expected_annexures,
     collect_index_annexure_entries,
+    index_rows_with_printed_pages,
     map_index_particulars_to_part,
     parse_index_rows,
 )
@@ -53,6 +54,26 @@ S.No. PARTICULARS OF DOCUMENTS Page No. of part
     assert by_part["Main Petition"].start_page == 31
     assert by_part["Annexure P-4"].end_page == 90
     assert by_part["Vakalatnama"].start_page == 93
+
+
+def test_index_row_keeps_page_span_printed_on_following_line() -> None:
+    rows = index_rows_with_printed_pages(
+        "INDEX\n"
+        "5. Copy of impugned judgment dated 17.05.2024\n"
+        "1-15\n"
+        "6. Special Leave Petition with affidavit\n"
+        "16-28\n"
+    )
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert (by_part["Impugned Order"].start, by_part["Impugned Order"].end) == (
+        1,
+        15,
+    )
+    assert (by_part["Main Petition"].start, by_part["Main Petition"].end) == (
+        16,
+        28,
+    )
 
 
 def test_sequence_flags_out_of_order_main_petition_before_index() -> None:

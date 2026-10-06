@@ -522,10 +522,12 @@ class AnnexureMark:
 
 
 # OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
+# Filing stamps also commonly quote the label: Annexure “P-1”.
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*[-–—:.~\s]*?(?:no\.?\s*)?"
-    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.~\s]*)?"
-    r"(?P<num>\d+)\b"
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
+    r"[-–—/:.~\s\"'“”‘’]*)?"
+    r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
     r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
     re.IGNORECASE,
@@ -534,11 +536,12 @@ _ANNEXURE_HEADING_RE = re.compile(
 _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"^[^A-Za-z0-9\s]{0,4}\s*(?:\d{1,4}\s+)?"
     r"(?:"
-    r"(?:annexure|annx\.?)\s*[-–—:.~\s]*?(?:no\.?\s*)?"
-    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*[-–—/:.~\s]*)?"
-    r"(?P<num>\d+)"
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
+    r"[-–—/:.~\s\"'“”‘’]*)?"
+    r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
     r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
-    r")\b",
+    r")(?!\w)",
     re.IGNORECASE,
 )
 _INDEX_ROW_ANNEXURE_RE = re.compile(
@@ -558,7 +561,8 @@ _ANNEXURE_CITATION_PREV_RE = re.compile(
 )
 _APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
 _AFFIDAVIT_HEADING_RE = re.compile(
-    r"(?m)^(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)\b",
+    r"(?m)^\s*(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"\s*(?:$|[:\-–—]|(?:OF|ON\s+BEHALF\s+OF|BY)\b)",
     re.IGNORECASE,
 )
 _CERTIFICATE_HEADING_RE = re.compile(
@@ -986,7 +990,18 @@ def _looks_like_sci_interlocutory(text: str) -> bool:
         and "translation" in blob
         or "balance of convenience" in blob
     )
-    return cites_annexure and ia_prose
+    # Lower-court appeals/applications can contain the same phrases and carry
+    # the *outer* paper-book Annexure stamp at the foot of the page. Do not
+    # suppress that stamp. An SCI application continuation, however, may omit
+    # the Supreme Court caption and still needs the original citation guard.
+    lower_court_caption = bool(
+        re.search(
+            r"(?i)^\s*(?:\d{1,4}\s+)?(?:(?:in|before)\s+the\s+"
+            r"(?:hon['’]?ble\s+)?)?(?:high\s+court|court\s+of|tribunal)\b",
+            _heading_window(text, lines=12),
+        )
+    )
+    return bool(cites_annexure and ia_prose and not lower_court_caption)
 
 
 def _memo_of_parties_heading(text: str) -> bool:
@@ -1777,6 +1792,10 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
     targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    if _requires_annexure_collection_coverage(defect) or _requires_index_collection_coverage(
+        defect
+    ):
+        return max(1, ceiling)
     budget = ceiling
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
@@ -1787,6 +1806,44 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
             tight = max(tight, 4)
         budget = min(budget, tight)
     return max(1, min(budget, ceiling))
+
+
+def _requires_annexure_collection_coverage(defect: Defect) -> bool:
+    """Whether the check must sample distinct annexures, not one good page.
+
+    Semantic search naturally ranks pages containing phrases such as ``true
+    copy`` above a non-compliant annexure that omits them.  Checks quantified
+    over each annexure therefore need breadth across the numbered documents.
+    """
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
+    if not any(family_split_name(part) == ANNEXURE_FAMILY for part in targets):
+        return False
+    wording = " ".join(
+        [defect.defect, defect.requirement, *defect.where_to_look]
+    ).casefold()
+    return bool(
+        re.search(r"\b(?:each|every|all)\s+annexure", wording)
+        or re.search(
+            r"\bannexures?\b.{0,100}\b(?:chronological|match|true cop)", wording
+        )
+    )
+
+
+def _requires_index_collection_coverage(defect: Defect) -> bool:
+    """Whether every available Index page is needed to judge completeness."""
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
+        defect
+    )
+    if "Index" not in targets:
+        return False
+    wording = " ".join(
+        [defect.defect, defect.requirement, *defect.where_to_look]
+    ).casefold()
+    return "common index" in wording and bool(
+        re.search(r"\b(?:running|complete|continuous)?\s*pagination\b", wording)
+    )
 
 
 def _chunk_score(chunk: dict[str, Any]) -> float:
@@ -1961,6 +2018,50 @@ def select_chunks_for_defect(
             if record_id:
                 used.add(record_id)
             break
+
+    if _requires_annexure_collection_coverage(defect):
+        covered_annexures = {
+            name.casefold()
+            for chunk in chosen
+            for name in parts_on_page(chunk.get("document_part"))
+            if _is_numbered_annexure(name)
+        }
+        for chunk in ranked:
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            if record_id in used:
+                continue
+            numbered = next(
+                (
+                    name
+                    for name in parts_on_page(chunk.get("document_part"))
+                    if _is_numbered_annexure(name)
+                ),
+                None,
+            )
+            if numbered is None or numbered.casefold() in covered_annexures:
+                continue
+            chosen.append(chunk)
+            covered_annexures.add(numbered.casefold())
+            if record_id:
+                used.add(record_id)
+
+    if _requires_index_collection_coverage(defect):
+        covered_pages = {chunk.get("page") for chunk in chosen}
+        for chunk in ranked:
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            page = chunk.get("page")
+            if record_id in used or page in covered_pages:
+                continue
+            if not _part_match(chunk, ["Index"]):
+                continue
+            chosen.append(chunk)
+            covered_pages.add(page)
+            if record_id:
+                used.add(record_id)
 
     remaining = page_budget - len(chosen)
     if remaining > 0:

@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 
 from extraction_review.scrutiny.catalogue_export import write_seed
+from extraction_review.scrutiny.rules import _load_file_catalogue
 
 
 def main() -> None:
@@ -20,7 +21,7 @@ def main() -> None:
         help="Destination JSON path",
     )
     args = parser.parse_args()
-    payload = write_seed(args.out)
+    payload = write_seed(args.out, catalogue=_load_file_catalogue())
     print(
         f"Wrote {args.out} "
         f"({len(payload['defects'])} defects, {len(payload['sources'])} sources)"

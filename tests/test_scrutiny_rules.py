@@ -10,6 +10,7 @@ import extraction_review.scrutiny.rules as rules_mod
 from extraction_review.scrutiny.prompts import (
     _filing_phrase,
     build_defect_prompt,
+    build_system_prompt,
     finding_title,
 )
 from extraction_review.scrutiny.rules import (
@@ -357,6 +358,53 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "Form 28 - SLP.pdf" not in d159.location_source
     assert "2024011691-1.pdf" not in d159.location_source
 
+    assert catalogue.defect("D-60").inspect_parts == ["AOR's Certificate"]
+    assert catalogue.defect("D-60").context_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-58").inspect_parts == ["Index"]
+    assert catalogue.defect("D-58").context_parts == ["Application"]
+    assert catalogue.defect("D-88").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-89").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-110").inspect_parts == [
+        "Synopsis",
+        "List of Dates & Events",
+    ]
+    assert catalogue.defect("D-111").inspect_parts == [
+        "List of Dates & Events",
+        "Application",
+    ]
+    assert catalogue.defect("D-114").inspect_parts == ["Memo of Appearance"]
+    assert catalogue.defect("D-115").inspect_parts == ["Memo of Appearance"]
+    assert catalogue.defect("D-120").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-126").inspect_parts == ["Annexures"]
+    assert catalogue.defect("D-127").inspect_parts == [
+        "Index",
+        "List of Dates & Events",
+        "Annexures",
+    ]
+    assert catalogue.defect("D-175").inspect_parts == [
+        "Appendix",
+        "Impugned Order",
+    ]
+    assert catalogue.defect("D-226").inspect_parts == [
+        "Appendix",
+        "Impugned Order",
+    ]
+    for check_id in (
+        "D-161",
+        "D-162",
+        "D-164",
+        "D-165",
+        "D-166",
+        "D-167",
+        "D-168",
+        "D-179",
+    ):
+        assert catalogue.defect(check_id).inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-160").context_parts == ["Impugned Order"]
+    assert catalogue.defect("D-163").context_parts == ["Impugned Order"]
+    assert catalogue.defect("D-180").inspect_parts == ["Impugned Order"]
+    assert catalogue.defect("D-194").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-324").inspect_parts == ["AOR's Certificate"]
     rules_pdf = (
         "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
         "uploads/2024/01/2024011691-1.pdf"
@@ -430,6 +478,22 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         dumped = defect.model_dump()
         assert "serial_no" not in dumped
         assert "category_id" not in dumped
+
+
+def test_scrutiny_prompt_distinguishes_layout_context_and_conditional_checks() -> None:
+    prompt = build_system_prompt(
+        Catalogue(
+            catalogue_id="test",
+            schema_version="1",
+            catalogue_version="1",
+            jurisdiction="Supreme Court of India",
+        )
+    )
+
+    assert "do not infer them from OCR silence" in prompt
+    assert "an affidavit inside an Annexure" in prompt
+    assert "return not_applicable" in prompt
+    assert "one compliant Annexure is not proof" in prompt
 
 
 def test_rewrite_location_source_maps_opaque_pdf_names() -> None:
@@ -590,4 +654,3 @@ def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
     listed = special_categories_for_catalog()
     assert "Motor Vehical Act" in listed["SLP_CIVIL"]
     assert "Motor Vehical Act" not in listed["SLP_CRIMINAL"]
-

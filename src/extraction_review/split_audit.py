@@ -496,6 +496,13 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                     )
                 )
         return result
+    # Parse the untouched text as well.  ``parse_index_rows`` can join a page
+    # span printed on the next line to its wrapped particulars.  The orphan
+    # alignment below is still needed for true table-column OCR, but removing
+    # every span-only line first used to discard otherwise unambiguous rows
+    # such as ``Copy of impugned judgment ...`` followed by ``1–15``.
+    direct_rows = parse_index_rows(index_text)
+
     kept: list[str] = []
     orphans: list[IndexPrintedRow] = []
     for line in (index_text or "").splitlines():
@@ -586,6 +593,42 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                 end_suffix=suffix,
             )
         )
+    seen = {
+        (_fold(row.particulars), row.start, row.end, row.mapped_part)
+        for row in aligned
+    }
+    for row in direct_rows:
+        if row.start_page <= 0:
+            continue
+        # Direct parsing is a narrow fallback for wrapped outer-document rows.
+        # Annexure/application tables with a detached page column can contain
+        # several candidate rows followed by one range; assigning that range
+        # to the last row would be a guess.
+        if row.mapped_part not in {
+            "Synopsis",
+            "List of Dates & Events",
+            "Impugned Order",
+            "Main Petition",
+        }:
+            continue
+        candidate = IndexPrintedRow(
+            mapped_part=row.mapped_part,
+            particulars=row.particulars,
+            kind="number",
+            start=row.start_page,
+            end=row.end_page,
+            end_suffix="",
+        )
+        key = (
+            _fold(candidate.particulars),
+            candidate.start,
+            candidate.end,
+            candidate.mapped_part,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        aligned.append(candidate)
     return aligned
 
 

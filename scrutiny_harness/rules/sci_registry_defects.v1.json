@@ -1944,7 +1944,9 @@
         "Go to the index and check whether the documents forming Part I and the applications to be listed in Part II are placed in their respective parts, as shown in the Index columns."
       ],
       "inspect_parts": [
-        "Index",
+        "Index"
+      ],
+      "context_parts": [
         "Application"
       ],
       "how_to_cure": [
@@ -2009,7 +2011,9 @@
         "3. THIS HAS TO BE CHECKED ON THE CERTIFICATE FOUND AFTER THE 'MAIN PRAYER' CLAUSE"
       ],
       "inspect_parts": [
-        "Advocate's Checklist",
+        "AOR's Certificate"
+      ],
+      "context_parts": [
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -2796,8 +2800,7 @@
         "2. Verify Times New Roman, size 14, with one-and-half line spacing; for quotations and indents, verify size 12 with single-line spacing."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Annexures"
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Font Style and Font Size",
@@ -2826,8 +2829,7 @@
         "2. Check for a margin of 4 cm on the left and right and 2 cm at the top and bottom."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Annexures"
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to auto-format the document with 4 cm left and right margins and 2 cm top and bottom margins.",
@@ -3360,8 +3362,11 @@
         "Check the case file before the Impugned Order for the Synopsis and List of dates/events usually located after the Listing Proforma"
       ],
       "inspect_parts": [
-        "Listing Proforma",
         "Synopsis",
+        "List of Dates & Events"
+      ],
+      "context_parts": [
+        "Listing Proforma",
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -3388,10 +3393,11 @@
         "3. Go through all the Applications placed after the Annexures and look for an application with the subject “Application for Exemption”"
       ],
       "inspect_parts": [
-        "Synopsis",
         "List of Dates & Events",
-        "Annexures",
         "Application"
+      ],
+      "context_parts": [
+        "Synopsis"
       ],
       "how_to_cure": [
         "1. Brief List of Dates and Events",
@@ -3469,8 +3475,9 @@
         "Check the case file for the Memo of Appearance addressed to the Registrar and signed by the AOR usually placed right after the or along with Vakalatnama"
       ],
       "inspect_parts": [
-        "Memo of Parties",
-        "Memo of Appearance",
+        "Memo of Appearance"
+      ],
+      "context_parts": [
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -3496,8 +3503,9 @@
         "2. Check the addressee section at the beginning of the Memo of Appearance."
       ],
       "inspect_parts": [
-        "Memo of Parties",
-        "Memo of Appearance",
+        "Memo of Appearance"
+      ],
+      "context_parts": [
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -3632,8 +3640,10 @@
         "6. Check below each signature of the person executing the Vakalatnama and verify that the person's name is stated in brackets for identification of the signature."
       ],
       "inspect_parts": [
-        "Memo of Parties",
         "Vakalatnama"
+      ],
+      "context_parts": [
+        "Memo of Parties"
       ],
       "how_to_cure": [
         "1. Prompt the User to enter the names of the persons executing the Vakalatnama and complete the relevant columns, and option for Jubeex to update the Vakalatnama using the information provided.",
@@ -3791,13 +3801,15 @@
       "special_category": null,
       "defect": "Annexures referred to in Petition are not true copies of the documents",
       "requirement": "Annexures referred to in the Petition must be true copies of the documents",
-      "trigger_words": null,
+      "trigger_words": "ANNEXURE P, TRUE COPY, CERTIFIED TRUE COPY",
       "where_to_look": [
         "1. Check each Annexure for an endorsement/certification that it is a true copy of the document filed before the court below."
       ],
       "inspect_parts": [
-        "Main Petition",
         "Annexures"
+      ],
+      "context_parts": [
+        "Main Petition"
       ],
       "how_to_cure": [
         "True Copy:",
@@ -3825,8 +3837,11 @@
       ],
       "inspect_parts": [
         "Index",
-        "Main Petition",
+        "List of Dates & Events",
         "Annexures"
+      ],
+      "context_parts": [
+        "Main Petition"
       ],
       "how_to_cure": [
         "Chronological Order of Annexures:",
@@ -4709,7 +4724,9 @@
         "Check the Memo of Parties for the names of all petitioners and the position of each party before the Court/Tribunal and before the Supreme Court (i.e., Petitioner/Respondent/Appellant)."
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -4734,7 +4751,7 @@
         "Check Paragraph 1 of the SLP for the particulars of the impugned judgment/order, including the name of the Court/Tribunal, case number, date of the order, and nature of the order"
       ],
       "inspect_parts": [
-        "Impugned Order"
+        "Main Petition"
       ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
@@ -4756,7 +4773,9 @@
       "where_to_look": [
         "Check Paragraph 2 ,Question of Law of the SLP to ensure that the questions of law arising for consideration are specifically and precisely stated."
       ],
-      "inspect_parts": [],
+      "inspect_parts": [
+        "Main Petition"
+      ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
       ],
@@ -4778,7 +4797,9 @@
         "Check Paragraph 3 ,Declaration in terms of Rule 3(2) of the SLP for the declaration that no other petition seeking leave to appeal has been filed by the petitioner against the impugned judgment/order."
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -4802,7 +4823,7 @@
         "Check Paragraph 4 ,Declaration in terms of Rule 5 of the SLP for the declaration that the annexures filed with the SLP are true copies of the pleadings/documents forming part of the record before the Court/Tribunal below."
       ],
       "inspect_parts": [
-        "Annexures"
+        "Main Petition"
       ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
@@ -4824,7 +4845,9 @@
       "where_to_look": [
         "Check Paragraph 5 ,Grounds of the SLP to ensure that the grounds on which leave to appeal is sought are stated clearly and precisely."
       ],
-      "inspect_parts": [],
+      "inspect_parts": [
+        "Main Petition"
+      ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
       ],
@@ -4845,7 +4868,9 @@
       "where_to_look": [
         "Check Paragraph 6 ,Grounds for Interim Relief of the SLP to ensure that, where interim relief is sought, the grounds for seeking such relief are stated briefly and clearly."
       ],
-      "inspect_parts": [],
+      "inspect_parts": [
+        "Main Petition"
+      ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
       ],
@@ -4866,7 +4891,9 @@
       "where_to_look": [
         "Check Paragraph 7, Main Prayer of the SLP to ensure that the main prayer sought by the petitioner is clearly set out."
       ],
-      "inspect_parts": [],
+      "inspect_parts": [
+        "Main Petition"
+      ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
       ],
@@ -4887,7 +4914,9 @@
       "where_to_look": [
         "Check Paragraph 8 ,Interim Relief of the SLP to ensure that, where interim relief is sought, the interim prayer is clearly set out. Check also the top of the cause title on every page where the cause title is given for the phrase \"Along with prayer for interim relief\""
       ],
-      "inspect_parts": [],
+      "inspect_parts": [
+        "Main Petition"
+      ],
       "how_to_cure": [
         "Option for User to edit the paragraph from the Main Petitio with Jubeex."
       ],
@@ -5073,10 +5102,12 @@
         "2. Check the case file after the Impugned Judgment/Order and before the Annexures for an Appendix reproducing the English version of each of those provisions."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Annexures",
         "Appendix",
         "Impugned Order"
+      ],
+      "context_parts": [
+        "Main Petition",
+        "Annexures"
       ],
       "how_to_cure": [
         "Option for the User to upload the Appendix."
@@ -5188,7 +5219,7 @@
         "Check Paragraph 1A of the SLP, particularly where the impugned order is passed by a Single Bench of the High Court, for a statement as to (i) whether an intra-court appeal before a Division Bench, including a Letters Patent Appeal or Writ Appeal, lies against the impugned order; (ii) whether such remedy has been availed; and (iii) where the petitioner has approached the Supreme Court directly, the reason for not availing the remedy before the Division Bench."
       ],
       "inspect_parts": [
-        "Impugned Order"
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Whether LPA/Writ Appeal Lies",
@@ -5217,7 +5248,7 @@
         "2. Check whether the copy bears the certification/seal of the issuing court."
       ],
       "inspect_parts": [
-        "Synopsis"
+        "Impugned Order"
       ],
       "how_to_cure": [
         "1. Option for the User to Upload  the certified copy of the judgment/order appealed from.",
@@ -6328,10 +6359,12 @@
         "2. Check the case file after the Affidavit supporting the main petition for an Appendix reproducing the English version of each of those provisions."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Affidavit",
         "Appendix",
         "Impugned Order"
+      ],
+      "context_parts": [
+        "Main Petition",
+        "Affidavit"
       ],
       "how_to_cure": [
         "Option for the User to upload the Appendix."
@@ -8949,7 +8982,7 @@
         "1. Check the certificate following the Main Petition"
       ],
       "inspect_parts": [
-        "Main Petition"
+        "AOR's Certificate"
       ],
       "how_to_cure": [
         "1. Option for user to draft AOR certificate with Jubeex",

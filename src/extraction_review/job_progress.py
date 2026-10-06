@@ -36,7 +36,22 @@ _SCRUTINY_RULES: list[tuple[int, str, tuple[str, ...]]] = [
     # Per-defect Status lines; fine-grained % comes from ScrutinyPartial.
     (40, "checking", ("checking", "defect", "scrutin", "checked ")),
     (78, "reasoning", ("reasoning", "llm", "model", "openrouter")),
-    (92, "report", ("report", "writing", "artifact", "usage", "complete")),
+    # Do not use bare "complete": warnings such as "coverage will be
+    # incomplete" are emitted before defect execution and previously jumped
+    # progress to 92%, after which the monotonic counter could not decrease.
+    (
+        92,
+        "report",
+        (
+            "final scrutiny report",
+            "writing final",
+            "uploading artifact",
+            "usage summary",
+            "scrutiny complete",
+            "job complete",
+            "workflow finished",
+        ),
+    ),
 ]
 
 _last_write_at: dict[str, float] = {}

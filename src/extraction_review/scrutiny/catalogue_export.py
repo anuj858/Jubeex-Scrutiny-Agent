@@ -8,6 +8,8 @@ database does not have to interpret ``main_category`` strings.
 from __future__ import annotations
 
 import json
+import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +25,12 @@ from .applicability import (
     petition_code_for_filing_type,
 )
 from .rules import (
+    DEFAULT_ENABLED_DEFECTS,
+    Catalogue,
     Defect,
+    _load_file_catalogue,
     allowed_special_keys,
     get_case_types,
-    get_catalogue,
     normalize_filing_type,
     normalize_special_category,
 )
@@ -51,6 +55,16 @@ _PETITION_NAMES: dict[str, str] = {
     "curative_petition_criminal": "Curative Petition (Criminal)",
     "miscellaneous_application": "Miscellaneous Application",
 }
+
+
+def _export_catalogue() -> Catalogue:
+    return get_catalogue()
+
+
+@lru_cache(maxsize=1)
+def get_catalogue() -> Catalogue:
+    """Return the source JSON catalogue used by this export-only module."""
+    return _load_file_catalogue()
 
 
 def split_trigger_words(value: str | None) -> list[str]:
@@ -136,8 +150,8 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
     }
 
 
-def build_seed() -> dict[str, Any]:
-    catalogue = get_catalogue()
+def build_seed(catalogue: Catalogue | None = None) -> dict[str, Any]:
+    catalogue = catalogue or _export_catalogue()
     case_types = get_case_types()
 
     petition_types: list[dict[str, Any]] = []
@@ -247,14 +261,25 @@ def build_seed() -> dict[str, Any]:
     }
 
 
-def write_seed(path: Path) -> dict[str, Any]:
-    payload = build_seed()
+def write_seed(path: Path, catalogue: Catalogue | None = None) -> dict[str, Any]:
+    payload = build_seed(catalogue)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return payload
+
+
+def _enabled_ids_for_export(catalogue: Catalogue) -> tuple[str, ...]:
+    """Apply SCRUTINY_DEFECTS without consulting the runtime DB catalogue."""
+    raw = (os.getenv("SCRUTINY_DEFECTS") or "").strip()
+    if not raw:
+        return DEFAULT_ENABLED_DEFECTS
+    if raw.casefold() == "all":
+        return tuple(catalogue.defect_order)
+    selected = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    return selected or DEFAULT_ENABLED_DEFECTS
 
 
 def legacy_selected_ids(
@@ -270,13 +295,12 @@ def legacy_selected_ids(
         _applies_to_filing,
         _applies_to_special,
         _overlay_special_key,
-        enabled_defect_ids,
         order_parent_then_children,
     )
 
-    catalogue = get_catalogue()
+    catalogue = _export_catalogue()
     normalized = normalize_filing_type(filing_type)
-    allowed = set(enabled_defect_ids())
+    allowed = set(_enabled_ids_for_export(catalogue))
     overlay_requested = normalize_special_category(special_category)
     selected = [
         defect
@@ -296,10 +320,10 @@ def explicit_selected_ids(
     filing_type: str | None,
     special_category: str | None,
 ) -> list[str]:
-    from .rules import enabled_defect_ids, order_parent_then_children
+    from .rules import order_parent_then_children
 
-    catalogue = get_catalogue()
-    allowed = set(enabled_defect_ids())
+    catalogue = _export_catalogue()
+    allowed = set(_enabled_ids_for_export(catalogue))
     allowed_specials = allowed_special_keys(filing_type)
     selected = [
         defect

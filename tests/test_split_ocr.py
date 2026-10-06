@@ -165,4 +165,4 @@ Please enter my appearance on behalf of the Petitioner.
     ):
         result = structure_aware_split(blank_pdf())
 
-    assert result.page_parts == {1: ["Vakalatnama"]}
+    assert result.page_parts == {1: ["Vakalatnama", "Memo of Appearance"]}
