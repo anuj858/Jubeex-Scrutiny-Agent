@@ -18,11 +18,10 @@ from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import filing_location
 from extraction_review.scrutiny.schema import (
     BoundingBox,
-    Coverage,
-    DefectFinding,
     DefectResponse,
     EvidenceRef,
     FindingEvidence,
+    _one_published_evidence,
     apply_evidence_pages,
     apply_status_policy,
     public_finding,
@@ -325,8 +324,6 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
         summary="Looks missing but the quote is thin.",
         reasoning="Partial match only.",
         evidence=[],
-        suggested_fix="Add the missing heading.",
-        fix_rationale="Required by the rule.",
     )
     gated = apply_status_policy(weak)
     assert gated.status == "needs_review"
@@ -340,8 +337,6 @@ def test_confident_defect_stays_defect_found() -> None:
         summary="The required declaration is not in the filing.",
         reasoning="Searched the affidavit excerpts; it is not there.",
         evidence=[],
-        suggested_fix="File the declaration.",
-        fix_rationale="The rule requires it.",
     )
     assert apply_status_policy(strong).status == "defect_found"
 
@@ -369,8 +364,6 @@ def test_evidence_pages_snap_to_excerpt_not_rulebook() -> None:
                 quote="Whether the petition is in Form 28  YES",
             )
         ],
-        suggested_fix="File the prescribed checklist.",
-        fix_rationale="Required.",
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page == 2
@@ -393,8 +386,6 @@ def test_invented_evidence_page_becomes_null() -> None:
         summary="Unclear.",
         reasoning="The quote is not in the excerpts.",
         evidence=[EvidenceRef(page=19, quote="something that was never retrieved")],
-        suggested_fix=None,
-        fix_rationale=None,
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page is None
@@ -423,8 +414,6 @@ def test_evidence_keeps_retrieved_page_when_quote_ocr_differs() -> None:
                 quote="Verified at Una on 17/4 day of April, 2026",
             )
         ],
-        suggested_fix="State the drafting date.",
-        fix_rationale="Required.",
     )
     grounded = apply_evidence_pages(response, chunks)
     assert grounded.evidence[0].page == 26
@@ -437,50 +426,33 @@ def test_filing_location_states_page_or_page_missing() -> None:
             reviewed_pages=[2],
             document_parts=["Advocate's Checklist"],
         )
-        == "Filing page 2 — Advocate's Checklist."
+        == "Advocate's Checklist, page 2."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[3, 4], document_parts=[])
-        == "Filing page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
+        == "Page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
-        == "Filing page missing — no page was identified in the retrieved excerpts."
+        == "Page missing — no page was identified in the retrieved excerpts."
     )
 
 
-def test_public_finding_uses_the_part_page_and_source_links() -> None:
-    finding = DefectFinding(
-        check_id="D-6",
-        title="old title",
-        defect="Names and addresses of appointed arbitrators are missing.",
-        requirement="A Section 11 petition must name appointed arbitrators.",
-        main_category="Arbitration Petition",
-        status="compliant",
-        summary="The petition names the arbitrator.",
-        confidence=0.95,
-        reasoning="See the main petition.",
-        evidence=[
-            FindingEvidence(
-                page=35,
-                local_page=9,
-                quote="Mr. Justice Jayant Nath",
-                document_part="Main Petition",
-                slot_id="petition",
-                boxes_status="matched",
-                bounding_boxes=[BoundingBox(page=35, x=0.19, y=0.24, w=0.63, h=0.01)],
-            )
-        ],
-        location="Filing page 35 — Main Petition.",
-        location_source="Official source (not a page of this filing): Handbook, page 62",
-        coverage=Coverage(chunks_reviewed=2, pages_reviewed=[35]),
+def test_published_finding_keeps_one_evidence_item() -> None:
+    matched = FindingEvidence(
+        page=1,
+        quote="the line with a box",
+        bounding_boxes=[BoundingBox(page=1, x=0.1, y=0.2, w=0.3, h=0.04)],
+        boxes_status="matched",
+        document_part="Annexure P-4",
     )
-    published = public_finding(finding)
-    assert "title" not in published
-    assert published["location"].startswith("Main Petition, page 9")
-    assert published["evidence"][0]["page"] == 9
-    assert published["evidence"][0]["bounding_boxes"][0]["page"] == 9
-    assert "local_page" not in published["evidence"][0]
-    assert isinstance(published["location_source"], list)
-    assert published["defect_version"] == 1
-    assert published["coverage"]["pages_reviewed"] == [9]
+    page_only = FindingEvidence(
+        page=1,
+        quote="a sentence the page never boxed",
+        boxes_status="page_only",
+        document_part="Annexure P-4",
+    )
+    kept = _one_published_evidence([page_only, matched])
+    assert len(kept) == 1
+    assert kept[0].quote == "the line with a box"
+    assert kept[0].boxes_status == "matched"

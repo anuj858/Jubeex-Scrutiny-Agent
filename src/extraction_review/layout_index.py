@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from .document_parts import parts_on_page
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S
 from .split_upload import SplitPartInput, UploadTypeCatalog, ordered_parts
 
@@ -294,20 +295,59 @@ def stitch_slot_layouts(
         local = pages_by_slot.get(item.slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
         slot_layout = layouts_by_slot.get(item.slot_id) or {}
+        part_names = [
+            str(name).strip()
+            for name in (item.document_parts or ())
+            if str(name).strip()
+        ]
+        document_part = (
+            part_names[0]
+            if len(part_names) == 1
+            else ", ".join(part_names)
+            if part_names
+            else None
+        )
         if not local_numbers:
             if omit_empty:
                 continue
+            stitched[next_page] = _layout_page_stub(
+                local_page=1,
+                slot_id=item.slot_id,
+                document_part=document_part,
+            )
             next_page += 1
             continue
         for local_page in local_numbers:
             page = page_entry(slot_layout, local_page)
-            if isinstance(page, dict) and page.get("words"):
+            if isinstance(page, dict):
                 copied = dict(page)
-                copied["slot_id"] = item.slot_id
-                copied["local_page"] = local_page
-                stitched[next_page] = copied
+                words = copied.get("words")
+                copied["words"] = list(words) if isinstance(words, list) else []
+            else:
+                copied = {"words": []}
+            copied["slot_id"] = item.slot_id
+            copied["local_page"] = local_page
+            if document_part:
+                copied["document_part"] = document_part
+            stitched[next_page] = copied
             next_page += 1
     return stitched
+
+
+def _layout_page_stub(
+    *,
+    local_page: int,
+    slot_id: str,
+    document_part: str | None,
+) -> dict[str, Any]:
+    page: dict[str, Any] = {
+        "words": [],
+        "local_page": local_page,
+        "slot_id": slot_id,
+    }
+    if document_part:
+        page["document_part"] = document_part
+    return page
 
 
 def page_entry(layout: LayoutIndex | None, page: int | None) -> PageLayout | None:
@@ -547,6 +587,36 @@ def locate_quote(
         return [], "unavailable", resolved_page
 
 
+def boxes_on_pages(
+    quote: str,
+    pages: Sequence[int],
+    layout: LayoutIndex | None,
+) -> tuple[list[dict[str, float | int]], str, int | None]:
+    """Match a quote on the given pages only. Does not scan the rest of the layout.
+
+    Returns (boxes, boxes_status, matched_page). ``matched_page`` is the page
+    whose words contain the quote, or the first requested page when none do.
+    """
+    ordered: list[int] = []
+    for page in pages:
+        try:
+            number = int(page)
+        except (TypeError, ValueError):
+            continue
+        if number not in ordered:
+            ordered.append(number)
+    if not ordered or not isinstance(layout, Mapping) or not layout:
+        return [], "unavailable", ordered[0] if ordered else None
+    needle = (quote or "").strip()
+    if not needle:
+        return [], "page_only", ordered[0]
+    for page in ordered:
+        boxes, status = _boxes_on_page(needle, page, layout)
+        if status == "matched":
+            return boxes, "matched", page
+    return [], "page_only", ordered[0]
+
+
 def boxes_for_quote(
     quote: str,
     page: int | None,
@@ -580,10 +650,12 @@ def part_for_page(
             continue
         if chunk_page != page:
             continue
-        name = str(chunk.get("document_part") or "").strip()
-        if name and name not in names:
-            names.append(name)
-    return names[0] if names else None
+        for name in parts_on_page(chunk.get("document_part")):
+            if name not in names:
+                names.append(name)
+    if not names:
+        return None
+    return names[0] if len(names) == 1 else " / ".join(names)
 
 
 async def load_layout_index(

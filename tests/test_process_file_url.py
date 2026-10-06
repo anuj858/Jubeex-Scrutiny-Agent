@@ -317,6 +317,20 @@ def test_compiled_keeps_classified_slp_civil() -> None:
     assert catalog.filing_type == "SLP_CIVIL"
 
 
+def test_compiled_keeps_classified_curative_civil_over_supplied_slp() -> None:
+    filing_type, catalog = resolve_compiled_filing_type(
+        "CURATIVE_PETITION_CIVIL", "SLP_CIVIL"
+    )
+    assert filing_type == "CURATIVE_PETITION_CIVIL"
+    assert catalog.filing_type == "CURATIVE_PETITION_CIVIL"
+
+
+def test_compiled_unknown_without_filing_type_defaults_to_slp_civil() -> None:
+    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", None)
+    assert filing_type == "SLP_CIVIL"
+    assert catalog.filing_type == "SLP_CIVIL"
+
+
 def test_compiled_accepts_optional_filing_type() -> None:
     event = FileEvent(
         job_type="upload_compiled",

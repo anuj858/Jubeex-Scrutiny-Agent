@@ -159,6 +159,7 @@ FULL_JOB_TYPES = (
     )
     | PETITION_SPLIT_JOB_TYPES
 )
+CLASSIFY_COMPILED_JOB_TYPES = FULL_JOB_TYPES - PETITION_SPLIT_JOB_TYPES
 SPLIT_JOB_TYPES = (
     frozenset({"split", "parts", "upload_separate", "upload_split"})
     | EXTRACT_ONLY_JOB_TYPES
@@ -622,6 +623,7 @@ class FileEvent(StartEvent):
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    court: str | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -684,8 +686,6 @@ class FileEvent(StartEvent):
             )
         self.documents = resolved
         job = (self.job_type or "").strip().lower()
-        if job in PETITION_SPLIT_JOB_TYPES and not (self.filing_type or "").strip():
-            raise ValueError("filing_type is required when job_type is split_petition")
         if mode in {"split", "verify"}:
             label = "upload_separate" if mode == "split" else "verify_document"
             if not self.documents:
@@ -1682,6 +1682,7 @@ async def _extract_sliced_parts(
     parsed_slots: list[str] | None = None,
     agent_data_id: str | None = None,
     special_category: str | None = None,
+    court: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
@@ -1711,6 +1712,7 @@ async def _extract_sliced_parts(
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
             special_category=special_category,
+            court=court,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
@@ -1882,6 +1884,7 @@ async def _run_split_from_file_event(
         parsed_slots=parsed_slots,
         agent_data_id=agent_data_id,
         special_category=event.special_category,
+        court=event.court,
         reuse_pages_by_slot=reuse_pages if index_only and not edited else {},
         reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
         reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},
@@ -2037,9 +2040,14 @@ class ProcessFileWorkflow(Workflow):
             state.started_at = started_at
 
         job = (event.job_type or "").strip().lower()
+        # Compiled bundles must be classified from the PDF. A caller-supplied
+        # filing_type is only a fallback when classify cannot be sliced.  The
+        # split_petition endpoint is the exception: it is used after the user
+        # has selected a petition type and intentionally avoids another
+        # classification call.
         override = (
             None
-            if job in PETITION_SPLIT_JOB_TYPES
+            if job in CLASSIFY_COMPILED_JOB_TYPES
             else compiled_catalog_override(event.filing_type)
         )
         if override is not None:

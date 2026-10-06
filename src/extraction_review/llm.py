@@ -394,8 +394,6 @@ def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
             completed.get("summary") or "Model response was truncated."
         )
     completed.setdefault("evidence", [])
-    completed.setdefault("suggested_fix", None)
-    completed.setdefault("fix_rationale", None)
     return completed
 
 

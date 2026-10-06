@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -23,16 +24,14 @@ from ..document_parts import (
     parts_on_page,
     preferred_parts_for_defect,
 )
-from ..layout_index import locate_quote, page_entry, part_for_page, quote_in_text
+from ..layout_index import boxes_on_pages, page_entry, part_for_page, quote_in_text
 from .prompts import (
     display_cure_steps,
     filing_location,
-    finding_title,
-    readable_location_source,
     validated_reasoning,
     validated_summary,
 )
-from .rules import Defect, get_catalogue
+from .rules import Catalogue, CatalogueSource, Defect, get_catalogue, source_match_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +50,25 @@ class EvidenceRef(BaseModel):
     """A pointer back into the source document for one observation.
 
     This is the model-facing shape. Do not add coordinates here — the LLM
-    schema is derived from DefectResponse and must stay {page, quote}.
+    schema is derived from DefectResponse. The model returns the excerpt
+    id and a quote. The server adds the document page and boxes later.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    page: int | None = Field(
+    chunk_id: str | None = Field(
+        default=None,
         description=(
-            "1-indexed PDF page of THIS filing, copied from the excerpt "
-            "header such as '[Page 12 — Main Petition]'. Null if the quote is "
-            "not from an excerpt. Never use a page number from Authority "
-            "or location_source (those are official-rulebook locators)."
-        )
+            "Excerpt label copied exactly from the header, such as c1. "
+            "Null when the quote is not from an excerpt. Do not invent an id."
+        ),
+    )
+    page: int | None = Field(
+        default=None,
+        description=(
+            "Leave null. The document page is taken from chunk_id. "
+            "Never copy a page number from Authority or location_source."
+        ),
     )
     quote: str = Field(description="Verbatim excerpt supporting the finding")
 
@@ -90,7 +96,6 @@ class FindingEvidence(BaseModel):
     boxes_status: BoxesStatus = "unavailable"
     document_part: str | None = None
     slot_id: str | None = None
-    local_page: int | None = None
 
 
 class VisualLocalization(BaseModel):
@@ -149,12 +154,6 @@ class DefectResponse(BaseModel):
         )
     )
     evidence: list[EvidenceRef]
-    suggested_fix: str | None = Field(
-        description="What should be there instead. Null unless status is defect_found."
-    )
-    fix_rationale: str | None = Field(
-        description="Why the suggested fix resolves the defect. Null if no fix."
-    )
 
 
 class Coverage(BaseModel):
@@ -245,11 +244,78 @@ class UsageSummary(BaseModel):
     )
 
 
+class SourceLocation(BaseModel):
+    """Official rulebook for this defect: its link and the page in that document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = None
+    page: int | None = None
+
+
+_SOURCE_PAGE = re.compile(r"\bpages?\s+(\d+)\b", re.IGNORECASE)
+
+
+def _source_page_number(text: str) -> int | None:
+    match = _SOURCE_PAGE.search(text or "")
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _sources_named_in(text: str, sources: list[CatalogueSource]) -> list[CatalogueSource]:
+    folded = text.casefold()
+    cited: list[CatalogueSource] = []
+    for source in sources:
+        if source.source_id and source.source_id in text:
+            cited.append(source)
+            continue
+        if any(url and url in text for url in source.urls()):
+            cited.append(source)
+            continue
+        if any(token.casefold() in folded for token in source_match_tokens(source)):
+            cited.append(source)
+    return cited
+
+
+def official_source_locations(
+    defect: Defect, catalogue: Catalogue | None
+) -> list[SourceLocation]:
+    """Link and page of each official source named on this defect."""
+    raw = (defect.location_text or defect.location_source or "").strip()
+    if not raw or "did not give" in raw.lower():
+        return []
+    sources = list(catalogue.sources) if catalogue is not None else []
+    found: list[SourceLocation] = []
+    seen: set[tuple[str | None, int | None]] = set()
+    lines = [line.strip() for line in re.split(r"[\n;]+", raw) if line.strip()]
+    for line in lines:
+        page = _source_page_number(line)
+        matched = _sources_named_in(line, sources)
+        if not matched:
+            if page is None:
+                continue
+            key = (None, page)
+            if key not in seen:
+                seen.add(key)
+                found.append(SourceLocation(page=page))
+            continue
+        for source in matched:
+            key = (source.url, page)
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(SourceLocation(url=source.url, page=page))
+    return found
+
+
 class DefectFinding(BaseModel):
     """Server-assembled finding for one catalogue defect."""
 
     check_id: str
-    title: str
     defect: str = Field(
         description=(
             "Exact catalogue defect text from sci_registry_defects.v1.json. "
@@ -269,24 +335,23 @@ class DefectFinding(BaseModel):
     confidence: float
     reasoning: str
     evidence: list[FindingEvidence] = Field(default_factory=list)
-    suggested_fix: str | None = None
-    fix_rationale: str | None = None
     how_to_cure: list[str] = Field(default_factory=list)
     applicable_rule: str | None = None
     location: str | None = Field(
         default=None,
         description=(
-            "Petition/Matter PDF page for this finding (the full filing), "
-            "e.g. 'Filing page 12 — Vakalatnama.' If the page is unknown: "
-            "'Filing page missing — …'."
+            "Page inside the document type, e.g. 'Vakalatnama, page 1.' "
+            "This is not the stitched filing page. If the page is unknown: "
+            "'Page missing — …'."
         ),
     )
-    location_source: str | None = None
+    location_source: list[SourceLocation] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     visual_localizations: list[VisualLocalization] = Field(default_factory=list)
     coverage: Coverage = Field(default_factory=Coverage)
     usage: LlmUsage | None = None
     error: str | None = None
+    defect_version: int = 1
 
 
 DEFAULT_REVIEW_CONFIDENCE = 0.6
@@ -416,9 +481,14 @@ def _evidence_from_chunks(
         if not quote:
             continue
         seen.add(page)
-        refs.append(EvidenceRef(page=page, quote=quote))
-        if len(refs) >= 2:
-            break
+        refs.append(
+            EvidenceRef(
+                page=page,
+                quote=quote,
+                chunk_id=str(chunk.get("excerpt_id") or "") or None,
+            )
+        )
+        break
     return refs
 
 
@@ -468,22 +538,142 @@ def _as_bounding_boxes(raw: Any) -> list[BoundingBox]:
     return boxes
 
 
+def _local_pages(
+    layout: dict[int, dict[str, Any]] | None,
+    global_pages: list[int],
+) -> list[int]:
+    """Map stitched filing pages to each document's own page. Drop unmapped pages."""
+    if not layout:
+        return []
+    local: list[int] = []
+    for global_page in global_pages:
+        meta = page_entry(layout, global_page)
+        number = _safe_page_number((meta or {}).get("local_page")) if meta else None
+        if number is not None and number not in local:
+            local.append(number)
+    return local
+
+
+def _document_type_for_page(
+    page_meta: dict[str, Any] | None,
+    chunks: list[dict[str, Any]] | None,
+    global_page: int | None,
+) -> str | None:
+    """Document type for this layout page. The slot label wins over the chunk."""
+    raw = (page_meta or {}).get("document_part")
+    if isinstance(raw, list):
+        names = [str(name).strip() for name in raw if str(name).strip()]
+        if len(names) == 1:
+            return names[0]
+        if names:
+            return ", ".join(names)
+    text = str(raw or "").strip()
+    if text:
+        return text
+    return part_for_page(chunks, global_page)
+
+
+def _publish_local_evidence(
+    *,
+    local_page: int | None,
+    boxes: list[BoundingBox],
+    boxes_status: BoxesStatus,
+) -> tuple[int | None, list[BoundingBox], BoxesStatus]:
+    """API page is the page inside the document type.
+
+    The stitched filing page is never returned. A missing box does not clear
+    a known document page. Coordinates are sent only when the quote matched.
+    """
+    if local_page is None:
+        return None, [], "unavailable"
+    if boxes_status != "matched" or not boxes:
+        return local_page, [], "page_only"
+    return (
+        local_page,
+        [box.model_copy(update={"page": local_page}) for box in boxes],
+        "matched",
+    )
+
+
+def _excerpt_label(chunk: dict[str, Any]) -> str:
+    return str(chunk.get("excerpt_id") or "").strip()
+
+
+def _chunk_span(chunk: dict[str, Any]) -> list[int]:
+    """The chunk's own page.
+
+    Borrowed overlap is marked ``--- from page N ---`` for retrieval only.
+    A quote taken from that margin still cites this page, not the neighbour.
+    """
+    start = _safe_page_number(chunk.get("page"))
+    if start is None:
+        return []
+    return [start]
+
+
+def _choose_evidence_chunk(
+    ref: EvidenceRef,
+    page_chunks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Pick the sent chunk that owns this citation.
+
+    A matching quote wins over a wrong excerpt id. A known id is kept when
+    the quote is not in any sent chunk, so the document page can still be
+    returned. An unknown id with no quote match returns nothing.
+    """
+    cited_id = (ref.chunk_id or "").strip()
+    cited = None
+    if cited_id:
+        for chunk in page_chunks:
+            if _excerpt_label(chunk) == cited_id:
+                cited = chunk
+                break
+    quote = (ref.quote or "").strip()
+    quote_hits = [
+        chunk
+        for chunk in page_chunks
+        if quote and quote_in_text(quote, str(chunk.get("text") or ""))
+    ]
+    if cited is not None and cited in quote_hits:
+        return cited
+    if quote_hits:
+        for chunk in quote_hits:
+            if ref.page is not None and _chunk_page_for_quote(quote, chunk) == ref.page:
+                return chunk
+        return quote_hits[0]
+    if cited is not None:
+        return cited
+    return None
+
+
 def attach_evidence_boxes(
     refs: list[EvidenceRef],
     *,
     layout: dict[int, dict[str, Any]] | None = None,
     chunks: list[dict[str, Any]] | None = None,
 ) -> list[FindingEvidence]:
-    """Attach per-line boxes after page snap. Empty layout → unavailable."""
+    """Open the cited chunk's pages only. Never scan the rest of the filing."""
     attached: list[FindingEvidence] = []
-    prefer_pages = sorted(_retrieved_pages(chunks or []))
+    page_chunks = [
+        chunk for chunk in (chunks or []) if chunk.get("chunk_kind") != "summary"
+    ]
     for ref in refs:
         try:
-            boxes, status, page = locate_quote(
+            chunk = _choose_evidence_chunk(ref, page_chunks)
+            if chunk is None:
+                attached.append(
+                    FindingEvidence(
+                        page=None,
+                        quote=ref.quote or "",
+                        bounding_boxes=[],
+                        boxes_status="unavailable",
+                    )
+                )
+                continue
+            boxes, status, page = boxes_on_pages(
                 ref.quote or "",
-                ref.page,
+                _chunk_span(chunk),
                 layout,
-                prefer_pages=prefer_pages,
             )
             boxes_status: BoxesStatus = (
                 status
@@ -496,15 +686,22 @@ def attach_evidence_boxes(
             if page_meta is not None:
                 slot_id = str(page_meta.get("slot_id") or "").strip() or None
                 local_page = _safe_page_number(page_meta.get("local_page"))
+            document_part = _document_type_for_page(page_meta, chunks, page)
+            if not document_part:
+                document_part = str(chunk.get("document_part") or "").strip() or None
+            published_page, published_boxes, boxes_status = _publish_local_evidence(
+                local_page=local_page,
+                boxes=_as_bounding_boxes(boxes),
+                boxes_status=boxes_status,
+            )
             attached.append(
                 FindingEvidence(
-                    page=page,
+                    page=published_page,
                     quote=ref.quote or "",
-                    bounding_boxes=_as_bounding_boxes(boxes),
+                    bounding_boxes=published_boxes,
                     boxes_status=boxes_status,
-                    document_part=part_for_page(chunks, page),
+                    document_part=document_part,
                     slot_id=slot_id,
-                    local_page=local_page,
                 )
             )
         except Exception:
@@ -514,13 +711,29 @@ def attach_evidence_boxes(
             )
             attached.append(
                 FindingEvidence(
-                    page=getattr(ref, "page", None),
+                    page=None,
                     quote=(getattr(ref, "quote", None) or ""),
                     bounding_boxes=[],
                     boxes_status="unavailable",
                 )
             )
     return attached
+
+
+def _one_published_evidence(
+    evidence: list[FindingEvidence],
+) -> list[FindingEvidence]:
+    """The API finding carries one citation. A matched box wins."""
+    if len(evidence) <= 1:
+        return evidence
+
+    def rank(index: int, item: FindingEvidence) -> tuple[int, int, int]:
+        matched = 1 if item.boxes_status == "matched" and item.bounding_boxes else 0
+        has_page = 1 if item.page is not None else 0
+        return (matched, has_page, -index)
+
+    chosen = max(range(len(evidence)), key=lambda index: rank(index, evidence[index]))
+    return [evidence[chosen]]
 
 
 def apply_evidence_pages(
@@ -571,7 +784,9 @@ def apply_evidence_pages(
             # Keep a retrieved page so layout matching can still box the quote
             # when Pinecone OCR differs from the model quote.
             page = ref.page
-        grounded.append(EvidenceRef(page=page, quote=quote))
+        grounded.append(
+            EvidenceRef(page=page, quote=quote, chunk_id=ref.chunk_id)
+        )
     response.evidence = grounded
     return response
 
@@ -637,7 +852,6 @@ class ScrutinyReport(BaseModel):
     catalogue_version: str
     agent_data_id: str | None = None
     file_hash: str | None = None
-    file_name: str | None = None
     petition_type: str | None = None
     model: str | None = None
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
@@ -816,21 +1030,29 @@ def build_finding(
     page_parts: dict[int, list[str]] | None = None,
     record: dict[str, Any] | None = None,
 ) -> DefectFinding:
-    suggested = response.suggested_fix if response.status == "defect_found" else None
-    rationale = response.fix_rationale if response.status == "defect_found" else None
     catalogue = get_catalogue()
     refs = list(response.evidence)
     if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
-    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
+    evidence = _one_published_evidence(
+        attach_evidence_boxes(refs, layout=layout, chunks=chunks)
+    )
     evidence_pages = [ref.page for ref in evidence if ref.page is not None]
-    pages = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
-    parts = _parts_for_pages(chunks, evidence_pages or pages)
+    reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
+    reviewed_local = _local_pages(layout, reviewed_global)
+    pages = reviewed_local
+    seen_parts: list[str] = []
+    for ref in evidence:
+        if ref.document_part and ref.document_part not in seen_parts:
+            seen_parts.append(ref.document_part)
+    if not seen_parts:
+        seen_parts = _parts_for_pages(chunks, reviewed_global)
     location = filing_location(
         evidence_pages=evidence_pages,
-        reviewed_pages=pages,
-        document_parts=parts,
+        reviewed_pages=reviewed_local or evidence_pages,
+        document_parts=seen_parts,
     )
+    coverage = coverage.model_copy(update={"pages_reviewed": reviewed_local})
     from ..visual.attach import attach_visual_localizations
 
     visual_localizations = attach_visual_localizations(
@@ -841,7 +1063,6 @@ def build_finding(
     )
     return DefectFinding(
         check_id=defect.check_id,
-        title=finding_title(defect, catalogue),
         defect=defect.defect,
         requirement=defect.requirement,
         main_category=defect.main_category,
@@ -863,16 +1084,15 @@ def build_finding(
             evidence_pages=evidence_pages,
         ),
         evidence=evidence,
-        suggested_fix=suggested,
-        fix_rationale=rationale,
         how_to_cure=display_cure_steps(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
         location=location,
-        location_source=readable_location_source(defect, catalogue),
+        location_source=official_source_locations(defect, catalogue),
         evidence_ids=evidence_ids,
         visual_localizations=visual_localizations,
         coverage=coverage,
         usage=usage,
+        defect_version=defect.defect_version,
     )
 
 
@@ -897,7 +1117,6 @@ def failed_finding(
     )
     return DefectFinding(
         check_id=defect.check_id,
-        title=finding_title(defect, catalogue),
         defect=defect.defect,
         requirement=defect.requirement,
         main_category=defect.main_category,
@@ -908,14 +1127,13 @@ def failed_finding(
         reasoning=f"This check did not run: {error}",
         evidence=[],
         visual_localizations=visual_localizations,
-        suggested_fix=None,
-        fix_rationale=None,
         how_to_cure=display_cure_steps(defect.how_to_cure),
         applicable_rule=defect.applicable_rule,
         location="Filing page missing — this check did not run.",
-        location_source=readable_location_source(defect, catalogue),
+        location_source=official_source_locations(defect, catalogue),
         error=error,
         usage=usage,
+        defect_version=defect.defect_version,
     )
 
 
