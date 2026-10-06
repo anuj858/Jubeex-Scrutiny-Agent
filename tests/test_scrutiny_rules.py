@@ -446,16 +446,41 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "List of Dates & Events",
     ]
     assert catalogue.defect("D-52").inspect_parts == ["Application"]
-    assert catalogue.defect("D-52").context_parts == ["Annexures"]
+    assert catalogue.defect("D-52").context_parts == [
+        "Annexures",
+        "Main Petition",
+    ]
     assert catalogue.defect("D-54").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-57").inspect_parts == [
         "Main Petition",
         "Vakalatnama",
     ]
     assert catalogue.defect("D-59").inspect_parts == ["Advocate's Checklist"]
+    assert catalogue.defect("D-63").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-63").context_parts == ["Memo of Parties"]
+    assert catalogue.defect("D-64").inspect_parts == ["Affidavit"]
+    assert catalogue.defect("D-64").context_parts == [
+        "Main Petition",
+        "Application",
+    ]
+    assert catalogue.defect("D-68").inspect_parts == ["Annexures"]
+    assert catalogue.defect("D-68").context_parts == ["Index"]
+    assert catalogue.defect("D-69").inspect_parts == ["Annexures"]
+    assert catalogue.defect("D-69").context_parts == [
+        "Application",
+        "Affidavit",
+    ]
+    assert catalogue.defect("D-74").inspect_parts == ["Memo of Appearance"]
+    assert catalogue.defect("D-74").context_parts == ["Vakalatnama"]
     assert catalogue.defect("D-72").context_parts == ["Cover Page"]
     assert catalogue.defect("D-73").inspect_parts == ["Vakalatnama"]
     assert catalogue.defect("D-94").context_parts == ["Synopsis"]
+    assert catalogue.defect("D-103").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-103").context_parts == [
+        "Application",
+        "Vakalatnama",
+        "AOR's Certificate",
+    ]
     assert catalogue.defect("D-111").inspect_parts == ["List of Dates & Events"]
     assert catalogue.defect("D-111").context_parts == [
         "Synopsis",
@@ -500,6 +525,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert catalogue.defect("D-163").context_parts == ["Impugned Order"]
     assert catalogue.defect("D-180").inspect_parts == ["Impugned Order"]
     assert catalogue.defect("D-194").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-223").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-324").inspect_parts == ["AOR's Certificate"]
     assert catalogue.defect("D-325").inspect_parts == ["Impugned Order"]
     assert catalogue.defect("D-327").inspect_parts == ["List of Dates & Events"]

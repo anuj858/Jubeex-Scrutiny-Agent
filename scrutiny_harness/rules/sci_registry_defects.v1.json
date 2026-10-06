@@ -1787,7 +1787,8 @@
         "Application"
       ],
       "context_parts": [
-        "Annexures"
+        "Annexures",
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Prompt the User to confirm whether the interlocutory application or miscellaneous application is being filed beyond the prescribed period. If so, Jubeex will auto-generate the application for condonation of delay",
@@ -2096,7 +2097,9 @@
         "“The Hon’ble Chief Justice of India and His Hon’ble Companion Judges of the Supreme Court of India The Humble Appeal of the Appellant Named Above” or “Most Respectfully Showeth:”]"
       ],
       "inspect_parts": [
-        "Main Petition",
+        "Main Petition"
+      ],
+      "context_parts": [
         "Memo of Parties"
       ],
       "how_to_cure": [
@@ -2124,10 +2127,10 @@
         "3. IN CASE OF AN AFFIDAVIT FILED SEPARATELY ALONG WITH AN I.A. THAT IS NOT A PART OF THE MAIN PETITION CHECK THE CAUSE TITLE ALSO AS IT SHOULD SAY \"I.A. NO. ____/2026 IN SLP(C) NO. _____/2026\""
       ],
       "inspect_parts": [
-        "Cover Page",
-        "AOR's Certificate",
+        "Affidavit"
+      ],
+      "context_parts": [
         "Main Petition",
-        "Affidavit",
         "Application"
       ],
       "how_to_cure": [
@@ -2236,8 +2239,10 @@
         "2. Check whether a translation of such document/portion is filed alongside it and is described as a translated copy in the Index and List of Dates."
       ],
       "inspect_parts": [
-        "Index",
         "Annexures"
+      ],
+      "context_parts": [
+        "Index"
       ],
       "how_to_cure": [
         "1. Option for the User to upload the translated document with Jubeex.",
@@ -2262,9 +2267,11 @@
         "2. If the translation filed is not an official one, check the Applications placed after the Annexures for an application seeking exemption from filing the official translation."
       ],
       "inspect_parts": [
-        "Affidavit",
-        "Annexures",
-        "Application"
+        "Annexures"
+      ],
+      "context_parts": [
+        "Application",
+        "Affidavit"
       ],
       "how_to_cure": [
         "1. Option for Jubeex to draft the Application for Exemption from Filing Official Translation (with an option for the User to review and edit them).",
@@ -2424,7 +2431,9 @@
         "Check for the Memo of Appearance, which is usually filed along with the Vakalatnama or placed immediately after the Vakalatnama."
       ],
       "inspect_parts": [
-        "Memo of Appearance",
+        "Memo of Appearance"
+      ],
+      "context_parts": [
         "Vakalatnama"
       ],
       "how_to_cure": [
@@ -3173,8 +3182,12 @@
         "2. Check that the application states the reasons why the petitioner cannot engage an advocate and whether he is willing to accept an advocate appointed by the Court."
       ],
       "inspect_parts": [
-        "Annexures",
-        "Application"
+        "Main Petition"
+      ],
+      "context_parts": [
+        "Application",
+        "Vakalatnama",
+        "AOR's Certificate"
       ],
       "how_to_cure": [
         "1.Option for Jubeex to draft the Application for Permission to Appear and Argue in Person.",
@@ -6288,7 +6301,6 @@
         "4. Verify that the status corresponds to the party’s actual position in the proceedings before the court(s) below."
       ],
       "inspect_parts": [
-        "AOR's Certificate",
         "Main Petition"
       ],
       "how_to_cure": [

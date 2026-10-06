@@ -24,7 +24,10 @@ from workflows.resource import Resource
 from .clients import agent_name, get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION
 from .document_parts import (
+    ANNEXURE_FAMILY,
     APPLICATION_FAMILY,
+    _is_numbered_annexure,
+    _requires_annexure_collection_coverage,
     chunks_cover_part,
     expand_parts_for_retrieval,
     family_split_name,
@@ -474,11 +477,56 @@ def _add_layout_fallback_chunks(
     last_first = bool(
         re.search(
             r"last\s+page|end\s+of|below\s+the\s+prayer|date\s+of\s+drafting|"
-            r"execution\s+date|signature",
+            r"execution\s+date|signature|true\s+cop|certif",
             wording,
         )
     )
     boundaries = ("last", "first") if last_first else ("first", "last")
+
+    # Collection-wide Annexure checks cannot rely on semantic ranking alone.
+    # For example, a "TRUE COPY" search ranks compliant pages above the
+    # Annexure that actually omits the endorsement.  Ground one boundary from
+    # every numbered Annexure first, then the opposite boundary when the
+    # evidence budget permits.  This also lets vernacular/translation checks
+    # see each distinct exhibit instead of a single high-scoring sample.
+    if _requires_annexure_collection_coverage(defect):
+        annexure_runs: dict[str, list[dict[str, Any]]] = {}
+        for options in candidates.values():
+            for option in options:
+                numbered = next(
+                    (
+                        name
+                        for name in _layout_document_parts(option.get("document_part"))
+                        if _is_numbered_annexure(name)
+                        and family_split_name(name) == ANNEXURE_FAMILY
+                    ),
+                    None,
+                )
+                if numbered:
+                    annexure_runs.setdefault(numbered.casefold(), []).append(option)
+
+        for boundary in boundaries:
+            for options in annexure_runs.values():
+                if len(chosen) >= capacity:
+                    break
+                fallback = options[0] if boundary == "first" else options[-1]
+                candidate = next(
+                    (
+                        chunk
+                        for chunk in target_pages
+                        if chunk.get("page") == fallback.get("page")
+                        and any(
+                            _is_numbered_annexure(name)
+                            for name in _layout_document_parts(
+                                chunk.get("document_part")
+                            )
+                        )
+                    ),
+                    fallback,
+                )
+                if any(chunk.get("page") == candidate.get("page") for chunk in chosen):
+                    continue
+                chosen.append(candidate)
 
     # First guarantee the most relevant boundary for every required part,
     # then add the opposite boundary when the evidence budget permits.

@@ -1837,6 +1837,7 @@ def _requires_annexure_collection_coverage(defect: Defect) -> bool:
     ).casefold()
     return bool(
         re.search(r"\b(?:each|every|all)\s+annexure", wording)
+        or re.search(r"\b(?:any\s+)?vernacular\b", wording)
         or re.search(
             r"\bannexures?\b.{0,100}\b(?:chronological|match|true cop)", wording
         )

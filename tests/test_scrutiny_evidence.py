@@ -338,6 +338,21 @@ def test_each_annexure_check_uses_full_budget_and_distinct_annexures() -> None:
     }
 
 
+def test_vernacular_annexure_check_uses_collection_budget() -> None:
+    defect = SimpleNamespace(
+        defect="Translations of vernacular documents are not filed",
+        requirement="If there are any vernacular documents, translations must be filed",
+        where_to_look=["Check the Annexures for any vernacular document."],
+        inspect_parts=["Annexures"],
+        context_parts=["Index"],
+        exclude_parts=None,
+        trigger_words=None,
+        parent_check_id=None,
+    )
+
+    assert max_chunks_for_defect(defect, ceiling=12) == 12
+
+
 def test_single_annexure_check_keeps_narrow_budget() -> None:
     defect = SimpleNamespace(
         defect="Annexure P-1 heading is missing",
@@ -404,6 +419,38 @@ def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     )
 
     assert [chunk["page"] for chunk in chunks] == [12, 28]
+
+
+def test_layout_fallback_covers_each_annexure_and_its_last_page() -> None:
+    defect = SimpleNamespace(
+        defect="Annexures are not true copies",
+        requirement="Each Annexure must be a true copy",
+        inspect_parts=["Annexures"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check each Annexure for a true copy certification."],
+    )
+    layout = {
+        page: {
+            "document_part": label,
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, label, text in (
+            (10, "Annexure P-1", "P1 OPEN"),
+            (11, "Annexure P-1", "P1 END"),
+            (20, "Annexure P-2", "P2 OPEN"),
+            (21, "Annexure P-2", "P2 TRUE COPY"),
+            (30, "Annexure P-3", "P3 OPEN"),
+            (31, "Annexure P-3", "P3 TRUE COPY"),
+        )
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=6)
+
+    assert [chunk["page"] for chunk in chunks] == [10, 11, 20, 21, 30, 31]
+    # Certification checks must see the end of every Annexure, not only the
+    # first caption page selected by semantic search.
+    assert {11, 21, 31}.issubset({chunk["page"] for chunk in chunks})
 
 
 def test_layout_boundaries_replace_incomplete_semantic_excerpt_set() -> None:
