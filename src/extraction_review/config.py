@@ -156,13 +156,13 @@ class CauseTitle(BaseModel):
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present."""
+    """One petitioner or respondent. Fill only from the Main Petition starting pages."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
         description=(
             "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition "
-            "starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix "
+            "starting pages. ORGANIZATION if the name has a prefix "
             "M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, "
             "or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, "
             "Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. "
@@ -170,7 +170,13 @@ class Party(BaseModel):
             "Always uppercase. Leave null if unclear."
         ),
     )
-    name: str | None = Field(default=None, description="Full name as printed. Do not concatenate S/o or W/o into the name.")
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Full name as printed on the Main Petition party block. Do not use the "
+            "Cover Page cause-title line. Do not concatenate S/o or W/o into the name."
+        ),
+    )
     entity_type: str | None = Field(
         default=None,
         description=(
@@ -190,7 +196,13 @@ class Party(BaseModel):
     relation: str | None = Field(default=None, description="Relation prefix only, e.g. S/o, D/o, W/o. Leave null if not printed.")
     guardian: str | None = Field(default=None, description="Related person's name after S/o, D/o, W/o. Leave null if not printed.")
     occupation: str | None = Field(default=None, description="Occupation ONLY if explicitly stated.")
-    address: str | None = Field(default=None, description="Verbatim address. Leave null if not printed on a fill source. Never copy from Vakalatnama.")
+    address: str | None = Field(
+        default=None,
+        description=(
+            "Verbatim address from the Main Petition party block. Leave null if not "
+            "printed there. Never copy from the Cover Page or Vakalatnama."
+        ),
+    )
     city: str | None = Field(default=None, description="Extracted city")
     state: str | None = Field(default=None, description="Extracted state")
     pin_code: str | None = Field(default=None, description="Extracted pincode")
@@ -199,12 +211,25 @@ class Party(BaseModel):
     is_primary: bool | None = Field(
         default=None,
         description=(
-            "True for the party whose name matches the Cover Page main petitioner or "
-            "main respondent. False for the others. Do not invent a party from Cover Page."
+            "True for the Main Petition party whose name matches "
+            "cause_title.main_petitioner or cause_title.main_respondent. False for "
+            "the others. Do not create or replace a party from the Cover Page."
         ),
     )
-    raw_text: str | None = Field(default=None, description="Verbatim party block as printed, including name, relation, and address lines.")
-    source_part: str | None = Field(default=None, description="Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.")
+    raw_text: str | None = Field(
+        default=None,
+        description=(
+            "Verbatim Main Petition party block, including name, relation, and "
+            "address lines. Do not copy the Cover Page '...Petitioner' or "
+            "'...Respondent' line."
+        ),
+    )
+    source_part: str | None = Field(
+        default=None,
+        description=(
+            "Must be Main Petition. Never Cover Page, Vakalatnama, or Memo of Parties."
+        ),
+    )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -382,8 +407,20 @@ class LegalExtractRecord(BaseModel):
             "and draft formatted_title from party counts."
         ),
     )
-    petitioners: list[Party] = Field(default_factory=list, description="Petitioners. One record per petitioner.")
-    respondents: list[Party] = Field(default_factory=list, description="Respondents. One record per respondent.")
+    petitioners: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "Petitioners. One record per petitioner, from the Main Petition starting "
+            "pages only. Do not copy the Cover Page cause-title line."
+        ),
+    )
+    respondents: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "Respondents. One record per respondent, from the Main Petition starting "
+            "pages only. Do not copy the Cover Page cause-title line."
+        ),
+    )
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(

@@ -575,7 +575,7 @@
           "type": "object"
         },
         "Party": {
-          "description": "One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present.",
+          "description": "One petitioner or respondent. Fill only from the Main Petition starting pages.",
           "properties": {
             "serial": {
               "anyOf": [
@@ -600,7 +600,7 @@
                 }
               ],
               "default": null,
-              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
+              "description": "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition starting pages. ORGANIZATION if the name has a prefix M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. Treat 'The' as a name prefix (The State of …), not every word 'the'. Always uppercase. Leave null if unclear.",
               "title": "Kind"
             },
             "name": {
@@ -613,7 +613,7 @@
                 }
               ],
               "default": null,
-              "description": "Full name as printed. Do not concatenate S/o or W/o into the name.",
+              "description": "Full name as printed on the Main Petition party block. Do not use the Cover Page cause-title line. Do not concatenate S/o or W/o into the name.",
               "title": "Name"
             },
             "entity_type": {
@@ -691,7 +691,7 @@
                 }
               ],
               "default": null,
-              "description": "Verbatim address. Leave null if not printed on a fill source. Never copy from Vakalatnama.",
+              "description": "Verbatim address from the Main Petition party block. Leave null if not printed there. Never copy from the Cover Page or Vakalatnama.",
               "title": "Address"
             },
             "city": {
@@ -769,7 +769,7 @@
                 }
               ],
               "default": null,
-              "description": "True for the party whose name matches the Cover Page main petitioner or main respondent. False for the others. Do not invent a party from Cover Page.",
+              "description": "True for the Main Petition party whose name matches cause_title.main_petitioner or cause_title.main_respondent. False for the others. Do not create or replace a party from the Cover Page.",
               "title": "Is Primary"
             },
             "raw_text": {
@@ -782,7 +782,7 @@
                 }
               ],
               "default": null,
-              "description": "Verbatim party block as printed, including name, relation, and address lines.",
+              "description": "Verbatim Main Petition party block, including name, relation, and address lines. Do not copy the Cover Page '...Petitioner' or '...Respondent' line.",
               "title": "Raw Text"
             },
             "source_part": {
@@ -795,7 +795,7 @@
                 }
               ],
               "default": null,
-              "description": "Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.",
+              "description": "Must be Main Petition. Never Cover Page, Vakalatnama, or Memo of Parties.",
               "title": "Source Part"
             },
             "source_pages": {
@@ -865,7 +865,7 @@
           "description": "Cause title representing petitioner vs respondent. Fill from Cover Page. If Cover Page is not in this pack, fill from the Main Petition caption and draft formatted_title from party counts."
         },
         "petitioners": {
-          "description": "Petitioners. One record per petitioner.",
+          "description": "Petitioners. One record per petitioner, from the Main Petition starting pages only. Do not copy the Cover Page cause-title line.",
           "items": {
             "$ref": "#/$defs/Party"
           },
@@ -873,7 +873,7 @@
           "type": "array"
         },
         "respondents": {
-          "description": "Respondents. One record per respondent.",
+          "description": "Respondents. One record per respondent, from the Main Petition starting pages only. Do not copy the Cover Page cause-title line.",
           "items": {
             "$ref": "#/$defs/Party"
           },
@@ -1086,22 +1086,12 @@
       },
       "petitioners": {
         "fill": [
-          "Main Petition",
-          "Cover Page"
-        ],
-        "verify": [
-          "Main Petition",
-          "Cover Page"
+          "Main Petition"
         ]
       },
       "respondents": {
         "fill": [
-          "Main Petition",
-          "Cover Page"
-        ],
-        "verify": [
-          "Main Petition",
-          "Cover Page"
+          "Main Petition"
         ]
       },
       "advocates_on_record": {

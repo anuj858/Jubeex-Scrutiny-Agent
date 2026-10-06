@@ -78,6 +78,25 @@ _ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d+)$")
 _APPLICATION_SLOT_RE = re.compile(r"^application_(\d+)$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
+PARTY_EXTRACT_RULES = (
+    "List every petitioner and respondent only from the starting pages of the "
+    "Main Petition; that party list can run 3-4 pages or more. Copy the full "
+    "party block from those pages: name, relation, guardian, occupation, address, "
+    "and the other printed particulars. source_part must be Main Petition. "
+    "Do not copy the Cover Page cause-title line (...Petitioner / ...Respondent) "
+    "into petitioners or respondents, and do not use Cover Page as source_part. "
+    "The Cover Page has only the short main name. If the Main Petition is not in "
+    "this pack, set party names to N/A. Never copy party names or addresses from "
+    "Cover Page, Vakalatnama, PoA/BR, Memo of Appearance, AOR's Certificate, or "
+    "Memo of Parties. Compare petitioner 1 on those starting pages with "
+    "cause_title.main_petitioner, and respondent 1 with cause_title.main_respondent. "
+    "A different name, a missing name, or a side swap is an inconsistencies item. "
+    "Do not replace the Main Petition party with the Cover Page name. Extra "
+    "parties continue on later starting pages; Cover Page And Anr/Ors is not the "
+    "second party's name. Do not invent parties. Write N/A if a field is not "
+    "printed on the Main Petition. kind is INDIVIDUAL or ORGANIZATION from name "
+    "prefixes/suffixes. ORGANIZATION without acting_through is an inconsistencies item."
+)
 
 
 class SplitUploadError(ValueError):
@@ -893,6 +912,12 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
             " For impugned_orders, use bracketed particulars only when Impugned Order "
             "is not in this pack."
         )
+    if "petitioners" in petition_fill or "respondents" in petition_fill:
+        extras.append(
+            " For petitioners and respondents, use only these starting pages. "
+            "Copy the full party block (name, relation, guardian, occupation, address). "
+            "Do not use the Cover Page cause-title line. source_part must be Main Petition."
+        )
     if "petition_date" in petition_fill:
         extras.append(
             " For petition_date, use only the last page after Main Prayer or Prayer. "
@@ -917,6 +942,10 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
             " For impugned_orders, use bracketed particulars only when Impugned Order "
             "is not in this pack."
         )
+    cover_bits.append(
+        " Do not copy petitioners or respondents from this page. Name, relation, "
+        "guardian, occupation, and address come only from the Main Petition starting pages."
+    )
     for extra in cover_bits:
         if extra.strip() not in cover_note:
             cover_note = cover_note.rstrip() + extra
@@ -941,22 +970,7 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             verify = ", ".join(f"[{p}]" for p in spec.verify)
             bit += f". Check spelling against {verify}; never overwrite fill text"
         if field_name in PARTY_FIELDS:
-            bit += (
-                ". List every petitioner and respondent from the starting pages of "
-                "the Main Petition; that party list can run 3-4 pages or more. "
-                "Cover Page prints only one petitioner and one respondent (the main "
-                "names, plus And Anr/Ors if extras exist). If a field is blank on "
-                "those starting pages or Main Petition is missing, use the Cover Page "
-                "if it is in this pack. Merge blank particulars between those two only. "
-                "Never copy party names or addresses from Vakalatnama or Memo of Parties. "
-                "Use Cover Page to mark is_primary from the cover cause-title names. "
-                "Petitioner 1 on the Main Petition starting pages must be the same "
-                "person as cause_title.main_petitioner; respondent 1 must be the same "
-                "person as cause_title.main_respondent. Flag a different name, a "
-                "missing name, or a side swap (Cause Title petitioner listed as a "
-                "respondent, or the reverse). And Anr/Ors on Cover Page means extra "
-                "parties exist; list those names from the Main Petition starting pages"
-            )
+            bit += f". {PARTY_EXTRACT_RULES.rstrip('.')}"
         if field_name == "cause_title":
             bit += (
                 ". Prefer Cover Page. If Cover Page is not in this pack, fill from the "
@@ -1078,26 +1092,7 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "If spellings differ, keep the fill value and add an inconsistencies item."
         )
     if field_name in PARTY_FIELDS:
-        extra += (
-            " List every petitioner and respondent from the starting pages of the "
-            "Main Petition; that party list can run 3-4 pages or more. Cover Page "
-            "prints only one petitioner and one respondent. If a field is blank on "
-            "those starting pages or Main Petition is missing, use the Cover Page if "
-            "it is in this pack. If a field is blank in one of those parts, fill it "
-            "from the other. If neither Main Petition nor Cover Page is in this pack, "
-            "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
-            "Memo of Appearance, AOR's Certificate, or Memo of Parties. "
-            "Use Cover Page to decide which already-listed party is primary and to "
-            "fill blanks. Petitioner 1 must be the same person as "
-            "cause_title.main_petitioner; respondent 1 must be the same person as "
-            "cause_title.main_respondent. Flag a different name, a missing name, or "
-            "a side swap. Extra petitioners and respondents continue on later starting "
-            "pages of the Main Petition; Cover Page And Anr/Ors is not the second "
-            "party's name. Do not invent parties. Write N/A if a field is not printed "
-            "on a fill source that is present. "
-            "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
-            "ORGANIZATION without acting_through is an inconsistencies item."
-        )
+        extra += f" {PARTY_EXTRACT_RULES}"
     if field_name == "cause_title":
         extra += (
             " main_petitioner and main_respondent are the names on the Cover Page "
@@ -1203,6 +1198,7 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
     lines.extend(
         [
             "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page if present, else Main Petition petitioner 1 / respondent 1, without And Anr / And Ors. Never use [And ors.] or other square brackets.",
+            "- petitioners and respondents: Main Petition starting pages only. Copy the full party block (name, relation, guardian, occupation, address). Do not copy the Cover Page cause-title line into serial 1. source_part must be Main Petition.",
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- petition_type: Main Petition cause title first; Cover Page cause title if not printed there.",

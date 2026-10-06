@@ -616,9 +616,11 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
     assert "Prefer Vakalatnama" in pack
     assert "Do not copy petitioner or respondent names" in pack
     assert (
-        "Never copy party names or addresses from Vakalatnama or Memo of Parties"
+        "Never copy party names or addresses from Cover Page, Vakalatnama"
         in pack
     )
+    assert "Do not copy petitioners or respondents from this page" in pack
+    assert "source_part must be Main Petition" in pack
     assert "and Anr." in pack
     assert "petition grounds later page" not in pack
     assert "index listing" not in pack
@@ -700,15 +702,14 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "memo of appearance advocates" in pack
 
 
-def test_party_fields_prefer_petition_then_cover_page() -> None:
+def test_party_fields_fill_from_main_petition_only() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
     )
     party_sources = FieldSources(
-        fill=("Main Petition", "Cover Page"),
-        verify=("Main Petition", "Cover Page"),
+        fill=("Main Petition",),
     )
     assert catalog.extract_field_sources["petitioners"] == party_sources
     assert catalog.extract_field_sources["respondents"] == party_sources
@@ -822,7 +823,7 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
         schema,
         {
             "cause_title": ["Cover Page", "Main Petition"],
-            "petitioners": ["Main Petition", "Cover Page"],
+            "petitioners": ["Main Petition"],
         },
     )
     assert (
@@ -830,14 +831,14 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
         in updated["properties"]["cause_title"]["description"]
     )
     petitioners = updated["properties"]["petitioners"]["description"]
+    assert "Fill only from Main Petition" in petitioners
     assert "starting pages of the Main Petition" in petitioners
     assert "3-4 pages or more" in petitioners
-    assert "only one petitioner and one respondent" in petitioners
-    assert "use the Cover Page" in petitioners
-    assert "fill it from the other" in petitioners
+    assert "Do not copy the Cover Page cause-title line" in petitioners
+    assert "do not use Cover Page as source_part" in petitioners
     assert "set party names to N/A" in petitioners
-    assert "Never copy party names or addresses from Vakalatnama" in petitioners
-    assert "Petitioner 1 must be the same person as" in petitioners
+    assert "Never copy party names or addresses from Cover Page" in petitioners
+    assert "Compare petitioner 1" in petitioners
     cause = updated["properties"]["cause_title"]["description"]
     assert "Cover Page has only one petitioner and one respondent" in cause
     assert "Cause Title petitioner must be the same person as petitioner 1" in cause
@@ -920,9 +921,12 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
 
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
+    assert "petitioners: fill Main Petition\n" in prompt
+    assert "respondents: fill Main Petition\n" in prompt
+    assert "petitioners: fill Main Petition, Cover Page" not in prompt
+    assert "respondents: fill Main Petition, Cover Page" not in prompt
     assert (
-        "petitioners: fill Main Petition, Cover Page; verify Main Petition, Cover Page"
-        in prompt
+        "Do not copy the Cover Page cause-title line into serial 1" in prompt
     )
     assert "cause_title: fill Cover Page, Main Petition; verify Main Petition" in prompt
     assert (
