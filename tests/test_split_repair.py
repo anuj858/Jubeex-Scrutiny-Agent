@@ -3507,3 +3507,113 @@ def test_applications_follow_index_order_when_pdf_order_is_reversed() -> None:
     assert repaired[15] == ["Application 2"]
     assert repaired[120] == ["Application 1"]
     assert repaired[121] == ["Application 1"]
+
+
+def test_criminal_appeal_position_of_parties_opens_main_petition() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE HON'BLE SUPREME COURT OF INDIA\n"
+        "CRIMINAL APPELLATE JURISDICTION\n"
+        "CRIMINAL APPEAL NO. OF 2023\n"
+        "POSITION OF PARTIES\n"
+        "Sathish  Accused No. 1  Appellant\nVERSUS\nState  Respondent"
+    )
+
+    assert _outer_anchor_label(text) == "Main Petition"
+
+
+def test_criminal_appeal_party_schedule_wins_over_application_reference() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE HON'BLE SUPREME COURT OF INDIA\n"
+        "CRIMINAL APPELLATE JURISDICTION\n"
+        "CRIMINAL APPEAL NO. OF 2023\n"
+        "Arising out of Criminal Miscellaneous Application No. 12\n"
+        "POSITION OF PARTIES\n"
+        "Sathish  Accused No. 1  Appellant\nVERSUS\nState  Respondent"
+    )
+
+    assert _outer_anchor_label(text) == "Main Petition"
+
+
+def test_compact_scanned_criminal_appeal_heading_opens_main_petition() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "IN THE HON’BLE SUPREME COURT OF INDIA\n"
+        "CRIMINALAPPELLATE JURISDICTION\n"
+        "CRIMINALAPPEALNO. OF 2023\n"
+        "POSITIONOF PARTIES\n"
+        "Sathish AccusedNo.1 Appellant\nVERSUS\nState Respondent"
+    )
+
+    assert _outer_anchor_label(text) == "Main Petition"
+
+
+def test_custody_certificate_is_a_standalone_outer_document() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "OFFICE OF THE SENIOR SUPERINTENDENT, CENTRAL JAIL\n"
+        "As on 21.02.2023\nCUSTODY CERTIFICATE\n"
+        "Name of Convict/Accused and Father"
+    )
+
+    assert _outer_anchor_label(text) == "Custody Certificate"
+
+
+def test_mixed_index_ocr_keeps_all_plain_annexure_rows() -> None:
+    from extraction_review.split_audit import collect_index_annexure_entries
+
+    text = (
+        "11. ANNEXURE P/1\nA copy of the order dated 27.05.2006\n"
+        "12. ANNEXURE P/2\nA copy of the policy dated 1.8.18\n"
+        "13. ANNEXURE P/3\nA copy of the order dated 5.7.21\n"
+        "12.\tANNEXURE P/2 A copy of the policy dated 1.8.18.\t55-63\n"
+    )
+
+    entries = collect_index_annexure_entries({1: ["Index"]}, {1: text})
+
+    assert [label for label, _particulars in entries] == [
+        "Annexure P-1",
+        "Annexure P-2",
+        "Annexure P-3",
+    ]
+
+
+def test_index_row_continues_across_appended_geometry_rows() -> None:
+    from extraction_review.split_audit import collect_index_annexure_entries
+
+    text = (
+        "13. ANNEXURE P/3\nA copy of the order dated\n"
+        "12.\tANNEXURE P/2 policy\t55-43\n"
+        "5.7.21 passed by this Hon'ble Court.\n"
+        "14. ANNEXURE P/4\nA copy of the compliance chart.\n"
+    )
+
+    entries = collect_index_annexure_entries({1: ["Index"]}, {1: text})
+
+    assert entries[0][0] == "Annexure P-3"
+    assert "5.7.21" in entries[0][1]
+
+
+def test_descending_ocr_page_range_is_rejected() -> None:
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    rows = index_rows_with_printed_pages(
+        "12.\tANNEXURE P/2 A copy of the policy\t55-43"
+    )
+
+    assert rows == []
+
+
+def test_descending_plain_index_range_keeps_row_without_coordinates() -> None:
+    from extraction_review.split_audit import parse_index_rows
+
+    rows = parse_index_rows("12. ANNEXURE P/2 A copy of the policy 55-43")
+
+    assert len(rows) == 1
+    assert rows[0].mapped_part == "Annexure P-2"
+    assert (rows[0].start_page, rows[0].end_page) == (0, 0)

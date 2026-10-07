@@ -33,6 +33,7 @@ EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
         "Record of Proceedings",
         "Court Fees",
         "Office Report on Limitation",
+        "Custody Certificate",
     }
 )
 
@@ -95,6 +96,13 @@ class UploadSlot:
 def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
     """Annexure X-n / Application n slots are created when those files appear."""
     key = (slot_id or "").strip()
+    if key == "custody_certificate":
+        return UploadSlot(
+            id=key,
+            label="Custody Certificate",
+            parts=("Custody Certificate",),
+            required=False,
+        )
     match = _ANNEXURE_SLOT_RE.fullmatch(key)
     if match:
         series = match.group(1).upper()

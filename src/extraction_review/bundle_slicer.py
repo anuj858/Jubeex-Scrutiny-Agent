@@ -64,6 +64,8 @@ def _slot_ids_for_labels(labels: Sequence[str], catalog: UploadTypeCatalog) -> s
         slot_id = numbered_part_slot_id(name)
         if slot_id:
             ids.add(slot_id)
+        elif name == "Custody Certificate":
+            ids.add("custody_certificate")
     if any(_is_numbered_annexure_slot(slot_id) for slot_id in ids):
         ids.discard("annexures")
     if any(

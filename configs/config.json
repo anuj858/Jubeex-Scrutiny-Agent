@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.21",
+  "config_version": "1.0.22",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -13,7 +13,7 @@
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.21"
+      "config_version": "1.0.22"
     }
   },
   "classify": {
@@ -1047,6 +1047,10 @@
       {
         "name": "Court Fees",
         "description": "Court fee stamps or court-fee endorsement pages."
+      },
+      {
+        "name": "Custody Certificate",
+        "description": "A standalone custody or surrender certificate issued by a jail/prison authority for an accused, convict, appellant, or petitioner in the current Supreme Court filing. It is commonly headed CUSTODY CERTIFICATE and states the jail, custody periods, sentence, surrender, or release particulars. Keep it separate from a bail/suspension Application and from Annexures when the paper-book Index lists it as its own document. A custody certificate reproduced inside an expressly bounded Annexure remains in that Annexure."
       }
     ],
     "splitting_strategy": {

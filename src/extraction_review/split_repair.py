@@ -135,6 +135,9 @@ _FILING_MEMO_RE = re.compile(
     r"(?m)^\s*(?:filing memo|index of filing|filing index|index of documents)\b",
     re.I,
 )
+_CUSTODY_CERTIFICATE_RE = re.compile(
+    r"(?mi)^\s*[^A-Za-z0-9\s]{0,3}custody\s+certificate\s*$"
+)
 _SCI_FILING_INDEX_RE = re.compile(
     r"(?mis)^.*?\bin\s+the\s+supreme\s+court\s+of\s+india\b"
     r".*?^\s*index\s*$"
@@ -279,6 +282,7 @@ _FIRST_RUN_PARTS = frozenset(
         "Memo of Parties",
         "Filing Memo",
         "Court Fees",
+        "Custody Certificate",
         "PoA/BR",
     }
 )
@@ -322,6 +326,7 @@ _NO_BACKWARD_CARRY_PARTS = frozenset(
         "List of Dates & Events",
         "Main Petition",
         "Office Report on Limitation",
+        "Custody Certificate",
     }
 )
 
@@ -999,6 +1004,17 @@ def _looks_like_sci_main_petition(text: str) -> bool:
         )
     ):
         return True
+    # Appeals do not use SLP/Form-28 wording. Their Supreme Court cause title
+    # and POSITION OF PARTIES table identify the main appeal pleading. Check
+    # this before the generic Application detector: appeal party schedules
+    # commonly mention one or more interlocutory applications in the cause
+    # history, but that does not make the pleading an Application slot.
+    if (
+        _is_sci_caption(text)
+        and re.search(r"\b(?:criminal|civil)\s*appeal\s*no\b", folded)
+        and re.search(r"\bposition\s*of\s*(?:the\s*)?parties\b", folded)
+    ):
+        return True
     if page_starts_application(text):
         return False
     if _OFFICE_REPORT_RE.search(text[:2000]):
@@ -1115,6 +1131,8 @@ def _outer_anchor_label(text: str) -> str | None:
     # not the filing list described by the Filing Memo category.
     if _EFILE_COURT_FEE_RE.search(text[:3000]):
         return "Court Fees"
+    if _CUSTODY_CERTIFICATE_RE.search(_heading_window(text, lines=24)):
+        return "Custody Certificate"
     # The blank front form is explicitly an Index of Record of Proceedings,
     # not the paper-book document Index.
     if _looks_like_rop_index_form(text):
@@ -4252,24 +4270,6 @@ def repair_compiled_split(
     repaired = _restore_unique_forward_annexure_stamps(
         repaired, page_text, page_count
     )
-    # A standalone custody certificate has no configured slot. Preserve it
-    # as Unidentified rather than swallowing it into the preceding bail IA.
-    indexed_custody = any(
-        "Index" in parts_on_page(names)
-        and re.search(r"custody\s+certificate", page_text.get(page, ""), re.IGNORECASE)
-        for page, names in repaired.items()
-    )
-    if indexed_custody:
-        for page in range(1, page_count + 1):
-            if re.search(
-                r"(?im)^\s*custody\s+certificate\s*$", page_text.get(page, "")[:1000]
-            ):
-                if any(
-                    name.startswith("Application ")
-                    for name in parts_on_page(repaired.get(page))
-                ):
-                    repaired.pop(page, None)
-
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
