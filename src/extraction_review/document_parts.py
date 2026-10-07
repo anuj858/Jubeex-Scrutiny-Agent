@@ -560,7 +560,10 @@ _ANNEXURE_CITATION_PREV_RE = re.compile(
     r"marked\s+as|true\s+cop(?:y|ies)\s+of",
     re.IGNORECASE,
 )
-_APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+_APPLICATION_CAUSE_RE = re.compile(
+    r"in\s+the\s+(?:hon['’]?ble\s+)?supreme\s+court\s+of\s+india",
+    re.IGNORECASE,
+)
 _AFFIDAVIT_HEADING_RE = re.compile(
     r"(?m)^\s*(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
     r"\s*(?:$|[:\-–—]|(?:OF|ON\s+BEHALF\s+OF|BY)\b)",
@@ -666,6 +669,58 @@ def _annexure_mark_from_title_or_stamp(
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return None
+    # An outer paper-book stamp can sit above an enclosed tribunal document's
+    # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
+    # the Supreme Court paper-book Index and must not hide the A-n boundary.
+    first_line_match = _ANNEXURE_HEADING_RE.search(lines[0])
+    stamped_local_index = bool(
+        first_line_match
+        and len(lines[0]) <= 80
+        and first_line_match.start() <= 6
+        and (
+            first_line_match.groupdict().get("series")
+            or first_line_match.groupdict().get("bare_series")
+        )
+        and re.search(
+            r"(?i)\b(?:before|in)\s+the\s+(?:hon['’]?ble\s+)?"
+            r"(?:national\s+company\s+law\s+appellate\s+tribunal|"
+            r"high\s+court|tribunal)\b",
+            "\n".join(lines[1:16]),
+        )
+        and re.search(r"(?im)^\s*(?:master\s+)?index\s*$", text or "")
+    )
+    if stamped_local_index:
+        mark = _annexure_mark_from_match(first_line_match)
+        if mark is not None:
+            return mark
+
+    # Some compiled paper-books place the outer Annexure stamp in the footer
+    # of the enclosed document's first page.  Llama/PDF text extraction then
+    # returns the local MASTER INDEX first and the real outer stamp immediately
+    # before one or two standalone folio numbers (Defect File 011, A-15).
+    # Recognize only that strong footer shape before rejecting Index pages;
+    # ordinary Index rows have a numbered prefix and/or a printed page range.
+    tail_start = max(0, len(lines) - 6)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
+        match = _ANNEXURE_TITLE_LINE_RE.match(line)
+        if not match or _INDEX_ROW_ANNEXURE_RE.match(line):
+            continue
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        if remainder:
+            continue
+        following = lines[index + 1 :]
+        if not following or len(following) > 3:
+            continue
+        if not all(re.fullmatch(r"\d{1,5}", value) for value in following):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is not None and (
+            not require_series
+            or match.groupdict().get("series")
+            or match.groupdict().get("bare_series")
+        ):
+            return mark
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 
@@ -779,6 +834,11 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     """Return printed Annexure series+number from a page title or stamp."""
     folded_head = _fold(_heading_window(text, lines=6))
     scan_head = (text or "")[:4000]
+    # Check the guarded title/stamp parser first. It can distinguish an outer
+    # A-n stamp above an enclosed tribunal MASTER INDEX from an Index row.
+    explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
+    if explicit is not None:
+        return explicit
     serial_rows = re.findall(r"(?m)^\s*\d{1,2}[.)]\s*$", scan_head)
     annexure_rows = re.findall(
         r"(?mi)^\s*[\[(]?\s*annexure\s*[-~–—:.\s]*[per]?"
@@ -823,9 +883,6 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         return None
     # A reproduced local Annexure No. 1 does not suppress an explicit outer
     # P/R stamp at the foot of the same sheet.
-    explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
-    if explicit is not None:
-        return explicit
     # Reproduced lower-court records often have their own local numbering
     # ("ANNEXURE NO. 1"). It is not the Supreme Court paper-book's P/R number.
     # Leave the outer boundary to the Supreme Court Index / repair pass.
@@ -887,16 +944,13 @@ def _heading_window(text: str, lines: int = 12) -> str:
 def _is_sci_application_start(text: str) -> bool:
     head = _fold(_heading_window(text, lines=20))
     window = _fold((text or "")[:2000])
-    if (
-        "in the supreme court of india" not in head
-        and "in the supreme court of india" not in window
-    ):
+    if not _APPLICATION_CAUSE_RE.search(text[:2000] or ""):
         return False
     # Paper-book covers list pending I.A.s; that is not an application start.
     if re.search(
-        r"for index\s+(?:kindly|please)\s+see\s+inside|"
+        r"for\s+(?:the\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
         r"\{\s*cover\s+page\s*\}|"
-        r"\bpaper\s+book\b",
+        r"\bpaper\s*book\b",
         text[:2200] or "",
         re.I,
     ):
@@ -1018,9 +1072,12 @@ def _looks_like_sci_interlocutory(text: str) -> bool:
 
 def _memo_of_parties_heading(text: str) -> bool:
     """True for an explicit party/judgment memo title, never an Index row."""
-    head = _heading_window(text, lines=12)
+    head = _heading_window(text, lines=30)
+    # Column extraction can split MEMO in the middle ("AMENDED ME\nMO OF
+    # PARTIES"). Join only that distinctive title fragment before matching.
+    head = re.sub(r"(?i)\bme\s*\n\s*mo\b", "MEMO", head)
     title = (
-        r"memo(?:randum)?\s+of\s+"
+        r"(?:amended\s+)?memo(?:randum)?\s+of\s+"
         r"(?:part(?:y|ies)|parities|judg(?:e)?ment)\b"
     )
     if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.IGNORECASE):

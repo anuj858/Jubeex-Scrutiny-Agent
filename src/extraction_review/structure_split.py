@@ -60,6 +60,7 @@ DOCUMENT_TYPES: tuple[str, ...] = (
     "Affidavit",
     "Appendix",
     "Filing Memo",
+    "Custody Certificate",
     "Vakalatnama",
     "Memo of Appearance",
     "Memo of Parties",
@@ -525,6 +526,7 @@ def _resolve_page_labels(
         "Memo of Parties",
         "Cover Page",
         "Office Report on Limitation",
+        "Custody Certificate",
     }
 
     labels: dict[int, str] = {}

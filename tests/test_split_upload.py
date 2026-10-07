@@ -133,10 +133,10 @@ def test_config_json_has_versioning() -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["config_id"] == "jubeex_parse"
     assert data["schema_version"] == "1.0"
-    assert data["config_version"] == "1.0.21"
+    assert data["config_version"] == "1.0.22"
     assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
     assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.1"
-    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.21"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.22"
     assert [rule["type"] for rule in data["classify"]["rules"]] == list(
         JUBEEX_FILING_TYPES
     )
@@ -151,10 +151,10 @@ def test_config_json_has_versioning() -> None:
     config = Config.model_validate(data)
     assert config.config_id == "jubeex_parse"
     assert config.schema_version == "1.0"
-    assert config.config_version == "1.0.21"
+    assert config.config_version == "1.0.22"
     assert config.pipeline_versions.classify.config_version == "1.0.0"
     assert config.pipeline_versions.extract.config_version == "1.0.1"
-    assert config.pipeline_versions.split.config_version == "1.0.21"
+    assert config.pipeline_versions.split.config_version == "1.0.22"
     classify_sent = dump_api_configuration(config.classify)
     assert "schema_version" not in classify_sent
     assert "config_version" not in classify_sent
@@ -177,7 +177,7 @@ def test_config_json_has_versioning() -> None:
     stamped = config_identity(data)
     assert stamped["classify"]["config_version"] == "1.0.0"
     assert stamped["extract"]["config_version"] == "1.0.1"
-    assert stamped["split"]["config_version"] == "1.0.21"
+    assert stamped["split"]["config_version"] == "1.0.22"
 
 
 def test_classify_dump_strips_unsupported_version_keys() -> None:
@@ -700,15 +700,15 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "memo of appearance advocates" in pack
 
 
-def test_party_fields_prefer_petition_then_cover_page() -> None:
+def test_party_fields_use_listing_proforma_as_ocr_fallback() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
     )
     party_sources = FieldSources(
-        fill=("Main Petition", "Cover Page"),
-        verify=("Main Petition", "Cover Page"),
+        fill=("Main Petition", "Cover Page", "Listing Proforma"),
+        verify=("Main Petition", "Cover Page", "Listing Proforma"),
     )
     assert catalog.extract_field_sources["petitioners"] == party_sources
     assert catalog.extract_field_sources["respondents"] == party_sources
@@ -834,7 +834,8 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     assert "3-4 pages or more" in petitioners
     assert "only one petitioner and one respondent" in petitioners
     assert "use the Cover Page" in petitioners
-    assert "fill it from the other" in petitioners
+    assert "fill it from another" in petitioners
+    assert "Cross-check Listing Proforma" in petitioners
     assert "set party names to N/A" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Petitioner 1 must be the same person as" in petitioners
@@ -921,7 +922,8 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
     assert (
-        "petitioners: fill Main Petition, Cover Page; verify Main Petition, Cover Page"
+        "petitioners: fill Main Petition, Cover Page, Listing Proforma; verify "
+        "Main Petition, Cover Page, Listing Proforma"
         in prompt
     )
     assert "cause_title: fill Cover Page, Main Petition; verify Main Petition" in prompt
@@ -1063,6 +1065,287 @@ def test_stamp_review_status_replaces_llamaextract_error() -> None:
     assert stamped["metadata"]["extract_status"] == "error"
     already = stamp_review_status({"status": "rejected", "metadata": {}})
     assert already["status"] == "rejected"
+
+
+def test_envelope_restores_defect_005_parties_and_coram_bench() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Lalit Mohan Aggarwal",
+            "main_respondent": "Andhra Bank",
+        },
+        "petitioners": [{"serial": 1, "name": "Lalit Mohan Aggarwal"}],
+        "respondents": [
+            {"serial": 1, "name": "Andhra Bank"},
+            {
+                "serial": 2,
+                "name": "Sh Atul Gupta",
+                "relation": "S/o",
+                "guardian_name": "Sh S.R. Gupta",
+                "address": "D-4 Balwant Enclave, Meerut, Uttar Pradesh",
+            },
+        ],
+        "impugned_orders": [
+            {
+                "case_number": "W.P.(C) 8749/2020",
+                "Forum": "IN THE HIGH COURT OF DELHI AT NEW DELHI",
+                "bench": "NEW DELHI",
+            }
+        ],
+    }
+    page_markdown = {
+        11: (
+            "2. (a) Petitioner No.1. Lalit Mohan Aggarwal "
+            "(b) Petitioner No.2. Ajay Bansal (c) Phone number: 9412071213 "
+            "3. (a) Respondent No.1: Andhra Bank (now Union Bank of India) "
+            "Respondent No. 2: Sh Atul Gupta, "
+            "Respondent No. 3: M/s Reema Papers Pvt Ltd "
+            "Respondent No. 4: Sh Ritesh Gupta (b) Mobile phone number: 011-27106869"
+        ),
+        17: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CORAM:\n"
+            "HON'BLE MR. JUSTICE VIPIN SANGHI\n"
+            "HON'BLE MS. JUSTICE REKHA PALLI\n"
+            "VIPIN SANGHI, J. (ORAL)"
+        ),
+    }
+    page_parts = {
+        11: ["Listing Proforma"],
+        17: ["Impugned Order"],
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts=page_parts,
+        filing_type="SLP_CIVIL",
+    )
+
+    assert [party["name"] for party in wrapped["petitioners"]] == [
+        "Lalit Mohan Aggarwal",
+        "Ajay Bansal",
+    ]
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Andhra Bank",
+        "Sh Atul Gupta",
+        "M/s Reema Papers Pvt Ltd",
+        "Sh Ritesh Gupta",
+    ]
+    assert wrapped["respondents"][1]["relation"] == "S/o"
+    assert wrapped["respondents"][1]["guardian_name"] == "Sh S.R. Gupta"
+    assert wrapped["respondents"][1]["address"] == (
+        "D-4 Balwant Enclave, Meerut, Uttar Pradesh"
+    )
+    assert wrapped["cause_title"]["formatted_title"] == (
+        "Lalit Mohan Aggarwal and Anr. VS Andhra Bank and Ors."
+    )
+    assert wrapped["impugned_orders"][0]["bench"] == (
+        "HON'BLE MR. JUSTICE VIPIN SANGHI; HON'BLE MS. JUSTICE REKHA PALLI"
+    )
+
+
+def test_envelope_restores_numbered_main_petition_respondent() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Kailash Negi Alias Anmol",
+            "main_respondent": "Smt. Shalija Shah And Anr.",
+        },
+        "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+        "respondents": [{"name": "Smt. Shailja Shah"}],
+    }
+    page_markdown = {
+        25: (
+            "IN THE HON'BLE SUPREME COURT OF INDIA\n"
+            "BETWEEN:\n"
+            "Kailash Negi Alias Anmol\n"
+            "VERSUS\n"
+            "1. Smt. Shailja Shah\n"
+            "W/o Shri Neeraj Sah\n"
+            "R/o Ward No. 10, Sukhatal, Nainital\n"
+            "2. Smt. Bandana Shah\n"
+            "W/o Sh. Vivek Shah\n"
+            "R/o A-901, La Lagune Apartments, Gurgaon\n"
+            "SPECIAL LEAVE PETITION UNDER ARTICLE 136 OF THE CONSTITUTION OF INDIA\n"
+            "1. A numbered pleading paragraph that is not a party\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={25: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shailja Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert wrapped["respondents"][0]["serial"] == 1
+    assert wrapped["respondents"][1] == {
+        "serial": 2,
+        "name": "Smt. Bandana Shah",
+        "kind": "INDIVIDUAL",
+        "source_part": "Main Petition",
+        "source_pages": [25],
+        "raw_text": "Smt. Bandana Shah",
+        "is_primary": False,
+    }
+    assert wrapped["cause_title"]["formatted_title"] == (
+        "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    )
+
+
+def test_envelope_restores_numbered_respondents_from_llamaparse_html_table() -> None:
+    """LlamaParse emits cause-title party schedules as HTML tables."""
+    record = {
+        "cause_title": {
+            "main_petitioner": "Kailash Negi Alias Anmol",
+            "main_respondent": "Smt. Shalija Shah",
+        },
+        "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+        "respondents": [{"name": "Smt. Shalija Shah"}],
+    }
+    page_markdown = {
+        2: (
+            "## **IN THE HON’BLE SUPREME COURT OF INDIA**\n\n"
+            "**<u>BETWEEN:</u>**\n\n"
+            "<table><tr><td><strong>Kailash Negi Alias Anmol</strong></td>"
+            "<td>Petitioner</td></tr></table>\n\n"
+            "#### **VERSUS**\n\n"
+            "<table><tr><td>1. Smt. Shailja Shah</td><td>Respondent</td>"
+            "<td>Respondent</td></tr>\n"
+            "<tr><td>W/o Shri Neeraj Sah</td><td>No. 1</td><td>No. 1</td></tr>\n"
+            "<tr><td>2. Smt. Bandana Shah</td><td>Respondent</td>"
+            "<td>Respondent</td></tr>\n"
+            "<tr><td>W/o Sh. Vivek Shah</td><td>No. 2</td><td>No. 2</td>"
+            "</tr></table>\n\n"
+            "**<u>SPECIAL LEAVE PETITION UNDER ARTICLE 136 OF THE "
+            "CONSTITUTION OF INDIA</u>**\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={2: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shalija Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert [party["serial"] for party in wrapped["respondents"]] == [1, 2]
+    assert wrapped["respondents"][1]["source_part"] == "Main Petition"
+    assert wrapped["respondents"][1]["source_pages"] == [2]
+
+
+def test_envelope_restores_numbered_main_petition_petitioners() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Asha Devi",
+            "main_respondent": "State of Uttarakhand",
+        },
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "State of Uttarakhand"}],
+    }
+    page_markdown = {
+        7: (
+            "**BETWEEN:**\n"
+            "**1. Asha Devi**\n"
+            "W/o Ram Lal\n"
+            "2. Mohan Lal\n"
+            "S/o Ram Lal\n"
+            "**VERSUS**\n"
+            "1. State of Uttarakhand\n"
+            "Through its Secretary\n"
+            "**WRIT PETITION UNDER ARTICLE 32**\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={7: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["petitioners"]] == [
+        "Asha Devi",
+        "Mohan Lal",
+    ]
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "State of Uttarakhand"
+    ]
+
+
+def test_envelope_restores_party_schedule_continued_on_next_page() -> None:
+    record = {
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "Union of India"}],
+    }
+    page_markdown = {
+        10: "BETWEEN:\n1. Asha Devi\nVERSUS\n1. Union of India\n",
+        11: (
+            "2. State of Uttarakhand\n"
+            "3. District Magistrate, Dehradun\n"
+            "SPECIAL LEAVE PETITION UNDER ARTICLE 136\n"
+            "1. This is a pleading paragraph, not a party.\n"
+        ),
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={10: ["Main Petition"], 11: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Union of India",
+        "State of Uttarakhand",
+        "District Magistrate, Dehradun",
+    ]
+    assert wrapped["respondents"][1]["source_pages"] == [11]
+    assert wrapped["respondents"][2]["source_pages"] == [11]
+
+
+def test_envelope_recovers_first_party_when_model_returned_only_second() -> None:
+    wrapped = apply_extract_envelope(
+        {"respondents": [{"name": "Smt. Bandana Shah"}]},
+        page_markdown={
+            25: (
+                "BETWEEN:\nKailash Negi\nVERSUS\n"
+                "1. Smt. Shailja Shah\n2. Smt. Bandana Shah\n"
+                "SPECIAL LEAVE PETITION UNDER ARTICLE 136\n"
+            )
+        },
+        page_parts={25: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shailja Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert [party["serial"] for party in wrapped["respondents"]] == [1, 2]
+
+
+def test_envelope_does_not_recover_parties_outside_main_petition() -> None:
+    record = {
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "State of Uttarakhand"}],
+    }
+    lower_court_text = (
+        "BETWEEN:\n1. Lower Court Applicant\nVERSUS\n"
+        "1. First Lower Court Party\n2. Second Lower Court Party\n"
+    )
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown={40: lower_court_text},
+        page_parts={40: ["Annexure P-1"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "State of Uttarakhand"
+    ]
 
 
 def test_formatted_title_anr_and_ors() -> None:
@@ -1644,6 +1927,47 @@ def test_empty_parse_still_stamps_document_part() -> None:
     assert "No parse text" not in pack
 
 
+def test_extract_pack_recovers_scanned_party_page_from_layout_words() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_markdown = {
+        23: "POSITION OF PARTIES\n1. Lalit Mohan Aggarwal",
+        25: "MOST RESPECTFULLY SHOWETH",
+    }
+    page_parts = {page: ["Main Petition"] for page in (23, 24, 25)}
+    page_layout = {
+        24: {
+            "words": [
+                {"t": "2.", "line": 1},
+                {"t": "Sh.", "line": 1},
+                {"t": "Atul", "line": 1},
+                {"t": "Gupta,", "line": 1},
+                {"t": "S/o", "line": 1},
+                {"t": "Sh", "line": 1},
+                {"t": "S.R.", "line": 1},
+                {"t": "Gupta", "line": 1},
+                {"t": "3.", "line": 2},
+                {"t": "M/s", "line": 2},
+                {"t": "Reema", "line": 2},
+                {"t": "Papers", "line": 2},
+                {"t": "Pvt.", "line": 2},
+                {"t": "Ltd.", "line": 2},
+            ]
+        }
+    }
+
+    pack = build_extract_pack_markdown(
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
+        page_layout=page_layout,
+    )
+
+    assert "Sh. Atul Gupta, S/o Sh S.R. Gupta" in pack
+    assert "M/s Reema Papers Pvt. Ltd." in pack
+    assert "No parse text" not in pack
+
+
 def test_page_maps_survive_string_keys() -> None:
     markdown = coerce_page_markdown({"1": "cover", "2": "petition body"})
     parts = coerce_page_parts({"1": "Cover Page", "2": ["Main Petition"]})
@@ -1671,7 +1995,7 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert result.config["config_id"] == "jubeex_parse"
     assert result.config["classify"]["config_version"] == "1.0.0"
     assert result.config["extract"]["config_version"] == "1.0.1"
-    assert result.config["split"]["config_version"] == "1.0.21"
+    assert result.config["split"]["config_version"] == "1.0.22"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -2818,3 +3142,11 @@ def test_extract_source_stitch_omits_unparsed_slots() -> None:
     assert markdown[3] == "c1"
     assert labels[3] == ["Cover Page"]
     assert all("Annexure" not in names for names in labels.values())
+
+
+def test_custody_certificate_maps_to_its_own_dynamic_slot() -> None:
+    catalog = type_catalog("WRIT_PETITION_CRIMINAL")
+
+    pages = map_slot_pages(catalog, {118: ["Custody Certificate"]})
+
+    assert pages == {"custody_certificate": [118]}

@@ -421,6 +421,90 @@ def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     assert [chunk["page"] for chunk in chunks] == [12, 28]
 
 
+def test_layout_fallback_reserves_explicit_petition_paragraph_page() -> None:
+    defect = SimpleNamespace(
+        defect="Paragraph 3 declaration is missing",
+        requirement=(
+            "Paragraph 3 must contain a declaration in terms of Rule 3(2) "
+            "about an earlier petition"
+        ),
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=[
+            "Check Paragraph 3, 'DECLARATION IN TERMS OF RULE 3(2)' of the SLP."
+        ],
+    )
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, text in (
+            (74, "SPECIAL LEAVE PETITION"),
+            (80, "3. DECLARATION IN TERMS OF RULE 3(2) no earlier petition filed"),
+            (82, "DRAWN ON 23.10.2024"),
+        )
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
+
+    assert [chunk["page"] for chunk in chunks] == [74, 80, 82]
+    assert "no earlier petition filed" in chunks[1]["text"]
+
+
+def test_layout_fallback_reserves_main_prayer_page() -> None:
+    defect = SimpleNamespace(
+        defect="Main prayer is missing",
+        requirement="Paragraph 7 must clearly set out the main prayer",
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check Paragraph 7, Main Prayer of the SLP."],
+    )
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, text in (
+            (74, "SPECIAL LEAVE PETITION"),
+            (81, "7. MAIN PRAYER grant special leave to appeal"),
+            (82, "DRAWN ON 23.10.2024"),
+        )
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
+
+    assert [chunk["page"] for chunk in chunks] == [74, 81, 82]
+
+
+def test_layout_fallback_finds_misnumbered_declaration_heading() -> None:
+    defect = SimpleNamespace(
+        defect="Paragraph 4 true-copy declaration is missing",
+        requirement="Paragraph 4 must contain a declaration in terms of Rule 5",
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check Paragraph 4, Declaration in terms of Rule 5."],
+    )
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [{"t": text, "line": 1}],
+        }
+        for page, text in (
+            (74, "4. Respondent No. 4"),
+            (80, "4. DECLARATION IN TERMS OF RULE 105 annexures chronological"),
+            (82, "DRAWN ON 23.10.2024"),
+        )
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
+
+    assert 80 in {chunk["page"] for chunk in chunks}
+
+
 def test_layout_fallback_covers_each_annexure_and_its_last_page() -> None:
     defect = SimpleNamespace(
         defect="Annexures are not true copies",

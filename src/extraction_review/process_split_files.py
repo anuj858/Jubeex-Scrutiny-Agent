@@ -507,6 +507,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             page_parts,
             extract_source_parts(catalog),
             catalog=catalog,
+            page_layout=coerce_page_layout(state.page_layout),
         )
         extract_file_id = state.petition_file_id
         pack_file_id: str | None = None

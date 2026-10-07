@@ -374,6 +374,64 @@ def _layout_page_text(page: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _layout_anchor_phrases(defect: Defect) -> list[str]:
+    """Return headings/paragraph markers that identify the page under review.
+
+    Semantic retrieval is not reliable for short, repeated form labels such as
+    ``Paragraph 3``.  These anchors are intentionally conservative: they come
+    only from quoted headings and explicit paragraph references authored in
+    the catalogue, plus a few standard Form 28 headings.
+    """
+    wording = " ".join(
+        [
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    )
+    anchors: list[str] = []
+
+    def add(value: str) -> None:
+        value = re.sub(r"\s+", " ", value).strip(" .,:;\"'[]()")
+        if len(value) >= 4 and value.casefold() not in {
+            item.casefold() for item in anchors
+        }:
+            anchors.append(value)
+
+    quoted_heading = re.compile(
+        r"[\"'\u2018\u2019\u201c\u201d]([^\"'\u2018\u2019\u201c\u201d]{4,120})"
+        r"[\"'\u2018\u2019\u201c\u201d]"
+    )
+    for quoted in quoted_heading.findall(wording):
+        add(quoted)
+
+    for number in re.findall(
+        r"\bparagraph\s+(\d+[A-Z]?)\b", wording, re.IGNORECASE
+    ):
+        add(f"{number}.")
+
+    folded = wording.casefold()
+    standard_headings = (
+        "declaration in terms of rule 3(2)",
+        "declaration in terms of rule 5",
+        "question of law",
+        "main prayer",
+    )
+    for heading in standard_headings:
+        if heading in folded:
+            add(heading)
+    if "declaration in terms" in folded:
+        # OCR and drafting errors often corrupt the rule number (the reviewed
+        # filing says "Rule 105"), while the declaration heading remains a
+        # reliable locator for the paragraph whose substance must be checked.
+        add("declaration in terms")
+    return anchors
+
+
+def _anchor_score(text: str, anchors: list[str]) -> int:
+    folded = re.sub(r"\s+", " ", text).casefold()
+    return sum(1 for anchor in anchors if anchor.casefold() in folded)
+
+
 def _add_layout_fallback_chunks(
     defect: Defect,
     chunks: list[dict[str, Any]],
@@ -467,6 +525,38 @@ def _add_layout_fallback_chunks(
     chosen: list[dict[str, Any]] = []
     capacity = max(0, max_chunks - len(summary))
 
+    # Paragraph-level Form 28 checks need the page containing the authored
+    # heading, not merely the opening and closing pages of a long petition.
+    # Prefer grounded layout OCR here; Pinecone still supplies any remaining
+    # pages after the anchors and boundaries have been reserved.
+    anchors = _layout_anchor_phrases(defect)
+    if anchors:
+        for part in required:
+            if len(chosen) >= capacity:
+                break
+            options = candidates.get(part) or []
+            ranked_anchors = sorted(
+                (
+                    (_anchor_score(str(option.get("text") or ""), anchors), option)
+                    for option in options
+                ),
+                key=lambda item: (-item[0], int(item[1].get("page") or 0)),
+            )
+            if not ranked_anchors or ranked_anchors[0][0] <= 0:
+                continue
+            fallback = ranked_anchors[0][1]
+            candidate = next(
+                (
+                    chunk
+                    for chunk in target_pages
+                    if chunk.get("page") == fallback.get("page")
+                    and chunks_cover_part([chunk], part)
+                ),
+                fallback,
+            )
+            if not any(chunk.get("page") == candidate.get("page") for chunk in chosen):
+                chosen.append(candidate)
+
     wording = " ".join(
         [
             str(getattr(defect, "defect", "") or ""),
@@ -534,12 +624,16 @@ def _add_layout_fallback_chunks(
         for part in required:
             if len(chosen) >= capacity:
                 break
-            if chunks_cover_part(chosen, part) and boundary == boundaries[0]:
-                continue
             options = candidates.get(part) or []
             if not options:
                 continue
             fallback = options[0] if boundary == "first" else options[-1]
+            if any(
+                chunk.get("page") == fallback.get("page")
+                and chunks_cover_part([chunk], part)
+                for chunk in chosen
+            ):
+                continue
             candidate = next(
                 (
                     chunk

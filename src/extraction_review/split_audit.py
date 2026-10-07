@@ -211,6 +211,10 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "List of Dates & Events"
     if "impugned" in text and ("order" in text or "judgment" in text or "judgement" in text):
         return "Impugned Order"
+    if re.search(r"\b(?:criminal|civil)\s+appeal\b", text):
+        # The Index names an appeal pleading directly (often "Criminal Appeal
+        # with affidavit") rather than calling it a petition or Form 28.
+        return "Main Petition"
     if "special leave" in text or "form 28" in text or (
         "petition" in text
         and "transfer" not in text
@@ -350,7 +354,10 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
             body = original_body
             start = end = 0
         if end < start:
-            start, end = end, start
+            # Do not turn a damaged OCR value such as 55-43 into an
+            # authoritative 43-55 range. Keep the Index row for inventory
+            # matching, but discard its unsafe page coordinates.
+            start = end = 0
         serial = int(match.group("sno")) if match.group("sno") else None
         mapped = map_index_particulars_to_part(body)
         key = (_fold(body), start, end)
@@ -427,7 +434,9 @@ def _printed_span_from_token(token: str) -> IndexPrintedRow | None:
     start = int(match.group("n1"))
     end = int(match.group("n2") or start)
     if end < start:
-        start, end = end, start
+        # A legal paper-book range is ascending. Reversing OCR corruption such
+        # as ``55-43`` creates a believable but incorrect Annexure range.
+        return None
     suffix = (match.group("s2") or match.group("s1") or "").upper()
     return IndexPrintedRow(
         mapped_part=None,
@@ -476,9 +485,14 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
     lines like ``37-48`` and ``61-63B``. They are zipped onto the rows that
     lost their page numbers, from the bottom, and only when the counts match.
     """
-    if any(re.match(r"^\d+[.)]\t", line) for line in index_text.splitlines()):
-        result = []
-        for line in index_text.splitlines():
+    tabbed_lines = [
+        line
+        for line in index_text.splitlines()
+        if re.match(r"^\d+[.)]\t", line)
+    ]
+    if tabbed_lines:
+        result: list[IndexPrintedRow] = []
+        for line in tabbed_lines:
             cells = line.split("\t")
             if len(cells) != 3 or not re.fullmatch(r"\d+[.)]", cells[0]):
                 continue
@@ -495,6 +509,11 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                         end_suffix=span.end_suffix,
                     )
                 )
+        # Geometry-rebuilt rows have a verified page-number column. Do not
+        # mix the remaining free-form OCR back into folio ranges: dates, case
+        # numbers and broken cells can look like plausible page spans. The
+        # plain OCR is still consumed separately for document inventory by
+        # ``collect_index_annexure_entries``.
         return result
     # Parse the untouched text as well.  ``parse_index_rows`` can join a page
     # span printed on the next line to its wrapped particulars.  The orphan
@@ -688,27 +707,54 @@ def collect_index_annexure_entries(
     # Scanned Index rows often lose serial punctuation or put the serial on
     # its own line. Explicit Annexure headings still delimit the particulars.
     # Do not mistake A-4/A-5 front-matter folios for exhibit identifiers.
-    if "\t" not in index_text:
-        headings = list(re.finditer(
+    # Geometry OCR may rebuild only a few rows and append them as tab-separated
+    # lines after otherwise useful plain OCR. Do not let one rebuilt row hide
+    # the remaining readable Annexure headings (Defect File 014 rebuilt only
+    # P-2 while its plain OCR still contained P-1 through P-8).
+    # OCR geometry rows are appended to the end of each source page. If an
+    # Index row wraps onto the next page, those synthetic tab rows sit in the
+    # middle of its particulars and make the continuation look like a new
+    # serial row. Remove them for free-text inventory parsing; they remain
+    # available to the separate, page-column parser.
+    explicit_text = "\n".join(
+        line
+        for line in index_text.splitlines()
+        if not re.match(r"^\d+[.)]\t", line)
+    )
+    headings = list(
+        re.finditer(
             r"(?im)^\s*(?:\d{1,3}[.,)]?\s*[|]?\s*)?[|]?\s*"
             r"[\[(]?\s*annexure\s*[-:~]?\s*[PR]\s*[/~–—-]?\s*\d+\b",
-            index_text,
-        ))
-        if headings:
-            explicit = []
-            for i, heading in enumerate(headings):
-                end = headings[i + 1].start() if i + 1 < len(headings) else len(index_text)
-                labels = annexure_labels_from_text(heading.group())
-                if len(labels) == 1:
-                    particulars = index_text[heading.start():end].strip()
-                    # The final exhibit may be followed by applications and
-                    # filing-list rows, which are not its particulars.
-                    following_row = re.search(r"\n\s*\d{1,3}[.)]\s*(?:\n|[A-Z])", particulars)
-                    if following_row:
-                        particulars = particulars[:following_row.start()].strip()
-                    explicit.append((next(iter(labels)), particulars))
-            if explicit:
-                return explicit
+            explicit_text,
+        )
+    )
+    if headings:
+        explicit: list[tuple[str, str]] = []
+        seen_explicit: set[str] = set()
+        for i, heading in enumerate(headings):
+            end = (
+                headings[i + 1].start()
+                if i + 1 < len(headings)
+                else len(explicit_text)
+            )
+            labels = annexure_labels_from_text(heading.group())
+            if len(labels) != 1:
+                continue
+            label = next(iter(labels))
+            if label in seen_explicit:
+                continue
+            particulars = explicit_text[heading.start():end].strip()
+            # The final exhibit may be followed by applications and
+            # filing-list rows, which are not its particulars.
+            following_row = re.search(
+                r"\n\s*\d{1,3}[.)]\s*(?:\n|[A-Z])", particulars
+            )
+            if following_row:
+                particulars = particulars[: following_row.start()].strip()
+            explicit.append((label, particulars))
+            seen_explicit.add(label)
+        if explicit:
+            return explicit
 
     entries: list[tuple[int, tuple[int, int], str, str]] = []
     seen: set[str] = set()

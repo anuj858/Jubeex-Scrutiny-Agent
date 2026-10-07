@@ -44,7 +44,10 @@ from .split_audit import (
 )
 from .split_pdf_layout import printed_folio as _printed_folio
 
-_SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+_SCI_CAPTION_RE = re.compile(
+    r"in\s+the\s+(?:hon['’]?ble\s+)?supreme\s+court\s+of\s+india",
+    re.IGNORECASE,
+)
 # OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
 _SCI_CAPTION_OCR_RE = re.compile(
     r"in\s+the\s+s\W*u\W*p\W*r\W*[eé0-9l:]+\W*m\W*e?\W*"
@@ -132,6 +135,9 @@ _FILING_MEMO_RE = re.compile(
     r"(?m)^\s*(?:filing memo|index of filing|filing index|index of documents)\b",
     re.I,
 )
+_CUSTODY_CERTIFICATE_RE = re.compile(
+    r"(?mi)^\s*[^A-Za-z0-9\s]{0,3}custody\s+certificate\s*$"
+)
 _SCI_FILING_INDEX_RE = re.compile(
     r"(?mis)^.*?\bin\s+the\s+supreme\s+court\s+of\s+india\b"
     r".*?^\s*index\s*$"
@@ -214,10 +220,10 @@ _LISTING_FIELD_CUES = (
     r"special category|vehicle number|litigation on the same point of law",
 )
 _COVER_FOOTER_RE = re.compile(
-    r"for index\s+(?:kindly|please)\s+see\s+inside|"
+    r"for\s+(?:the\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
     r"\{\s*cover\s+page\s*\}|"
     r"cover\s+page\s+of\s+paper|"
-    r"\bpaper\s+book\b",
+    r"\bpaper\s*book\b",
     re.I,
 )
 # Form-28 party schedule (not the one-name-per-side paper-book cover).
@@ -225,7 +231,7 @@ _PARTY_SCHEDULE_RE = re.compile(
     r"before\s+high\s+court|before\s+supreme\s+court|"
     r"before\s+this\s+court|"
     r"respondent\s+no\.|petitioner\s+no\.|"
-    r"positi[o0]n\s+of\s+pa|"
+    r"positi[o0]n\s+of\s+(?:the\s+)?pa|"
     r"(?:^|\n)\s*\d{1,2}\.\s*.{0,120}(?:s/?o|d/?o|w/?o|age\s+\d+)",
     re.I,
 )
@@ -234,7 +240,8 @@ _PARTY_SCHEDULE_RE = re.compile(
 _FORM28_BODY_RE = re.compile(
     r"form\s*28|"
     r"qu\W{0,4}stions?\s+of\s+law|questions\s+of\s+law|"
-    r"most respectfully showeth|position of parties|positi[o0]n\s+of\s+pa|"
+    r"most respectfully showeth|position of (?:the )?parties|"
+    r"positi[o0]n\s+of\s+(?:the\s+)?pa|"
     r"humble petition of the|declaration in terms of rule",
     re.I,
 )
@@ -275,6 +282,7 @@ _FIRST_RUN_PARTS = frozenset(
         "Memo of Parties",
         "Filing Memo",
         "Court Fees",
+        "Custody Certificate",
         "PoA/BR",
     }
 )
@@ -296,6 +304,7 @@ _NESTED_STEAL_PARTS = frozenset(
         "Index",
         "Synopsis",
         "List of Dates & Events",
+        "PoA/BR",
     }
 )
 
@@ -317,6 +326,7 @@ _NO_BACKWARD_CARRY_PARTS = frozenset(
         "List of Dates & Events",
         "Main Petition",
         "Office Report on Limitation",
+        "Custody Certificate",
     }
 )
 
@@ -987,11 +997,22 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     # Application detector. Its own heading and SLP caption are decisive.
     if (
         _is_sci_caption(text)
-        and "position of parties" in folded
+        and re.search(r"\bposition\s+of\s+(?:the\s+)?parties\b", folded)
         and re.search(
             r"\b(?:s\.?\s*l\.?\s*p\.?|special\s+lea\s*ve\s+petition)\b",
             folded,
         )
+    ):
+        return True
+    # Appeals do not use SLP/Form-28 wording. Their Supreme Court cause title
+    # and POSITION OF PARTIES table identify the main appeal pleading. Check
+    # this before the generic Application detector: appeal party schedules
+    # commonly mention one or more interlocutory applications in the cause
+    # history, but that does not make the pleading an Application slot.
+    if (
+        _is_sci_caption(text)
+        and re.search(r"\b(?:criminal|civil)\s*appeal\s*no\b", folded)
+        and re.search(r"\bposition\s*of\s*(?:the\s*)?parties\b", folded)
     ):
         return True
     if page_starts_application(text):
@@ -1086,6 +1107,10 @@ def _outer_anchor_label(text: str) -> str | None:
     # That is not the paper-book Index — classify the checklist first.
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
+    # A cover says "FOR THE INDEX, PLEASE SEE INSIDE" and therefore satisfies
+    # the generic Index cues. Its PAPERBOOK/footer evidence is more specific.
+    if _looks_like_cover_page(text):
+        return "Cover Page"
     # The current filing's own FILING INDEX is the Filing Memo. Evaluate it
     # before the generic Index-table rule, which otherwise absorbs this page
     # into the preceding paper-book Index.
@@ -1106,6 +1131,12 @@ def _outer_anchor_label(text: str) -> str | None:
     # not the filing list described by the Filing Memo category.
     if _EFILE_COURT_FEE_RE.search(text[:3000]):
         return "Court Fees"
+    if _CUSTODY_CERTIFICATE_RE.search(_heading_window(text, lines=24)):
+        return "Custody Certificate"
+    # The blank front form is explicitly an Index of Record of Proceedings,
+    # not the paper-book document Index.
+    if _looks_like_rop_index_form(text):
+        return "Record of Proceedings"
     # A paper-book Index can list Filing Memo, Annexures, and other sections.
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
@@ -1202,8 +1233,6 @@ def _outer_anchor_label(text: str) -> str | None:
                 _heading_window(text, lines=20)
             ):
                 return "AOR's Certificate"
-    if _looks_like_cover_page(text):
-        return "Cover Page"
     if (
         page_starts_application(text)
         and not _looks_like_cover_page(text)
@@ -1256,11 +1285,45 @@ def _annexure_run_bounds(
     pages are often image-only with no E/P stamp, and Llama already numbered
     them. Cap trailing blank sheets so those later P-n labels survive.
     """
-    starts: list[tuple[int, str]] = []
+    raw_starts: list[tuple[int, Any]] = []
     for page in range(1, page_count + 1):
-        label = annexure_label_from_text(page_text.get(page, ""))
-        if label:
-            starts.append((page, label))
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
+        if mark:
+            raw_starts.append((page, mark))
+
+    # A reproduced exhibit may carry its own Annexure P-1 inside the outer
+    # filing's A-2. If consecutive outer A-n stamps surround that foreign
+    # series, it is nested evidence, not a new paper-book boundary.
+    starts: list[tuple[int, str]] = []
+    for index, (page, mark) in enumerate(raw_starts):
+        nested = False
+        other_series = {
+            candidate.series
+            for _candidate_page, candidate in raw_starts
+            if candidate.series != mark.series
+        }
+        for series in other_series:
+            prior = next(
+                (
+                    candidate
+                    for _candidate_page, candidate in reversed(raw_starts[:index])
+                    if candidate.series == series
+                ),
+                None,
+            )
+            following = next(
+                (
+                    candidate
+                    for _candidate_page, candidate in raw_starts[index + 1 :]
+                    if candidate.series == series
+                ),
+                None,
+            )
+            if prior and following and following.number == prior.number + 1:
+                nested = True
+                break
+        if not nested:
+            starts.append((page, mark.label))
     if not starts:
         return []
 
@@ -1282,13 +1345,16 @@ def _annexure_run_bounds(
                 if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not (
+                    anchor == "Memo of Parties" and _is_lower_court_caption(text)
+                ):
                     end = page - 1
                     break
                 if (
@@ -1307,13 +1373,16 @@ def _annexure_run_bounds(
                     break
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not (
+                    anchor == "Memo of Parties" and _is_lower_court_caption(text)
+                ):
                     break
                 if (
                     _FILING_MEMO_RE.search(_heading_window(text, lines=8))
@@ -1753,6 +1822,14 @@ def _extend_explicit_memo_of_parties(
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
         if _memo_of_parties_heading(text):
+            # A lower-court Memo can be content inside an already established
+            # outer Annexure run (A-15 in Defect File_011). Do not promote it.
+            if any(
+                family_split_name(name) == ANNEXURE_FAMILY
+                for name in parts_on_page(updated.get(page))
+            ):
+                active = False
+                continue
             updated[page] = ["Memo of Parties"]
             active = True
             continue
@@ -4193,24 +4270,6 @@ def repair_compiled_split(
     repaired = _restore_unique_forward_annexure_stamps(
         repaired, page_text, page_count
     )
-    # A standalone custody certificate has no configured slot. Preserve it
-    # as Unidentified rather than swallowing it into the preceding bail IA.
-    indexed_custody = any(
-        "Index" in parts_on_page(names)
-        and re.search(r"custody\s+certificate", page_text.get(page, ""), re.IGNORECASE)
-        for page, names in repaired.items()
-    )
-    if indexed_custody:
-        for page in range(1, page_count + 1):
-            if re.search(
-                r"(?im)^\s*custody\s+certificate\s*$", page_text.get(page, "")[:1000]
-            ):
-                if any(
-                    name.startswith("Application ")
-                    for name in parts_on_page(repaired.get(page))
-                ):
-                    repaired.pop(page, None)
-
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
@@ -4445,17 +4504,46 @@ def _restore_index_bridge_pages(
     last_page = max(max(updated, default=0), max(page_text, default=0))
     for page in range(2, last_page):
         current = set(parts_on_page(updated.get(page)))
+        previous_is_index = "Index" in parts_on_page(updated.get(page - 1))
+        next_anchor = _outer_anchor_label(page_text.get(page + 1, ""))
+        text = page_text.get(page, "")
+
+        # A long master Index can continue onto one untitled sheet and then
+        # immediately give way to the first filing document.  The continuation
+        # can list several I.A.s plus F/M and V/A without a repeated INDEX
+        # heading or serial-number column. Require
+        # multiple filing-inventory cues and a strong next front-matter anchor
+        # so ordinary document prose cannot be promoted to Index.
+        inventory_cues = len(
+            re.findall(
+                r"(?mi)^\s*(?:annexure\b|(?:i\.?\s*a\.?|application)\b|"
+                r"f\s*/?\s*m\b|v\s*/?\s*a\b)",
+                text,
+            )
+        )
+        if (
+            previous_is_index
+            and next_anchor
+            in {
+                "Office Report on Limitation",
+                "Listing Proforma",
+                "Cover Page",
+                "Record of Proceedings",
+            }
+            and inventory_cues >= 2
+        ):
+            updated[page] = ["Index"]
+            continue
         if current and not current <= {
             "Listing Proforma",
             "Synopsis",
             "List of Dates & Events",
         }:
             continue
-        if "Index" not in parts_on_page(updated.get(page - 1)):
+        if not previous_is_index:
             continue
         if "Index" not in parts_on_page(updated.get(page + 1)):
             continue
-        text = page_text.get(page, "")
         numbered_rows = re.findall(r"(?m)^\s*\d{1,3}[.)]\s+\S", text)
         if len(numbered_rows) >= 2:
             updated[page] = ["Index"]
@@ -4477,12 +4565,36 @@ def _apply_indexed_outer_document_ranges(
     }
     updated = {page: list(names) for page, names in page_parts.items()}
 
+    def has_conflicting_outer_heading(page: int, target: str | None) -> bool:
+        """Keep a real filing heading out of an inferred numeric range.
+
+        A master Index contains many bare numbers from its page-range column.
+        OCR can put one of those numbers on the final line and make it look
+        like the physical sheet's folio.  Those false folios must not be used
+        as either a range endpoint or a page to overwrite.  Inspecting the
+        page text (rather than trusting its current split label) still allows
+        a genuinely mislabelled, heading-less judgment page to be reclaimed.
+        """
+        text = page_text.get(page, "")
+        heading = _outer_anchor_label(text)
+        if heading and heading != target:
+            return True
+        return bool(
+            target != "Index"
+            and (
+                _looks_like_index_table(text)
+                or _looks_like_index_continuation(text)
+            )
+        )
+
     def physical_pages(row: IndexPrintedRow) -> list[int]:
         """Map an Index folio span even when an interior scan has no OCR folio."""
         matched = [
             page
             for page, folio in folios.items()
-            if folio and _folio_in_printed_row(folio, row)
+            if folio
+            and _folio_in_printed_row(folio, row)
+            and not has_conflicting_outer_heading(page, row.mapped_part)
         ]
         exact_start = next(
             (
@@ -4492,6 +4604,7 @@ def _apply_indexed_outer_document_ranges(
                 and folio[0] == row.kind
                 and folio[1] == row.start
                 and not folio[2]
+                and not has_conflicting_outer_heading(page, row.mapped_part)
             ),
             None,
         )
@@ -4503,6 +4616,7 @@ def _apply_indexed_outer_document_ranges(
                 and folio[0] == row.kind
                 and folio[1] == row.end
                 and (not row.end_suffix or folio[2] == row.end_suffix)
+                and not has_conflicting_outer_heading(page, row.mapped_part)
             ),
             None,
         )
@@ -4563,9 +4677,55 @@ def _apply_indexed_outer_document_ranges(
     if len(impugned_rows) == 1:
         row = impugned_rows[0]
         for page in physical_pages(row):
+            if has_conflicting_outer_heading(page, row.mapped_part):
+                continue
             if _looks_like_sci_main_petition(page_text.get(page, "")):
                 break
             updated[page] = ["Impugned Order"]
+
+        # Scanned judgments may have no recoverable margin folios at all.
+        # When the master Index has exactly one Impugned Order row, use a
+        # strong lower-court judgment start before Form 28 and carry it only
+        # up to that petition boundary.  This also reclaims internal exhibit
+        # tables (P-3/P-4, etc.) that the model mistook for outer Annexures.
+        main_start = next(
+            (
+                page
+                for page in range(1, page_count + 1)
+                if _looks_like_sci_main_petition(page_text.get(page, ""))
+            ),
+            page_count + 1,
+        )
+        front_end = max(
+            (
+                page
+                for page in range(1, main_start)
+                if set(parts_on_page(updated.get(page)))
+                & {"Synopsis", "List of Dates & Events", "Memo of Parties"}
+            ),
+            default=0,
+        )
+        judgment_start = next(
+            (
+                page
+                for page in range(front_end + 1, main_start)
+                if _is_lower_court_caption(page_text.get(page, ""))
+                and re.search(
+                    r"\b(?:coram|reserved\s+on|date\s+of\s+decision|"
+                    r"pronounced\s+on|judg(?:e)?ment|order\s+sheet)\b",
+                    page_text.get(page, "")[:3000],
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if judgment_start is not None:
+            for page in range(judgment_start, main_start):
+                if page > judgment_start and has_conflicting_outer_heading(
+                    page, row.mapped_part
+                ):
+                    break
+                updated[page] = ["Impugned Order"]
 
     main_rows = [
         row

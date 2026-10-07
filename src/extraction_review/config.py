@@ -156,7 +156,7 @@ class CauseTitle(BaseModel):
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present."""
+    """One petitioner or respondent from the complete filing party schedule."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
@@ -204,7 +204,13 @@ class Party(BaseModel):
         ),
     )
     raw_text: str | None = Field(default=None, description="Verbatim party block as printed, including name, relation, and address lines.")
-    source_part: str | None = Field(default=None, description="Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.")
+    source_part: str | None = Field(
+        default=None,
+        description=(
+            "Main Petition normally; Cover Page or Listing Proforma only when used "
+            "to recover a missing party name/count. Never Vakalatnama or Memo of Parties."
+        ),
+    )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
@@ -287,7 +293,14 @@ class ImpugnedOrder(BaseModel):
     case_number: str | None = Field(default=None, description="Case number before the earlier court")
     order_date: str | None = Field(default=None, description="Date of the order under challenge. A filename or slot named Impugned Order is not proof of its contents. Do not use dates of earlier orders merely quoted, summarized, or discussed in Synopsis, List of Dates, pleadings, or applications. Require the actual standalone order or explicit particulars identifying the order challenged in this petition; otherwise return null.")
     Forum: str | None = Field(default=None, description="The court/forum that passed the impugned order")
-    bench: str | None = Field(default=None, description="Bench or seat as printed")
+    bench: str | None = Field(
+        default=None,
+        description=(
+            "Judicial bench/coram: copy judge names printed under CORAM in the "
+            "Impugned Order, preserving honorifics. Join multiple judges with '; '. "
+            "Do not put the city, court seat, place of decision, or forum here."
+        ),
+    )
     certified_copy_applied_on: str | None = Field(default=None, description="Date the certified copy was applied for")
     certified_copy_obtained_on: str | None = Field(default=None, description="Date it was obtained")
     raw_text: str | None = Field(default=None, description="Verbatim impugned-order identification as printed.")

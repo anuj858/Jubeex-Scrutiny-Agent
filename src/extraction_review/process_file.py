@@ -196,6 +196,7 @@ _SLOT_NAME_ALIASES = {
     "aor_s_certificate": "aor_s_certificate",
     "aor_s_declaration": "aor_s_declaration",
     "listing_proforma": "listing_proforma",
+    "custody_certificate": "custody_certificate",
 }
 
 
@@ -378,6 +379,7 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
         not known
         or "annexures" in known
         or "applications" in known
+        or dynamic.id == "custody_certificate"
         or dynamic.id in known
     ):
         return dynamic.id
