@@ -169,15 +169,22 @@ _LISTING_FIELD_AFTER_PARTY = re.compile(
 _NUMBERED_PARTY_LINE = re.compile(
     r"(?m)^\s*\|?\s*(?:[*_`#]+\s*)?(\d{1,3})\s*[.)]\s*(.+?)\s*$"
 )
+_NUMBERED_PARTY_TABLE_CELL = re.compile(
+    r"(?is)<t[dh]\b[^>]*>\s*(?:<[^>]+>\s*)*"
+    r"(\d{1,3})\s*[.)]\s*(.*?)</t[dh]>"
+)
+_HEADING_PREFIX = r"(?:[*_`#]+\s*)*(?:<[^>]+>\s*)*"
+_HEADING_SUFFIX = r"(?:\s*</[^>]+>)*(?:\s*[*_`#]+)*"
 _VERSUS_LINE = re.compile(
-    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?(?:versus|vs\.?)"
-    r"\s*(?:[*_`#]+\s*)?\|?\s*$"
+    rf"(?im)^\s*\|?\s*{_HEADING_PREFIX}(?:versus|vs\.?)"
+    rf"{_HEADING_SUFFIX}\s*\|?\s*$"
 )
 _BETWEEN_LINE = re.compile(
-    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?between\s*:?[\s*_`#|]*$"
+    rf"(?im)^\s*\|?\s*{_HEADING_PREFIX}between\s*:?"
+    rf"{_HEADING_SUFFIX}\s*\|?\s*$"
 )
 _PARTY_SCHEDULE_END = re.compile(
-    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?(?:"
+    rf"(?im)^\s*\|?\s*{_HEADING_PREFIX}(?:"
     r"special\s+leave\s+petition|writ\s+petition|civil\s+appeal|criminal\s+appeal|"
     r"transfer\s+petition|review\s+petition|curative\s+petition|arbitration\s+petition|"
     r"petition\s+under|appeal\s+under|to\s*,?\s*$|most\s+respectfully\s+showeth"
@@ -459,10 +466,18 @@ def _numbered_parties_in_scope(
     end: int,
 ) -> list[tuple[int, str, int]]:
     found: list[tuple[int, str, int]] = []
-    for match in _NUMBERED_PARTY_LINE.finditer(text, start, end):
+    matches = [
+        *_NUMBERED_PARTY_LINE.finditer(text, start, end),
+        *_NUMBERED_PARTY_TABLE_CELL.finditer(text, start, end),
+    ]
+    for match in sorted(matches, key=lambda item: item.start()):
+        serial = int(match.group(1))
         name = _clean_numbered_party_name(match.group(2))
-        if name:
-            found.append((int(match.group(1)), name, match.start()))
+        if name and not any(
+            existing_serial == serial and _names_match(existing_name, name)
+            for existing_serial, existing_name, _offset in found
+        ):
+            found.append((serial, name, match.start()))
     return found
 
 

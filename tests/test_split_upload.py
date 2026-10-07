@@ -1195,6 +1195,50 @@ def test_envelope_restores_numbered_main_petition_respondent() -> None:
     )
 
 
+def test_envelope_restores_numbered_respondents_from_llamaparse_html_table() -> None:
+    """LlamaParse emits cause-title party schedules as HTML tables."""
+    record = {
+        "cause_title": {
+            "main_petitioner": "Kailash Negi Alias Anmol",
+            "main_respondent": "Smt. Shalija Shah",
+        },
+        "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+        "respondents": [{"name": "Smt. Shalija Shah"}],
+    }
+    page_markdown = {
+        2: (
+            "## **IN THE HON’BLE SUPREME COURT OF INDIA**\n\n"
+            "**<u>BETWEEN:</u>**\n\n"
+            "<table><tr><td><strong>Kailash Negi Alias Anmol</strong></td>"
+            "<td>Petitioner</td></tr></table>\n\n"
+            "#### **VERSUS**\n\n"
+            "<table><tr><td>1. Smt. Shailja Shah</td><td>Respondent</td>"
+            "<td>Respondent</td></tr>\n"
+            "<tr><td>W/o Shri Neeraj Sah</td><td>No. 1</td><td>No. 1</td></tr>\n"
+            "<tr><td>2. Smt. Bandana Shah</td><td>Respondent</td>"
+            "<td>Respondent</td></tr>\n"
+            "<tr><td>W/o Sh. Vivek Shah</td><td>No. 2</td><td>No. 2</td>"
+            "</tr></table>\n\n"
+            "**<u>SPECIAL LEAVE PETITION UNDER ARTICLE 136 OF THE "
+            "CONSTITUTION OF INDIA</u>**\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={2: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shalija Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert [party["serial"] for party in wrapped["respondents"]] == [1, 2]
+    assert wrapped["respondents"][1]["source_part"] == "Main Petition"
+    assert wrapped["respondents"][1]["source_pages"] == [2]
+
+
 def test_envelope_restores_numbered_main_petition_petitioners() -> None:
     record = {
         "cause_title": {
