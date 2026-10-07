@@ -3480,6 +3480,40 @@ def test_adjacent_applications_with_distinct_headings_remain_separate() -> None:
     assert repaired == parts
 
 
+def test_generic_applications_continuation_merges_into_numbered_application() -> None:
+    from extraction_review.split_repair import _merge_spurious_application_splits
+
+    texts = {
+        73: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "I. A. NO. OF 2024\n"
+            "APPLICATION FOR GRANT OF AD-INTERIM EX-PARTE RELIEF\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner has preferred..."
+        ),
+        74: (
+            "3. That Respondent No.1 conducted the NEET(UG)...\n"
+            "8. This application is being made bonafide..."
+        ),
+        75: (
+            "FILED BY:\n(ASLAM AHMED JAMAL)\n"
+            "ADVOCATE FOR THE PETITIONER\nFiled on: 09.06.2024"
+        ),
+    }
+    parts = {
+        73: ["Application 1"],
+        74: ["Applications"],
+        75: ["Applications"],
+    }
+
+    repaired = _merge_spurious_application_splits(parts, texts)
+
+    assert repaired == {
+        73: ["Application 1"],
+        74: ["Application 1"],
+        75: ["Application 1"],
+    }
+
+
 def test_applications_follow_index_order_when_pdf_order_is_reversed() -> None:
     from extraction_review.split_repair import _renumber_outer_applications
 

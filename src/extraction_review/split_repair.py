@@ -4961,10 +4961,12 @@ def _merge_spurious_application_splits(
 ) -> PagePartMap:
     """Merge a renamed continuation page back into the preceding Application.
 
-    Numbered Application labels from the model are not themselves evidence of
-    a document boundary. Consecutive labels may differ only when the later page
-    has a real application start; otherwise a prayer or verification page can
-    be incorrectly emitted as a second application.
+    Application labels from the model are not themselves evidence of a
+    document boundary. This includes the generic ``Applications`` catch-all:
+    a classifier can label the headed first page ``Application 1`` and its
+    body/signature continuation pages ``Applications``. Consecutive labels may
+    differ only when the later page has a real application start; otherwise
+    they belong to the active application.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     active_app: str | None = None
@@ -4976,7 +4978,7 @@ def _merge_spurious_application_splits(
             (
                 name
                 for name in names
-                if re.fullmatch(r"(?i)application\s+\d+", name)
+                if family_split_name(name) == APPLICATION_FAMILY
             ),
             None,
         )
