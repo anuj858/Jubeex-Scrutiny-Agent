@@ -1144,6 +1144,166 @@ def test_envelope_restores_defect_005_parties_and_coram_bench() -> None:
     )
 
 
+def test_envelope_restores_numbered_main_petition_respondent() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Kailash Negi Alias Anmol",
+            "main_respondent": "Smt. Shalija Shah And Anr.",
+        },
+        "petitioners": [{"name": "Kailash Negi Alias Anmol"}],
+        "respondents": [{"name": "Smt. Shailja Shah"}],
+    }
+    page_markdown = {
+        25: (
+            "IN THE HON'BLE SUPREME COURT OF INDIA\n"
+            "BETWEEN:\n"
+            "Kailash Negi Alias Anmol\n"
+            "VERSUS\n"
+            "1. Smt. Shailja Shah\n"
+            "W/o Shri Neeraj Sah\n"
+            "R/o Ward No. 10, Sukhatal, Nainital\n"
+            "2. Smt. Bandana Shah\n"
+            "W/o Sh. Vivek Shah\n"
+            "R/o A-901, La Lagune Apartments, Gurgaon\n"
+            "SPECIAL LEAVE PETITION UNDER ARTICLE 136 OF THE CONSTITUTION OF INDIA\n"
+            "1. A numbered pleading paragraph that is not a party\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={25: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shailja Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert wrapped["respondents"][0]["serial"] == 1
+    assert wrapped["respondents"][1] == {
+        "serial": 2,
+        "name": "Smt. Bandana Shah",
+        "kind": "INDIVIDUAL",
+        "source_part": "Main Petition",
+        "source_pages": [25],
+        "raw_text": "Smt. Bandana Shah",
+        "is_primary": False,
+    }
+    assert wrapped["cause_title"]["formatted_title"] == (
+        "Kailash Negi Alias Anmol VS Smt. Shalija Shah and Anr."
+    )
+
+
+def test_envelope_restores_numbered_main_petition_petitioners() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Asha Devi",
+            "main_respondent": "State of Uttarakhand",
+        },
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "State of Uttarakhand"}],
+    }
+    page_markdown = {
+        7: (
+            "**BETWEEN:**\n"
+            "**1. Asha Devi**\n"
+            "W/o Ram Lal\n"
+            "2. Mohan Lal\n"
+            "S/o Ram Lal\n"
+            "**VERSUS**\n"
+            "1. State of Uttarakhand\n"
+            "Through its Secretary\n"
+            "**WRIT PETITION UNDER ARTICLE 32**\n"
+        )
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={7: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["petitioners"]] == [
+        "Asha Devi",
+        "Mohan Lal",
+    ]
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "State of Uttarakhand"
+    ]
+
+
+def test_envelope_restores_party_schedule_continued_on_next_page() -> None:
+    record = {
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "Union of India"}],
+    }
+    page_markdown = {
+        10: "BETWEEN:\n1. Asha Devi\nVERSUS\n1. Union of India\n",
+        11: (
+            "2. State of Uttarakhand\n"
+            "3. District Magistrate, Dehradun\n"
+            "SPECIAL LEAVE PETITION UNDER ARTICLE 136\n"
+            "1. This is a pleading paragraph, not a party.\n"
+        ),
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts={10: ["Main Petition"], 11: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Union of India",
+        "State of Uttarakhand",
+        "District Magistrate, Dehradun",
+    ]
+    assert wrapped["respondents"][1]["source_pages"] == [11]
+    assert wrapped["respondents"][2]["source_pages"] == [11]
+
+
+def test_envelope_recovers_first_party_when_model_returned_only_second() -> None:
+    wrapped = apply_extract_envelope(
+        {"respondents": [{"name": "Smt. Bandana Shah"}]},
+        page_markdown={
+            25: (
+                "BETWEEN:\nKailash Negi\nVERSUS\n"
+                "1. Smt. Shailja Shah\n2. Smt. Bandana Shah\n"
+                "SPECIAL LEAVE PETITION UNDER ARTICLE 136\n"
+            )
+        },
+        page_parts={25: ["Main Petition"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Smt. Shailja Shah",
+        "Smt. Bandana Shah",
+    ]
+    assert [party["serial"] for party in wrapped["respondents"]] == [1, 2]
+
+
+def test_envelope_does_not_recover_parties_outside_main_petition() -> None:
+    record = {
+        "petitioners": [{"name": "Asha Devi"}],
+        "respondents": [{"name": "State of Uttarakhand"}],
+    }
+    lower_court_text = (
+        "BETWEEN:\n1. Lower Court Applicant\nVERSUS\n"
+        "1. First Lower Court Party\n2. Second Lower Court Party\n"
+    )
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown={40: lower_court_text},
+        page_parts={40: ["Annexure P-1"]},
+    )
+
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "State of Uttarakhand"
+    ]
+
+
 def test_formatted_title_anr_and_ors() -> None:
     assert build_formatted_title("Meera Krishnan", 1, "Union of India", 1) == (
         "Meera Krishnan VS Union of India"

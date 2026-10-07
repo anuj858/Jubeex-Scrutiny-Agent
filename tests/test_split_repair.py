@@ -100,11 +100,11 @@ def test_defect_011_a15_stamp_wins_over_its_nested_master_index() -> None:
     from extraction_review.split_repair import _extend_explicit_memo_of_parties
 
     text = (
-        "303 ANNEXURE A-15\n"
         "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
         "PRINCIPAL BENCH AT NEW DELHI\nMASTER INDEX\n"
         "S.NO PARTICULARS PAGE NO\n1. Memo of Parties 1\n"
-        "2. Synopsis and List of Dates 2-9"
+        "2. Synopsis and List of Dates 2-9\n"
+        "ANNEXURE A-15\n1876\n303"
     )
 
     assert annexure_label_from_text(text) == "Annexure A-15"
@@ -123,6 +123,69 @@ def test_defect_011_a15_stamp_wins_over_its_nested_master_index() -> None:
         3,
     )
     assert repaired[2] == ["Annexure A-15"]
+
+
+def test_defect_011_reported_boundaries_are_repaired_together() -> None:
+    """A-2 scans, A-14/A-15, one stay IA, and final Memo stay independent."""
+    texts = {
+        1: "92\nANNEXURE A-2:",
+        2: "93",
+        3: "94",
+        4: "True typed copy of ANNEXURE A-2\nEIGHTH MEETING OF CREDITORS",
+        5: "288\nANNEXURE A-14:\nIN THE NATIONAL COMPANY LAW TRIBUNAL",
+        6: "Order Delivered On: 14.10.2025\nContinuation of the order",
+        7: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "MASTER INDEX\nS.NO PARTICULARS PAGE NO\n1. Memo of Parties 1\n"
+            "2. Synopsis & List of Dates 2-9\nANNEXURE A-15\n1876\n303"
+        ),
+        8: "Continuation of the enclosed appellate record",
+        9: (
+            "ITEM NO.13\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+            "ANNEXURE A-16\n357"
+        ),
+        10: (
+            "IN THE HON'BLE SUPREME COURT OF INDIA\nI.A. NO. OF 2026\n"
+            "APPLICATION SEEKING AD-INTERIM EX-PARTE STAY\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+        11: "2. The Appellant is filing the present Application seeking stay.",
+        12: "PRAYER\nThe application may kindly be allowed.",
+        13: "FILED BY\nAdvocate on Record for the petitioner",
+        14: "IN THE HON'BLE SUPREME COURT OF INDIA\nFILING INDEX",
+        15: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "AMENDED ME\nMO OF PARTIES\n1. Appellant\n1. Respondent"
+        ),
+        16: "2. Assets Care & Reconstruction ...Respondent No.2",
+    }
+    bad = {
+        1: ["Annexure A-2"],
+        4: ["Annexure A-2"],
+        5: ["Annexure A-14"],
+        6: ["Annexure A-14"],
+        7: ["Annexure A-14"],
+        8: ["Annexure A-14"],
+        9: ["Annexure A-16"],
+        10: ["Application 1"],
+        11: ["Application 2"],
+        12: ["Application 2"],
+        13: ["Application 2"],
+        14: ["Filing Memo"],
+        15: ["Annexure A-15"],
+        16: ["Annexure A-15"],
+    }
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=16)
+
+    assert all(repaired[page] == ["Annexure A-2"] for page in range(1, 5))
+    assert all(repaired[page] == ["Annexure A-14"] for page in range(5, 7))
+    assert all(repaired[page] == ["Annexure A-15"] for page in range(7, 9))
+    assert repaired[9] != ["Annexure A-15"]
+    assert all(repaired[page] == ["Application 1"] for page in range(10, 14))
+    assert repaired[14] == ["Filing Memo"]
+    assert repaired[15] == ["Memo of Parties"]
+    assert repaired[16] == ["Memo of Parties"]
 
 
 def test_defect_011_split_amended_memo_heading_is_recovered() -> None:
@@ -571,6 +634,128 @@ def test_master_index_impugned_range_overrides_stray_index_scan_label() -> None:
 
     assert all(repaired[page] == ["Impugned Order"] for page in range(2, 7))
     assert repaired[7] == ["Main Petition"]
+
+
+def test_defect_008_impugned_range_does_not_consume_front_matter(
+    monkeypatch,
+) -> None:
+    """A page-range number inside the master Index is not physical folio 1."""
+    from extraction_review import split_repair
+    from extraction_review.split_audit import IndexPrintedRow
+
+    texts = {
+        5: (
+            "INDEX\nS.No. Particulars of Documents Page No.\n"
+            "6. Office Report on Limitation A\n"
+            "7. Listing Proforma A1-A2\n"
+            "12. Synopsis and List of Dates B-G\n"
+            "13. Impugned Judgment and Order 1-14"
+        ),
+        6: (
+            "ANNEXURE-A: Death certificates\n"
+            "I.A. No. of 2025 Application for condonation of delay\n"
+            "Application for setting aside abatement\nF/M\nV/A"
+        ),
+        7: "OFFICE REPORT ON LIMITATION\nA",
+        8: "LISTED PERFORMA\nSection: IV-B\nA1",
+        9: "Similar disposed matter: No\nCriminal matter: Yes\nA2",
+        10: "SYNOPSIS AND LIST OF DATES\nB",
+        11: "Chronology of events continues.\nC",
+        12: "Chronology of events continues.\nD",
+        13: "Chronology of events continues.\nE",
+        14: "Chronology of events continues.\nF",
+        15: "Chronology of events continues.\nG",
+        16: "IN THE HIGH COURT\nMEMO OF PARTIES",
+        17: "OPENING SHEET FOR CIVIL APPEALS",
+        18: "IN THE HIGH COURT\nRFA No. 8145 of 2014\nJUDGMENT\n1",
+        19: "Judgment reasons continue.\n2",
+        20: "Judgment reasons continue.\n3",
+        21: "Judgment reasons continue.\n4",
+        22: "List of sale deeds\n4 P-4 10.02.2006 12945\n5",
+        23: "List of sale deeds\n11 P-11 16.06.2008 12513\n6",
+        24: "Judgment reasons continue.\n7",
+        25: "Judgment reasons continue.\n8",
+        26: "Judgment reasons continue.\n9",
+        27: "Judgment reasons continue.\n10",
+        28: "Judgment reasons continue.\n11",
+        29: "For the reasons stated, the appeals are dismissed.\n12",
+        30: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL)\nMOST RESPECTFULLY SHOWETH\n15"
+        ),
+        40: (
+            "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+            "Certified that the petition is confined to the pleadings."
+        ),
+        41: (
+            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\n"
+            "I solemnly affirm that the accompanying petition is true.\nDEPONENT"
+        ),
+        42: "ANNEXURE P-1\nCopy of the order dated 04.03.2014\n24",
+    }
+    bad = {
+        5: ["Index"],
+        6: ["Impugned Order"],
+        7: ["Office Report on Limitation"],
+        8: ["Listing Proforma"],
+        9: ["Listing Proforma"],
+        10: ["Synopsis", "List of Dates & Events"],
+        11: ["Synopsis", "List of Dates & Events"],
+        12: ["Synopsis", "List of Dates & Events"],
+        13: ["Synopsis", "List of Dates & Events"],
+        14: ["Synopsis", "List of Dates & Events"],
+        15: ["Synopsis", "List of Dates & Events"],
+        16: ["Memo of Parties"],
+        17: ["Memo of Parties"],
+        18: ["Impugned Order"],
+        19: ["Impugned Order"],
+        20: ["Impugned Order"],
+        21: ["Impugned Order"],
+        22: ["Annexure P-3"],
+        23: ["Annexure P-4"],
+        24: ["Impugned Order"],
+        25: ["Impugned Order"],
+        26: ["Impugned Order"],
+        27: ["Impugned Order"],
+        28: ["Impugned Order"],
+        29: ["Impugned Order"],
+        30: ["Main Petition"],
+        40: ["AOR's Certificate"],
+        41: ["Annexure P-4"],
+        42: ["Annexure P-1"],
+    }
+    monkeypatch_rows = [
+        IndexPrintedRow(
+            mapped_part="Impugned Order",
+            particulars="Impugned Judgment and Order",
+            kind="number",
+            start=1,
+            end=14,
+        )
+    ]
+    monkeypatch.setattr(
+        split_repair,
+        "aligned_index_printed_rows",
+        lambda _parts, _text: monkeypatch_rows,
+    )
+    repaired, _ = split_repair.repair_compiled_split(bad, texts, page_count=42)
+
+    assert repaired[5] == ["Index"]
+    assert repaired[6] == ["Index"]
+    assert repaired[7] == ["Office Report on Limitation"]
+    assert repaired[8] == ["Listing Proforma"]
+    assert repaired[9] == ["Listing Proforma"]
+    assert "Synopsis" in repaired[10]
+    assert "Synopsis" in repaired[15]
+    assert repaired[16] == ["Memo of Parties"]
+    assert repaired[17] == ["Memo of Parties"]
+    assert all(repaired[page] == ["Impugned Order"] for page in range(18, 30))
+    assert repaired[22] == ["Impugned Order"]
+    assert repaired[23] == ["Impugned Order"]
+    assert repaired[30] == ["Main Petition"]
+    assert repaired[40] == ["AOR's Certificate"]
+    assert repaired[41] == ["Affidavit"]
+    assert repaired[42] == ["Annexure P-1"]
 
 
 def test_two_page_judgment_heading_restores_complete_impugned_order() -> None:

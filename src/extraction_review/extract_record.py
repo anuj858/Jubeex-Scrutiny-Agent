@@ -166,6 +166,29 @@ _LISTING_FIELD_AFTER_PARTY = re.compile(
     r"\(\s*[a-z]\s*\)\s*(?:phone|mobile|e-?mail|main\s+category|sub\s+classification)\b",
     re.IGNORECASE,
 )
+_NUMBERED_PARTY_LINE = re.compile(
+    r"(?m)^\s*\|?\s*(?:[*_`#]+\s*)?(\d{1,3})\s*[.)]\s*(.+?)\s*$"
+)
+_VERSUS_LINE = re.compile(
+    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?(?:versus|vs\.?)"
+    r"\s*(?:[*_`#]+\s*)?\|?\s*$"
+)
+_BETWEEN_LINE = re.compile(
+    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?between\s*:?[\s*_`#|]*$"
+)
+_PARTY_SCHEDULE_END = re.compile(
+    r"(?im)^\s*\|?\s*(?:[*_`#]+\s*)?(?:"
+    r"special\s+leave\s+petition|writ\s+petition|civil\s+appeal|criminal\s+appeal|"
+    r"transfer\s+petition|review\s+petition|curative\s+petition|arbitration\s+petition|"
+    r"petition\s+under|appeal\s+under|to\s*,?\s*$|most\s+respectfully\s+showeth"
+    r")"
+)
+_PARTY_NAME_TAIL = re.compile(
+    r"\s+(?:s\s*/\s*o|d\s*/\s*o|w\s*/\s*o|r\s*/\s*o|c\s*/\s*o|"
+    r"aged?\b|age\b|resident\b|residing\b|address\b|through\b|"
+    r"petitioner\s+no\b|respondent\s+no\b).*$",
+    re.IGNORECASE,
+)
 _CORAM_JUDGE = re.compile(
     r"hon[’']?ble\s+(?:mr|ms|mrs|dr)\.?\s+justice\s+"
     r"[a-z][a-z .’'\-]{2,80}",
@@ -413,6 +436,181 @@ def _listing_proforma_party_names(
             key = "petitioners" if match.group(1).casefold() == "petitioner" else "respondents"
             found[key].append((int(match.group(2)), value, page))
     return found
+
+
+def _clean_numbered_party_name(value: str) -> str | None:
+    """Return the printed name at the start of an explicit cause-title row."""
+    text = re.sub(r"</?[^>]+>|[*_`#]", " ", value)
+    text = re.sub(r"\s*\|\s*", " ", text)
+    text = _PARTY_NAME_TAIL.sub("", text)
+    text = _ROLE_TAIL.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,.;:-")
+    if not text or len(text) > 180:
+        return None
+    if text.casefold() in _EMPTY_DATE or not re.search(r"[A-Za-z]", text):
+        return None
+    return text
+
+
+def _numbered_parties_in_scope(
+    text: str,
+    *,
+    start: int,
+    end: int,
+) -> list[tuple[int, str, int]]:
+    found: list[tuple[int, str, int]] = []
+    for match in _NUMBERED_PARTY_LINE.finditer(text, start, end):
+        name = _clean_numbered_party_name(match.group(2))
+        if name:
+            found.append((int(match.group(1)), name, match.start()))
+    return found
+
+
+def _main_petition_party_names(
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> dict[str, list[tuple[int, str, int]]]:
+    """Read explicit numbered parties from the Main Petition cause title.
+
+    This deliberately requires a VERSUS separator and inspects only the cause-title
+    scope. It therefore cannot reinterpret numbered pleading paragraphs or parties
+    appearing in an annexure/lower-court record as filing parties.
+    """
+    found: dict[str, list[tuple[int, str, int]]] = {
+        "petitioners": [],
+        "respondents": [],
+    }
+    chunks: list[str] = []
+    spans: list[tuple[int, int, int]] = []
+    cursor = 0
+    for page in sorted(page_markdown or {}):
+        if MAIN_PETITION_PART not in parts_on_page((page_parts or {}).get(page)):
+            continue
+        text = str((page_markdown or {}).get(page) or "").replace("\r\n", "\n")
+        if chunks:
+            chunks.append("\n")
+            cursor += 1
+        start = cursor
+        chunks.append(text)
+        cursor += len(text)
+        spans.append((start, cursor, page))
+    text = "".join(chunks)
+    versus = _VERSUS_LINE.search(text)
+    if versus is None:
+        return found
+
+    def page_at(offset: int) -> int:
+        for page_start, page_end, page in spans:
+            if page_start <= offset < page_end:
+                return page
+        return spans[-1][2]
+
+    between = _BETWEEN_LINE.search(text, 0, versus.start())
+    petitioner_start = between.end() if between is not None else 0
+    schedule_end = _PARTY_SCHEDULE_END.search(text, versus.end())
+    if schedule_end is not None:
+        respondent_end = schedule_end.start()
+    else:
+        respondent_end = next(
+            page_end
+            for page_start, page_end, _page in spans
+            if page_start <= versus.start() < page_end
+        )
+    found["petitioners"].extend(
+        (serial, name, page_at(offset))
+        for serial, name, offset in _numbered_parties_in_scope(
+            text, start=petitioner_start, end=versus.start()
+        )
+    )
+    found["respondents"].extend(
+        (serial, name, page_at(offset))
+        for serial, name, offset in _numbered_parties_in_scope(
+            text, start=versus.end(), end=respondent_end
+        )
+    )
+    return found
+
+
+def _supplement_parties_from_main_petition(
+    payload: dict[str, Any],
+    *,
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> None:
+    """Restore explicit numbered filing parties omitted by extraction."""
+    recovered = _main_petition_party_names(page_markdown, page_parts)
+    for key in ("petitioners", "respondents"):
+        parties = payload.get(key)
+        if not isinstance(parties, list):
+            parties = []
+            payload[key] = parties
+        # Match returned names before applying positional fallbacks. This handles a
+        # model that returns only party 2 (or another later serial) without a serial.
+        for party in parties:
+            if not isinstance(party, dict) or party.get("serial") is not None:
+                continue
+            name = _party_name(party)
+            matched = next(
+                (
+                    serial
+                    for serial, recovered_name, _page in recovered[key]
+                    if _names_match(name, recovered_name)
+                ),
+                None,
+            )
+            if matched is not None:
+                party["serial"] = matched
+        for serial, name, page in recovered[key]:
+            existing = next(
+                (
+                    party
+                    for party in parties
+                    if isinstance(party, dict)
+                    and _names_match(_party_name(party), name)
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.get("serial") is None:
+                    existing["serial"] = serial
+                continue
+            same_serial = next(
+                (
+                    party
+                    for party in parties
+                    if isinstance(party, dict)
+                    and str(party.get("serial") or "").isdigit()
+                    and int(party["serial"]) == serial
+                ),
+                None,
+            )
+            if same_serial is not None:
+                continue
+            # Models commonly omit serial on returned parties while preserving list
+            # order. Treat an occupied position as that serial instead of duplicating
+            # it; explicit later serials are still appended.
+            if 1 <= serial <= len(parties):
+                positional = parties[serial - 1]
+                if isinstance(positional, dict) and positional.get("serial") is None:
+                    positional["serial"] = serial
+                    continue
+            parties.append(
+                {
+                    "serial": serial,
+                    "name": name,
+                    "kind": normalize_party_kind(name, None),
+                    "source_part": MAIN_PETITION_PART,
+                    "source_pages": [page],
+                    "raw_text": name,
+                }
+            )
+        parties.sort(
+            key=lambda party: (
+                int(party.get("serial"))
+                if isinstance(party, dict) and str(party.get("serial") or "").isdigit()
+                else 10_000
+            )
+        )
 
 
 def _supplement_parties_from_listing_proforma(
@@ -1312,6 +1510,11 @@ def apply_extract_envelope(
     )
     if printed_date:
         payload["petition_date"] = printed_date
+    _supplement_parties_from_main_petition(
+        payload,
+        page_markdown=page_markdown,
+        page_parts=page_parts,
+    )
     _supplement_parties_from_listing_proforma(
         payload,
         page_markdown=page_markdown,

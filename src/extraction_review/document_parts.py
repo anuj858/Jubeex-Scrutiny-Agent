@@ -693,6 +693,34 @@ def _annexure_mark_from_title_or_stamp(
         mark = _annexure_mark_from_match(first_line_match)
         if mark is not None:
             return mark
+
+    # Some compiled paper-books place the outer Annexure stamp in the footer
+    # of the enclosed document's first page.  Llama/PDF text extraction then
+    # returns the local MASTER INDEX first and the real outer stamp immediately
+    # before one or two standalone folio numbers (Defect File 011, A-15).
+    # Recognize only that strong footer shape before rejecting Index pages;
+    # ordinary Index rows have a numbered prefix and/or a printed page range.
+    tail_start = max(0, len(lines) - 6)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
+        match = _ANNEXURE_TITLE_LINE_RE.match(line)
+        if not match or _INDEX_ROW_ANNEXURE_RE.match(line):
+            continue
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        if remainder:
+            continue
+        following = lines[index + 1 :]
+        if not following or len(following) > 3:
+            continue
+        if not all(re.fullmatch(r"\d{1,5}", value) for value in following):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is not None and (
+            not require_series
+            or match.groupdict().get("series")
+            or match.groupdict().get("bare_series")
+        ):
+            return mark
     if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
         return None
 

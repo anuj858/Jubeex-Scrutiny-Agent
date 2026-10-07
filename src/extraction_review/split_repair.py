@@ -4504,17 +4504,46 @@ def _restore_index_bridge_pages(
     last_page = max(max(updated, default=0), max(page_text, default=0))
     for page in range(2, last_page):
         current = set(parts_on_page(updated.get(page)))
+        previous_is_index = "Index" in parts_on_page(updated.get(page - 1))
+        next_anchor = _outer_anchor_label(page_text.get(page + 1, ""))
+        text = page_text.get(page, "")
+
+        # A long master Index can continue onto one untitled sheet and then
+        # immediately give way to the first filing document.  The continuation
+        # can list several I.A.s plus F/M and V/A without a repeated INDEX
+        # heading or serial-number column. Require
+        # multiple filing-inventory cues and a strong next front-matter anchor
+        # so ordinary document prose cannot be promoted to Index.
+        inventory_cues = len(
+            re.findall(
+                r"(?mi)^\s*(?:annexure\b|(?:i\.?\s*a\.?|application)\b|"
+                r"f\s*/?\s*m\b|v\s*/?\s*a\b)",
+                text,
+            )
+        )
+        if (
+            previous_is_index
+            and next_anchor
+            in {
+                "Office Report on Limitation",
+                "Listing Proforma",
+                "Cover Page",
+                "Record of Proceedings",
+            }
+            and inventory_cues >= 2
+        ):
+            updated[page] = ["Index"]
+            continue
         if current and not current <= {
             "Listing Proforma",
             "Synopsis",
             "List of Dates & Events",
         }:
             continue
-        if "Index" not in parts_on_page(updated.get(page - 1)):
+        if not previous_is_index:
             continue
         if "Index" not in parts_on_page(updated.get(page + 1)):
             continue
-        text = page_text.get(page, "")
         numbered_rows = re.findall(r"(?m)^\s*\d{1,3}[.)]\s+\S", text)
         if len(numbered_rows) >= 2:
             updated[page] = ["Index"]
@@ -4536,12 +4565,36 @@ def _apply_indexed_outer_document_ranges(
     }
     updated = {page: list(names) for page, names in page_parts.items()}
 
+    def has_conflicting_outer_heading(page: int, target: str | None) -> bool:
+        """Keep a real filing heading out of an inferred numeric range.
+
+        A master Index contains many bare numbers from its page-range column.
+        OCR can put one of those numbers on the final line and make it look
+        like the physical sheet's folio.  Those false folios must not be used
+        as either a range endpoint or a page to overwrite.  Inspecting the
+        page text (rather than trusting its current split label) still allows
+        a genuinely mislabelled, heading-less judgment page to be reclaimed.
+        """
+        text = page_text.get(page, "")
+        heading = _outer_anchor_label(text)
+        if heading and heading != target:
+            return True
+        return bool(
+            target != "Index"
+            and (
+                _looks_like_index_table(text)
+                or _looks_like_index_continuation(text)
+            )
+        )
+
     def physical_pages(row: IndexPrintedRow) -> list[int]:
         """Map an Index folio span even when an interior scan has no OCR folio."""
         matched = [
             page
             for page, folio in folios.items()
-            if folio and _folio_in_printed_row(folio, row)
+            if folio
+            and _folio_in_printed_row(folio, row)
+            and not has_conflicting_outer_heading(page, row.mapped_part)
         ]
         exact_start = next(
             (
@@ -4551,6 +4604,7 @@ def _apply_indexed_outer_document_ranges(
                 and folio[0] == row.kind
                 and folio[1] == row.start
                 and not folio[2]
+                and not has_conflicting_outer_heading(page, row.mapped_part)
             ),
             None,
         )
@@ -4562,6 +4616,7 @@ def _apply_indexed_outer_document_ranges(
                 and folio[0] == row.kind
                 and folio[1] == row.end
                 and (not row.end_suffix or folio[2] == row.end_suffix)
+                and not has_conflicting_outer_heading(page, row.mapped_part)
             ),
             None,
         )
@@ -4622,9 +4677,55 @@ def _apply_indexed_outer_document_ranges(
     if len(impugned_rows) == 1:
         row = impugned_rows[0]
         for page in physical_pages(row):
+            if has_conflicting_outer_heading(page, row.mapped_part):
+                continue
             if _looks_like_sci_main_petition(page_text.get(page, "")):
                 break
             updated[page] = ["Impugned Order"]
+
+        # Scanned judgments may have no recoverable margin folios at all.
+        # When the master Index has exactly one Impugned Order row, use a
+        # strong lower-court judgment start before Form 28 and carry it only
+        # up to that petition boundary.  This also reclaims internal exhibit
+        # tables (P-3/P-4, etc.) that the model mistook for outer Annexures.
+        main_start = next(
+            (
+                page
+                for page in range(1, page_count + 1)
+                if _looks_like_sci_main_petition(page_text.get(page, ""))
+            ),
+            page_count + 1,
+        )
+        front_end = max(
+            (
+                page
+                for page in range(1, main_start)
+                if set(parts_on_page(updated.get(page)))
+                & {"Synopsis", "List of Dates & Events", "Memo of Parties"}
+            ),
+            default=0,
+        )
+        judgment_start = next(
+            (
+                page
+                for page in range(front_end + 1, main_start)
+                if _is_lower_court_caption(page_text.get(page, ""))
+                and re.search(
+                    r"\b(?:coram|reserved\s+on|date\s+of\s+decision|"
+                    r"pronounced\s+on|judg(?:e)?ment|order\s+sheet)\b",
+                    page_text.get(page, "")[:3000],
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if judgment_start is not None:
+            for page in range(judgment_start, main_start):
+                if page > judgment_start and has_conflicting_outer_heading(
+                    page, row.mapped_part
+                ):
+                    break
+                updated[page] = ["Impugned Order"]
 
     main_rows = [
         row
