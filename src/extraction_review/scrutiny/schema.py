@@ -461,10 +461,9 @@ def _evidence_from_chunks(
     ranked = sorted(
         page_chunks,
         key=lambda chunk: (
-            _chunk_part_rank(chunk, preferred),
-            _safe_page_number(chunk.get("page")) or -1,
+            -_chunk_part_rank(chunk, preferred),
+            _safe_page_number(chunk.get("page")) or 999999,
         ),
-        reverse=True,
     )
     refs: list[EvidenceRef] = []
     seen: set[int] = set()
@@ -621,11 +620,11 @@ def _choose_evidence_chunk(
     the quote is not in any sent chunk, so the document page can still be
     returned. An unknown id with no quote match returns nothing.
     """
-    cited_id = (ref.chunk_id or "").strip()
+    cited_id = re.sub(r"[\[\]]", "", (ref.chunk_id or "")).split("|")[0].strip().lower()
     cited = None
     if cited_id:
         for chunk in page_chunks:
-            if _excerpt_label(chunk) == cited_id:
+            if _excerpt_label(chunk).strip().lower() == cited_id:
                 cited = chunk
                 break
     quote = (ref.quote or "").strip()
