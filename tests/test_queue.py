@@ -3,6 +3,7 @@ from extraction_review.queue import _client_kwargs, queue_kind, queue_name, sqs_
 
 def test_queue_kind_splits_ingestion_and_scrutiny() -> None:
     assert queue_kind("scrutiny") == "scrutiny"
+    assert queue_kind("annexure_index") == "scrutiny"
     assert queue_kind("process_file") == "process_file"
     assert queue_kind("INGESTION") == "process_file"
 

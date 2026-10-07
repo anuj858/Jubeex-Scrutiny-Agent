@@ -220,19 +220,13 @@ def build_filing_chunk_text(
     cause = _as_dict(data.get("cause_title"))
     matter = _as_dict(data.get("classification") or data.get("matter_classification"))
     impugned = _first_dict(data.get("impugned_orders") or data.get("impugned_order"))
-    aor = _first_dict(
-        data.get("advocates_on_record") or data.get("advocate_on_record")
-    )
+    aor = _first_dict(data.get("advocates_on_record") or data.get("advocate_on_record"))
 
     petitioners = data.get("petitioners") or []
     respondents = data.get("respondents") or []
 
-    petitioner_names = [
-        name for name in (_party_name(p) for p in petitioners) if name
-    ]
-    respondent_names = [
-        name for name in (_party_name(r) for r in respondents) if name
-    ]
+    petitioner_names = [name for name in (_party_name(p) for p in petitioners) if name]
+    respondent_names = [name for name in (_party_name(r) for r in respondents) if name]
 
     special = None
     specials = matter.get("special_categories")
@@ -260,7 +254,9 @@ def build_filing_chunk_text(
         f"AOR: {aor.get('name')} ({aor.get('registration_number')})",
         f"Summary title: {cause.get('formatted_title') or cause.get('title')}",
     ]
-    return "\n".join(p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None"))
+    return "\n".join(
+        p for p in parts if p and not p.endswith(": None") and not p.endswith("/ None")
+    )
 
 
 def split_text_windows(
@@ -713,9 +709,7 @@ def gather_filing_evidence(
         if not record_id:
             return
         existing = seen.get(record_id)
-        if existing is None or (chunk.get("score") or 0) > (
-            existing.get("score") or 0
-        ):
+        if existing is None or (chunk.get("score") or 0) > (existing.get("score") or 0):
             seen[record_id] = chunk
 
     jobs: list[tuple[str, dict[str, Any]]] = []
@@ -822,3 +816,130 @@ def gather_filing_evidence_pool(
         file_hash,
     )
     return chunks
+
+
+THIN_PAGE_CHARS = 500
+MAX_PAGE_WINDOWS = 4
+_FETCH_BATCH = 100
+
+
+def page_record_id(base_id: str, page: int, window: int) -> str:
+    """Pinecone id written by ``build_page_records``."""
+    return f"{base_id}:page:{int(page)}:{int(window)}"
+
+
+def _vectors_from_fetch(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        vectors = result.get("vectors") or result.get("records") or {}
+        return dict(vectors) if isinstance(vectors, dict) else {}
+    vectors = getattr(result, "vectors", None) or getattr(result, "records", None) or {}
+    return dict(vectors) if isinstance(vectors, dict) else {}
+
+
+def _record_fields(record: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    if isinstance(record, dict):
+        fields.update(record)
+        meta = record.get("metadata") or record.get("fields")
+        if isinstance(meta, dict):
+            fields.update(meta)
+        return fields
+    meta = getattr(record, "metadata", None)
+    if isinstance(meta, dict):
+        fields.update(meta)
+    if hasattr(record, "to_dict"):
+        dumped = record.to_dict()
+        if isinstance(dumped, dict):
+            fields.update(dumped)
+            inner = dumped.get("metadata")
+            if isinstance(inner, dict):
+                fields.update(inner)
+    return fields
+
+
+def _text_from_fields(fields: dict[str, Any], text_field: str) -> str:
+    for key in (text_field, "chunk_text", "normalized_text", "text"):
+        value = fields.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _fetch_id_batch(ids: list[str]) -> dict[str, Any]:
+    if not ids:
+        return {}
+    client = get_pinecone_client()
+    index = ensure_index(client)
+    found: dict[str, Any] = {}
+    with _pinecone_query_gate():
+        for start in range(0, len(ids), _FETCH_BATCH):
+            batch = ids[start : start + _FETCH_BATCH]
+            result = index.fetch(ids=batch, namespace=pinecone_namespace)
+            found.update(_vectors_from_fetch(result))
+    return found
+
+
+def fetch_page_texts(
+    *,
+    base_id: str,
+    pages: list[int],
+    max_windows: int = MAX_PAGE_WINDOWS,
+    thin_chars: int = THIN_PAGE_CHARS,
+) -> dict[int, str]:
+    """Read page text by id ``{base_id}:page:{page}:{window}``.
+
+    Window 0 is always requested. Later windows are read only while the page
+    text is still shorter than ``thin_chars``.
+    """
+    wanted = sorted({int(page) for page in pages if int(page) > 0})
+    if not base_id or not wanted:
+        return {}
+    text_field = pinecone_text_field
+    try:
+        text_field = resolve_text_field()
+    except ValueError as exc:
+        logger.debug("Using configured Pinecone text field: %s", exc)
+
+    windows = {page: 0 for page in wanted}
+    parts: dict[int, list[str]] = {page: [] for page in wanted}
+    open_pages = set(wanted)
+    while open_pages:
+        ids = [
+            page_record_id(base_id, page, windows[page]) for page in sorted(open_pages)
+        ]
+        try:
+            records = _fetch_id_batch(ids)
+        except Exception:
+            logger.exception(
+                "[Pinecone] Page fetch failed for %s page(s) of %s",
+                len(ids),
+                base_id,
+            )
+            raise
+        next_open: set[int] = set()
+        for page in list(open_pages):
+            record_id = page_record_id(base_id, page, windows[page])
+            record = records.get(record_id)
+            text = (
+                _text_from_fields(_record_fields(record), text_field) if record else ""
+            )
+            if text:
+                parts[page].append(text)
+            joined = "\n\n".join(parts[page]).strip()
+            if text and len(joined) < thin_chars and windows[page] + 1 < max_windows:
+                windows[page] += 1
+                next_open.add(page)
+        open_pages = next_open
+
+    loaded = {
+        page: "\n\n".join(chunks).strip()
+        for page, chunks in parts.items()
+        if any(chunk.strip() for chunk in chunks)
+    }
+    logger.info(
+        "[Pinecone] Fetched %s/%s page(s) for %s",
+        len(loaded),
+        len(wanted),
+        base_id,
+    )
+    return loaded

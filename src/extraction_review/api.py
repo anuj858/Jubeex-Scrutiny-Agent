@@ -29,6 +29,8 @@ from pydantic import (
     model_validator,
 )
 
+from .annexure_index import AnnexureIndexEvent
+from .annexure_index import workflow as annexure_index_workflow
 from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
@@ -54,7 +56,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-JobKind = Literal["process_file", "scrutiny"]
+JobKind = Literal["process_file", "scrutiny", "annexure_index"]
 JobStatus = Literal["running", "completed", "failed"]
 ReviewStatus = Literal["pending_review", "approved", "rejected"]
 
@@ -342,6 +344,38 @@ class CreateScrutinyRequest(BaseModel):
         return blank_or_placeholder(value)
 
 
+class AnnexureIndexRequest(BaseModel):
+    """Annexure ids to describe. PDFs are already in Pinecone."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    annexures: list[str] = Field(
+        min_length=1,
+        examples=[["annexure_p1", "annexure_p2", "annexure_p3"]],
+    )
+
+    @field_validator("annexures", mode="before")
+    @classmethod
+    def _clean_annexures(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        items = [value] if isinstance(value, str) else value
+        if not isinstance(items, list):
+            return []
+        cleaned: list[str] = []
+        for item in items:
+            text = blank_or_placeholder(item)
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    @model_validator(mode="after")
+    def _require_annexures(self) -> AnnexureIndexRequest:
+        if not self.annexures:
+            raise ValueError("annexures must contain at least one annexure id")
+        return self
+
+
 class JobAccepted(BaseModel):
     job_id: str
     status: Literal["accepted"] = "accepted"
@@ -485,9 +519,7 @@ def _apply_event_progress(job: JobState, event: Any) -> None:
     message = getattr(event, "message", None)
     if not isinstance(message, str) or not message.strip():
         return
-    percent, stage = progress_for_status(
-        message, kind=job.callback_kind or job.kind
-    )
+    percent, stage = progress_for_status(message, kind=job.callback_kind or job.kind)
     # Persist stage transitions immediately. The normal S3 write throttle can
     # otherwise retain a short-lived message such as "skipping classify" for
     # the entire LlamaSplit wait, even though the job has moved to splitting.
@@ -891,6 +923,18 @@ async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
         )
 
 
+async def _require_scrutiny_before_annexure_index(agent_data_id: str) -> None:
+    """Annexure descriptions run only after defects have been saved."""
+    item = await _load_filing_item(agent_data_id)
+    data = _as_data_dict(getattr(item, "data", None))
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    if not metadata.get("scrutiny_report"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Annexure index runs after scrutiny. Run index or scrutiny first.",
+        )
+
+
 def _filing_out(agent_data_id: str, item: Any, data: Any) -> dict[str, Any]:
     return {
         "id": getattr(item, "id", agent_data_id),
@@ -1035,6 +1079,61 @@ async def create_scrutiny(
         callback_url=(body.callback_url if body else None),
         background_tasks=background_tasks,
     )
+
+
+def _accept_annexure_index(
+    *,
+    event: AnnexureIndexEvent,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue annexure descriptions (kind=annexure_index → ANNEXURE_INDEX_* webhooks)."""
+    job_id = str(uuid.uuid4())
+    job = JobState(job_id=job_id, kind="annexure_index")
+    job.callback_kind = "annexure_index"
+    JOBS[job_id] = job
+    job.persist(force=True)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "annexure_index",
+                "callback_kind": "annexure_index",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_annexure_index, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
+async def _start_annexure_index(job: JobState, event: AnnexureIndexEvent) -> None:
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    handler = annexure_index_workflow.run(start_event=event)
+    await _run_workflow(job, handler)
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/annexure-index",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Describe annexures for a new index page",
+    dependencies=[Depends(require_api_key)],
+)
+async def create_annexure_index(
+    agent_data_id: str,
+    body: AnnexureIndexRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Last step: List of Dates plus annexure pages, after Pinecone and defects."""
+    await _require_scrutiny_before_annexure_index(agent_data_id)
+    event = AnnexureIndexEvent(
+        agent_data_id=agent_data_id,
+        annexures=list(body.annexures),
+    )
+    return _accept_annexure_index(event=event, background_tasks=background_tasks)
 
 
 def main() -> None:

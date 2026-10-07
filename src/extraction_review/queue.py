@@ -18,18 +18,25 @@ def sqs_enabled() -> bool:
     return bool(
         (os.getenv("JUBEEX_SQS_INGESTION_QUEUE_URL") or "").strip()
         or (os.getenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL") or "").strip()
-        or (os.getenv("JUBEEX_SQS_ENABLED") or "").strip().lower() in {"1", "true", "yes"}
+        or (os.getenv("JUBEEX_SQS_ENABLED") or "").strip().lower()
+        in {"1", "true", "yes"}
     )
 
 
 def queue_kind(kind: str) -> str:
-    return "scrutiny" if kind == "scrutiny" else "process_file"
+    if kind in {"scrutiny", "annexure_index"}:
+        return "scrutiny"
+    return "process_file"
 
 
 def queue_name(kind: str) -> str:
     if queue_kind(kind) == "scrutiny":
-        return (os.getenv("JUBEEX_SQS_SCRUTINY_QUEUE_NAME") or SCRUTINY_QUEUE_NAME).strip()
-    return (os.getenv("JUBEEX_SQS_INGESTION_QUEUE_NAME") or INGESTION_QUEUE_NAME).strip()
+        return (
+            os.getenv("JUBEEX_SQS_SCRUTINY_QUEUE_NAME") or SCRUTINY_QUEUE_NAME
+        ).strip()
+    return (
+        os.getenv("JUBEEX_SQS_INGESTION_QUEUE_NAME") or INGESTION_QUEUE_NAME
+    ).strip()
 
 
 def _visibility_timeout() -> int:
@@ -106,7 +113,9 @@ def enqueue_job(message: dict[str, Any]) -> str:
     return str(sent.get("MessageId") or "")
 
 
-def receive_jobs(kind: str, *, wait_seconds: int = 20, max_messages: int = 1) -> list[dict[str, Any]]:
+def receive_jobs(
+    kind: str, *, wait_seconds: int = 20, max_messages: int = 1
+) -> list[dict[str, Any]]:
     url = _queue_url(kind)
     response = _client().receive_message(
         QueueUrl=url,

@@ -98,15 +98,12 @@ async def notify_job_finished(
         )
         return
     completed = status == "completed"
-    event = (
-        "INGESTION_COMPLETED"
-        if kind == "process_file" and completed
-        else "INGESTION_FAILED"
-        if kind == "process_file"
-        else "SCRUTINY_COMPLETED"
-        if completed
-        else "SCRUTINY_FAILED"
-    )
+    if kind == "process_file":
+        event = "INGESTION_COMPLETED" if completed else "INGESTION_FAILED"
+    elif kind == "annexure_index":
+        event = "ANNEXURE_INDEX_COMPLETED" if completed else "ANNEXURE_INDEX_FAILED"
+    else:
+        event = "SCRUTINY_COMPLETED" if completed else "SCRUTINY_FAILED"
     artifact_map = artifacts or {}
     payload = {
         "event_id": event_id,
