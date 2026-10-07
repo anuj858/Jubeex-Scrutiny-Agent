@@ -44,7 +44,10 @@ from .split_audit import (
 )
 from .split_pdf_layout import printed_folio as _printed_folio
 
-_SCI_CAPTION_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+_SCI_CAPTION_RE = re.compile(
+    r"in\s+the\s+(?:hon['’]?ble\s+)?supreme\s+court\s+of\s+india",
+    re.IGNORECASE,
+)
 # OCR often inserts punctuation inside words: S_UPRE1:IE, LISTIN.G, LEA VE.
 _SCI_CAPTION_OCR_RE = re.compile(
     r"in\s+the\s+s\W*u\W*p\W*r\W*[eé0-9l:]+\W*m\W*e?\W*"
@@ -214,10 +217,10 @@ _LISTING_FIELD_CUES = (
     r"special category|vehicle number|litigation on the same point of law",
 )
 _COVER_FOOTER_RE = re.compile(
-    r"for index\s+(?:kindly|please)\s+see\s+inside|"
+    r"for\s+(?:the\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
     r"\{\s*cover\s+page\s*\}|"
     r"cover\s+page\s+of\s+paper|"
-    r"\bpaper\s+book\b",
+    r"\bpaper\s*book\b",
     re.I,
 )
 # Form-28 party schedule (not the one-name-per-side paper-book cover).
@@ -225,7 +228,7 @@ _PARTY_SCHEDULE_RE = re.compile(
     r"before\s+high\s+court|before\s+supreme\s+court|"
     r"before\s+this\s+court|"
     r"respondent\s+no\.|petitioner\s+no\.|"
-    r"positi[o0]n\s+of\s+pa|"
+    r"positi[o0]n\s+of\s+(?:the\s+)?pa|"
     r"(?:^|\n)\s*\d{1,2}\.\s*.{0,120}(?:s/?o|d/?o|w/?o|age\s+\d+)",
     re.I,
 )
@@ -234,7 +237,8 @@ _PARTY_SCHEDULE_RE = re.compile(
 _FORM28_BODY_RE = re.compile(
     r"form\s*28|"
     r"qu\W{0,4}stions?\s+of\s+law|questions\s+of\s+law|"
-    r"most respectfully showeth|position of parties|positi[o0]n\s+of\s+pa|"
+    r"most respectfully showeth|position of (?:the )?parties|"
+    r"positi[o0]n\s+of\s+(?:the\s+)?pa|"
     r"humble petition of the|declaration in terms of rule",
     re.I,
 )
@@ -296,6 +300,7 @@ _NESTED_STEAL_PARTS = frozenset(
         "Index",
         "Synopsis",
         "List of Dates & Events",
+        "PoA/BR",
     }
 )
 
@@ -987,7 +992,7 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     # Application detector. Its own heading and SLP caption are decisive.
     if (
         _is_sci_caption(text)
-        and "position of parties" in folded
+        and re.search(r"\bposition\s+of\s+(?:the\s+)?parties\b", folded)
         and re.search(
             r"\b(?:s\.?\s*l\.?\s*p\.?|special\s+lea\s*ve\s+petition)\b",
             folded,
@@ -1086,6 +1091,10 @@ def _outer_anchor_label(text: str) -> str | None:
     # That is not the paper-book Index — classify the checklist first.
     if _looks_like_sci_checklist(text):
         return "Advocate's Checklist"
+    # A cover says "FOR THE INDEX, PLEASE SEE INSIDE" and therefore satisfies
+    # the generic Index cues. Its PAPERBOOK/footer evidence is more specific.
+    if _looks_like_cover_page(text):
+        return "Cover Page"
     # The current filing's own FILING INDEX is the Filing Memo. Evaluate it
     # before the generic Index-table rule, which otherwise absorbs this page
     # into the preceding paper-book Index.
@@ -1106,6 +1115,10 @@ def _outer_anchor_label(text: str) -> str | None:
     # not the filing list described by the Filing Memo category.
     if _EFILE_COURT_FEE_RE.search(text[:3000]):
         return "Court Fees"
+    # The blank front form is explicitly an Index of Record of Proceedings,
+    # not the paper-book document Index.
+    if _looks_like_rop_index_form(text):
+        return "Record of Proceedings"
     # A paper-book Index can list Filing Memo, Annexures, and other sections.
     # Its table heading takes precedence over those row entries.
     if _looks_like_index_table(text):
@@ -1202,8 +1215,6 @@ def _outer_anchor_label(text: str) -> str | None:
                 _heading_window(text, lines=20)
             ):
                 return "AOR's Certificate"
-    if _looks_like_cover_page(text):
-        return "Cover Page"
     if (
         page_starts_application(text)
         and not _looks_like_cover_page(text)
@@ -1256,11 +1267,45 @@ def _annexure_run_bounds(
     pages are often image-only with no E/P stamp, and Llama already numbered
     them. Cap trailing blank sheets so those later P-n labels survive.
     """
-    starts: list[tuple[int, str]] = []
+    raw_starts: list[tuple[int, Any]] = []
     for page in range(1, page_count + 1):
-        label = annexure_label_from_text(page_text.get(page, ""))
-        if label:
-            starts.append((page, label))
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
+        if mark:
+            raw_starts.append((page, mark))
+
+    # A reproduced exhibit may carry its own Annexure P-1 inside the outer
+    # filing's A-2. If consecutive outer A-n stamps surround that foreign
+    # series, it is nested evidence, not a new paper-book boundary.
+    starts: list[tuple[int, str]] = []
+    for index, (page, mark) in enumerate(raw_starts):
+        nested = False
+        other_series = {
+            candidate.series
+            for _candidate_page, candidate in raw_starts
+            if candidate.series != mark.series
+        }
+        for series in other_series:
+            prior = next(
+                (
+                    candidate
+                    for _candidate_page, candidate in reversed(raw_starts[:index])
+                    if candidate.series == series
+                ),
+                None,
+            )
+            following = next(
+                (
+                    candidate
+                    for _candidate_page, candidate in raw_starts[index + 1 :]
+                    if candidate.series == series
+                ),
+                None,
+            )
+            if prior and following and following.number == prior.number + 1:
+                nested = True
+                break
+        if not nested:
+            starts.append((page, mark.label))
     if not starts:
         return []
 
@@ -1282,13 +1327,16 @@ def _annexure_run_bounds(
                 if page_starts_application(text) and _is_sci_caption(text):
                     end = page - 1
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not (
+                    anchor == "Memo of Parties" and _is_lower_court_caption(text)
+                ):
                     end = page - 1
                     break
                 if (
@@ -1307,13 +1355,16 @@ def _annexure_run_bounds(
                     break
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
-                if _outer_anchor_label(text) in {
+                anchor = _outer_anchor_label(text)
+                if anchor in {
                     "Vakalatnama",
                     "Memo of Appearance",
                     "Memo of Parties",
                     "AOR's Declaration",
                     "Filing Memo",
-                }:
+                } and not (
+                    anchor == "Memo of Parties" and _is_lower_court_caption(text)
+                ):
                     break
                 if (
                     _FILING_MEMO_RE.search(_heading_window(text, lines=8))
@@ -1753,6 +1804,14 @@ def _extend_explicit_memo_of_parties(
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
         if _memo_of_parties_heading(text):
+            # A lower-court Memo can be content inside an already established
+            # outer Annexure run (A-15 in Defect File_011). Do not promote it.
+            if any(
+                family_split_name(name) == ANNEXURE_FAMILY
+                for name in parts_on_page(updated.get(page))
+            ):
+                active = False
+                continue
             updated[page] = ["Memo of Parties"]
             active = True
             continue

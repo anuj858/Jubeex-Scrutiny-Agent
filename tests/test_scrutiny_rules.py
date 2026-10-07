@@ -618,6 +618,8 @@ def test_scrutiny_prompt_distinguishes_layout_context_and_conditional_checks() -
     assert "an affidavit inside an Annexure" in prompt
     assert "return not_applicable" in prompt
     assert "one compliant Annexure is not proof" in prompt
+    assert "Distinguish a missing paragraph from defective content" in prompt
+    assert "endorsement wording versus" in prompt
 
 
 def test_rewrite_location_source_maps_opaque_pdf_names() -> None:

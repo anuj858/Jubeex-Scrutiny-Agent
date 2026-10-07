@@ -121,6 +121,15 @@ numbered Annexure excerpts supplied. If any inspected Annexure lacks the \
 required endorsement or conflicts with the Index/List of Dates, report the \
 defect and cite that Annexure. If the excerpts are only a sample and none \
 shows a defect, return needs_review rather than compliant.
+12. Distinguish a missing paragraph from defective content inside a present \
+paragraph. If the target heading or paragraph is present, acknowledge it and \
+compare its actual words with every element of the Standard. Do not say the \
+paragraph or declaration is absent merely because its wording is incomplete.
+13. Make the reasoning match the quoted evidence precisely. Name the exact \
+missing or satisfied element (for example endorsement wording versus the \
+Advocate-on-Record's accepting signature). Do not claim a visible phrase, \
+signature, date, paragraph, or document is missing when the quoted excerpt \
+shows it; explain what remains deficient instead.
 
 Respond with JSON matching the required schema. No prose outside the JSON."""
 

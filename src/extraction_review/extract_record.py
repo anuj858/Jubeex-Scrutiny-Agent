@@ -158,6 +158,19 @@ _DATE_PLAIN = re.compile(
 _BARE_DATE = re.compile(rf"({_DATE_VALUE})", re.IGNORECASE)
 _PETITION_CLOSING_PAGES = 3
 _EMPTY_DATE = frozenset({"n/a", "na", "none", "null", "-", "—"})
+_LISTING_PARTY_MARKER = re.compile(
+    r"\b(petitioner|respondent)\s+no\.?\s*(\d+)\s*[.:)]*\s*",
+    re.IGNORECASE,
+)
+_LISTING_FIELD_AFTER_PARTY = re.compile(
+    r"\(\s*[a-z]\s*\)\s*(?:phone|mobile|e-?mail|main\s+category|sub\s+classification)\b",
+    re.IGNORECASE,
+)
+_CORAM_JUDGE = re.compile(
+    r"hon[’']?ble\s+(?:mr|ms|mrs|dr)\.?\s+justice\s+"
+    r"[a-z][a-z .’'\-]{2,80}",
+    re.IGNORECASE,
+)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -371,6 +384,117 @@ def main_petition_closing_text(
     ]
     chosen = pages[-_PETITION_CLOSING_PAGES:]
     return "\n".join((page_markdown.get(page) or "") for page in chosen)
+
+
+def _listing_proforma_party_names(
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> dict[str, list[tuple[int, str, int]]]:
+    """Read numbered party names printed in Listing Proforma fields."""
+    found: dict[str, list[tuple[int, str, int]]] = {
+        "petitioners": [],
+        "respondents": [],
+    }
+    for page in sorted(page_markdown or {}):
+        if "Listing Proforma" not in parts_on_page((page_parts or {}).get(page)):
+            continue
+        text = re.sub(r"\s+", " ", str((page_markdown or {}).get(page) or ""))
+        matches = list(_LISTING_PARTY_MARKER.finditer(text))
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            value = text[match.end() : end]
+            value = _LISTING_FIELD_AFTER_PARTY.split(value, maxsplit=1)[0]
+            value = re.sub(
+                r"\(\s*[a-z]\s*\)\s*$", "", value, flags=re.IGNORECASE
+            )
+            value = re.sub(r"\s+", " ", value).strip(" ,.;:-")
+            if not value or len(value) > 180 or value.casefold() in _EMPTY_DATE:
+                continue
+            key = "petitioners" if match.group(1).casefold() == "petitioner" else "respondents"
+            found[key].append((int(match.group(2)), value, page))
+    return found
+
+
+def _supplement_parties_from_listing_proforma(
+    payload: dict[str, Any],
+    *,
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> None:
+    """Restore party names/counts that scanned Main Petition OCR omitted."""
+    recovered = _listing_proforma_party_names(page_markdown, page_parts)
+    for key in ("petitioners", "respondents"):
+        parties = payload.get(key)
+        if not isinstance(parties, list):
+            parties = []
+            payload[key] = parties
+        for serial, name, page in recovered[key]:
+            existing = next(
+                (
+                    party
+                    for party in parties
+                    if isinstance(party, dict)
+                    and _names_match(_party_name(party), name)
+                ),
+                None,
+            )
+            if existing is not None:
+                if existing.get("serial") is None:
+                    existing["serial"] = serial
+                continue
+            parties.append(
+                {
+                    "serial": serial,
+                    "name": name,
+                    "kind": normalize_party_kind(name, None),
+                    "source_part": "Listing Proforma",
+                    "source_pages": [page],
+                    "raw_text": name,
+                }
+            )
+        parties.sort(
+            key=lambda party: (
+                int(party.get("serial"))
+                if isinstance(party, dict) and str(party.get("serial") or "").isdigit()
+                else 10_000
+            )
+        )
+
+
+def _coram_judges(
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> list[str]:
+    judges: list[str] = []
+    for page in sorted(page_markdown or {}):
+        if "Impugned Order" not in parts_on_page((page_parts or {}).get(page)):
+            continue
+        text = str((page_markdown or {}).get(page) or "")
+        if "coram" not in text.casefold():
+            continue
+        for match in _CORAM_JUDGE.finditer(text):
+            judge = re.sub(r"\s+", " ", match.group(0)).strip(" |*_.,;:-")
+            key = judge.casefold()
+            if judge and all(existing.casefold() != key for existing in judges):
+                judges.append(judge)
+    return judges
+
+
+def _correct_impugned_order_bench(
+    payload: dict[str, Any],
+    *,
+    page_markdown: Mapping[int, str] | None,
+    page_parts: Mapping[int, Any] | None,
+) -> None:
+    judges = _coram_judges(page_markdown, page_parts)
+    if not judges:
+        return
+    orders = payload.get("impugned_orders")
+    if not isinstance(orders, list) or not orders:
+        return
+    primary = next((order for order in orders if isinstance(order, dict)), None)
+    if primary is not None:
+        primary["bench"] = "; ".join(judges)
 
 
 def strip_anr_ors_suffix(text: str | None) -> str:
@@ -1188,6 +1312,16 @@ def apply_extract_envelope(
     )
     if printed_date:
         payload["petition_date"] = printed_date
+    _supplement_parties_from_listing_proforma(
+        payload,
+        page_markdown=page_markdown,
+        page_parts=page_parts,
+    )
+    _correct_impugned_order_bench(
+        payload,
+        page_markdown=page_markdown,
+        page_parts=page_parts,
+    )
     _normalize_parties(payload)
     _append_missing_acting_through(payload)
     _drop_role_label_inconsistencies(payload)

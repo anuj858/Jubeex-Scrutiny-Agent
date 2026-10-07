@@ -775,6 +775,54 @@ def _keep_extract_page(
     return any(page in window_keep.get(name, set()) for name in sources)
 
 
+def _layout_ocr_text(page: Mapping[str, Any] | None) -> str:
+    """Rebuild readable OCR lines from grounded layout words.
+
+    Scanned pages can have useful LlamaParse layout words even when the page
+    markdown is empty or contains only the parse stub.  Party schedules often
+    continue on exactly such a page.
+    """
+    if not isinstance(page, Mapping):
+        return ""
+    words = page.get("words")
+    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+        return ""
+    lines: list[str] = []
+    current: list[str] = []
+    current_line: Any = object()
+    for word in words:
+        if not isinstance(word, Mapping):
+            continue
+        token = str(word.get("t") or "").strip()
+        if not token:
+            continue
+        line = word.get("line")
+        if current and line != current_line:
+            lines.append(" ".join(current))
+            current = []
+        current.append(token)
+        current_line = line
+    if current:
+        lines.append(" ".join(current))
+    return "\n".join(lines).strip()
+
+
+def _recover_page_markdown(
+    page_markdown: Mapping[int, str],
+    page_layout: Mapping[int, Mapping[str, Any]] | None,
+) -> dict[int, str]:
+    recovered = dict(page_markdown)
+    for page in sorted(set(recovered) | set(page_layout or {})):
+        body = recovered.get(page, "")
+        text = (body or "").strip()
+        if text and not text.startswith(_PARSE_STUB_PREFIX):
+            continue
+        layout_text = _layout_ocr_text((page_layout or {}).get(page))
+        if layout_text:
+            recovered[page] = layout_text
+    return recovered
+
+
 def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     fill_of: dict[str, list[str]] = {}
     verify_of: dict[str, list[str]] = {}
@@ -816,7 +864,10 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     for part, extra in (
         (
             "Listing Proforma",
-            " Use only to fill blank advocates_on_record fields. Never override "
+            " For petitioners/respondents, use numbered fields to cross-check the "
+            "complete party count and recover names omitted by scanned Main Petition "
+            "OCR; do not invent unprinted addresses or relations. For "
+            "advocates_on_record, use only to fill blank fields and never override "
             "Vakalatnama. office_address is the Chamber lines on the last page, "
             "under the AOR name / (ADVOCATE-ON-RECORD). Copy printed text only; "
             "do not invent.",
@@ -947,7 +998,11 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
                 "Cover Page prints only one petitioner and one respondent (the main "
                 "names, plus And Anr/Ors if extras exist). If a field is blank on "
                 "those starting pages or Main Petition is missing, use the Cover Page "
-                "if it is in this pack. Merge blank particulars between those two only. "
+                "if it is in this pack. Cross-check Listing Proforma for the total "
+                "party count and names and add a numbered party omitted by OCR. Use "
+                "Listing Proforma only for names/counts and contacts actually printed "
+                "there; keep address, relation, guardian, and acting-through details "
+                "from Main Petition. Merge blanks between permitted sources only. "
                 "Never copy party names or addresses from Vakalatnama or Memo of Parties. "
                 "Use Cover Page to mark is_primary from the cover cause-title names. "
                 "Petitioner 1 on the Main Petition starting pages must be the same "
@@ -973,7 +1028,8 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             bit += (
                 ". Prefer the Impugned Order document. If it is not in this pack, use "
                 "bracketed particulars on Main Petition, Cover Page, AOR's Certificate, "
-                "and Affidavit. Keep one consistent set"
+                "and Affidavit. Keep one consistent set. bench means the judge names "
+                "under CORAM, joined with '; '; it never means New Delhi or another seat"
             )
         lines.append(bit + ".")
     lines.extend(
@@ -1044,7 +1100,9 @@ def build_extract_pack_markdown(
     page_parts: Mapping[int, Any],
     source_parts: set[str],
     catalog: UploadTypeCatalog | None = None,
+    page_layout: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> str:
+    page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
     window_keep = _windowed_pages_to_keep(page_markdown, page_parts)
     notes = _section_use_notes(catalog)
@@ -1083,8 +1141,12 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
             "Main Petition; that party list can run 3-4 pages or more. Cover Page "
             "prints only one petitioner and one respondent. If a field is blank on "
             "those starting pages or Main Petition is missing, use the Cover Page if "
-            "it is in this pack. If a field is blank in one of those parts, fill it "
-            "from the other. If neither Main Petition nor Cover Page is in this pack, "
+            "it is in this pack. Cross-check Listing Proforma numbered fields for the "
+            "total count and names, adding parties omitted by OCR. Listing Proforma "
+            "may supply names and printed contacts only; address, relation, guardian, "
+            "and acting_through remain Main Petition details. If a field is blank in "
+            "one permitted source, fill it from another. If neither Main Petition, "
+            "Cover Page nor Listing Proforma is in this pack, "
             "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
             "Memo of Appearance, AOR's Certificate, or Memo of Parties. "
             "Use Cover Page to decide which already-listed party is primary and to "
@@ -1204,10 +1266,12 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         [
             "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page if present, else Main Petition petitioner 1 / respondent 1, without And Anr / And Ors. Never use [And ors.] or other square brackets.",
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
+            "- petitioners/respondents: read every numbered party across all consecutive Main Petition opening pages, on both sides of VERSUS. Cross-check Listing Proforma for party counts/names and restore any OCR-omitted party. Preserve each printed address, S/o/D/o/W/o relation and related person's name, and acting-through representative from Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
             "- petition_type: Main Petition cause title first; Cover Page cause title if not printed there.",
             "- advocates_on_record: Vakalatnama first. Copy the printed AOR footer only; leave a field null if it is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition (very end: Drawn By / Filed on / DRAWN & FILED BY / Advocate for Petitioner / Chamber). Do not use petition opening pages. If office_address is still blank, last page of Listing Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate signature / DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama.",
             "- impugned_orders: Impugned Order PDF first. If missing, bracketed particulars on Main Petition, Cover Page, AOR's Certificate, and Affidavit. Keep one consistent set.",
+            "- impugned_orders.bench: copy every judge name under CORAM in the Impugned Order, joined with '; '. Never put New Delhi, another city/seat, or the forum name in bench.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
             "- petition_date: last page of the Main Petition, after Main Prayer / Prayer. Use Date, Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on are printed, use only Date Drafted. Return the date only.",
             "- confidence: percentage strings such as 95% or 65%.",

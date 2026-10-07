@@ -20,6 +20,125 @@ def test_trailing_index_description_is_not_an_application_start() -> None:
     assert _outer_anchor_label(text) == "Index"
 
 
+def test_defect_011_honble_sci_pages_keep_their_specific_boundaries() -> None:
+    """The optional HON'BLE token must not hide this filing's outer headings."""
+    from extraction_review.document_parts import page_starts_application
+    from extraction_review.split_repair import _outer_anchor_label
+
+    caption = "IN THE HON’BLE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+    cover = (
+        caption + "CIVIL APPEAL NO. OF 2026\nWITH I.A. APPLICATION SEEKING STAY\n"
+        "PAPERBOOK\n(FOR THE INDEX, PLEASE SEE INSIDE)\n"
+        "ADVOCATE FOR THE APPELLANT"
+    )
+    main = (
+        caption + "CIVIL APPEAL NO. OF 2026\nIN THE MATTER OF:\n"
+        "POSITION OF THE PARTIES\nBEFORE THE TRIBUNAL BEFORE THIS COURT"
+    )
+    application = (
+        caption + "I.A. NO. OF 2026\nIN CIVIL APPEAL NO. OF 2026\n"
+        "APPLICATION SEEKING AD-INTERIM EX-PARTE STAY\n"
+        "MOST RESPECTFULLY SHOWETH"
+    )
+    filing = (
+        caption + "CIVIL APPEAL NO. OF 2026\nFILING INDEX\n"
+        "S.No. Particulars Court Fee (In Rs.)\n1. Appeal with affidavit 5000"
+    )
+
+    assert _outer_anchor_label(cover) == "Cover Page"
+    assert not page_starts_application(cover)
+    assert _outer_anchor_label(main) == "Main Petition"
+    assert _outer_anchor_label(application) == "Application 1"
+    assert _outer_anchor_label(filing) == "Filing Memo"
+
+
+def test_defect_011_record_form_is_not_the_removed_paperbook_index() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "INDEX\nRECORD OF PROCEEDINGS\n"
+        "S. NO. DATE OF RECORD OF PROCEEDINGS PAGE NO.\n1.\n2.\n3."
+    )
+
+    assert _outer_anchor_label(text) == "Record of Proceedings"
+
+
+def test_defect_011_outer_a_series_owns_nested_p1_and_a3_tail() -> None:
+    from extraction_review.split_repair import (
+        _annexure_run_bounds,
+        _force_annexure_nesting,
+    )
+
+    texts = {
+        1: "92\nANNEXURE A-2\nOuter exhibit begins",
+        2: "ANNEXURE P-1\nInternal exhibit reproduced inside A-2",
+        3: "Continuation of the internal exhibit",
+        4: "162\nANNEXURE A-3\nOuter exhibit begins",
+        5: "Last pages of A-3 with continuous printed folio",
+        6: "205\nANNEXURE A-4\nNext outer exhibit",
+    }
+    bad = {
+        1: ["Annexure A-2"],
+        2: ["Annexure P-1"],
+        3: ["Annexure P-1"],
+        4: ["Annexure A-3"],
+        5: ["PoA/BR"],
+        6: ["Annexure A-4"],
+    }
+
+    assert _annexure_run_bounds(texts, 6)[:2] == [
+        (1, 3, "Annexure A-2"),
+        (4, 5, "Annexure A-3"),
+    ]
+    repaired = _force_annexure_nesting(bad, texts, 6)
+    assert all(repaired[page] == ["Annexure A-2"] for page in range(1, 4))
+    assert all(repaired[page] == ["Annexure A-3"] for page in range(4, 6))
+
+
+def test_defect_011_a15_stamp_wins_over_its_nested_master_index() -> None:
+    from extraction_review.document_parts import annexure_label_from_text
+    from extraction_review.split_repair import _extend_explicit_memo_of_parties
+
+    text = (
+        "303 ANNEXURE A-15\n"
+        "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+        "PRINCIPAL BENCH AT NEW DELHI\nMASTER INDEX\n"
+        "S.NO PARTICULARS PAGE NO\n1. Memo of Parties 1\n"
+        "2. Synopsis and List of Dates 2-9"
+    )
+
+    assert annexure_label_from_text(text) == "Annexure A-15"
+    texts = {
+        1: text,
+        2: (
+            "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+            "PRINCIPAL BENCH AT NEW DELHI\n"
+            "MEMO OF PARTIES\n1. Appellant\n2. Respondent"
+        ),
+        3: "359 ANNEXURE A-16\nRECORD OF PROCEEDINGS",
+    }
+    repaired = _extend_explicit_memo_of_parties(
+        {1: ["Annexure A-15"], 2: ["Annexure A-15"], 3: ["Annexure A-16"]},
+        texts,
+        3,
+    )
+    assert repaired[2] == ["Annexure A-15"]
+
+
+def test_defect_011_split_amended_memo_heading_is_recovered() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "BEFORE THE NATIONAL COMPANY LAW APPELLATE TRIBUNAL\n"
+        "PRINCIPAL BENCH AT NEW DELHI\nCOMPANY APPEAL (AT) NO. 1876 OF 2025\n"
+        "IN THE MATTER OF:\nM/S MEHAR BHOOMI BHAWAN PVT LTD. ...Appellant\n"
+        "VERSUS\nMR SHASHI BHUSHAN PRASAD ...Respondent\n"
+        "AMENDED ME\nMO OF PARTIES\n1. Appellant\n2. Respondent No. 1"
+    )
+
+    assert _outer_anchor_label(text) == "Memo of Parties"
+
+
 def test_order_prose_with_application_references_is_not_index() -> None:
     from extraction_review.split_repair import _outer_anchor_label
 

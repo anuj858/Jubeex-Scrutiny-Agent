@@ -700,15 +700,15 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "memo of appearance advocates" in pack
 
 
-def test_party_fields_prefer_petition_then_cover_page() -> None:
+def test_party_fields_use_listing_proforma_as_ocr_fallback() -> None:
     catalog = type_catalog("SLP_CIVIL")
     court_verify = (
         "Main Petition",
         "Vakalatnama",
     )
     party_sources = FieldSources(
-        fill=("Main Petition", "Cover Page"),
-        verify=("Main Petition", "Cover Page"),
+        fill=("Main Petition", "Cover Page", "Listing Proforma"),
+        verify=("Main Petition", "Cover Page", "Listing Proforma"),
     )
     assert catalog.extract_field_sources["petitioners"] == party_sources
     assert catalog.extract_field_sources["respondents"] == party_sources
@@ -834,7 +834,8 @@ def test_inject_where_to_look_appends_field_guidance() -> None:
     assert "3-4 pages or more" in petitioners
     assert "only one petitioner and one respondent" in petitioners
     assert "use the Cover Page" in petitioners
-    assert "fill it from the other" in petitioners
+    assert "fill it from another" in petitioners
+    assert "Cross-check Listing Proforma" in petitioners
     assert "set party names to N/A" in petitioners
     assert "Never copy party names or addresses from Vakalatnama" in petitioners
     assert "Petitioner 1 must be the same person as" in petitioners
@@ -921,7 +922,8 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
 def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
     assert (
-        "petitioners: fill Main Petition, Cover Page; verify Main Petition, Cover Page"
+        "petitioners: fill Main Petition, Cover Page, Listing Proforma; verify "
+        "Main Petition, Cover Page, Listing Proforma"
         in prompt
     )
     assert "cause_title: fill Cover Page, Main Petition; verify Main Petition" in prompt
@@ -1063,6 +1065,83 @@ def test_stamp_review_status_replaces_llamaextract_error() -> None:
     assert stamped["metadata"]["extract_status"] == "error"
     already = stamp_review_status({"status": "rejected", "metadata": {}})
     assert already["status"] == "rejected"
+
+
+def test_envelope_restores_defect_005_parties_and_coram_bench() -> None:
+    record = {
+        "cause_title": {
+            "main_petitioner": "Lalit Mohan Aggarwal",
+            "main_respondent": "Andhra Bank",
+        },
+        "petitioners": [{"serial": 1, "name": "Lalit Mohan Aggarwal"}],
+        "respondents": [
+            {"serial": 1, "name": "Andhra Bank"},
+            {
+                "serial": 2,
+                "name": "Sh Atul Gupta",
+                "relation": "S/o",
+                "guardian_name": "Sh S.R. Gupta",
+                "address": "D-4 Balwant Enclave, Meerut, Uttar Pradesh",
+            },
+        ],
+        "impugned_orders": [
+            {
+                "case_number": "W.P.(C) 8749/2020",
+                "Forum": "IN THE HIGH COURT OF DELHI AT NEW DELHI",
+                "bench": "NEW DELHI",
+            }
+        ],
+    }
+    page_markdown = {
+        11: (
+            "2. (a) Petitioner No.1. Lalit Mohan Aggarwal "
+            "(b) Petitioner No.2. Ajay Bansal (c) Phone number: 9412071213 "
+            "3. (a) Respondent No.1: Andhra Bank (now Union Bank of India) "
+            "Respondent No. 2: Sh Atul Gupta, "
+            "Respondent No. 3: M/s Reema Papers Pvt Ltd "
+            "Respondent No. 4: Sh Ritesh Gupta (b) Mobile phone number: 011-27106869"
+        ),
+        17: (
+            "IN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "CORAM:\n"
+            "HON'BLE MR. JUSTICE VIPIN SANGHI\n"
+            "HON'BLE MS. JUSTICE REKHA PALLI\n"
+            "VIPIN SANGHI, J. (ORAL)"
+        ),
+    }
+    page_parts = {
+        11: ["Listing Proforma"],
+        17: ["Impugned Order"],
+    }
+
+    wrapped = apply_extract_envelope(
+        record,
+        page_markdown=page_markdown,
+        page_parts=page_parts,
+        filing_type="SLP_CIVIL",
+    )
+
+    assert [party["name"] for party in wrapped["petitioners"]] == [
+        "Lalit Mohan Aggarwal",
+        "Ajay Bansal",
+    ]
+    assert [party["name"] for party in wrapped["respondents"]] == [
+        "Andhra Bank",
+        "Sh Atul Gupta",
+        "M/s Reema Papers Pvt Ltd",
+        "Sh Ritesh Gupta",
+    ]
+    assert wrapped["respondents"][1]["relation"] == "S/o"
+    assert wrapped["respondents"][1]["guardian_name"] == "Sh S.R. Gupta"
+    assert wrapped["respondents"][1]["address"] == (
+        "D-4 Balwant Enclave, Meerut, Uttar Pradesh"
+    )
+    assert wrapped["cause_title"]["formatted_title"] == (
+        "Lalit Mohan Aggarwal and Anr. VS Andhra Bank and Ors."
+    )
+    assert wrapped["impugned_orders"][0]["bench"] == (
+        "HON'BLE MR. JUSTICE VIPIN SANGHI; HON'BLE MS. JUSTICE REKHA PALLI"
+    )
 
 
 def test_formatted_title_anr_and_ors() -> None:
@@ -1641,6 +1720,47 @@ def test_empty_parse_still_stamps_document_part() -> None:
     pack = build_extract_pack_markdown(
         page_markdown, page_parts, extract_source_parts(catalog)
     )
+    assert "No parse text" not in pack
+
+
+def test_extract_pack_recovers_scanned_party_page_from_layout_words() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_markdown = {
+        23: "POSITION OF PARTIES\n1. Lalit Mohan Aggarwal",
+        25: "MOST RESPECTFULLY SHOWETH",
+    }
+    page_parts = {page: ["Main Petition"] for page in (23, 24, 25)}
+    page_layout = {
+        24: {
+            "words": [
+                {"t": "2.", "line": 1},
+                {"t": "Sh.", "line": 1},
+                {"t": "Atul", "line": 1},
+                {"t": "Gupta,", "line": 1},
+                {"t": "S/o", "line": 1},
+                {"t": "Sh", "line": 1},
+                {"t": "S.R.", "line": 1},
+                {"t": "Gupta", "line": 1},
+                {"t": "3.", "line": 2},
+                {"t": "M/s", "line": 2},
+                {"t": "Reema", "line": 2},
+                {"t": "Papers", "line": 2},
+                {"t": "Pvt.", "line": 2},
+                {"t": "Ltd.", "line": 2},
+            ]
+        }
+    }
+
+    pack = build_extract_pack_markdown(
+        page_markdown,
+        page_parts,
+        extract_source_parts(catalog),
+        catalog=catalog,
+        page_layout=page_layout,
+    )
+
+    assert "Sh. Atul Gupta, S/o Sh S.R. Gupta" in pack
+    assert "M/s Reema Papers Pvt. Ltd." in pack
     assert "No parse text" not in pack
 
 

@@ -406,7 +406,7 @@
                 }
               ],
               "default": null,
-              "description": "Bench or seat as printed",
+              "description": "Judicial bench/coram: copy the judge names printed under CORAM in the Impugned Order, preserving honorifics. Join multiple judges with '; '. Do not put the city, court seat, place of decision, or forum here.",
               "title": "Bench"
             },
             "certified_copy_applied_on": {
@@ -575,7 +575,7 @@
           "type": "object"
         },
         "Party": {
-          "description": "One petitioner or respondent. Fill from Main Petition starting pages, then Cover Page if present.",
+          "description": "One petitioner or respondent. Fill every numbered party from all consecutive Main Petition starting pages. Use Cover Page and Listing Proforma only to recover/check missing party names and counts; keep address, relation, guardian and acting-through details from the Main Petition when printed.",
           "properties": {
             "serial": {
               "anyOf": [
@@ -795,7 +795,7 @@
                 }
               ],
               "default": null,
-              "description": "Must be Main Petition or Cover Page. Never Vakalatnama or Memo of Parties.",
+              "description": "Main Petition normally; Cover Page or Listing Proforma only when used to recover a missing party name/count. Never Vakalatnama or Memo of Parties.",
               "title": "Source Part"
             },
             "source_pages": {
@@ -1087,21 +1087,25 @@
       "petitioners": {
         "fill": [
           "Main Petition",
-          "Cover Page"
+          "Cover Page",
+          "Listing Proforma"
         ],
         "verify": [
           "Main Petition",
-          "Cover Page"
+          "Cover Page",
+          "Listing Proforma"
         ]
       },
       "respondents": {
         "fill": [
           "Main Petition",
-          "Cover Page"
+          "Cover Page",
+          "Listing Proforma"
         ],
         "verify": [
           "Main Petition",
-          "Cover Page"
+          "Cover Page",
+          "Listing Proforma"
         ]
       },
       "advocates_on_record": {

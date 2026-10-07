@@ -60,6 +60,10 @@
           "value": "180"
         },
         {
+          "name": "OPENROUTER_REQUESTS_PER_MINUTE",
+          "value": "25"
+        },
+        {
           "name": "OPENROUTER_APP_TITLE",
           "value": "JubeeX Scrutiny"
         },
