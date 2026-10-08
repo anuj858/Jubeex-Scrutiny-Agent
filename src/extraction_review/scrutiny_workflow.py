@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -51,10 +52,10 @@ from .llm import (
     LLMError,
     call_structured,
     llm_provider,
+    llm_requests_per_minute,
     mask_openrouter_api_key,
     openrouter_enabled,
     openrouter_model,
-    openrouter_requests_per_minute,
 )
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -404,9 +405,7 @@ def _layout_anchor_phrases(defect: Defect) -> list[str]:
     for quoted in quoted_heading.findall(wording):
         add(quoted)
 
-    for number in re.findall(
-        r"\bparagraph\s+(\d+[A-Z]?)\b", wording, re.IGNORECASE
-    ):
+    for number in re.findall(r"\bparagraph\s+(\d+[A-Z]?)\b", wording, re.IGNORECASE):
         add(f"{number}.")
 
     folded = wording.casefold()
@@ -815,6 +814,7 @@ class ScrutinyWorkflow(Workflow):
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
     ) -> ScrutinyResponse:
+        scrutiny_started = time.perf_counter()
         if not scrutiny_enabled():
             raise ValueError("Scrutiny is disabled (SCRUTINY_ENABLED=false)")
         if not openrouter_enabled():
@@ -830,7 +830,7 @@ class ScrutinyWorkflow(Workflow):
             llm_provider(),
             mask_openrouter_api_key(),
             openrouter_model(),
-            openrouter_requests_per_minute() or "unlimited",
+            llm_requests_per_minute() or "unlimited",
         )
 
         async with ctx.store.edit_state() as state:
@@ -1076,6 +1076,7 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             try:
+                retrieval_started = time.perf_counter()
                 chunks = await _chunks_for_defect(
                     defect,
                     file_hash=file_hash,
@@ -1083,6 +1084,8 @@ class ScrutinyWorkflow(Workflow):
                     use_pinecone=use_pinecone,
                     layout=layout,
                 )
+                retrieval_seconds = time.perf_counter() - retrieval_started
+                evaluation_started = time.perf_counter()
                 finding = await _run_defect(
                     defect,
                     catalogue=catalogue,
@@ -1091,6 +1094,12 @@ class ScrutinyWorkflow(Workflow):
                     filing_type=filing_type,
                     layout=layout,
                     visual_index=visual_index,
+                )
+                logger.info(
+                    "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
+                    defect.check_id,
+                    retrieval_seconds,
+                    time.perf_counter() - evaluation_started,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1141,6 +1150,13 @@ class ScrutinyWorkflow(Workflow):
             concurrency=concurrency,
             stop_on_error=False,
             on_update=publish,
+        )
+        logger.info(
+            "[ScrutinyTiming] total=%.1fs checks=%s concurrency=%s rpm=%s",
+            time.perf_counter() - scrutiny_started,
+            len(findings),
+            concurrency,
+            llm_requests_per_minute() or "unlimited",
         )
         report = build_report(findings, stopped_early=stopped_early)
         ctx.write_event_to_stream(

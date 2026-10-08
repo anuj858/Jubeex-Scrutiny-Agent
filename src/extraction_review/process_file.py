@@ -30,7 +30,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pypdf import PdfReader
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -48,8 +47,6 @@ from .document_parts import (
     page_parts_from_split,
     parts_on_page,
 )
-from .split_audit import audit_compiled_split
-from .structure_split import structure_aware_split
 from .job_timing import (
     attach_timing,
     elapsed_seconds,
@@ -64,6 +61,7 @@ from .llama_usage import (
     usage_status_message,
 )
 from .s3_artifacts import STEP_SPLIT, upload_step_json
+from .split_audit import audit_compiled_split
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
@@ -71,6 +69,7 @@ from .split_upload import (
     type_catalog,
     ui_catalog,
 )
+from .structure_split import PageUnit, extract_page_units, structure_aware_split
 
 logger = logging.getLogger(__name__)
 
@@ -1429,6 +1428,7 @@ async def _run_split_from_file_event(
     filing_type = (event.filing_type or "").strip()
     job = (event.job_type or "").strip().lower()
     prior_file_ids: dict[str, str] = {}
+    prior_file_hashes: dict[str, str] = {}
     parsed_slots = [slot for slot in (event.parsed_slots or []) if slot]
     reuse_pages: dict[str, dict[str, str]] = {}
     reuse_layouts: dict[str, dict[str, Any]] = {}
@@ -1451,6 +1451,21 @@ async def _run_split_from_file_event(
                 for slot, file_id in split_files.items()
                 if slot and file_id
             }
+        stored_hashes = meta.get("document_hashes")
+        if isinstance(stored_hashes, dict):
+            prior_file_hashes = {
+                str(slot): str(file_hash)
+                for slot, file_hash in stored_hashes.items()
+                if slot and file_hash
+            }
+        if not prior_file_hashes:
+            for document in meta.get("documents") or []:
+                if not isinstance(document, dict):
+                    continue
+                slot = str(document.get("slot_id") or "").strip()
+                file_hash = str(document.get("file_hash") or "").strip()
+                if slot and file_hash:
+                    prior_file_hashes[slot] = file_hash
         if not parsed_slots:
             parsed_slots = [
                 str(slot).strip()
@@ -1484,6 +1499,7 @@ async def _run_split_from_file_event(
     )
     split_parts: list[SplitPartEvent] = []
     source_docs: list[SourceDocument] = []
+    reusable_slots: set[str] = set(parsed_slots) if not event.edited else set()
     for item in event.documents:
         slot = (item.slot_id or "").strip()
         if slot.lower() in FULL_PETITION_SLOTS:
@@ -1493,8 +1509,18 @@ async def _run_split_from_file_event(
         item_file_id = (item.file_id or "").strip() or None
         prior_id = prior_file_ids.get(slot) or None
         edited = bool(event.edited)
-        # Edited filings must re-ingest download_url; cached LlamaCloud ids are stale.
-        file_id = item_file_id if edited else (item_file_id or prior_id)
+        current_hash = (item.file_hash or "").strip()
+        prior_hash = prior_file_hashes.get(slot, "")
+        unchanged = bool(
+            edited and current_hash and prior_hash and current_hash == prior_hash
+        )
+        if unchanged and prior_id:
+            reusable_slots.add(slot)
+        # Invalidate only documents whose content changed. A matching checksum
+        # proves that the prior file id and parse artifact are still current.
+        file_id = (
+            (item_file_id or prior_id) if (not edited or unchanged) else item_file_id
+        )
         filename = (item.filename or "").strip() or None
         file_hash = item.file_hash
         if not file_id:
@@ -1518,6 +1544,19 @@ async def _run_split_from_file_event(
         source_docs.append(
             source_document_from_part(item, file_id=file_id, file_hash=file_hash)
         )
+
+    parsed_slots = [slot for slot in parsed_slots if slot in reusable_slots]
+    reuse_pages = {
+        slot: pages for slot, pages in reuse_pages.items() if slot in reusable_slots
+    }
+    reuse_layouts = {
+        slot: layout for slot, layout in reuse_layouts.items() if slot in reusable_slots
+    }
+    reuse_jobs = {
+        slot: parse_job_id
+        for slot, parse_job_id in reuse_jobs.items()
+        if slot in reusable_slots
+    }
 
     echo = intake_echo(event)
     upload_step_json(
@@ -1555,7 +1594,7 @@ async def _run_split_from_file_event(
     if extract_only:
         parse_scope = "extract_sources"
     elif index_only:
-        parse_scope = "all" if edited else "unparsed"
+        parse_scope = "unparsed"
     nested_payload = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
@@ -1571,9 +1610,9 @@ async def _run_split_from_file_event(
         agent_data_id=agent_data_id,
         special_category=event.special_category,
         court=event.court,
-        reuse_pages_by_slot=reuse_pages if index_only and not edited else {},
-        reuse_layouts_by_slot=reuse_layouts if index_only and not edited else {},
-        reuse_parse_job_ids=reuse_jobs if index_only and not edited else {},
+        reuse_pages_by_slot=reuse_pages if index_only else {},
+        reuse_layouts_by_slot=reuse_layouts if index_only else {},
+        reuse_parse_job_ids=reuse_jobs if index_only else {},
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [
@@ -1865,11 +1904,44 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        page_parts, split_job_id, llama_split = await _split_page_parts(
-            llama_cloud_client,
-            file_id=state.file_id,
-            split_config=split_config,
-            filename=state.filename,
+        split_started = start_timer()
+
+        async def run_llama_split() -> tuple[dict[int, list[str]], str, dict[str, Any]]:
+            return await _split_page_parts(
+                llama_cloud_client,
+                file_id=state.file_id,
+                split_config=split_config,
+                filename=state.filename,
+            )
+
+        async def load_and_read_pages() -> tuple[bytes, list[PageUnit], float | None]:
+            pdf_bytes = await _load_bundle_pdf(
+                llama_cloud_client,
+                file_id=state.file_id,
+                source_documents=state.source_documents,
+            )
+            local_started = start_timer()
+            units = await asyncio.to_thread(
+                extract_page_units,
+                pdf_bytes,
+                source_pdf=state.filename or "bundle.pdf",
+            )
+            return pdf_bytes, units, elapsed_seconds(local_started)
+
+        # LlamaSplit and deterministic page/OCR preparation are independent.
+        # Running them together removes one full-document pass from the
+        # sequential critical path without changing either result authority.
+        split_result, local_result = await asyncio.gather(
+            run_llama_split(), load_and_read_pages()
+        )
+        page_parts, split_job_id, llama_split = split_result
+        pdf_bytes, page_units, local_read_seconds = local_result
+        llama_split_seconds = elapsed_seconds(split_started)
+        logger.info(
+            "[SplitTiming] remote_and_local=%.1fs local_page_read=%ss pages=%s",
+            llama_split_seconds or 0.0,
+            local_read_seconds,
+            len(page_units),
         )
         split_usage = await collect_optional_usage(
             llama_cloud_client,
@@ -1886,12 +1958,7 @@ class ProcessFileWorkflow(Workflow):
                 message=f"Loading {state.filename} to slice labeled pages",
             )
         )
-        pdf_bytes = await _load_bundle_pdf(
-            llama_cloud_client,
-            file_id=state.file_id,
-            source_documents=state.source_documents,
-        )
-        pdf_page_count = len(PdfReader(io.BytesIO(pdf_bytes)).pages) if pdf_bytes else 0
+        pdf_page_count = len(page_units)
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
             "index_rows": [],
@@ -1913,6 +1980,7 @@ class ProcessFileWorkflow(Workflow):
                 structure_aware_split,
                 pdf_bytes,
                 llama_page_parts=page_parts,
+                page_units=page_units,
                 source_pdf=state.filename or "bundle.pdf",
                 run_hybrid_repair=True,
             )

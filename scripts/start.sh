@@ -55,4 +55,8 @@ PY
 
 echo "[startup] Google ADC/WIF environment prepared"
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 exec llamactl serve --host 0.0.0.0 --port 4501

@@ -47,6 +47,11 @@ def _visibility_timeout() -> int:
         return DEFAULT_VISIBILITY_TIMEOUT
 
 
+def visibility_timeout() -> int:
+    """Configured SQS lease duration, exposed for worker heartbeats."""
+    return _visibility_timeout()
+
+
 def _first_env(*names: str, default: str = "") -> str:
     for name in names:
         value = (os.getenv(name) or "").strip()
@@ -144,3 +149,19 @@ def delete_job(message: dict[str, Any]) -> None:
     if not handle or not url:
         return
     _client().delete_message(QueueUrl=str(url), ReceiptHandle=str(handle))
+
+
+def extend_job_visibility(
+    message: dict[str, Any], *, timeout_seconds: int | None = None
+) -> None:
+    """Renew an in-flight message lease while a long workflow is running."""
+    handle = message.get("_receipt_handle")
+    url = message.get("_queue_url")
+    if not handle or not url:
+        return
+    timeout = timeout_seconds if timeout_seconds is not None else _visibility_timeout()
+    _client().change_message_visibility(
+        QueueUrl=str(url),
+        ReceiptHandle=str(handle),
+        VisibilityTimeout=max(60, min(int(timeout), 43200)),
+    )

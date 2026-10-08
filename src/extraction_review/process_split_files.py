@@ -234,6 +234,7 @@ class SplitFilesState(BaseModel):
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
     page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
     started_at: float | None = None
+    extract_started_at: float | None = None
     classify_split_seconds: float | None = None
     llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
     parse_scope: str = "all"
@@ -282,11 +283,13 @@ class ProcessSplitFilesWorkflow(Workflow):
                 ),
             )
         )
+        ingest_started = start_timer()
         ingested = await _ingest_labeled_parts(
             llama_cloud_client,
             event.parts,
             concurrency=ingest_concurrency(),
         )
+        ingest_seconds = elapsed_seconds(ingest_started)
 
         try:
             catalog, parts = validate_parts(
@@ -317,6 +320,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
 
+        parse_started = start_timer()
         (
             pages_by_slot,
             parse_job_ids,
@@ -334,6 +338,14 @@ class ProcessSplitFilesWorkflow(Workflow):
             reuse_layouts=reuse_layouts,
             reuse_job_ids=reuse_jobs,
             ctx=ctx,
+        )
+        parse_seconds = elapsed_seconds(parse_started)
+        logger.info(
+            "[ExtractionTiming] ingest=%ss parse=%ss documents=%s parsed_slots=%s",
+            ingest_seconds,
+            parse_seconds,
+            len(parts),
+            len(parse_job_ids),
         )
         if event.stitch_in_request_order:
             omit_empty = (event.parse_scope or "").strip().lower() == "extract_sources"
@@ -491,6 +503,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             ),
         ],
     ) -> ExtractJobStartedEvent:
+        extract_started_at = start_timer()
         state = await ctx.store.get_state()
         if not state.filing_type:
             raise ValueError("Filing type is not set")
@@ -563,6 +576,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         async with ctx.store.edit_state() as state:
             state.extract_pack_file_id = pack_file_id
             state.extract_job_id = extract_job.id
+            state.extract_started_at = extract_started_at
 
         return ExtractJobStartedEvent()
 
@@ -608,6 +622,11 @@ class ProcessSplitFilesWorkflow(Workflow):
             expand=["extract_metadata", "usage"],
             project_id=project_id,
         )
+        logger.info(
+            "[ExtractionTiming] extract=%ss job_id=%s",
+            elapsed_seconds(state.extract_started_at),
+            state.extract_job_id,
+        )
         extract_usage = await collect_extract_usage(
             llama_cloud_client,
             state.extract_job_id,
@@ -646,6 +665,9 @@ class ProcessSplitFilesWorkflow(Workflow):
             data.metadata["split_files"] = {
                 item.slot_id: item.file_id for item in state.parts
             }
+            data.metadata["document_hashes"] = {
+                item.slot_id: item.file_hash for item in state.parts if item.file_hash
+            }
             data.metadata["extract_confidence"] = {
                 "overall": overall,
                 "fields": field_confidence_from_job(job),
@@ -656,6 +678,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                     "name": item.filename,
                     "document_id": item.document_id,
                     "file_id": item.file_id,
+                    "file_hash": item.file_hash,
                 }
                 for item in state.parts
             ]
@@ -822,6 +845,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         )
 
         if pinecone_enabled() and not state.skip_index:
+            index_started = start_timer()
             try:
                 await _index_split_upload(
                     extracted_data=extracted_data,
@@ -831,6 +855,11 @@ class ProcessSplitFilesWorkflow(Workflow):
                     page_markdown=page_markdown,
                     page_parts=page_parts,
                     ctx=ctx,
+                )
+                logger.info(
+                    "[ExtractionTiming] index=%ss pages=%s",
+                    elapsed_seconds(index_started),
+                    len(page_markdown),
                 )
             except Exception as exc:
                 logger.exception(
@@ -1168,7 +1197,7 @@ def _reuse_parse_maps(
     dict[str, str],
 ]:
     del parts
-    if event.edited or (event.parse_scope or "all") != "unparsed":
+    if (event.parse_scope or "all") != "unparsed":
         return {}, {}, {}
     pages = {
         slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})
@@ -1310,6 +1339,19 @@ async def _complete_index_only(
     meta["split_files"] = {
         part.slot_id: part.file_id for part in state.parts if part.file_id
     }
+    meta["document_hashes"] = {
+        part.slot_id: part.file_hash for part in state.parts if part.file_hash
+    }
+    meta["documents"] = [
+        {
+            "slot_id": part.slot_id,
+            "name": part.filename,
+            "document_id": part.document_id,
+            "file_id": part.file_id,
+            "file_hash": part.file_hash,
+        }
+        for part in state.parts
+    ]
     if state.parse_artifact_url:
         meta[PARSE_ARTIFACT_URL_KEY] = state.parse_artifact_url
     if state.parse_artifact_key:

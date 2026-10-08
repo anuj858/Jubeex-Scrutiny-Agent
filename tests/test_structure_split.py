@@ -88,8 +88,9 @@ def test_logical_documents_preserve_page_ranges() -> None:
 
 def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
     """End-to-end: Llama tags Synopsis as Main; structure + repair must separate."""
-    from pypdf import PdfWriter
     import io
+
+    from pypdf import PdfWriter
 
     # Build a tiny multi-page PDF with extractable text via reportlab-less path:
     # structure_aware_split accepts page_texts override, so empty PDF pages + texts.
@@ -140,6 +141,28 @@ def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
     report = result.report()
     assert report["architecture"] == "structure_aware_v1"
     assert "logical_documents" in report
+
+
+def test_structure_aware_split_reuses_precomputed_page_units(monkeypatch) -> None:
+    import extraction_review.structure_split as module
+
+    units = [PageUnit(pdf_page=1, text="SYNOPSIS\nCase summary")]
+    monkeypatch.setattr(
+        module,
+        "extract_page_units",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("page units should not be extracted twice")
+        ),
+    )
+
+    result = structure_aware_split(
+        _blank_pdf(1),
+        page_units=units,
+        llama_page_parts={1: ["Synopsis"]},
+    )
+
+    assert result.page_units == units
+    assert result.page_parts[1] == ["Synopsis"]
 
 
 def test_structure_split_cuts_sci_application_out_of_annexure_carry() -> None:
@@ -202,10 +225,7 @@ def test_extract_page_units_prefers_clean_layout_over_control_corrupted_date(
     import extraction_review.structure_split as module
 
     pdf_bytes = _blank_pdf(1)
-    clean = (
-        "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
-        "Dated:21.01.2026"
-    )
+    clean = "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nDated:21.01.2026"
     monkeypatch.setattr(
         module,
         "extract_split_layout",

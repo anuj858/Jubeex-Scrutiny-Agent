@@ -385,9 +385,15 @@ async def test_index_edited_reingests_download_urls(
 ) -> None:
     ingest_calls: list[str] = []
 
-    async def fake_ingest(_client: object, url: str, **kwargs: object) -> tuple[str, str, str]:
+    async def fake_ingest(
+        _client: object, url: str, **kwargs: object
+    ) -> tuple[str, str, str]:
         ingest_calls.append(str(url))
-        return (f"dfl-new-{len(ingest_calls)}", "hash", str(kwargs.get("filename") or ""))
+        return (
+            f"dfl-new-{len(ingest_calls)}",
+            "hash",
+            str(kwargs.get("filename") or ""),
+        )
 
     async def fake_extract(_ctx: object, **kwargs: object) -> str:
         return "agd-index"
@@ -447,3 +453,97 @@ async def test_index_edited_reingests_download_urls(
     assert isinstance(result, BundlePrepared)
     assert ingest_calls == ["https://example.com/petition.pdf"]
     assert result.parts[0].file_id == "dfl-new-1"
+
+
+@pytest.mark.asyncio
+async def test_index_edited_reuses_only_documents_with_matching_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingest_calls: list[str] = []
+    captured: dict[str, object] = {}
+
+    async def fake_ingest(
+        _client: object, url: str, **kwargs: object
+    ) -> tuple[str, str, str]:
+        ingest_calls.append(url)
+        return "dfl-new-index", "new-index-hash", str(kwargs.get("filename") or "")
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file.ingest_remote_file", fake_ingest
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts", fake_extract
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition", "index"],
+            "slots": {
+                "petition": {"pages": {"1": "old petition"}},
+                "index": {"pages": {"1": "old index"}},
+            },
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition", "index"],
+                        "split_files": {
+                            "petition": "dfl-old-petition",
+                            "index": "dfl-old-index",
+                        },
+                        "document_hashes": {
+                            "petition": "petition-hash",
+                            "index": "old-index-hash",
+                        },
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=True,
+        documents=[
+            {
+                "slot_id": "petition",
+                "name": "Petition.pdf",
+                "download_url": "https://example.com/petition.pdf",
+                "file_hash": "petition-hash",
+            },
+            {
+                "slot_id": "index",
+                "name": "Index.pdf",
+                "download_url": "https://example.com/index.pdf",
+                "file_hash": "new-index-hash",
+            },
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+
+    assert ingest_calls == ["https://example.com/index.pdf"]
+    assert result.parts[0].file_id == "dfl-old-petition"
+    assert result.parts[1].file_id == "dfl-new-index"
+    assert captured["parse_scope"] == "unparsed"
+    assert captured["parsed_slots"] == ["petition"]
+    assert set(captured["reuse_pages_by_slot"]) == {"petition"}  # type: ignore[arg-type]

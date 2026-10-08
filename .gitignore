@@ -8,6 +8,7 @@ __pycache__/
 .venv/
 venv/
 workflows.db
+qa_reports/
 package-lock.json
 node_modules/
 ui/node_modules/

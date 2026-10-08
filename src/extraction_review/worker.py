@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import uuid
+from contextlib import suppress
 from typing import Any
 
 from dotenv import load_dotenv
@@ -17,13 +18,84 @@ from .api import JOBS, JobState, _run_workflow
 from .job_progress import load_job_status
 from .process_file import FileEvent
 from .process_file import workflow as process_file_workflow
-from .queue import delete_job, receive_jobs, sqs_enabled
+from .queue import (
+    delete_job,
+    extend_job_visibility,
+    receive_jobs,
+    sqs_enabled,
+    visibility_timeout,
+)
 from .s3_artifacts import set_job_context
 from .scrutiny_workflow import ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+TERMINAL_JOB_STATUSES = frozenset({"completed", "failed"})
+
+
+def worker_kinds() -> tuple[str, ...]:
+    """Queues consumed by this process.
+
+    Dedicated ECS services should set ``JUBEEX_WORKER_KINDS=process_file`` or
+    ``JUBEEX_WORKER_KINDS=scrutiny`` so slow scrutiny cannot starve intake.
+    """
+    raw = (os.getenv("JUBEEX_WORKER_KINDS") or "").strip()
+    if not raw:
+        return ("process_file", "scrutiny")
+    aliases = {
+        "process_file": "process_file",
+        "ingestion": "process_file",
+        "split": "process_file",
+        "extract": "process_file",
+        "scrutiny": "scrutiny",
+        "annexure_index": "scrutiny",
+    }
+    kinds: list[str] = []
+    invalid: list[str] = []
+    for token in (part.strip().lower() for part in raw.split(",")):
+        if not token:
+            continue
+        kind = aliases.get(token)
+        if kind is None:
+            invalid.append(token)
+        elif kind not in kinds:
+            kinds.append(kind)
+    if invalid or not kinds:
+        allowed = ", ".join(sorted(aliases))
+        raise RuntimeError(
+            f"Invalid JUBEEX_WORKER_KINDS value(s): {', '.join(invalid) or raw}. "
+            f"Allowed: {allowed}"
+        )
+    return tuple(kinds)
+
+
+def _heartbeat_interval_seconds() -> int:
+    raw = (os.getenv("JUBEEX_SQS_HEARTBEAT_SECONDS") or "").strip()
+    try:
+        if raw:
+            return max(1, int(raw))
+    except ValueError:
+        pass
+    return max(30, min(300, visibility_timeout() // 3))
+
+
+async def _visibility_heartbeat(message: dict[str, Any], stop: asyncio.Event) -> None:
+    interval = _heartbeat_interval_seconds()
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except TimeoutError:
+            try:
+                await asyncio.to_thread(extend_job_visibility, message)
+            except Exception:
+                logger.warning(
+                    "Could not renew SQS visibility for job %s",
+                    message.get("job_id"),
+                    exc_info=True,
+                )
 
 
 def _job_from_message(message: dict[str, Any]) -> JobState:
@@ -62,6 +134,12 @@ def _job_from_message(message: dict[str, Any]) -> JobState:
 
 
 async def process_message(message: dict[str, Any]) -> None:
+    job_id = str(message.get("job_id") or "").strip()
+    prior = load_job_status(job_id) if job_id else None
+    if str((prior or {}).get("status") or "").lower() in TERMINAL_JOB_STATUSES:
+        logger.info("Discarding terminal replay for job %s", job_id)
+        delete_job(message)
+        return
     job = _job_from_message(message)
     event = message.get("event") if isinstance(message.get("event"), dict) else {}
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
@@ -71,8 +149,16 @@ async def process_message(message: dict[str, Any]) -> None:
         handler = annexure_index_workflow.run(start_event=AnnexureIndexEvent(**event))
     else:
         handler = process_file_workflow.run(start_event=FileEvent(**event))
-    await _run_workflow(job, handler)
-    delete_job(message)
+    stop_heartbeat = asyncio.Event()
+    heartbeat = asyncio.create_task(_visibility_heartbeat(message, stop_heartbeat))
+    try:
+        await _run_workflow(job, handler)
+        delete_job(message)
+    finally:
+        stop_heartbeat.set()
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
 
 
 async def run_worker(*, once: bool = False) -> None:
@@ -84,7 +170,7 @@ async def run_worker(*, once: bool = False) -> None:
         raise RuntimeError(
             "Split OCR is unavailable: install tesseract-ocr in the worker image."
         )
-    kinds = ("process_file", "scrutiny")
+    kinds = worker_kinds()
     while True:
         received = False
         for kind in kinds:

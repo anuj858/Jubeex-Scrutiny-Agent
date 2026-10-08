@@ -131,6 +131,28 @@ def openrouter_requests_per_minute() -> int:
         return DEFAULT_REQUESTS_PER_MINUTE
 
 
+def llm_requests_per_minute() -> int:
+    """Rate limit for the active provider.
+
+    ``OPENROUTER_REQUESTS_PER_MINUTE`` must not throttle Vertex calls.  A
+    provider-neutral override is available for installations that deliberately
+    want one limit regardless of backend.
+    """
+    generic = (os.getenv("LLM_REQUESTS_PER_MINUTE") or "").strip()
+    if generic:
+        try:
+            return max(0, int(generic))
+        except ValueError:
+            return DEFAULT_REQUESTS_PER_MINUTE
+    if llm_provider() == "openrouter":
+        return openrouter_requests_per_minute()
+    raw = (os.getenv("VERTEX_REQUESTS_PER_MINUTE") or "").strip()
+    try:
+        return max(0, int(raw)) if raw else DEFAULT_REQUESTS_PER_MINUTE
+    except ValueError:
+        return DEFAULT_REQUESTS_PER_MINUTE
+
+
 class _OpenRouterRateLimiter:
     """Process-wide sliding window for LLM completion calls."""
 
@@ -139,16 +161,14 @@ class _OpenRouterRateLimiter:
         self._timestamps: deque[float] = deque()
 
     async def acquire(self) -> None:
-        rpm = openrouter_requests_per_minute()
+        rpm = llm_requests_per_minute()
         if rpm <= 0:
             return
         while True:
             wait_s = 0.0
             async with self._lock:
                 now = time.monotonic()
-                while (
-                    self._timestamps and now - self._timestamps[0] >= _RATE_WINDOW_S
-                ):
+                while self._timestamps and now - self._timestamps[0] >= _RATE_WINDOW_S:
                     self._timestamps.popleft()
                 if len(self._timestamps) < rpm:
                     self._timestamps.append(now)
@@ -232,7 +252,6 @@ def _headers() -> dict[str, str]:
     if referer:
         headers["HTTP-Referer"] = referer
     return headers
-
 
 
 def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -469,9 +488,7 @@ async def _call_structured_vertex[T: BaseModel](
                     parsed = _complete_structured_fields(parsed_obj)
                     return response_model.model_validate(parsed), usage
                 if isinstance(parsed_obj, BaseModel):
-                    return response_model.model_validate(
-                        parsed_obj.model_dump()
-                    ), usage
+                    return response_model.model_validate(parsed_obj.model_dump()), usage
             if not content:
                 raise LLMError("Vertex response had empty text")
             parsed = _complete_structured_fields(_parse_json(content))
@@ -721,7 +738,9 @@ async def call_structured[T: BaseModel](
                     )
             except LLMFatalError as e:
                 last_error = e
-                logger.error("[LLM] Fatal OpenRouter error (no retry): %s", str(e)[:300])
+                logger.error(
+                    "[LLM] Fatal OpenRouter error (no retry): %s", str(e)[:300]
+                )
                 break
             except (httpx.HTTPError, LLMError) as e:
                 last_error = e

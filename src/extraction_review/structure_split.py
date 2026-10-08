@@ -182,7 +182,9 @@ class StructureSplitResult:
             "boundaries": [b.as_dict() for b in self.boundaries],
             "logical_documents": [d.as_dict() for d in self.logical_documents],
             "auto_boundaries": sum(1 for b in self.boundaries if b.action == "auto"),
-            "verify_boundaries": sum(1 for b in self.boundaries if b.action == "verify"),
+            "verify_boundaries": sum(
+                1 for b in self.boundaries if b.action == "verify"
+            ),
         }
 
 
@@ -199,11 +201,13 @@ def extract_page_units(
     total = len(reader.pages)
     layout = extract_split_layout(pdf_bytes)
     sparse_pages = {
-        number for number in range(1, total + 1)
+        number
+        for number in range(1, total + 1)
         if max(
             len(layout.get(number, ("", None, None))[0].strip()),
             len(((page_texts or {}).get(number) or "").strip()),
-        ) < _OCR_TEXT_MIN
+        )
+        < _OCR_TEXT_MIN
     }
     image_pages = pages_with_large_images(pdf_bytes)
     ocr_pages = sorted(sparse_pages | image_pages)
@@ -240,12 +244,8 @@ def extract_page_units(
             # reads every column vertically.  OCR is only slightly longer in
             # that case, but it restores serial-numbered rows and their page
             # spans. Prefer that row-shaped OCR so the Index can drive ranges.
-            native_index_rows = len(
-                re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", text)
-            )
-            ocr_index_rows = len(
-                re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", ocr_text)
-            )
+            native_index_rows = len(re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", text))
+            ocr_index_rows = len(re.findall(r"(?m)^\s*\d{1,3}[.)|]\s+", ocr_text))
             ocr_index_spans = len(
                 re.findall(
                     r"(?i)(?<![A-Za-z0-9])(?:A\d{1,2}|[A-Z]{1,2}|\d{1,4})"
@@ -401,7 +401,9 @@ def classify_page(
 def classify_pages(
     units: Sequence[PageUnit],
     *,
-    llama_page_parts: PagePartMap | Mapping[int, Sequence[str] | str | None] | None = None,
+    llama_page_parts: PagePartMap
+    | Mapping[int, Sequence[str] | str | None]
+    | None = None,
 ) -> list[PageClassification]:
     hints: dict[int, str] = {}
     if llama_page_parts:
@@ -409,9 +411,7 @@ def classify_pages(
             parts = parts_on_page(names)
             if parts:
                 hints[int(page)] = parts[0]
-    return [
-        classify_page(unit, llama_hint=hints.get(unit.pdf_page)) for unit in units
-    ]
+    return [classify_page(unit, llama_hint=hints.get(unit.pdf_page)) for unit in units]
 
 
 def _boundary_score(
@@ -562,8 +562,7 @@ def _resolve_page_labels(
             if (
                 c.document_type != "other"
                 and c.confidence >= 0.9
-                and family_split_name(c.document_type)
-                == family_split_name(current)
+                and family_split_name(c.document_type) == family_split_name(current)
             ):
                 current = c.document_type
             labels[c.page] = current
@@ -635,8 +634,11 @@ def logical_documents_to_page_parts(
 def structure_aware_split(
     pdf_bytes: bytes,
     *,
-    llama_page_parts: PagePartMap | Mapping[int, Sequence[str] | str | None] | None = None,
+    llama_page_parts: PagePartMap
+    | Mapping[int, Sequence[str] | str | None]
+    | None = None,
     page_texts: Mapping[int, str] | None = None,
+    page_units: Sequence[PageUnit] | None = None,
     source_pdf: str = "bundle.pdf",
     run_hybrid_repair: bool = True,
 ) -> StructureSplitResult:
@@ -648,8 +650,10 @@ def structure_aware_split(
     page into ``page_parts`` before repair — that created one-page Index /
     Listing / Synopsis islands when a continuation page was mis-typed.
     """
-    units = extract_page_units(
-        pdf_bytes, source_pdf=source_pdf, page_texts=page_texts
+    units = (
+        list(page_units)
+        if page_units is not None
+        else extract_page_units(pdf_bytes, source_pdf=source_pdf, page_texts=page_texts)
     )
     texts = {unit.pdf_page: unit.text for unit in units}
 

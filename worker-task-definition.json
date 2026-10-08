@@ -38,7 +38,15 @@
         },
         {
           "name": "INGEST_CONCURRENCY",
-          "value": "8"
+          "value": "12"
+        },
+        {
+          "name": "JUBEEX_WORKER_KINDS",
+          "value": "process_file"
+        },
+        {
+          "name": "SPLIT_OCR_CONCURRENCY",
+          "value": "4"
         },
         {
           "name": "AWS_S3_BUCKET",
@@ -70,7 +78,7 @@
         },
         {
           "name": "PARSE_CONCURRENCY",
-          "value": "8"
+          "value": "12"
         },
         {
           "name": "VECTOR_BACKEND",
@@ -78,7 +86,7 @@
         },
         {
           "name": "SLOT_UPLOAD_CONCURRENCY",
-          "value": "8"
+          "value": "12"
         },
         {
           "name": "SCRUTINY_MAX_CHUNKS",
@@ -160,7 +168,7 @@
       "systemControls": []
     }
   ],
-  "family": "jubeex-scrutiny-worker",
+  "family": "jubeex-ingestion-worker",
   "taskRoleArn": "arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole",
   "executionRoleArn": "arn:aws:iam::893338224943:role/ecsTaskExecutionRole",
   "networkMode": "awsvpc",
@@ -169,6 +177,6 @@
   "requiresCompatibilities": [
     "FARGATE"
   ],
-  "cpu": "1024",
-  "memory": "2048"
+  "cpu": "2048",
+  "memory": "4096"
 }

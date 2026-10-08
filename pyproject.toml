@@ -24,6 +24,7 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     "google-auth>=2.35,<3",
     "google-genai>=1.0,<3",
+    "xlsxwriter>=3.2.9,<4",
 ]
 
 [dependency-groups]
@@ -46,6 +47,7 @@ build-backend = "hatchling.build"
 [project.scripts]
 jubeex-api = "extraction_review.api:main"
 jubeex-sqs-worker = "extraction_review.worker:main"
+jubeex-batch-qa = "extraction_review.batch_qa.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/extraction_review"]
@@ -115,4 +117,3 @@ scrutiny-check = "extraction_review.scrutiny_workflow:workflow"
 [tool.llamadeploy.ui]
 directory = "ui"
 package_manager = "npm"
-

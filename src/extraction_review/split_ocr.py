@@ -16,11 +16,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SPLIT_OCR_CONCURRENCY = 2
+
 _FOLIO_TOKEN_RE = re.compile(r"(?:\d{1,4}[A-Za-z]?|A\d{1,2}|[A-Z]{1,2})")
 _INDEX_PAGE_SPAN_RE = re.compile(
     r"(?:\d{1,4}[A-Za-z]?(?:[-–—]\d{1,4}[A-Za-z]?)?|"
     r"A\d{1,2}(?:[-–—]A?-?\d{1,2})?|[A-Z]{1,2}(?:[-–—][A-Z]{1,2})?)"
 )
+
+
+def split_ocr_concurrency() -> int:
+    """Bound local Tesseract processes to the CPU allocated to the worker."""
+    raw = (os.getenv("SPLIT_OCR_CONCURRENCY") or "").strip()
+    try:
+        return max(1, min(int(raw), 8)) if raw else DEFAULT_SPLIT_OCR_CONCURRENCY
+    except ValueError:
+        return DEFAULT_SPLIT_OCR_CONCURRENCY
 
 
 def _cluster_positions(values: list[float], *, tolerance: float) -> list[float]:
@@ -315,13 +326,15 @@ def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
                 output_base.with_suffix(".txt").unlink(missing_ok=True)
                 output_base.with_suffix(".tsv").unlink(missing_ok=True)
 
+        workers = split_ocr_concurrency()
         with (
             pymupdf.open(stream=pdf_bytes, filetype="pdf") as document,
-            ThreadPoolExecutor(max_workers=2) as pool,
+            ThreadPoolExecutor(max_workers=workers) as pool,
         ):
             # Batches bound rendered-image storage and outstanding work.
-            for offset in range(0, len(pages), 4):
-                batch = pages[offset : offset + 4]
+            batch_size = max(4, workers * 2)
+            for offset in range(0, len(pages), batch_size):
+                batch = pages[offset : offset + batch_size]
                 for number in batch:
                     page = document[number - 1]
                     page.get_pixmap(dpi=180, colorspace=pymupdf.csGRAY).save(

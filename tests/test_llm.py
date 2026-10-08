@@ -2,9 +2,10 @@ import pytest
 
 from extraction_review.llm import (
     LLMError,
-    _OpenRouterRateLimiter,
     _complete_structured_fields,
+    _OpenRouterRateLimiter,
     _parse_json,
+    llm_requests_per_minute,
     openrouter_requests_per_minute,
 )
 
@@ -82,6 +83,24 @@ def test_llm_provider_defaults_to_vertex(monkeypatch: pytest.MonkeyPatch) -> Non
     assert openrouter_model() == "gemini-3.8-flash"
 
 
+def test_openrouter_limit_does_not_throttle_vertex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_REQUESTS_PER_MINUTE", raising=False)
+    monkeypatch.delenv("VERTEX_REQUESTS_PER_MINUTE", raising=False)
+    monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "25")
+    assert llm_requests_per_minute() == 0
+
+
+def test_active_provider_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "vertex")
+    monkeypatch.setenv("VERTEX_REQUESTS_PER_MINUTE", "120")
+    assert llm_requests_per_minute() == 120
+    monkeypatch.setenv("LLM_REQUESTS_PER_MINUTE", "80")
+    assert llm_requests_per_minute() == 80
+
+
 def test_llm_provider_openrouter_keeps_prefixed_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -97,6 +116,7 @@ def test_llm_provider_openrouter_keeps_prefixed_model(
 async def test_openrouter_rate_limiter_paces_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "2")
     limiter = _OpenRouterRateLimiter()
     await limiter.acquire()

@@ -1,4 +1,10 @@
-from extraction_review.queue import _client_kwargs, queue_kind, queue_name, sqs_enabled
+from extraction_review.queue import (
+    _client_kwargs,
+    extend_job_visibility,
+    queue_kind,
+    queue_name,
+    sqs_enabled,
+)
 
 
 def test_queue_kind_splits_ingestion_and_scrutiny() -> None:
@@ -46,3 +52,26 @@ def test_sqs_disabled_without_env(monkeypatch) -> None:
     assert sqs_enabled() is False
     monkeypatch.setenv("JUBEEX_SQS_ENABLED", "true")
     assert sqs_enabled() is True
+
+
+def test_extend_job_visibility_renews_receipt(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def change_message_visibility(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    client = FakeClient()
+    monkeypatch.setattr("extraction_review.queue._client", lambda: client)
+
+    extend_job_visibility(
+        {"_queue_url": "https://sqs/queue", "_receipt_handle": "receipt"},
+        timeout_seconds=900,
+    )
+
+    assert client.kwargs == {
+        "QueueUrl": "https://sqs/queue",
+        "ReceiptHandle": "receipt",
+        "VisibilityTimeout": 900,
+    }

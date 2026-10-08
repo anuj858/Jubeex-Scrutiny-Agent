@@ -9,6 +9,7 @@ from extraction_review.split_ocr import (
     margin_folio_from_tsv,
     ocr_sparse_pages,
     pages_with_large_images,
+    split_ocr_concurrency,
 )
 from extraction_review.structure_split import extract_page_units, structure_aware_split
 
@@ -97,6 +98,13 @@ def test_ocr_timeout_does_not_invent_text():
         ),
     ):
         assert ocr_sparse_pages(blank_pdf(), [1]) == {1: ""}
+
+
+def test_split_ocr_concurrency_is_configurable_and_bounded(monkeypatch):
+    monkeypatch.setenv("SPLIT_OCR_CONCURRENCY", "4")
+    assert split_ocr_concurrency() == 4
+    monkeypatch.setenv("SPLIT_OCR_CONCURRENCY", "100")
+    assert split_ocr_concurrency() == 8
 
 
 def test_ocr_keeps_native_annexure_stamp():

@@ -14,6 +14,9 @@
       "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-452c864-amd64",
       "essential": true,
       "entryPoint": [
+        "/app/scripts/start.sh"
+      ],
+      "command": [
         "uv",
         "run",
         "jubeex-sqs-worker"
@@ -62,6 +65,18 @@
         {
           "name": "OPENROUTER_REQUESTS_PER_MINUTE",
           "value": "25"
+        },
+        {
+          "name": "LLM_PROVIDER",
+          "value": "vertex"
+        },
+        {
+          "name": "VERTEX_REQUESTS_PER_MINUTE",
+          "value": "0"
+        },
+        {
+          "name": "JUBEEX_WORKER_KINDS",
+          "value": "scrutiny"
         },
         {
           "name": "OPENROUTER_APP_TITLE",
