@@ -16,10 +16,11 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
+import pymupdf
 from llama_cloud import AsyncLlamaCloud, BadRequestError
 from llama_cloud.types.beta.extracted_data import ExtractedData
 from pydantic import (
@@ -43,6 +44,7 @@ from .config import (
     with_config_identity,
 )
 from .document_parts import (
+    family_split_name,
     format_page_span,
     page_parts_from_split,
     parts_on_page,
@@ -61,7 +63,6 @@ from .llama_usage import (
     usage_status_message,
 )
 from .s3_artifacts import STEP_SPLIT, upload_step_json
-from .split_audit import audit_compiled_split
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
@@ -69,7 +70,9 @@ from .split_upload import (
     type_catalog,
     ui_catalog,
 )
-from .structure_split import PageUnit, extract_page_units, structure_aware_split
+
+if TYPE_CHECKING:
+    from .structure_split import PageUnit
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,11 @@ def positive_int_env(name: str, default: int) -> int:
 
 def slot_upload_concurrency() -> int:
     return positive_int_env("SLOT_UPLOAD_CONCURRENCY", DEFAULT_SLOT_UPLOAD_CONCURRENCY)
+
+
+def split_python_rules_enabled() -> bool:
+    """One opt-in switch for local OCR, structure detection, repair and audit."""
+    return (os.getenv("SPLIT_PYTHON_RULES_ENABLED") or "").strip().lower() in _TRUTHY
 
 
 def remember_file_bytes(file_id: str | None, data: bytes | None) -> None:
@@ -468,6 +476,18 @@ def split_labels_match_expected_slot(
     if not counts:
         return False
     dominant = max(counts, key=lambda slot_id: (counts[slot_id], slot_id))
+    expected_dynamic = dynamic_upload_slot(expected)
+    if expected_dynamic and expected_dynamic.parts == ("Annexures",):
+        # Generic upload ordinals are not printed exhibit identities. Verify
+        # the category returned by LlamaCloud, not an invented P/A number.
+        actual_dynamic = dynamic_upload_slot(dominant)
+        return dominant == "annexures" or bool(
+            actual_dynamic
+            and all(
+                family_split_name(part) == "Annexures"
+                for part in actual_dynamic.parts
+            )
+        )
     return dominant == expected
 
 
@@ -991,11 +1011,14 @@ async def _split_page_parts(
     completed = await _wait_for_split(client, job.id)
     exchange = {"sent": sent, "returned": _json_value(completed)}
     mapping = page_parts_from_split(completed)
-    if not mapping:
+    segments = (exchange["returned"].get("result") or {}).get("segments") or []
+    if not mapping and not any(segment.get("pages") for segment in segments):
         raise RuntimeError(
             f"Split finished for {label} but labelled no pages. "
             "Scrutiny cannot filter Listing Proforma / Main Petition / checklist parts."
         )
+    # An entirely uncategorized result is still usable: preserve the pages in
+    # Unidentified rather than manufacturing local labels or dropping the PDF.
     return mapping, str(getattr(completed, "id", None) or job.id), exchange
 
 
@@ -1905,6 +1928,10 @@ class ProcessFileWorkflow(Workflow):
             Status(level="info", message=f"Splitting file {state.filename}")
         )
         split_started = start_timer()
+        # Snapshot once so all stages of this job use the same mode.
+        use_python_rules = split_python_rules_enabled()
+        split_mode = "llama_with_python_rules" if use_python_rules else "llama_only"
+        logger.info("[SplitMode] mode=%s file=%s", split_mode, state.filename)
 
         async def run_llama_split() -> tuple[dict[int, list[str]], str, dict[str, Any]]:
             return await _split_page_parts(
@@ -1914,34 +1941,42 @@ class ProcessFileWorkflow(Workflow):
                 filename=state.filename,
             )
 
-        async def load_and_read_pages() -> tuple[bytes, list[PageUnit], float | None]:
+        async def load_and_prepare_pdf() -> tuple[
+            bytes, list[PageUnit] | None, float
+        ]:
             pdf_bytes = await _load_bundle_pdf(
                 llama_cloud_client,
                 file_id=state.file_id,
                 source_documents=state.source_documents,
             )
+            if not use_python_rules:
+                return pdf_bytes, None, 0.0
+            # Do not even load local rule dependencies in LlamaCloud-only mode.
+            from .structure_split import extract_page_units
+
             local_started = start_timer()
             units = await asyncio.to_thread(
                 extract_page_units,
                 pdf_bytes,
-                source_pdf=state.filename or "bundle.pdf",
+                source_pdf=state.filename,
             )
-            return pdf_bytes, units, elapsed_seconds(local_started)
+            return pdf_bytes, units, elapsed_seconds(local_started) or 0.0
 
-        # LlamaSplit and deterministic page/OCR preparation are independent.
-        # Running them together removes one full-document pass from the
-        # sequential critical path without changing either result authority.
+        # Download (and optional local OCR) can run alongside the remote split.
         split_result, local_result = await asyncio.gather(
-            run_llama_split(), load_and_read_pages()
+            run_llama_split(), load_and_prepare_pdf()
         )
         page_parts, split_job_id, llama_split = split_result
         pdf_bytes, page_units, local_read_seconds = local_result
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+            pdf_page_count = pdf.page_count
         llama_split_seconds = elapsed_seconds(split_started)
         logger.info(
-            "[SplitTiming] remote_and_local=%.1fs local_page_read=%ss pages=%s",
+            "[SplitTiming] mode=%s split_and_prepare=%.1fs local_page_read=%.1fs pages=%s",
+            split_mode,
             llama_split_seconds or 0.0,
             local_read_seconds,
-            len(page_units),
+            pdf_page_count,
         )
         split_usage = await collect_optional_usage(
             llama_cloud_client,
@@ -1958,7 +1993,8 @@ class ProcessFileWorkflow(Workflow):
                 message=f"Loading {state.filename} to slice labeled pages",
             )
         )
-        pdf_page_count = len(page_units)
+        # Keep existing artifact keys for consumers; no local rule-based audit
+        # or duplicate filtering is performed in the LlamaCloud-only flow.
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
             "index_rows": [],
@@ -1966,58 +2002,58 @@ class ProcessFileWorkflow(Workflow):
             "flags": [],
             "flag_counts": {"error": 0, "warning": 0, "total": 0},
         }
-        if pdf_page_count:
+        if use_python_rules:
+            from .split_audit import audit_compiled_split
+            from .structure_split import structure_aware_split
+
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message="Reading scanned pages and validating document boundaries",
+                    message="Applying local split structure rules, repairs and audit",
                 )
             )
-            # Structure-aware path: page units → classify → boundaries →
-            # logical docs → hybrid repair. LlamaSplit is a warm-start hint.
-            # Physical slot PDFs are created only after boundaries are final.
+            rules_started = start_timer()
             structured = await asyncio.to_thread(
                 structure_aware_split,
                 pdf_bytes,
                 llama_page_parts=page_parts,
                 page_units=page_units,
-                source_pdf=state.filename or "bundle.pdf",
+                source_pdf=state.filename,
                 run_hybrid_repair=True,
             )
             page_parts = structured.page_parts
-            duplicate_hits = structured.duplicates
             split_duplicates = [
                 hit.as_dict() if hasattr(hit, "as_dict") else hit
-                for hit in duplicate_hits
+                for hit in structured.duplicates
             ]
-            split_audit = audit_compiled_split(
+            split_audit = await asyncio.to_thread(
+                audit_compiled_split,
                 page_parts,
                 {unit.pdf_page: unit.text for unit in structured.page_units},
                 page_count=pdf_page_count,
             )
             split_audit["structure"] = structured.report()
+            logger.info(
+                "[SplitTiming] mode=%s repair_and_audit=%.1fs",
+                split_mode,
+                elapsed_seconds(rules_started) or 0.0,
+            )
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Structure-aware split found {len(structured.logical_documents)} "
+                        "logical document(s) after local repair"
+                    ),
+                )
+            )
             if structured.ocr_needed_pages:
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
                         message=(
                             f"Marked {len(structured.ocr_needed_pages)} page(s) "
-                            f"as OCR-needed (sparse text layer)"
-                        ),
-                    )
-                )
-            logical_n = len(structured.logical_documents)
-            if logical_n:
-                structure_meta = split_audit["structure"]
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Structure-aware split found {logical_n} logical "
-                            f"document(s) "
-                            f"({structure_meta.get('auto_boundaries', 0)} auto / "
-                            f"{structure_meta.get('verify_boundaries', 0)} "
-                            f"verify boundaries)"
+                            "as OCR-needed"
                         ),
                     )
                 )
@@ -2027,7 +2063,7 @@ class ProcessFileWorkflow(Workflow):
                         level="info",
                         message=(
                             f"Detected {len(split_duplicates)} duplicate document "
-                            f"span(s) after split repair"
+                            "span(s) after split repair"
                         ),
                     )
                 )
@@ -2038,7 +2074,7 @@ class ProcessFileWorkflow(Workflow):
                         level="info",
                         message=(
                             f"Split audit raised {audit_total} flag(s) "
-                            f"(sequence / Index consistency)"
+                            "(sequence / Index consistency)"
                         ),
                     )
                 )
@@ -2055,7 +2091,16 @@ class ProcessFileWorkflow(Workflow):
                 ),
             )
         )
-        slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
+        # Only the Llama-only mode uses raw segment boundaries. Passing them
+        # after local repair would restore the old, uncorrected page assignments.
+        returned = llama_split["returned"]
+        split_segments = (returned.get("result") or {}).get("segments") or []
+        slices = slice_bundle_pdf(
+            pdf_bytes,
+            catalog,
+            page_parts,
+            split_segments=None if use_python_rules else split_segments,
+        )
         ctx.write_event_to_stream(
             Status(
                 level="info",

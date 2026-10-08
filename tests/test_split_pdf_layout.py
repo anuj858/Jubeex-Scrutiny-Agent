@@ -103,6 +103,34 @@ def test_last_index_page_can_have_only_one_remaining_row():
     assert "3.\tVakalatnama\t4" in units[1].text
 
 
+def test_index_without_vector_grid_is_rebuilt_from_word_geometry():
+    """A visual table may have no detectable ruling lines and vertical text order."""
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=595, height=842)
+        page.insert_text((72, 55), "MASTER INDEX")
+        page.insert_text((72, 90), "S.No")
+        page.insert_text((118, 90), "Particulars")
+        page.insert_text((280, 90), "Page No.")
+        rows = [
+            ("1.", "Synopsis and List of Dates", "B-Y"),
+            ("2.", "Special Leave Petition with Affidavit", "14-38"),
+            ("3.", "ANNEXURE P-1 Credit letter", "48-63"),
+        ]
+        for index, (serial, body, span) in enumerate(rows):
+            y = 130 + index * 70
+            page.insert_text((73, y), serial)
+            page.insert_textbox((118, y - 12, 265, y + 48), body, fontsize=9)
+            page.insert_text((280, y), span)
+        units = extract_page_units(pdf.tobytes())
+
+    parsed = index_rows_with_printed_pages(units[0].text)
+    assert [(row.mapped_part, row.kind, row.start, row.end) for row in parsed] == [
+        ("Synopsis", "letter", 66, 89),
+        ("Main Petition", "number", 14, 38),
+        ("Annexure P-1", "number", 48, 63),
+    ]
+
+
 def test_judgment_page_counter_is_a_fallback_folio():
     signed = "Page 1 of 9\nSignature Not Verified\nSigning Date:11.11.2025"
     assert printed_folio(signed) == ("number", 1, "")

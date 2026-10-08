@@ -10,6 +10,7 @@ import hashlib
 import io
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import pymupdf
 from pypdf import PdfReader
@@ -25,6 +26,7 @@ from .document_parts import (
 )
 from .split_upload import (
     _ANNEXURE_SLOT_RE,
+    _GENERIC_ANNEXURE_SLOT_RE,
     UNDEFINED_SLOT_ID,
     UploadSlot,
     UploadTypeCatalog,
@@ -34,7 +36,10 @@ from .split_upload import (
 
 
 def _is_numbered_annexure_slot(slot_id: str) -> bool:
-    return bool(_ANNEXURE_SLOT_RE.fullmatch(slot_id or ""))
+    return bool(
+        _ANNEXURE_SLOT_RE.fullmatch(slot_id or "")
+        or _GENERIC_ANNEXURE_SLOT_RE.fullmatch(slot_id or "")
+    )
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,8 @@ def _slot_ids_for_labels(labels: Sequence[str], catalog: UploadTypeCatalog) -> s
 def map_slot_pages(
     catalog: UploadTypeCatalog,
     page_parts: Mapping[int, Sequence[str] | str | None],
+    *,
+    promote_repeatable: bool = True,
 ) -> dict[str, list[int]]:
     """Map 1-indexed LlamaSplit pages onto catalog slots.
 
@@ -104,13 +111,44 @@ def map_slot_pages(
             continue
         for slot_id in _slot_ids_for_labels(labels, catalog):
             pages_by_slot.setdefault(slot_id, []).append(number)
-    return _promote_repeatable_catchall(
-        {
-            slot_id: sorted(set(pages))
-            for slot_id, pages in pages_by_slot.items()
-            if pages
-        }
-    )
+    mapped = {
+        slot_id: sorted(set(pages))
+        for slot_id, pages in pages_by_slot.items()
+        if pages
+    }
+    return _promote_repeatable_catchall(mapped) if promote_repeatable else mapped
+
+
+def _map_repeatable_segments(
+    pages_by_slot: dict[str, list[int]],
+    segments: Sequence[Mapping[str, Any]],
+) -> dict[str, list[int]]:
+    """Give each generic Llama segment its own upload ID, not a guessed boundary.
+
+    Do not inspect PDF text or infer printed P/A/R numbers. A segment's supplied
+    page list is the entire source of its boundaries, including any gaps.
+    Singleton/combined UI slots continue to use the configured catalog mapping.
+    """
+    mapped = dict(pages_by_slot)
+    counters = {ANNEXURE_FAMILY: 0, APPLICATION_FAMILY: 0}
+    for segment in segments:
+        labels = parts_on_page(segment.get("category"))
+        if len(labels) != 1 or labels[0] not in counters:
+            continue
+        family = labels[0]
+        pages = sorted({int(page) for page in segment.get("pages") or []})
+        if not pages:
+            continue
+        catchall = "annexures" if family == ANNEXURE_FAMILY else "applications"
+        prefix = "annexure" if family == ANNEXURE_FAMILY else "application"
+        mapped.pop(catchall, None)
+        counters[family] += 1
+        slot_id = f"{prefix}_{counters[family]}"
+        while slot_id in mapped:
+            counters[family] += 1
+            slot_id = f"{prefix}_{counters[family]}"
+        mapped[slot_id] = pages
+    return mapped
 
 
 def leftover_pages(
@@ -271,13 +309,17 @@ def slice_bundle_pdf(
     pdf_bytes: bytes,
     catalog: UploadTypeCatalog,
     page_parts: Mapping[int, Sequence[str] | str | None],
+    *,
+    split_segments: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[SlotSlice]:
     """Cut the bundle into one PDF per catalog slot that LlamaSplit found.
 
     Pages that match no known slot are copied into Undefined when that slot
     exists and leftover pages remain. Annexure P-n and Application n names
     are used as LlamaSplit returned them. Printed headings are not used to
-    invent or renumber those labels.
+    invent or renumber those labels. When raw segments are provided, generic
+    Annexures/Application segments receive distinct ordinal upload IDs; the
+    ordinals are not printed exhibit numbers and do not infer new boundaries.
     """
     normalized: dict[int, list[str]] = {}
     for page, raw in page_parts.items():
@@ -289,7 +331,31 @@ def slice_bundle_pdf(
         if labels:
             normalized[number] = labels
     reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
-    pages_by_slot = dict(map_slot_pages(catalog, normalized))
+    pages_by_slot = dict(
+        map_slot_pages(
+            catalog, normalized, promote_repeatable=split_segments is None
+        )
+    )
+    if split_segments is not None:
+        pages_by_slot = _map_repeatable_segments(pages_by_slot, split_segments)
+    if reader is not None:
+        invalid_pages = {
+            page
+            for pages in pages_by_slot.values()
+            for page in pages
+            if page < 1 or page > len(reader.pages)
+        }
+        if split_segments is not None:
+            invalid_pages.update(
+                int(page)
+                for segment in split_segments
+                for page in segment.get("pages") or []
+                if int(page) < 1 or int(page) > len(reader.pages)
+            )
+        if invalid_pages:
+            raise ValueError(
+                f"Split returned out-of-range PDF pages: {sorted(invalid_pages)}"
+            )
     if reader is not None and any(
         slot.id == UNDEFINED_SLOT_ID for slot in catalog.slots
     ):

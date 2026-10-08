@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 import httpx
+import pymupdf
 import pytest
 
 logging.basicConfig(
@@ -59,6 +60,26 @@ def _install_llama_cloud_compat(server: object) -> None:
         result = adapted.get("result")
         if isinstance(result, dict):
             segments = result.get("segments") or []
+            # The fake splits raw PDF bytes into text-like "pages", which can
+            # produce hundreds of references for a one-page PDF. Return a
+            # valid simulated API response instead of relying on local repairs
+            # to silently discard those out-of-range references.
+            stored = server.files.get(adapted["file_input"])
+            if stored is not None and stored.content.startswith(b"%PDF"):
+                with pymupdf.open(stream=stored.content, filetype="pdf") as pdf:
+                    page_count = pdf.page_count
+                segments = [
+                    {**segment, "pages": pages}
+                    for segment in segments
+                    if (
+                        pages := [
+                            page
+                            for page in segment.get("pages", [])
+                            if 1 <= page <= page_count
+                        ]
+                    )
+                ]
+                adapted["result"] = {**result, "segments": segments}
             if not segments:
                 categories = adapted.get("categories") or []
                 name = None

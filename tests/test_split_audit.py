@@ -400,3 +400,25 @@ def test_scanned_index_range_embedded_before_wrapped_particulars():
         ("Annexure P-1", 24, 46),
         ("Application 1", 47, 48),
     ]
+
+
+def test_spaced_annexure_dash_wins_over_enclosed_document_words():
+    from extraction_review.split_audit import map_index_particulars_to_part
+
+    assert (
+        map_index_particulars_to_part(
+            "ANNEXURE P – 11: Anticipatory Bail Application No. 845 of 2023"
+        )
+        == "Annexure P-11"
+    )
+    assert (
+        map_index_particulars_to_part("ANNEXURE P – 15: Affidavit dated 20.09.2023")
+        == "Annexure P-15"
+    )
+    assert (
+        map_index_particulars_to_part(
+            "CRL. M.P. No. of 2024 Application seeking condonation of delay"
+        )
+        == "Application 1"
+    )
+    assert map_index_particulars_to_part("Filling Memo") == "Filing Memo"

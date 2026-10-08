@@ -46,6 +46,46 @@ uvx llamactl deployments apply -f deployment.yaml
 
 `deployment.yaml` maps Pinecone and S3 env vars into LlamaCloud deployment secrets. A local `.env` is not uploaded (it is gitignored), so hosted agents only see secrets listed there or in `[tool.llamadeploy.env]`.
 
+## Compiled splitting: optional local OCR, repair and audit
+
+LlamaCloud Split uses `split.categories` and `split.splitting_strategy` in
+`configs/config.json`. One environment variable selects the compiled-upload
+and split-petition behavior:
+
+- `SPLIT_PYTHON_RULES_ENABLED=false` (also the default when unset): LlamaCloud
+  only. No local OCR, heading/Index/folio rules, structure detection, repairs,
+  duplicate filtering or audits run.
+- `SPLIT_PYTHON_RULES_ENABLED=true`: LlamaCloud plus the full existing local
+  pipeline: text/layout extraction, Tesseract OCR where needed, structure and
+  boundary detection, hybrid repairs, duplicate handling and consistency audit.
+  Local page reading runs concurrently with the remote split. PDFs are sliced
+  from the repaired page assignments, not the original remote segments.
+
+The value is case-insensitive; `1` and `yes` also enable the local pipeline.
+All other values leave it disabled. The mode is captured once per split job.
+`SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
+enable/disable switch.
+
+In either mode, Python downloads the source PDF, maps document categories to
+configured upload slots, copies pages and uploads the resulting PDFs. Pages
+without an assigned slot are retained as Unidentified.
+
+In LlamaCloud-only mode, separate generic `Annexures` and `Application` segments remain separate files.
+Generic annexures use `Annexure 1`, `Annexure 2`, etc. (`annexure_1`, `annexure_2`
+upload IDs): these are segment ordinals, not inferred printed P/A/R numbers.
+Explicit numbered categories returned by LlamaCloud are preserved. Existing
+catalog grouping (for example Synopsis + LOD and Vakalatnama + Memo of Appearance)
+is retained for frontend compatibility; it does not reclassify page content.
+
+Extraction, separate-file verification and scrutiny checks are unchanged.
+Deploy the updated ingestion worker image, set the flag on that worker's
+environment (for ECS, its task definition), and restart/roll out the worker.
+Editing your laptop's `.env` does not change a deployed ECS worker. Start a
+fresh split; existing split artifacts are not rewritten. Look for
+`[SplitMode] mode=llama_only` or `mode=llama_with_python_rules` and the matching
+`[SplitTiming]` entries in worker logs. Enabled mode requires Tesseract and its
+language data, which are included in the repository's worker Dockerfiles.
+
 ## Features
 
 - **Parse**: LlamaParse produces per-page markdown used for Pinecone page chunks

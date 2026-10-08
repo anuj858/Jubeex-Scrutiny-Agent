@@ -76,6 +76,7 @@ AOR_EXTRACT_RULES = (
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
 _ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d+)$")
+_GENERIC_ANNEXURE_SLOT_RE = re.compile(r"^annexure_(\d+)$")
 _APPLICATION_SLOT_RE = re.compile(r"^application_(\d+)$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
@@ -94,13 +95,22 @@ class UploadSlot:
 
 
 def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
-    """Annexure X-n / Application n slots are created when those files appear."""
+    """Resolve upload IDs, without inferring printed document identities."""
     key = (slot_id or "").strip()
     if key == "custody_certificate":
         return UploadSlot(
             id=key,
             label="Custody Certificate",
             parts=("Custody Certificate",),
+            required=False,
+        )
+    match = _GENERIC_ANNEXURE_SLOT_RE.fullmatch(key)
+    if match and int(match.group(1)) >= 1:
+        return UploadSlot(
+            id=key,
+            label=f"Annexure {int(match.group(1))}",
+            # The ordinal identifies a returned segment, not a printed P/A mark.
+            parts=("Annexures",),
             required=False,
         )
     match = _ANNEXURE_SLOT_RE.fullmatch(key)
@@ -136,6 +146,9 @@ def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot 
 
 
 def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
+    generic = _GENERIC_ANNEXURE_SLOT_RE.fullmatch(slot_id)
+    if generic:
+        return (0, 4, int(generic.group(1)))
     match = _ANNEXURE_SLOT_RE.fullmatch(slot_id)
     if match:
         series = match.group(1)
@@ -426,7 +439,12 @@ def ordered_parts(
     ordered: list[SplitPartInput] = []
     consumed: set[str] = set()
     annexure_ids = sorted(
-        (slot_id for slot_id in grouped if _ANNEXURE_SLOT_RE.fullmatch(slot_id)),
+        (
+            slot_id
+            for slot_id in grouped
+            if _ANNEXURE_SLOT_RE.fullmatch(slot_id)
+            or _GENERIC_ANNEXURE_SLOT_RE.fullmatch(slot_id)
+        ),
         key=_numbered_slot_sort_key,
     )
     application_ids = sorted(

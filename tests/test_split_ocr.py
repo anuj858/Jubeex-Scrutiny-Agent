@@ -62,6 +62,14 @@ def test_margin_folio_accepts_scanned_top_numbers_and_roman_letters():
     assert margin_folio_from_tsv(_folio_tsv("V", left=480, top=35)) == "V"
 
 
+def test_margin_folio_prefers_outer_center_number_over_reproduced_page_number():
+    tsv = _folio_tsv("644", left=480, top=45) + (
+        "5\t1\t2\t1\t2\t1\t900\t20\t40\t30\t95\t2\n"
+    )
+
+    assert margin_folio_from_tsv(tsv) == "644"
+
+
 def test_margin_folio_rejects_title_words_and_years():
     assert margin_folio_from_tsv(_folio_tsv("IN", left=60, top=180)) is None
     assert margin_folio_from_tsv(_folio_tsv("2025", left=900, top=35)) is None

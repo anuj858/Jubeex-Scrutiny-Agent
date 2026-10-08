@@ -133,10 +133,10 @@ def test_config_json_has_versioning() -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["config_id"] == "jubeex_parse"
     assert data["schema_version"] == "1.0"
-    assert data["config_version"] == "1.0.22"
+    assert data["config_version"] == "1.0.24"
     assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
     assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.1"
-    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.22"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.24"
     assert [rule["type"] for rule in data["classify"]["rules"]] == list(
         JUBEEX_FILING_TYPES
     )
@@ -151,10 +151,10 @@ def test_config_json_has_versioning() -> None:
     config = Config.model_validate(data)
     assert config.config_id == "jubeex_parse"
     assert config.schema_version == "1.0"
-    assert config.config_version == "1.0.22"
+    assert config.config_version == "1.0.24"
     assert config.pipeline_versions.classify.config_version == "1.0.0"
     assert config.pipeline_versions.extract.config_version == "1.0.1"
-    assert config.pipeline_versions.split.config_version == "1.0.22"
+    assert config.pipeline_versions.split.config_version == "1.0.24"
     classify_sent = dump_api_configuration(config.classify)
     assert "schema_version" not in classify_sent
     assert "config_version" not in classify_sent
@@ -173,11 +173,12 @@ def test_config_json_has_versioning() -> None:
     instructions = strategy.get("custom_instructions") or ""
     assert strategy.get("allow_uncategorized") == "include"
     assert "ANNEXURE-P" in instructions
-    assert len(instructions) <= 12000
+    assert len(instructions) <= 5000
+    assert instructions == data["split"]["splitting_strategy"]["custom_instructions"]
     stamped = config_identity(data)
     assert stamped["classify"]["config_version"] == "1.0.0"
     assert stamped["extract"]["config_version"] == "1.0.1"
-    assert stamped["split"]["config_version"] == "1.0.22"
+    assert stamped["split"]["config_version"] == "1.0.24"
 
 
 def test_classify_dump_strips_unsupported_version_keys() -> None:
@@ -774,24 +775,27 @@ def test_extract_source_parts_include_petition_and_index() -> None:
     assert normalize_part_name("AOR's Certificate") == "AOR's Certificate"
     _split_categories.cache_clear()
     declaration = dict(_split_categories())["AOR's Declaration"]
-    assert "defects have been duly cured" in declaration
+    assert "defects have been cured" in declaration
     assert "DECLEARTION" in declaration
-    assert "different from the AOR's Certificate" in declaration
+    assert "Do not use for" in declaration
+    assert "AOR's pleadings-confined Certificate" in declaration
     cert = dict(_split_categories())["AOR's Certificate"]
     assert "CERTIFICATE" in cert
-    assert "C E R T I F I C A T E" in cert
-    assert "cause title at the top" in cert
-    assert "Certified that" in cert
-    assert "CERTIFIED that" in cert
-    assert "confined only to the pleadings" in cert
-    assert "DRAWN & FILED BY" in cert
+    assert "OCR/letter-spaced variant" in cert
+    assert "do not require a fixed heading position" in cert
+    assert "confined to the pleadings/documents" in cert
+    assert "filing date and signature" in cert
+    assert "Certificates inside a Checklist, Listing Proforma" in cert
     instructions = json.loads(
         (Path(__file__).resolve().parents[1] / "configs" / "config.json").read_text(
             encoding="utf-8"
         )
     )["split"]["splitting_strategy"]["custom_instructions"]
-    assert "CERTIFICATE is always printed" in instructions
-    assert "Cause title without the word CERTIFICATE" in instructions
+    assert "AOR's Certificate" in instructions
+    assert (
+        "closing declaration, certificate, date or signature with that form"
+        in instructions
+    )
     petition = dict(_split_categories())["Main Petition"]
     assert "Form 28" in petition
     assert "CERTIFICATE" not in petition
@@ -1995,7 +1999,7 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert result.config["config_id"] == "jubeex_parse"
     assert result.config["classify"]["config_version"] == "1.0.0"
     assert result.config["extract"]["config_version"] == "1.0.1"
-    assert result.config["split"]["config_version"] == "1.0.22"
+    assert result.config["split"]["config_version"] == "1.0.24"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -2690,38 +2694,38 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
     _split_categories.cache_clear()
     cats = dict(_split_categories())
     listing = cats["Listing Proforma"]
-    assert "PROFORMA FOR FIRST LISTING" in listing
-    assert "Central Act" in listing
-    assert "The case pertains to" in listing
+    assert "PROFORMA/PERFORMA FOR FIRST LISTING" in listing
+    assert "Acts/sections/rules" in listing
+    assert "prompt/value structure" in listing
     synopsis = cats["Synopsis"]
     assert "SYNOPSIS" in synopsis
     lod = cats["List of Dates & Events"]
     assert "LIST OF DATES" in lod
-    assert "DD/MM/YYYY" in lod
+    assert "Dates can be full or partial" in lod
     impugned = cats["Impugned Order"]
-    assert "judgment or order under challenge" in impugned
+    assert "decision directly challenged" in impugned
     assert "LIST OF DATES" not in impugned
     petition = cats["Main Petition"]
     assert "Form 28" in petition
-    assert "Grounds" in petition
-    assert "Prayer" in petition
+    assert "grounds" in petition
+    assert "prayers" in petition
     assert "questions of law" in petition
-    # Nested HC exhibits may mention SCI captions in the guidance text.
-    assert "High Court" in petition or "Annexure" in petition
+    assert "lower-court petition" in petition
+    assert "remains with that enclosing document" in petition
     assert "contiguous" not in petition
     affidavit = cats["Affidavit"]
-    assert "A F F I D A V I T" in affidavit
-    assert "Deponent" in affidavit
-    assert "Verification" in affidavit
+    assert "OCR/letter-spaced variant" in affidavit
+    assert "deponent" in affidavit
+    assert "verification" in affidavit
     annexure = cats["Annexures"]
-    assert "P-10" in annexure
-    assert "Do not cap the sequence at 15" in annexure
+    assert "actual outer series/number" in annexure
+    assert "without renumbering or imposing a maximum" in annexure
     appendix = cats["Appendix"]
-    assert "Appendix" in appendix
+    assert "APPENDIX" in appendix
     application = cats["Application"]
     assert "APPLICATION" in application
     assert "RESPECTFULLY SHOWETH" in application
-    assert "no fixed limit" in application
+    assert "each genuinely separate application" in application
     filing = cats["Filing Memo"]
     assert "FILING INDEX" in filing or "INDEX OF FILING" in filing
     parties = cats["Memo of Parties"]
@@ -2736,12 +2740,12 @@ def test_remaining_split_descriptions_cover_user_cues() -> None:
             encoding="utf-8"
         )
     )["split"]["splitting_strategy"]["custom_instructions"]
-    assert len(instructions) <= 12000
+    assert len(instructions) <= 5000
     assert "Near-blank scanned pages" in instructions
     assert "GENERAL RULE -- CONTINUATION PAGES" in instructions
-    assert "do not cap the sequence at 15" in instructions
-    assert "without a fixed maximum" in instructions
-    assert "cannot reappear after it ends" in instructions
+    # The model must use the configured category names, not numbered labels.
+    assert "do not invent category names" in instructions
+    assert "do not infer a missing annexure from a numbering gap" in instructions
 
 
 def test_slice_uses_one_indexed_split_pages() -> None:

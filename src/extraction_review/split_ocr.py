@@ -191,7 +191,7 @@ def margin_folio_from_tsv(tsv: str) -> str | None:
         )
         lines.setdefault(key, []).append(row)
 
-    candidates: list[tuple[float, str]] = []
+    candidates: list[tuple[int, float, str]] = []
     for words in lines.values():
         if len(words) != 1:
             continue
@@ -219,10 +219,15 @@ def margin_folio_from_tsv(tsv: str) -> str | None:
         if token.isalpha() and not (top_margin and 0.38 <= center_x <= 0.62):
             continue
         edge_distance = center_y if top_margin else 1.0 - center_y
-        candidates.append((edge_distance, token.upper()))
+        # Compiled paper books normally add their outer folio at top-centre,
+        # while a reproduced order may retain a different internal page
+        # number at top-right. Prefer the centred compilation folio before
+        # comparing distance from the edge.
+        zone_priority = 0 if 0.30 <= center_x <= 0.70 else 1
+        candidates.append((zone_priority, edge_distance, token.upper()))
     if not candidates:
         return None
-    return min(candidates, key=lambda item: item[0])[1]
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
 
 
 def pages_with_large_images(

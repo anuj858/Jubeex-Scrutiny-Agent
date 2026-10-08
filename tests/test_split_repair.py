@@ -243,6 +243,342 @@ def test_explicit_outer_stamp_wins_over_local_annexure_number() -> None:
     assert annexure_label_from_text(text + "32\nANNEXURE P-2") == "Annexure P-2"
 
 
+def test_geometry_rebuilt_index_row_is_not_an_annexure_stamp() -> None:
+    """Continued master Index rows must not open an early P-1/P-7 run."""
+    from extraction_review.document_parts import annexure_label_from_text
+
+    p1_continuation = (
+        "10.\nSpecial Leave Petition with Affidavit.\n"
+        "11.\nAPPENDIX A\n22-25\n12:\nANNEXURE P-1;\n"
+        "True copy of the registered Lease Deed\n26-58\n"
+        "13.\nANNEXURE P-2;\n59-74\n"
+        "12.\tANNEXURE P-1; True copy of the registered Lease Deed\t26-58\n"
+    )
+    p7_continuation = (
+        "Copy of the Final Arbitral Award\n18.\n120-149\n"
+        "ANNEXURE P-7:\n150-172\nTrue copy of the Petition\n"
+        "18.\tANNEXURE P-7: True copy of the Petition\t150-172\n"
+    )
+
+    assert annexure_label_from_text(p1_continuation) is None
+    assert annexure_label_from_text(p7_continuation) is None
+
+
+def test_master_index_continuation_block_is_restored_before_annexure_repair() -> None:
+    from extraction_review.split_repair import _restore_index_bridge_pages
+
+    texts = {
+        1: "INDEX\nS.No. Particulars Page No.\n1. Synopsis B-M",
+        2: (
+            "10.\nSpecial Leave Petition with Affidavit\n11.\nAPPENDIX A\n"
+            "22-25\n12.\nANNEXURE P-1\n26-58\n13.\n"
+            "ANNEXURE P-2\n59-74\n"
+            "12.\tANNEXURE P-1 Lease deed\t26-58"
+        ),
+        3: (
+            "Copy of Final Award\n18.\n120-149\nANNEXURE P-7\n150-172\n"
+            "18.\tANNEXURE P-7 Petition\t150-172"
+        ),
+        4: (
+            "Filing Memo\n647\nVakalatnama\n648-650\n"
+            "Memo of Parties\n651-653"
+        ),
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "FORM 28\nPOSITION OF PARTIES"
+        ),
+    }
+    bad = {
+        1: ["Index"],
+        2: ["Annexure P-1"],
+        3: ["Annexure P-7"],
+        4: ["Annexure P-7"],
+        5: ["Main Petition"],
+    }
+
+    restored = _restore_index_bridge_pages(bad, texts)
+
+    assert all(restored[page] == ["Index"] for page in range(1, 5))
+    assert restored[5] == ["Main Petition"]
+
+
+def test_index_application_wins_over_annexure_references_in_its_title() -> None:
+    from extraction_review.split_audit import map_index_particulars_to_part
+
+    assert (
+        map_index_particulars_to_part(
+            "I.A. No. 2026: Application for exemption from filing official "
+            "translation and certified copies of Annexure P-1 and P-8."
+        )
+        == "Application 1"
+    )
+
+
+def test_index_range_uses_supported_volume_offset_for_missing_folios() -> None:
+    from extraction_review.split_audit import IndexPrintedRow
+    from extraction_review.split_repair import _physical_pages_for_index_row
+
+    # Printed 26-58 is physically 54-86. A few interior footers are missing,
+    # but several observed pages independently support the +28 offset.
+    folios = {
+        54: ("number", 26, ""),
+        55: ("number", 27, ""),
+        60: None,
+        85: ("number", 57, ""),
+        86: ("number", 58, ""),
+        # A later volume uses a different +30 offset and must not win P-1.
+        203: ("number", 173, ""),
+        204: ("number", 174, ""),
+    }
+    row = IndexPrintedRow("Annexure P-1", "Lease deed", "number", 26, 58)
+
+    assert _physical_pages_for_index_row(row, folios, 683) == list(range(54, 87))
+
+
+def test_index_range_uses_nearby_folios_when_own_footers_are_unreadable() -> None:
+    from extraction_review.split_audit import IndexPrintedRow
+    from extraction_review.split_repair import _physical_pages_for_index_row
+
+    # P-1 itself has no readable footer, but the next indexed exhibit proves
+    # the Volume-I physical-minus-printed offset is +28.
+    folios = {
+        103: ("number", 75, ""),
+        104: ("number", 76, ""),
+        105: ("number", 77, ""),
+        203: ("number", 173, ""),
+        204: ("number", 174, ""),
+        205: ("number", 175, ""),
+    }
+    row = IndexPrintedRow("Annexure P-1", "Lease deed", "number", 26, 58)
+
+    assert _physical_pages_for_index_row(row, folios, 683) == list(range(54, 87))
+
+
+def test_index_range_ignores_repeated_internal_document_folios() -> None:
+    from extraction_review.split_audit import IndexPrintedRow
+    from extraction_review.split_repair import _physical_pages_for_index_row
+
+    # The outer paper book uses +28. A reproduced judgment much later in the
+    # bundle repeats 26 and 58; global first/last endpoints must not join the
+    # two unrelated runs into one giant Annexure.
+    folios = {
+        55: ("number", 27, ""),
+        56: ("number", 28, ""),
+        84: ("number", 56, ""),
+        85: ("number", 57, ""),
+        86: ("number", 58, ""),
+        426: ("number", 26, ""),
+        458: ("number", 58, ""),
+    }
+    row = IndexPrintedRow("Annexure P-1", "Lease deed", "number", 26, 58)
+
+    assert _physical_pages_for_index_row(row, folios, 683) == list(range(54, 87))
+
+
+def test_master_volume_offsets_confine_printed_ranges_to_their_volume() -> None:
+    from extraction_review.split_repair import _master_volume_offsets
+
+    texts = {
+        3: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "VOL-I\nPages A to 172\nPAPER BOOK\n(PLEASE SEE INDEX INSIDE)"
+        ),
+        201: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "VOL-II\nPages 173 to 653\nPAPER BOOK\n(PLEASE SEE INDEX INSIDE)"
+        ),
+    }
+    folios = {
+        29: ("number", 1, ""),
+        30: ("number", 2, ""),
+        31: ("number", 3, ""),
+        198: ("number", 170, ""),
+        199: ("number", 171, ""),
+        200: ("number", 172, ""),
+        203: ("number", 173, ""),
+        204: ("number", 174, ""),
+        205: ("number", 175, ""),
+        681: ("number", 651, ""),
+        682: ("number", 652, ""),
+        683: ("number", 653, ""),
+    }
+
+    assert _master_volume_offsets(texts, folios, 683) == [
+        (1, 172, 4, 200, 28),
+        (173, 653, 202, 683, 30),
+    ]
+
+
+def test_index_recovers_one_explicit_annexure_row_split_across_pages() -> None:
+    from extraction_review.split_audit import aligned_index_printed_rows
+
+    parts = {1: ["Index"], 2: ["Index"]}
+    texts = {
+        1: (
+            "16.\tANNEXURE P-5: Award dated 10.01.2020\t105-119\n"
+            "17. ANNEXURE P-6:\nTrue copy of the Final Arbitral Award"
+        ),
+        2: (
+            "passed by the Tribunal\n120-149\n"
+            "18.\tANNEXURE P-7: Petition under Section 34\t150-172"
+        ),
+    }
+
+    rows = aligned_index_printed_rows(parts, texts)
+    recovered = [row for row in rows if row.mapped_part == "Annexure P-6"]
+
+    assert len(recovered) == 1
+    assert (recovered[0].start, recovered[0].end) == (120, 149)
+
+
+def test_two_volume_index_recovers_missing_main_p9_and_back_matter_ranges() -> None:
+    from extraction_review.split_audit import aligned_index_printed_rows
+
+    parts = {page: ["Index"] for page in range(1, 5)}
+    texts = {
+        1: "9.\tIMPUGNED ORDERS\t1-4",
+        2: (
+            "10.\nSpecial Leave Petition with Affidavit.\n"
+            "11.\tAPPENDIX A\t22-25\n"
+            "19.\tANNEXURE P-8: Second stay application\t173-628"
+        ),
+        3: (
+            "20.\tI.A. Application for certified copies\t629-630\n"
+            "21.\tI.A. Application for translation\t631-632\n"
+            "22.\tI.A. Application for additional documents\t633-636\n"
+            "23. ANNEXURE P-9;"
+        ),
+        4: (
+            "True copies of High Court orders 637-646\n"
+            "24, Filing Memo 647\n"
+            "25, Vakalatnama 648-650\n"
+            "26, Memo of Parties 651-653"
+        ),
+    }
+
+    rows = aligned_index_printed_rows(parts, texts)
+    ranges = {
+        row.mapped_part: (row.start, row.end)
+        for row in rows
+        if row.mapped_part
+    }
+
+    assert ranges["Main Petition"] == (5, 21)
+    assert ranges["Annexure P-9"] == (637, 646)
+    assert ranges["Filing Memo"] == (647, 647)
+    assert ranges["Vakalatnama"] == (648, 650)
+    assert ranges["Memo of Parties"] == (651, 653)
+
+
+def test_abbreviated_volume_heading_is_a_master_volume_cover() -> None:
+    from extraction_review.split_audit import aligned_index_printed_rows
+    from extraction_review.split_repair import _looks_like_volume_cover
+
+    text = (
+        "IN THE SUPREME COURT OF INDIA\n"
+        "SPECIAL LEAVE PETITION (C) NO. OF 2026\n"
+        "VOL- II\nPages 173 to 653\nPAPER BOOK\n"
+        "(PLEASE SEE INDEX INSIDE)"
+    )
+
+    assert _looks_like_volume_cover(text)
+
+    rows = aligned_index_printed_rows(
+        {1: ["Index"], 100: ["Cover Page"], 101: ["Index"]},
+        {
+            1: "1.\tANNEXURE P-1: First volume exhibit\t26-58",
+            100: text,
+            101: "23.\tANNEXURE P-9: Second volume exhibit\t637-646",
+        },
+    )
+    assert any(row.mapped_part == "Annexure P-9" for row in rows)
+
+
+def test_filing_index_and_cash_accounts_receipt_do_not_join_main_petition() -> None:
+    """Arbitration petition back matter keeps four independent boundaries."""
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL ORIGINAL JURISDICTION\n"
+            "ARBITRATION PETITION NO. OF 2025\nIN THE MATTER OF APPOINTMENT "
+            "OF ARBITRAL TRIBUNAL\nMOST RESPECTFULLY SHOWETH"
+        ),
+        2: "Grounds and prayer in the accompanying Arbitration Petition",
+        3: "VERIFICATION\nVerified at New Delhi\nDEPONENT",
+        4: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL ORIGINAL JURISDICTION\n"
+            "ARBITRATION PETITION NO. OF 2025\nFILING INDEX\n"
+            "S. No. Particulars No. of Copies Court Fee\n1. Petition with affidavit"
+        ),
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nVAKALATNAMA\n"
+            "I appoint and retain the Advocate-on-Record"
+        ),
+        6: (
+            "SUPREME COURT OF INDIA\n(CASH & ACCOUNTS-II)\n"
+            "Received from Shri/Ms. Easy Handling LLC\n(Rupees Five Hundred)"
+        ),
+    }
+    bad = {page: ["Main Petition"] for page in range(1, 7)}
+
+    repaired, _ = repair_compiled_split(bad, texts, page_count=6)
+
+    assert all(repaired[page] == ["Main Petition"] for page in range(1, 4))
+    assert repaired[4] == ["Filing Memo"]
+    assert "Vakalatnama" in repaired[5]
+    assert repaired[6] == ["Court Fees"]
+
+
+def test_indexed_main_range_cannot_overwrite_filing_and_court_fee_headings(
+    monkeypatch,
+) -> None:
+    from extraction_review import split_repair
+    from extraction_review.split_audit import IndexPrintedRow
+
+    monkeypatch.setattr(
+        split_repair,
+        "aligned_index_printed_rows",
+        lambda _parts, _text: [
+            IndexPrintedRow(
+                mapped_part="Main Petition",
+                particulars="Arbitration Petition with affidavit",
+                kind="number",
+                start=1,
+                end=4,
+            )
+        ],
+    )
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nARBITRATION PETITION\n"
+            "MOST RESPECTFULLY SHOWETH\n1"
+        ),
+        2: "Petition grounds and prayer\n2",
+        3: (
+            "IN THE SUPREME COURT OF INDIA\nFILING INDEX\n"
+            "S. No. Particulars No. of Copies Court Fee\n3"
+        ),
+        4: (
+            "SUPREME COURT OF INDIA\n(CASH & ACCOUNTS-II)\n"
+            "Received from Shri/Ms. Petitioner\n(Rupees Five Hundred)\n4"
+        ),
+    }
+    parts = {
+        1: ["Main Petition"],
+        2: ["Main Petition"],
+        3: ["Filing Memo"],
+        4: ["Court Fees"],
+    }
+
+    repaired = split_repair._apply_indexed_outer_document_ranges(
+        parts, texts, page_count=4
+    )
+
+    assert repaired[1] == ["Main Petition"]
+    assert repaired[2] == ["Main Petition"]
+    assert repaired[3] == ["Filing Memo"]
+    assert repaired[4] == ["Court Fees"]
+
+
 def test_later_printed_annexures_survive_incomplete_index_ocr() -> None:
     """A chained stamped sequence wins when Index OCR captured only P-1."""
     from extraction_review.split_repair import _demote_unmentioned_annexures
@@ -634,6 +970,39 @@ def test_master_index_impugned_range_overrides_stray_index_scan_label() -> None:
 
     assert all(repaired[page] == ["Impugned Order"] for page in range(2, 7))
     assert repaired[7] == ["Main Petition"]
+
+
+def test_indexed_main_range_reclaims_prose_falsely_seen_as_rop(monkeypatch) -> None:
+    from extraction_review import split_repair
+    from extraction_review.split_audit import IndexPrintedRow
+
+    row = IndexPrintedRow(
+        "Main Petition",
+        "Special Leave Petition with Affidavit",
+        "number",
+        5,
+        21,
+    )
+    monkeypatch.setattr(
+        split_repair, "aligned_index_printed_rows", lambda *_args: [row]
+    )
+    texts = {page: f"Petition grounds continue\n{page - 1}" for page in range(6, 23)}
+    texts[6] = (
+        "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+        "POSITION OF PARTIES\nMOST RESPECTFULLY SHOWETH\n5"
+    )
+    texts[13] = (
+        "12\nSecond Application dated 21.09.2026 would cause irreparable harm.\n"
+        "The offer was accepted by the Court and dispossession should not proceed.\n12"
+    )
+
+    repaired = split_repair._apply_indexed_outer_document_ranges(
+        {1: ["Index"], 6: ["Main Petition"], 13: ["Record of Proceedings"]},
+        texts,
+        page_count=22,
+    )
+
+    assert repaired[13] == ["Main Petition"]
 
 
 def test_defect_008_impugned_range_does_not_consume_front_matter(
@@ -1830,6 +2199,22 @@ def test_explicit_impugned_order_title_still_detected() -> None:
         texts.setdefault(page, "body")
     repaired, _ = repair_compiled_split(page_parts, texts, page_count=5)
     assert repaired[5] == ["Impugned Order"]
+
+
+def test_petition_sentence_beginning_impugned_order_is_not_document_start() -> None:
+    """A ground in the petition body is prose, not an Impugned Order heading."""
+    from extraction_review.split_repair import _looks_like_impugned_order_start
+
+    text = (
+        "P.\n"
+        "That the impugned order erred in deciding the controversy.\n"
+        "The\n"
+        "Impugned Order considers extraneous factors and goes beyond the case.\n"
+        "The Hon'ble High Court failed to appreciate the material on record.\n"
+        "29\n"
+    )
+
+    assert not _looks_like_impugned_order_start(text)
 
 
 def test_front_matter_multi_page_index_listing_synopsis_not_one_page_islands() -> None:
@@ -3651,3 +4036,65 @@ def test_descending_plain_index_range_keeps_row_without_coordinates() -> None:
     assert len(rows) == 1
     assert rows[0].mapped_part == "Annexure P-2"
     assert (rows[0].start_page, rows[0].end_page) == (0, 0)
+
+
+def test_short_filing_inventory_index_is_not_the_master_index() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1. Copy of the Impugned Order\n"
+        "2. SLP with Affidavit\n"
+        "3. Annexures P1 - P18\n"
+        "4. IA for exemption from certified copy\n"
+        "5. Memo of parties\n"
+        "6. Vakalatnama\n"
+    )
+
+    assert _outer_anchor_label(text) == "Filing Memo"
+
+
+def test_explicit_synopsis_and_memo_titles_win_over_caption_references() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    synopsis = (
+        "SYNOPSIS\nThe petition challenges an order passed by the "
+        "High Court of Judicature at Bombay."
+    )
+    memo = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (CRIMINAL) NO. OF 2024\n"
+        "MEMO OF PARTIES\nIN THE MATTER OF:\nA ... PETITIONER\nVERSUS\n"
+        "B ... RESPONDENT"
+    )
+
+    assert _outer_anchor_label(synopsis) == "Synopsis"
+    assert _outer_anchor_label(memo) == "Memo of Parties"
+
+
+def test_index_does_not_invent_an_omitted_annexure_from_neighbour_offsets() -> None:
+    from extraction_review.split_repair import _apply_indexed_annexure_ranges
+
+    parts = {1: ["Index"], 84: ["Annexure P-1"], 101: ["Annexure P-3"]}
+    texts = {
+        1: (
+            "1.\tANNEXURE P-1 Credit letter\t48-63\n"
+            "2.\tANNEXURE P-2 FIR copy\t64-75\n"
+            "3.\tANNEXURE P-3 NOC\t76-77"
+        ),
+        84: "ANNEXURE P-1\nCredit letter\n48",
+        85: "Credit letter continuation\n49",
+        99: "Credit letter continuation\n63",
+        101: "ANNEXURE P-3\nNOC\n76",
+        102: "NOC continuation\n77",
+    }
+    for page in range(1, 103):
+        texts.setdefault(page, "")
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, 102)
+
+    assert all(
+        "Annexure P-2" not in repaired.get(page, []) for page in range(1, 103)
+    )
+    assert repaired[84] == ["Annexure P-1"]
+    assert repaired[101] == ["Annexure P-3"]

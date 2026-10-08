@@ -5,6 +5,99 @@ from __future__ import annotations
 import re
 
 
+_INDEX_SERIAL_WORD_RE = re.compile(r"(?P<serial>\d{1,3})[.)]")
+_INDEX_SPAN_CELL_RE = re.compile(
+    r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})"
+    r"(?:\s*[-–—]\s*(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2}))?",
+    re.IGNORECASE,
+)
+
+
+def _geometry_index_rows(page: object) -> list[str]:
+    """Rebuild rows when a PDF emits an Index column-by-column.
+
+    ``Page.find_tables()`` works for ruled tables whose vector lines survive
+    compilation. Some SCI paper-books instead contain a visually intact
+    table whose text layer is ordered as: serial column, particulars column,
+    then every page-number cell. The plain text is therefore unreadable as
+    rows even though word coordinates still identify the three columns.
+
+    This fallback is deliberately restricted to a narrow serial column on an
+    Index page. It never runs over arbitrary body tables or annexed records.
+    """
+    try:
+        width = float(page.rect.width)  # type: ignore[attr-defined]
+        words = list(page.get_text("words"))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - optional geometry enrichment
+        return []
+
+    serials: list[tuple[float, int, str]] = []
+    for word in words:
+        value = str(word[4]).strip()
+        match = _INDEX_SERIAL_WORD_RE.fullmatch(value)
+        if not match or float(word[0]) > width * 0.22:
+            continue
+        serials.append((float(word[1]), int(match.group("serial")), value))
+    serials.sort()
+    if not serials:
+        return []
+
+    def line_text(cells: list[tuple]) -> list[str]:
+        lines: list[list[tuple]] = []
+        for word in sorted(cells, key=lambda item: (float(item[1]), float(item[0]))):
+            if not lines or abs(float(word[1]) - float(lines[-1][0][1])) > 3.0:
+                lines.append([word])
+            else:
+                lines[-1].append(word)
+        return [
+            " ".join(
+                str(word[4]).strip()
+                for word in sorted(line, key=lambda item: float(item[0]))
+            )
+            for line in lines
+        ]
+
+    rows: list[str] = []
+    body_left = width * 0.18
+    page_column_left = width * 0.46
+    page_column_right = width * 0.75
+    for index, (start_y, serial, _raw) in enumerate(serials):
+        end_y = (
+            serials[index + 1][0]
+            if index + 1 < len(serials)
+            else float(page.rect.height)  # type: ignore[attr-defined]
+        )
+        in_row = [
+            word
+            for word in words
+            if start_y - 2.5 <= float(word[1]) < end_y - 2.5
+        ]
+        body_words = [
+            word
+            for word in in_row
+            if body_left <= float(word[0]) < page_column_left
+        ]
+        body = " ".join(line_text(body_words)).strip()
+        if not body:
+            continue
+
+        span = ""
+        span_words = [
+            word
+            for word in in_row
+            if page_column_left <= float(word[0]) < page_column_right
+        ]
+        for candidate in line_text(span_words):
+            normalized = re.sub(
+                r"\s*[-–—]\s*", "-", candidate.strip(" .,:;")
+            )
+            if _INDEX_SPAN_CELL_RE.fullmatch(normalized):
+                span = normalized
+                break
+        rows.append(f"{serial}.\t{body}\t{span}")
+    return rows
+
+
 def letter_folio_number(value: str) -> int:
     """Sortable value for A..Z, AA..ZZ while preserving A == 65."""
     number = 0
@@ -65,7 +158,9 @@ def extract_split_layout(
                         ) and not re.fullmatch(r"(?:19|20)\d{2}", value):
                             folios.add(value)
                 folio = next(iter(folios)) if len(folios) == 1 else None
-                is_heading = bool(re.search(r"(?mi)^\s*index\s*$", text)) and bool(
+                is_heading = bool(
+                    re.search(r"(?mi)^\s*(?:master\s+)?index\s*$", text)
+                ) and bool(
                     re.search(r"particulars|page\s+no", text, re.IGNORECASE)
                 )
                 table_text = None
@@ -110,6 +205,13 @@ def extract_split_layout(
                                             "\n".join(lines),
                                             prior[2],
                                         )
+                    geometry_rows = _geometry_index_rows(page)
+                    # Prefer the coordinate reconstruction when table-line
+                    # detection failed or recovered fewer serial-numbered
+                    # rows. Both sources are confined to the active outer
+                    # Index, so this does not reinterpret annexed tables.
+                    if len(geometry_rows) > len(rows):
+                        rows = geometry_rows
                     serials = [int(row.split("\t")[0][:-1]) for row in rows]
                     ordered = serials == sorted(set(serials))
                     follows = bool(serials and serials[0] > last_serial)

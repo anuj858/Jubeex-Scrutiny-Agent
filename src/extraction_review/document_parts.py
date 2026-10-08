@@ -834,25 +834,48 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     """Return printed Annexure series+number from a page title or stamp."""
     folded_head = _fold(_heading_window(text, lines=6))
     scan_head = (text or "")[:4000]
-    # Check the guarded title/stamp parser first. It can distinguish an outer
-    # A-n stamp above an enclosed tribunal MASTER INDEX from an Index row.
+    # Capture a possible stamp first, but do not return it until serial/table
+    # evidence has been checked. Tesseract emits a continued Index row as
+    # separate blocks and appends a geometry-rebuilt tab row.
     explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
-    if explicit is not None:
-        return explicit
     serial_rows = re.findall(r"(?m)^\s*\d{1,2}[.)]\s*$", scan_head)
     annexure_rows = re.findall(
         r"(?mi)^\s*[\[(]?\s*annexure\s*[-~–—:.\s]*[per]?"
         r"\s*[-~–—/:.\s]*\d+\b",
         scan_head,
     )
+    rebuilt_index_marks = {
+        (match.group(1).upper(), int(match.group(2)))
+        for match in re.finditer(
+            r"(?mi)^\s*\d{1,3}[.)]\t[^\n]*?annexure\s*[-~–—:.\s]*"
+            r"([PRE])\s*[-~–—/:.\s]*(\d+)\b[^\n]*\t\s*"
+            r"(?:\d{1,4}|[A-Z]{1,2})(?:\s*[-–—]\s*"
+            r"(?:\d{1,4}|[A-Z]{1,2}))?\s*$",
+            text or "",
+        )
+    }
+    explicit_is_rebuilt_index_row = bool(
+        explicit
+        and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
+    )
     if (
-        _looks_like_index_table(text)
+        explicit_is_rebuilt_index_row
+        or (explicit is None and _looks_like_index_table(text))
         or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
-        or _looks_like_sci_interlocutory(text)
-        or "list of dates" in folded_head
-        or folded_head.startswith("synopsis")
+        or (
+            explicit is None
+            and (
+                _looks_like_sci_interlocutory(text)
+                or "list of dates" in folded_head
+                or folded_head.startswith("synopsis")
+            )
+        )
     ):
         return None
+    # Preserve a genuine outer stamp above a reproduced tribunal MASTER INDEX
+    # after excluding a matching serial-numbered Index row.
+    if explicit is not None:
+        return explicit
     # Numbered pleading paragraphs ("12. That the petitioner…") are not stamps.
     # Only inspect the heading — annexed HC bodies often contain that pattern.
     if re.search(

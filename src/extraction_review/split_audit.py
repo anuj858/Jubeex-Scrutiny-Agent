@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import pairwise
 from typing import Any
 
 from .document_parts import (
@@ -68,17 +69,17 @@ _COMBINED_SEQUENCE_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _INDEX_ROW_RE = re.compile(
-    r"(?m)^\s*(?:(?P<sno>\d{1,3})[.)]\s*)(?P<body>.+?)\s+"
+    r"(?m)^\s*(?:(?P<sno>\d{1,3})[.),]\s*)(?P<body>.+?)\s+"
     r"(?P<start>\d{1,4})(?:\s*[-–—/]\s*(?P<end>\d{1,4}))?\s*$"
 )
 # Softer row: serial + particulars, page number may be on the same line mid-OCR.
 _INDEX_SOFT_ROW_RE = re.compile(
-    r"(?m)^\s*(?P<sno>\d{1,3})[.)]\s+(?P<body>.+?)"
+    r"(?m)^\s*(?P<sno>\d{1,3})[.),]\s+(?P<body>.+?)"
     r"(?:\s+(?P<start>\d{1,4})(?:\s*[-–—/]\s*(?P<end>\d{1,4}))?)?\s*$"
 )
 
 _ANNEXURE_IN_INDEX_RE = re.compile(
-    r"annexure[\s\-]*([a-z])?[\s\-/\.]*(\d+)", re.IGNORECASE
+    r"annexure[\s\-–—]*([a-z])?[\s\-–—/\.]*(\d+)", re.IGNORECASE
 )
 # Some outer Index tables put the exhibit identifier in its own column, so a
 # row may read ``Copy of order ... P-6 65-92`` without the word Annexure.
@@ -174,6 +175,31 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
     if text.startswith("s.no") or text.startswith("particulars"):
         return None
 
+    # An Annexure description can itself be an application or affidavit. Its
+    # leading outer-paper-book label is authoritative (for example
+    # ``ANNEXURE P-11: Anticipatory Bail Application ...``).
+    leading_annex = re.match(
+        r"^[^a-z0-9]{0,3}annexure[\s\-–—]*([a-z])?"
+        r"[\s\-–—/\.]*([0-9]+)\b",
+        particulars,
+        re.IGNORECASE,
+    )
+    if leading_annex:
+        return normalize_annexure_part_label(
+            leading_annex.group(1), int(leading_annex.group(2))
+        )
+
+    # An IA description can mention the SLP, its affidavit or impugned order.
+    # It can also request copies/translations of Annexure P-1/P-8. Its own
+    # title determines the row type, so test Application before references.
+    if re.match(
+        r"^[^a-z0-9]{0,3}(?:[il]\.?\s*a\.?\s*(?:no\.?|\b)|"
+        r"crl\.?\s*m\.?\s*p\.?\s*(?:no\.?|\b)|"
+        r"(?:an?\s+)?application\b)",
+        text,
+    ) or re.search(r"\bapplication\s+(?:for|seeking)\b", text):
+        return "Application 1"
+
     annex = _ANNEXURE_IN_INDEX_RE.search(particulars)
     if annex:
         return normalize_annexure_part_label(annex.group(1), int(annex.group(2)))
@@ -182,15 +208,6 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return normalize_annexure_part_label(
             series_label.group(1), int(series_label.group(2))
         )
-
-    # An IA description can mention the SLP, its affidavit or impugned order.
-    # Its own title determines the document type, not those references.
-    if re.match(
-        r"^[^a-z0-9]{0,3}(?:[il]\.?\s*a\.?\s*(?:no\.?|\b)|"
-        r"(?:an?\s+)?application\b)",
-        text,
-    ) or "application for" in text:
-        return "Application 1"
 
     if "fresh case" in text and "report" in text:
         return None
@@ -243,7 +260,12 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Cover Page"
     if "record of proceeding" in text:
         return "Record of Proceedings"
-    if "filing memo" in text or "index of filing" in text or "filing index" in text:
+    if (
+        "filing memo" in text
+        or "filling memo" in text
+        or "index of filing" in text
+        or "filing index" in text
+    ):
         return "Filing Memo"
     if "court fee" in text or "payment receipt" in text:
         return "Court Fees"
@@ -260,11 +282,11 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
     # Flatten OCR line-breaks inside a row: join lines that don't start a new serial.
     # Tab-separated rows come from verified PDF table cells. Keep the page
     # column separate from dates, case numbers and section numbers in prose.
-    if any(re.match(r"^\d+[.)]\t", line) for line in index_text.splitlines()):
+    if any(re.match(r"^\d+[.),]\t", line) for line in index_text.splitlines()):
         rows = []
         for line in index_text.splitlines():
             cells = line.split("\t")
-            if len(cells) != 3 or not re.fullmatch(r"\d+[.)]", cells[0]):
+            if len(cells) != 3 or not re.fullmatch(r"\d+[.),]", cells[0]):
                 continue
             spans = _span_only_line(cells[2])
             span = spans[0] if len(spans) == 1 and spans[0].kind == "number" else None
@@ -284,7 +306,7 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
         stripped = line.strip()
         if not stripped:
             continue
-        if re.match(r"^\d{1,3}[.)](?:\s+|$)", stripped) or not merged:
+        if re.match(r"^\d{1,3}[.),](?:\s+|$)", stripped) or not merged:
             merged.append(stripped)
         else:
             merged[-1] = f"{merged[-1]} {stripped}"
@@ -294,7 +316,7 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
     seen: set[tuple[str, int, int]] = set()
     for match in _INDEX_SOFT_ROW_RE.finditer(normalized):
         body = (match.group("body") or "").strip()
-        original_body = re.sub(r"^\s*\d+[.)]\s*", "", match.group(0)).strip()
+        original_body = re.sub(r"^\s*\d+[.),]\s*", "", match.group(0)).strip()
         if not body or len(body) < 3:
             continue
         folded = _fold(body)
@@ -488,13 +510,13 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
     tabbed_lines = [
         line
         for line in index_text.splitlines()
-        if re.match(r"^\d+[.)]\t", line)
+        if re.match(r"^\d+[.),]\t", line)
     ]
     if tabbed_lines:
         result: list[IndexPrintedRow] = []
         for line in tabbed_lines:
             cells = line.split("\t")
-            if len(cells) != 3 or not re.fullmatch(r"\d+[.)]", cells[0]):
+            if len(cells) != 3 or not re.fullmatch(r"\d+[.),]", cells[0]):
                 continue
             spans = _span_only_line(cells[2])
             if len(spans) == 1:
@@ -509,11 +531,47 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
                         end_suffix=span.end_suffix,
                     )
                 )
-        # Geometry-rebuilt rows have a verified page-number column. Do not
-        # mix the remaining free-form OCR back into folio ranges: dates, case
-        # numbers and broken cells can look like plausible page spans. The
-        # plain OCR is still consumed separately for document inventory by
-        # ``collect_index_annexure_entries``.
+        # Geometry-rebuilt rows have a verified page-number column. Scanned
+        # continuation sheets may nevertheless lack enough surviving ruling
+        # lines for TSV reconstruction (typically the short final Index page
+        # containing Filing Memo / Vakalatnama / Memo of Parties). Recover
+        # only those strongly named filing rows from free OCR; dates and case
+        # numbers in ordinary particulars remain excluded.
+        safe_plain_parts = {
+            "Filing Memo",
+            "Vakalatnama",
+            "Memo of Parties",
+            "Memo of Appearance",
+        }
+        seen = {
+            (row.mapped_part, row.kind, row.start, row.end, row.end_suffix)
+            for row in result
+        }
+        plain_index_text = "\n".join(
+            line
+            for line in index_text.splitlines()
+            if not re.match(r"^\d+[.),]\t", line)
+        )
+        for row in parse_index_rows(plain_index_text):
+            if row.mapped_part not in safe_plain_parts or row.start_page <= 0:
+                continue
+            candidate = IndexPrintedRow(
+                mapped_part=row.mapped_part,
+                particulars=row.particulars,
+                kind="number",
+                start=row.start_page,
+                end=row.end_page,
+            )
+            key = (
+                candidate.mapped_part,
+                candidate.kind,
+                candidate.start,
+                candidate.end,
+                candidate.end_suffix,
+            )
+            if key not in seen:
+                result.append(candidate)
+                seen.add(key)
         return result
     # Parse the untouched text as well.  ``parse_index_rows`` can join a page
     # span printed on the next line to its wrapped particulars.  The orphan
@@ -583,7 +641,7 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
     aligned = [row for row in printed if row is not None and row.start > 0]
     seen_serials = {row.serial for row in rows if row.serial is not None}
     for line in kept:
-        serial_match = re.match(r"^(\d{1,3})[.)]\s+(.*)$", line)
+        serial_match = re.match(r"^(\d{1,3})[.),]\s+(.*)$", line)
         if not serial_match:
             continue
         serial = int(serial_match.group(1))
@@ -659,7 +717,180 @@ def aligned_index_printed_rows(
     index_text = _index_pages_text(page_parts, page_text)
     if not index_text.strip():
         return []
-    return index_rows_with_printed_pages(index_text)
+    rows = index_rows_with_printed_pages(index_text)
+
+    # A long particulars cell can cross an Index page boundary. In that case
+    # OCR may leave ``ANNEXURE P-6`` at the bottom of one sheet and put only
+    # its particulars plus ``120-149`` on the next sheet, so neither fragment
+    # is a complete parseable row. Recover only a single, sequential gap whose
+    # label is explicitly present in the Index and whose printed-page gap is
+    # bounded by the neighbouring annexures. This deliberately does not infer
+    # arbitrary missing inventory entries.
+    def annexure_key(row: IndexPrintedRow) -> tuple[str, int] | None:
+        match = re.fullmatch(
+            r"Annexure\s+([A-Z])-(\d+)", row.mapped_part or "", re.IGNORECASE
+        )
+        if not match or row.kind != "number" or row.end_suffix:
+            return None
+        return match.group(1).upper(), int(match.group(2))
+
+    unique: dict[tuple[str | None, str, int, int, str], IndexPrintedRow] = {
+        (row.mapped_part, row.kind, row.start, row.end, row.end_suffix): row
+        for row in rows
+    }
+    annexure_rows = sorted(
+        (row for row in unique.values() if annexure_key(row)),
+        key=lambda row: (annexure_key(row) or ("", 0), row.start, row.end),
+    )
+    for previous, following in pairwise(annexure_rows):
+        previous_key = annexure_key(previous)
+        following_key = annexure_key(following)
+        if not previous_key or not following_key:
+            continue
+        series, number = previous_key
+        if following_key != (series, number + 2):
+            continue
+        start = previous.end + 1
+        end = following.start - 1
+        if end < start:
+            continue
+        missing_label = f"Annexure {series}-{number + 1}"
+        explicit = re.search(
+            rf"\bANNEXURE\s*{re.escape(series)}\s*[-/]\s*{number + 1}\b",
+            index_text,
+            re.IGNORECASE,
+        )
+        if not explicit:
+            continue
+        recovered = IndexPrintedRow(
+            mapped_part=missing_label,
+            particulars=missing_label,
+            kind="number",
+            start=start,
+            end=end,
+        )
+        unique[(missing_label, "number", start, end, "")] = recovered
+
+    # A scanned Index can lose one page-column cell while retaining the row
+    # title and both neighbouring ranges. Recover the petition range only
+    # when the Index explicitly names it and Impugned Order / Appendix leave
+    # one exact contiguous gap (for example 1-4, SLP 5-21, Appendix 22-25).
+    has_main = any(row.mapped_part == "Main Petition" for row in unique.values())
+    impugned = [
+        row
+        for row in unique.values()
+        if row.mapped_part == "Impugned Order" and row.kind == "number"
+    ]
+    appendices = [
+        row
+        for row in unique.values()
+        if row.mapped_part == "Appendix" and row.kind == "number"
+    ]
+    if (
+        not has_main
+        and len(impugned) == 1
+        and len(appendices) == 1
+        and impugned[0].end + 1 <= appendices[0].start - 1
+        and re.search(
+            r"\bspecial\s+leave\s+petition\s+with\s+affidavit\b",
+            index_text,
+            re.IGNORECASE,
+        )
+    ):
+        start = impugned[0].end + 1
+        end = appendices[0].start - 1
+        recovered = IndexPrintedRow(
+            mapped_part="Main Petition",
+            particulars="Special Leave Petition with Affidavit",
+            kind="number",
+            start=start,
+            end=end,
+        )
+        unique[("Main Petition", "number", start, end, "")] = recovered
+
+    # The final Annexure row may be split between two scanned Index sheets:
+    # its label remains at the bottom of one page while its particulars/range
+    # start the next. Recover it only when (a) the label is explicit, (b) the
+    # previous sequential Annexure exists, and (c) parsed rows leave exactly
+    # one bounded numeric gap before the next Annexure or filing-back-matter
+    # row. This fixes P-9 637-646 without inventing omitted exhibits.
+    annexure_keys = {
+        key
+        for row in unique.values()
+        if (key := annexure_key(row)) is not None
+    }
+    explicit_keys = {
+        ((match.group(1) or "P").upper(), int(match.group(2)))
+        for match in _ANNEXURE_IN_INDEX_RE.finditer(index_text)
+    }
+    back_matter = {
+        "Filing Memo",
+        "Vakalatnama",
+        "Memo of Parties",
+        "Memo of Appearance",
+    }
+    for series, number in sorted(explicit_keys - annexure_keys):
+        previous = next(
+            (
+                row
+                for row in unique.values()
+                if annexure_key(row) == (series, number - 1)
+            ),
+            None,
+        )
+        if previous is None:
+            continue
+        following_annexure = [
+            row
+            for row in unique.values()
+            if (key := annexure_key(row)) is not None
+            and key[0] == series
+            and key[1] > number
+        ]
+        following_back = [
+            row
+            for row in unique.values()
+            if row.kind == "number"
+            and row.mapped_part in back_matter
+            and row.start > previous.end
+        ]
+        upper = min(
+            [row.start for row in following_annexure + following_back],
+            default=0,
+        )
+        if upper <= previous.end + 1:
+            continue
+        covered = sorted(
+            (
+                row.start,
+                row.end,
+            )
+            for row in unique.values()
+            if row.kind == "number"
+            and row.start > previous.end
+            and row.start < upper
+        )
+        gaps: list[tuple[int, int]] = []
+        cursor = previous.end + 1
+        for start, end in covered:
+            if start > cursor:
+                gaps.append((cursor, start - 1))
+            cursor = max(cursor, end + 1)
+        if cursor < upper:
+            gaps.append((cursor, upper - 1))
+        if len(gaps) != 1:
+            continue
+        start, end = gaps[0]
+        label = f"Annexure {series}-{number}"
+        unique[(label, "number", start, end, "")] = IndexPrintedRow(
+            mapped_part=label,
+            particulars=label,
+            kind="number",
+            start=start,
+            end=end,
+        )
+
+    return list(unique.values())
 
 
 def normalize_annexure_part_label(series: str | None, number: int) -> str:
@@ -867,7 +1098,10 @@ def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> 
         if (
             "Cover Page" in prior_parts
             and "paper book" in prior_text
-            and re.search(r"\bvolume\s*[-–—]?\s*(?:i{1,3}|[1-3])\b", prior_text)
+            and re.search(
+                r"\bvol(?:ume)?\.?\s*[-–—]?\s*(?:i{1,3}|[1-3])\b",
+                prior_text,
+            )
         ):
             selected.extend(run)
     return "\n".join(page_text.get(page, "") for page in selected)

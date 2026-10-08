@@ -144,8 +144,38 @@ _SCI_FILING_INDEX_RE = re.compile(
     r".*?\bs\.?\s*no\.?\s+particulars\b"
     r".*?\bcopy\s+court\s+fee\b",
 )
+
+
+def _looks_like_filing_inventory_index(text: str) -> bool:
+    """Recognize the short filing-stage Index even without an OCR caption.
+
+    Unlike the master paper-book Index, this form lists copies being filed
+    (impugned order, SLP, annexures, IAs and representation documents) and
+    does not assign printed folio ranges. Scans commonly preserve the table
+    body while losing the ``IN THE SUPREME COURT`` caption.
+    """
+    head = _heading_window(text, lines=8)
+    if not re.search(r"(?mi)^\s*index\s*$", head):
+        return False
+    folded = _fold(text[:3500])
+    if "master index" in folded or "page no. of part" in folded:
+        return False
+    cues = sum(
+        bool(re.search(pattern, folded))
+        for pattern in (
+            r"copy of (?:the )?impugned (?:order|judg)",
+            r"\bslp\b.*\baffidavit\b",
+            r"\bannexures?\b",
+            r"\b(?:ia|application)\b",
+            r"memo of parties",
+            r"vakalatnama",
+        )
+    )
+    return cues >= 4
 _EFILE_COURT_FEE_RE = re.compile(
     r"supreme\s+court\s+of\s+india.{0,120}acknowledgement|"
+    r"supreme\s+court\s+of\s+india.{0,160}cash\s*&?\s*accounts|"
+    r"cash\s*&?\s*accounts.{0,240}received\s+from.{0,240}rupees|"
     r"e-?filing\s+no\..{0,500}payment\s+details.{0,200}court\s+fee|"
     r"receipts?\s+no\..{0,100}court\s+fee",
     re.I | re.S,
@@ -553,7 +583,12 @@ def _looks_like_impugned_order_start(text: str) -> bool:
     if _IMPUGNED_ORDER_RE.search(head):
         if "annexure" in _fold(head) and "true copy" in _fold(head):
             return False
-        if _is_lower_court_caption(text):
+        if _is_lower_court_caption(text) and re.search(
+            r"(?mi)^\s*(?:certified\s+copy\s+of\s+(?:the\s+)?)?"
+            r"impugned\s+(?:final\s+)?(?:order|judgment|judgement)\s*"
+            r"[.:–—-]?\s*$",
+            head,
+        ):
             return True
         if re.search(r"(?mi)certified\s+copy\s+of\s+(?:the\s+)?impugned", head):
             return True
@@ -1120,6 +1155,8 @@ def _outer_anchor_label(text: str) -> str | None:
         and not _is_lower_court_caption(text)
     ):
         return "Filing Memo"
+    if _looks_like_filing_inventory_index(text):
+        return "Filing Memo"
     # Some filing lists are headed only ``INDEX``.  The SCI caption plus the
     # COPY / COURT FEE columns identifies the filing-stage index and separates
     # it from the paper-book Index, whose table maps documents to page ranges.
@@ -1149,6 +1186,10 @@ def _outer_anchor_label(text: str) -> str | None:
     # Form-28 can cite an I.A. number in its "arising out of" line. Detect
     # its SLP party schedule before the generic indexed-application heuristic,
     # otherwise the Main Petition boundary is shifted one page forward.
+    # A Memo of Parties has the same SCI caption and party schedule as Form
+    # 28. Its explicit title must win before generic Main Petition detection.
+    if _memo_of_parties_heading(text):
+        return "Memo of Parties"
     if _looks_like_sci_main_petition(text):
         return MAIN_PETITION_PART
     # Likewise, a misspelled scanned heading such as LIMITAION is still an
@@ -1200,13 +1241,9 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Record of Proceedings"
     if _RECORD_RE.search(_heading_window(text, lines=10)):
         return "Record of Proceedings"
-    if _SYNOPSIS_RE.search(
-        _heading_window(text, lines=8)
-    ) and not _is_lower_court_caption(text):
+    if _SYNOPSIS_RE.search(_heading_window(text, lines=8)):
         return "Synopsis"
-    if _LOD_RE.search(_heading_window(text, lines=8)) and not _is_lower_court_caption(
-        text
-    ):
+    if _LOD_RE.search(_heading_window(text, lines=8)):
         return "List of Dates & Events"
     if _APPENDIX_RE.search(
         _heading_window(text, lines=6)
@@ -1269,7 +1306,7 @@ def _looks_like_volume_cover(text: str) -> bool:
         _is_sci_caption(text)
         and "paper book" in folded
         and re.search(
-            r"\bvolume\s*[-–—]?\s*(?:i{1,3}|[1-3])\b",
+            r"\bvol(?:ume)?\.?\s*[-–—]?\s*(?:i{1,3}|[1-3])\b",
             folded,
             re.IGNORECASE,
         )
@@ -4303,9 +4340,30 @@ def repair_compiled_split(
     # Some front-matter range propagation can revisit an otherwise recovered
     # Index continuation. Its bracketed table structure is the final authority.
     repaired = _restore_index_bridge_pages(repaired, page_text)
+    # Re-establish every volume's cover/Index before consuming Index rows.
+    # Otherwise a preceding annexure carry can hide Volume II's Index until
+    # after its P-9 and back-matter ranges have already been calculated.
+    repaired = _restore_master_volume_sections(repaired, page_text, page_count)
+    # Apply the immutable master-Index spans last. Earlier content repairs may
+    # discover boundaries, but must not recreate a local/duplicate stamp over
+    # a range supported by multiple consecutive printed folios.
+    repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
+    repaired = collapse_repeated_split_pages(repaired)
+    # Preserve a later paper-book volume boundary after the indexed P-7 range;
+    # unlike the broad bridge repair, this cannot turn a Filing Memo into an
+    # Index merely because its inventory text resembles an Index continuation.
+    repaired = _restore_master_volume_sections(repaired, page_text, page_count)
+    repaired = _add_same_page_representation_labels(repaired, page_text)
     # Run last: Index reconciliation and duplicate collapse can otherwise undo
     # the explicit Appendix boundary or leave its captionless final sheet empty.
     repaired = _extend_explicit_appendix_continuation(repaired, page_text, page_count)
+    # Duplicate collapse intentionally prefers the earliest occurrence of a
+    # label, but a chronology citation can appear before the genuine P-n
+    # exhibit. Reassert verified master-Index ranges after that destructive
+    # choice, with no subsequent collapse allowed to discard them again.
+    repaired = _apply_indexed_outer_document_ranges(repaired, page_text, page_count)
+    repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
+    repaired = _add_same_page_representation_labels(repaired, page_text)
     return repaired, duplicates
 
 
@@ -4325,6 +4383,256 @@ def _folio_in_printed_row(folio: tuple[str, int, str], row: IndexPrintedRow) -> 
     if not suffix:
         return True
     return suffix <= row.end_suffix
+
+
+def _physical_pages_for_index_row(
+    row: IndexPrintedRow,
+    folios: Mapping[int, tuple[str, int, str] | None],
+    page_count: int,
+    *,
+    preferred_offset: int | None = None,
+    physical_window: tuple[int, int] | None = None,
+) -> list[int]:
+    """Resolve one printed Index span to a continuous physical page range.
+
+    Scanned continuation sheets frequently lose an individual footer in OCR.
+    A correct master Index must still own those interior sheets. Infer a
+    physical-minus-printed offset only when several observed folios within the
+    proposed span support the same offset; otherwise retain only exact matches.
+    Different paper-book volumes naturally produce different winning offsets.
+    """
+    if preferred_offset is not None and row.kind == "number" and not row.end_suffix:
+        start = row.start + preferred_offset
+        end = row.end + preferred_offset
+        window_start, window_end = physical_window or (1, page_count)
+        if window_start <= start <= end <= window_end:
+            return list(range(start, end + 1))
+
+    exact = [
+        page
+        for page, folio in folios.items()
+        if folio and _folio_in_printed_row(folio, row)
+    ]
+    if row.kind != "number" or row.end_suffix:
+        return sorted(set(exact))
+
+    if exact:
+        local_offsets = [
+            page - folio[1]
+            for page in exact
+            if (folio := folios.get(page)) and not folio[2]
+        ]
+        dominant_offset = (
+            max(set(local_offsets), key=lambda value: (local_offsets.count(value), -value))
+            if local_offsets
+            else None
+        )
+        dominant_support = (
+            local_offsets.count(dominant_offset)
+            if dominant_offset is not None
+            else 0
+        )
+        exact_start = next(
+            (
+                page
+                for page in exact
+                if (folio := folios.get(page))
+                and folio[1] == row.start
+                and not folio[2]
+            ),
+            None,
+        )
+        exact_end = next(
+            (
+                page
+                for page in reversed(exact)
+                if (folio := folios.get(page))
+                and folio[1] == row.end
+                and (not row.end_suffix or folio[2] == row.end_suffix)
+            ),
+            None,
+        )
+        expected_length = row.end - row.start + 1
+        endpoint_length = (
+            exact_end - exact_start + 1
+            if exact_start is not None
+            and exact_end is not None
+            and exact_end >= exact_start
+            else 0
+        )
+        endpoint_offset_delta = (
+            abs((exact_start - row.start) - (exact_end - row.end))
+            if exact_start is not None and exact_end is not None
+            else page_count
+        )
+        # The same small folio numbers recur inside reproduced judgments and
+        # annexed records. First/last global matches can therefore span
+        # hundreds of unrelated sheets. Endpoints are authoritative only when
+        # they form one plausible paper-book interval with a stable offset.
+        insertion_tolerance = max(3, expected_length // 20)
+        if (
+            exact_start is not None
+            and exact_end is not None
+            and endpoint_length >= max(1, expected_length - insertion_tolerance)
+            and endpoint_length <= expected_length + insertion_tolerance
+            and endpoint_offset_delta <= insertion_tolerance
+            and (
+                dominant_support < 2
+                or dominant_offset is not None
+                and (
+                    abs((exact_start - row.start) - dominant_offset)
+                    <= insertion_tolerance
+                    or abs((exact_end - row.end) - dominant_offset)
+                    <= insertion_tolerance
+                )
+            )
+        ):
+            # Printed insertions such as 59A change the physical offset in the
+            # middle of an exhibit. Observed endpoints are more reliable than
+            # any single global offset and include unreadable interior scans.
+            return list(range(exact_start, exact_end + 1))
+
+        if local_offsets:
+            offset = max(
+                set(local_offsets),
+                key=lambda value: (local_offsets.count(value), -value),
+            )
+            if offset >= 0 and local_offsets.count(offset) >= 2:
+                inferred = range(row.start + offset, row.end + offset + 1)
+                # Matches with a different offset belong to reproduced inner
+                # documents or another paper-book volume. Do not union those
+                # global duplicates back into this volume-local range.
+                return [page for page in inferred if 1 <= page <= page_count]
+        # One isolated matching folio proves presence, but not enough of an
+        # offset to claim unrelated neighbouring pages.
+        return sorted(set(exact))
+
+    offsets = {
+        page - folio[1]
+        for page, folio in folios.items()
+        if folio
+        and folio[0] == "number"
+        and not folio[2]
+        and 0 <= page - folio[1] <= page_count
+    }
+    best: tuple[int, int, int] | None = None
+    for offset in offsets:
+        physical_start = row.start + offset
+        physical_end = row.end + offset
+        if physical_start < 1 or physical_end > page_count:
+            continue
+        span_support = sum(
+            1
+            for page in range(physical_start, physical_end + 1)
+            if (folio := folios.get(page))
+            and folio[0] == "number"
+            and not folio[2]
+            and folio[1] == page - offset
+        )
+        # Some scanned exhibits have no readable footer of their own, while
+        # neighbouring indexed exhibits establish the same page offset. Count
+        # only nearby exact numeric folios, keeping the inference volume-local.
+        context_start = max(1, physical_start - 48)
+        context_end = min(page_count, physical_end + 48)
+        context_support = sum(
+            1
+            for page in range(context_start, context_end + 1)
+            if (folio := folios.get(page))
+            and folio[0] == "number"
+            and not folio[2]
+            and folio[1] == page - offset
+        )
+        candidate = (context_support, span_support, -offset)
+        if best is None or candidate > best:
+            best = candidate
+
+    span_length = row.end - row.start + 1
+    minimum_support = 1 if span_length == 1 else 2
+    if best is None or (best[1] < minimum_support and best[0] < 3):
+        return sorted(set(exact))
+    offset = -best[2]
+    return list(range(row.start + offset, row.end + offset + 1))
+
+
+_VOLUME_PAGE_RANGE_RE = re.compile(
+    r"\bpages?\s+(?P<start>\d{1,4}|[A-Z])\s*(?:to|[-–—])\s*"
+    r"(?P<end>\d{1,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _master_volume_offsets(
+    page_text: Mapping[int, str],
+    folios: Mapping[int, tuple[str, int, str] | None],
+    page_count: int,
+) -> list[tuple[int, int, int, int, int]]:
+    """Return declared printed ranges with their physical-page offsets.
+
+    Multi-volume paper books can use +28 in Volume I and +30 in Volume II.
+    Reproduced judgments inside an Annexure have their own pagination, so a
+    global offset vote is unsafe. A volume cover plus at least three matching
+    outer folios confines the vote to the declared printed range.
+    """
+    covers: list[tuple[int, int, int]] = []
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        if not _looks_like_volume_cover(text):
+            continue
+        match = _VOLUME_PAGE_RANGE_RE.search(text)
+        if not match:
+            continue
+        raw_start = match.group("start").upper()
+        printed_start = int(raw_start) if raw_start.isdigit() else 1
+        printed_end = int(match.group("end"))
+        if printed_end < printed_start:
+            continue
+        covers.append((page, printed_start, printed_end))
+
+    hints: list[tuple[int, int, int, int, int]] = []
+    for index, (cover, printed_start, printed_end) in enumerate(covers):
+        physical_start = cover + 1
+        physical_end = covers[index + 1][0] - 1 if index + 1 < len(covers) else page_count
+        offsets = [
+            page - folio[1]
+            for page in range(physical_start, physical_end + 1)
+            if (folio := folios.get(page))
+            and folio[0] == "number"
+            and not folio[2]
+            and printed_start <= folio[1] <= printed_end
+            and page - folio[1] >= 0
+        ]
+        if not offsets:
+            continue
+        # The volume cover declares its last printed folio and the next cover
+        # (or file end) declares the physical end. Their difference is the
+        # outer paper-book offset. Internal annexed records can contain a
+        # longer repeated pagination run, so they may win a raw frequency
+        # vote; use OCR only to validate the cover-derived offset.
+        cover_offset = physical_end - printed_end
+        if cover_offset >= 0 and offsets.count(cover_offset) >= 3:
+            offset = cover_offset
+        else:
+            offset = max(
+                set(offsets), key=lambda value: (offsets.count(value), -value)
+            )
+            if offsets.count(offset) < 3:
+                continue
+        hints.append(
+            (printed_start, printed_end, physical_start, physical_end, offset)
+        )
+    return hints
+
+
+def _volume_hint_for_row(
+    row: IndexPrintedRow,
+    hints: list[tuple[int, int, int, int, int]],
+) -> tuple[int | None, tuple[int, int] | None]:
+    if row.kind != "number" or row.end_suffix:
+        return None, None
+    for printed_start, printed_end, physical_start, physical_end, offset in hints:
+        if printed_start <= row.start and row.end <= printed_end:
+            return offset, (physical_start, physical_end)
+    return None, None
 
 
 def _index_heading_part(text: str) -> str | None:
@@ -4408,13 +4716,25 @@ def _apply_indexed_annexure_ranges(
             or row.start > front_end
         )
     ]
+    rows = list(
+        {
+            (row.mapped_part, row.kind, row.start, row.end, row.end_suffix): row
+            for row in rows
+        }.values()
+    )
+    rows.sort(key=lambda row: (row.kind, row.start, row.end, row.mapped_part or ""))
     if not rows:
         return page_parts
 
     # If OCR produced overlapping Annexure rows, leave those folios alone
     # rather than picking an arbitrary owner.
-    zone_start = _post_petition_zone_start(page_parts, page_count) or 1
-    owners: dict[int, str] = {}
+    folios = {
+        page: _printed_folio(page_text.get(page, ""))
+        for page in range(1, page_count + 1)
+    }
+    volume_hints = _master_volume_offsets(page_text, folios, page_count)
+    owner_candidates: dict[int, set[str]] = {}
+    supported_labels: set[str] = set()
     application_labels = {
         id(row): f"Application {number}"
         for number, row in enumerate(
@@ -4426,22 +4746,69 @@ def _apply_indexed_annexure_ranges(
             1,
         )
     }
-    for page in range(zone_start, page_count + 1):
-        folio = _printed_folio(page_text.get(page, ""))
-        if not folio:
+    for row in rows:
+        if not row.mapped_part:
             continue
-        matches = [row for row in rows if _folio_in_printed_row(folio, row)]
-        labels = {
-            application_labels.get(id(row), row.mapped_part)
-            for row in matches
-            if row.mapped_part
-        }
-        if len(labels) == 1:
-            owners[page] = next(iter(labels))
+        label = application_labels.get(id(row), row.mapped_part)
+        preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
+        row_pages = _physical_pages_for_index_row(
+            row,
+            folios,
+            page_count,
+            preferred_offset=preferred_offset,
+            physical_window=physical_window,
+        )
+        exact_pages = [
+            page
+            for page in row_pages
+            if (folio := folios.get(page)) and _folio_in_printed_row(folio, row)
+        ]
+        explicit_pages = [
+            page
+            for page in range(1, page_count + 1)
+            if (
+                family_split_name(label) == ANNEXURE_FAMILY
+                and annexure_label_from_text(page_text.get(page, "")) == label
+            )
+            or (
+                not label.startswith("Application ")
+                and _outer_anchor_label(page_text.get(page, "")) == label
+            )
+        ]
+        # Neighbouring folios can establish a volume offset, but they cannot
+        # prove that an indexed document was actually included in the PDF.
+        # If an Index lists an omitted P-n or I.A., inferring its span from an
+        # adjacent exhibit steals real pages. Require evidence from this row
+        # before expanding across unreadable interior sheets.
+        if not exact_pages and not explicit_pages and preferred_offset is None:
+            continue
+        supported_labels.add(label)
+        for page in row_pages:
+            owner_candidates.setdefault(page, set()).add(label)
+    owners = {
+        page: next(iter(labels))
+        for page, labels in owner_candidates.items()
+        if len(labels) == 1
+    }
     if not owners:
         return page_parts
 
     updated = {int(page): list(names) for page, names in page_parts.items()}
+    authoritative_pages = {
+        label: {page for page, owner in owners.items() if owner == label}
+        for label in supported_labels
+    }
+    for page, names in list(updated.items()):
+        kept = [
+            name
+            for name in parts_on_page(names)
+            if name not in supported_labels
+            or page in authoritative_pages.get(name, set())
+        ]
+        if kept:
+            updated[page] = kept
+        else:
+            updated.pop(page, None)
     for page, owner in owners.items():
         # Index row spans assign the outer exhibit identity to the complete
         # physical page, including an exhibit cover and poorly OCR'd sheets.
@@ -4502,6 +4869,66 @@ def _restore_index_bridge_pages(
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     last_page = max(max(updated, default=0), max(page_text, default=0))
+
+    # Restore an entire untitled master-Index continuation block, not just one
+    # sheet bracketed by pages that survived as Index. Scanned multi-page
+    # indexes often repeat neither INDEX nor the column headings: Tesseract
+    # emits rows as separated blocks and appends geometry-rebuilt tab rows.
+    # Limit this expansion to the front matter before the first real petition;
+    # reproduced lower-court indexes inside annexures are handled separately.
+    first_main = next(
+        (
+            page
+            for page in range(1, last_page + 1)
+            if _looks_like_sci_main_petition(page_text.get(page, ""))
+        ),
+        last_page + 1,
+    )
+
+    def master_index_continuation(text: str) -> bool:
+        if _looks_like_index_continuation(text):
+            return True
+        tabbed_rows = len(re.findall(r"(?m)^\s*\d{1,3}[.),]\t.+\t\S+\s*$", text))
+        if tabbed_rows:
+            return True
+        inventory = len(
+            re.findall(
+                r"(?mi)^\s*(?:annexure\b|filing\s+memo\b|vakalatnama\b|"
+                r"memo\s+of\s+parties\b|(?:i\.?\s*a\.?|application)\b)",
+                text,
+            )
+        )
+        spans = len(
+            re.findall(
+                r"(?m)^\s*(?:\d{1,4}|[A-Z]{1,2})\s*[-–—]\s*"
+                r"(?:\d{1,4}|[A-Z]{1,2})\s*$",
+                text,
+            )
+        )
+        return inventory >= 2 and spans >= 2
+
+    seeds = {
+        page
+        for page in range(1, first_main)
+        if "Index" in parts_on_page(updated.get(page))
+        and _looks_like_index_table(page_text.get(page, ""))
+        and _outer_anchor_label(page_text.get(page, "")) == "Index"
+    }
+    restored = set(seeds)
+    changed = True
+    while changed:
+        changed = False
+        for page in range(1, first_main):
+            if page in restored or not master_index_continuation(
+                page_text.get(page, "")
+            ):
+                continue
+            if page - 1 in restored or page + 1 in restored:
+                restored.add(page)
+                changed = True
+    for page in restored:
+        updated[page] = ["Index"]
+
     for page in range(2, last_page):
         current = set(parts_on_page(updated.get(page)))
         previous_is_index = "Index" in parts_on_page(updated.get(page - 1))
@@ -4544,7 +4971,7 @@ def _restore_index_bridge_pages(
             continue
         if "Index" not in parts_on_page(updated.get(page + 1)):
             continue
-        numbered_rows = re.findall(r"(?m)^\s*\d{1,3}[.)]\s+\S", text)
+        numbered_rows = re.findall(r"(?m)^\s*\d{1,3}[.),]\s+\S", text)
         if len(numbered_rows) >= 2:
             updated[page] = ["Index"]
     return updated
@@ -4563,6 +4990,7 @@ def _apply_indexed_outer_document_ranges(
         page: _printed_folio(page_text.get(page, ""))
         for page in range(1, page_count + 1)
     }
+    volume_hints = _master_volume_offsets(page_text, folios, page_count)
     updated = {page: list(names) for page, names in page_parts.items()}
 
     def has_conflicting_outer_heading(page: int, target: str | None) -> bool:
@@ -4577,6 +5005,19 @@ def _apply_indexed_outer_document_ranges(
         """
         text = page_text.get(page, "")
         heading = _outer_anchor_label(text)
+        if target == MAIN_PETITION_PART and heading in {
+            "AOR's Certificate",
+            "Affidavit",
+        }:
+            return False
+        if (
+            target == MAIN_PETITION_PART
+            and heading == "Record of Proceedings"
+            and not _RECORD_RE.search(_heading_window(text, lines=10))
+            and not _looks_like_sci_court_rop_extract(text)
+            and not _looks_like_rop_index_form(text)
+        ):
+            return False
         if heading and heading != target:
             return True
         return bool(
@@ -4589,13 +5030,20 @@ def _apply_indexed_outer_document_ranges(
 
     def physical_pages(row: IndexPrintedRow) -> list[int]:
         """Map an Index folio span even when an interior scan has no OCR folio."""
+        preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
         matched = [
             page
-            for page, folio in folios.items()
-            if folio
-            and _folio_in_printed_row(folio, row)
-            and not has_conflicting_outer_heading(page, row.mapped_part)
+            for page in _physical_pages_for_index_row(
+                row,
+                folios,
+                page_count,
+                preferred_offset=preferred_offset,
+                physical_window=physical_window,
+            )
+            if not has_conflicting_outer_heading(page, row.mapped_part)
         ]
+        if preferred_offset is not None:
+            return sorted(set(matched))
         exact_start = next(
             (
                 page
@@ -4631,6 +5079,19 @@ def _apply_indexed_outer_document_ranges(
             physical_end = min(page_count, exact_start + expected_length - 1)
             matched.extend(range(exact_start, physical_end + 1))
         return sorted(set(matched))
+
+    # Front forms have distinctive printed folio families (A, A1-A2). Reapply
+    # them after Index continuation repair so the final master-Index page
+    # cannot absorb the following Office Report or Listing Proforma.
+    for row in rows:
+        if row.mapped_part not in {
+            "Office Report on Limitation",
+            "Listing Proforma",
+        }:
+            continue
+        for page in physical_pages(row):
+            if not has_conflicting_outer_heading(page, row.mapped_part):
+                updated[page] = [row.mapped_part]
 
     # A combined Synopsis/LOD row is authoritative only for its outer folio
     # range. The explicit LIST OF DATES heading decides the internal boundary.
@@ -4732,7 +5193,10 @@ def _apply_indexed_outer_document_ranges(
         for row in rows
         if row.kind == "number" and row.mapped_part == MAIN_PETITION_PART
     ]
-    if len(main_rows) == 1:
+    if len(main_rows) == 1 and any(
+        _looks_like_sci_main_petition(page_text.get(page, ""))
+        for page in physical_pages(main_rows[0])
+    ):
         row = main_rows[0]
         pages = physical_pages(row)
         # Some Indexes describe the petition and its Appendix in one printed
@@ -4795,7 +5259,25 @@ def _apply_indexed_outer_document_ranges(
                 updated[page] = ["Appendix"]
             elif page >= affidavit_start:
                 updated[page] = ["Affidavit"]
-            elif anchor not in {"Affidavit", "Appendix"}:
+            # The Index range is authoritative for unheaded petition body
+            # pages, but it must not absorb a later explicitly headed filing
+            # document. Arbitration filings can have a noisy printed folio on
+            # their CASH & ACCOUNTS receipt; range inference may include that
+            # page even though its own Court Fees heading is stronger.
+            elif (
+                anchor is None
+                or anchor == MAIN_PETITION_PART
+                or (
+                    anchor == "Record of Proceedings"
+                    and not _RECORD_RE.search(_heading_window(
+                        page_text.get(page, ""), lines=10
+                    ))
+                    and not _looks_like_sci_court_rop_extract(
+                        page_text.get(page, "")
+                    )
+                    and not _looks_like_rop_index_form(page_text.get(page, ""))
+                )
+            ):
                 updated[page] = [MAIN_PETITION_PART]
     return updated
 
