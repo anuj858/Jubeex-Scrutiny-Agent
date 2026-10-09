@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from extraction_review.config import Config
+from extraction_review.document_parts import _needles_for_part
 from extraction_review.process_file import (
     _SPLIT_CUSTOM_INSTRUCTIONS_MAX,
     _split_api_configuration,
@@ -31,6 +32,7 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
     assert 0 < len(instructions) <= _SPLIT_CUSTOM_INSTRUCTIONS_MAX
     sent = _split_api_configuration(split)
     assert sent["splitting_strategy"] == source["splitting_strategy"]
+    assert sent["splitting_strategy"]["min_pages_per_split"] == 1
     assert sent["categories"] == source["categories"]
     assert source["configuration_id"] is None  # The inline rules must be used.
     assert set(sent) == {"categories", "splitting_strategy"}
@@ -63,6 +65,15 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         assert set(category) == {"name", "description"}
         assert 0 < len(category["name"]) <= 200
         assert 0 < len(category["description"]) <= 2000
+        for section in (
+            "IDENTITY",
+            "START",
+            "CONTINUE",
+            "END",
+            "DO NOT SPLIT",
+            "REPEAT",
+        ):
+            assert f"{section}: " in category["description"]
 
 
 @pytest.mark.parametrize(
@@ -143,6 +154,21 @@ def test_shared_guidance_does_not_restore_conflicting_old_requirements() -> None
         not in instructions
     )
     assert "marks Main Petition or Impugned Order" not in instructions
+
+
+def test_description_examples_do_not_create_aliases_for_other_categories() -> None:
+    # Parenthesized description phrases also feed local category lookup.
+    # Contrasting '(Vakalatnama)' with PoA must not alias one to the other.
+    categories = _config_payload()["split"]["categories"]
+    for category in categories:
+        own_needles = set(_needles_for_part(category["name"]))
+        added_needles = (
+            set(_needles_for_part(category["name"], category["description"]))
+            - own_needles
+        )
+        for other in categories:
+            if other["name"] != category["name"]:
+                assert not added_needles.intersection(_needles_for_part(other["name"]))
 
 
 @pytest.mark.asyncio

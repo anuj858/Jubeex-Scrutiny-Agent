@@ -49,20 +49,28 @@ uvx llamactl deployments apply -f deployment.yaml
 ## Compiled splitting: optional local OCR, repair and audit
 
 LlamaCloud Split uses `split.categories` and `split.splitting_strategy` in
-`configs/config.json`. One environment variable selects the compiled-upload
-and split-petition behavior:
+`configs/config.json`. Each category description uses IDENTITY, START,
+CONTINUE, END, DO NOT SPLIT and REPEAT sections; shared instructions define
+nesting, physical-page ownership and Index/folio handling. The configured
+`min_pages_per_split: 1` disables size-based merging of short documents, as
+documented in the [Split API reference](https://developers.llamaindex.ai/reference/resources/split/methods/create/).
+Instructions over 5,000 characters, category names over 200 characters and
+descriptions over 2,000 characters fail before submitting an inline split job;
+instructions are never silently truncated.
 
-- `SPLIT_PYTHON_RULES_ENABLED=false` (also the default when unset): LlamaCloud
-  only. No local OCR, heading/Index/folio rules, structure detection, repairs,
-  duplicate filtering or audits run.
-- `SPLIT_PYTHON_RULES_ENABLED=true`: LlamaCloud plus the full existing local
-  pipeline: text/layout extraction, Tesseract OCR where needed, structure and
-  boundary detection, hybrid repairs, duplicate handling and consistency audit.
-  Local page reading runs concurrently with the remote split. PDFs are sliced
-  from the repaired page assignments, not the original remote segments.
+`SPLIT_RECONCILIATION_MODE` selects compiled-upload and split-petition behavior:
 
-The value is case-insensitive; `1` and `yes` also enable the local pipeline.
-All other values leave it disabled. The mode is captured once per split job.
+- `llama_only`: LlamaCloud only. No local OCR, heading/Index/folio rules,
+  structure detection, repairs, duplicate filtering or audits run.
+- `targeted`: Local text/layout extraction, OCR and repairs run, but label
+  changes are limited to missing/ambiguous pages or supported outer boundaries
+  and Index/folio evidence. Local page reading runs alongside the remote split.
+- `legacy_full`: Apply the full local repair result, for regression comparison.
+
+A valid mode overrides the compatibility flag `SPLIT_PYTHON_RULES_ENABLED`.
+Otherwise that flag selects `targeted` for `true`, `1` or `yes` and `llama_only`
+for other values or when unset. Values are case-insensitive. The mode is
+captured once per split job. `.env.template` explicitly selects `targeted`.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 
@@ -70,7 +78,11 @@ In either mode, Python downloads the source PDF, maps document categories to
 configured upload slots, copies pages and uploads the resulting PDFs. Pages
 without an assigned slot are retained as Unidentified.
 
-In LlamaCloud-only mode, separate generic `Annexures` and `Application` segments remain separate files.
+In every mode, separate generic `Annexures` and `Application` segments remain
+separate files when their pages retain those generic labels. The slicer uses
+remote boundaries only within the final assignments: reclassified pages and
+numbered local document identities are not overwritten. Newly assigned generic
+pages outside matching remote segments are retained in separate contiguous runs.
 Generic annexures use `Annexure 1`, `Annexure 2`, etc. (`annexure_1`, `annexure_2`
 upload IDs): these are segment ordinals, not inferred printed P/A/R numbers.
 Explicit numbered categories returned by LlamaCloud are preserved. Existing
@@ -78,11 +90,11 @@ catalog grouping (for example Synopsis + LOD and Vakalatnama + Memo of Appearanc
 is retained for frontend compatibility; it does not reclassify page content.
 
 Extraction, separate-file verification and scrutiny checks are unchanged.
-Deploy the updated ingestion worker image, set the flag on that worker's
+Deploy the updated ingestion worker image, set the mode on that worker's
 environment (for ECS, its task definition), and restart/roll out the worker.
 Editing your laptop's `.env` does not change a deployed ECS worker. Start a
 fresh split; existing split artifacts are not rewritten. Look for
-`[SplitMode] mode=llama_only` or `mode=llama_with_python_rules` and the matching
+`[SplitMode] mode=llama_only`, `mode=targeted` or `mode=legacy_full` and the matching
 `[SplitTiming]` entries in worker logs. Enabled mode requires Tesseract and its
 language data, which are included in the repository's worker Dockerfiles.
 

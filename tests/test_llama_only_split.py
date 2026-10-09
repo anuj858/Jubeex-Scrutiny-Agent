@@ -274,6 +274,70 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["targeted", "legacy_full"])
+async def test_reconciled_workflow_preserves_adjacent_remote_documents(
+    monkeypatch, mode
+):
+    from extraction_review import split_audit, structure_split
+
+    monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", mode)
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
+    segments = [
+        {"category": "Annexures", "pages": [1, 2]},
+        {"category": "Annexures", "pages": [3, 4]},
+        {"category": "Application", "pages": [5]},
+        {"category": "Application", "pages": [6]},
+    ]
+    # Local repair changes a page but leaves generic document identities.
+    repaired = page_parts_from_split({"segments": segments})
+    repaired[1] = ["Index"]
+    units = [SimpleNamespace(pdf_page=page, text="") for page in range(1, 7)]
+    structured = SimpleNamespace(
+        page_parts=repaired,
+        page_units=units,
+        duplicates=[],
+        ocr_needed_pages=[],
+        logical_documents=[],
+        report=dict,
+    )
+    monkeypatch.setattr(structure_split, "extract_page_units", Mock(return_value=units))
+    monkeypatch.setattr(
+        structure_split, "structure_aware_split", Mock(return_value=structured)
+    )
+    monkeypatch.setattr(split_audit, "audit_compiled_split", Mock(return_value={}))
+    monkeypatch.setattr(
+        process_file, "_load_bundle_pdf", AsyncMock(return_value=_pdf_bytes())
+    )
+    monkeypatch.setattr(
+        process_file, "collect_optional_usage", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(process_file, "upload_step_json", Mock())
+    ctx = SimpleNamespace(
+        store=SimpleNamespace(
+            get_state=AsyncMock(
+                return_value=process_file.PrepareState(
+                    file_id="dfl-source", filename="source.pdf"
+                )
+            )
+        ),
+        write_event_to_stream=Mock(),
+    )
+    result = await process_file.ProcessFileWorkflow().prepare_bundle(
+        process_file.FileClassifiedEvent(filing_type="SLP_CIVIL"),
+        ctx,
+        _client(segments),
+        _config().split,
+    )
+    assert result.slot_pages == {
+        "index": [{"start": 1, "end": 1}],
+        "annexure_1": [{"start": 2, "end": 2}],
+        "annexure_2": [{"start": 3, "end": 4}],
+        "application_1": [{"start": 5, "end": 5}],
+        "application_2": [{"start": 6, "end": 6}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_enabled_flag_reaches_ocr_and_real_repair_and_audit(monkeypatch):
     from extraction_review import split_audit, structure_split
 

@@ -112,9 +112,7 @@ def map_slot_pages(
         for slot_id in _slot_ids_for_labels(labels, catalog):
             pages_by_slot.setdefault(slot_id, []).append(number)
     mapped = {
-        slot_id: sorted(set(pages))
-        for slot_id, pages in pages_by_slot.items()
-        if pages
+        slot_id: sorted(set(pages)) for slot_id, pages in pages_by_slot.items() if pages
     }
     return _promote_repeatable_catchall(mapped) if promote_repeatable else mapped
 
@@ -123,31 +121,60 @@ def _map_repeatable_segments(
     pages_by_slot: dict[str, list[int]],
     segments: Sequence[Mapping[str, Any]],
 ) -> dict[str, list[int]]:
-    """Give each generic Llama segment its own upload ID, not a guessed boundary.
+    """Preserve remote document boundaries within the final page assignments.
 
-    Do not inspect PDF text or infer printed P/A/R numbers. A segment's supplied
-    page list is the entire source of its boundaries, including any gaps.
-    Singleton/combined UI slots continue to use the configured catalog mapping.
+    Reconciliation may change a page's category, give it a numbered identity,
+    or remove a duplicate assignment. Raw segments supply boundaries only:
+    they must never restore pages that the final map no longer assigns to the
+    generic family. Explicit numbered identities remain authoritative.
+
+    A generic page absent from matching remote segments is retained in its own
+    contiguous run, rather than lost or attached to an unrelated remote
+    document. Ordinal upload IDs do not assert printed exhibit numbers.
+    Singleton/combined slots keep their configured catalog mapping.
     """
     mapped = dict(pages_by_slot)
-    counters = {ANNEXURE_FAMILY: 0, APPLICATION_FAMILY: 0}
-    for segment in segments:
-        labels = parts_on_page(segment.get("category"))
-        if len(labels) != 1 or labels[0] not in counters:
-            continue
-        family = labels[0]
-        pages = sorted({int(page) for page in segment.get("pages") or []})
-        if not pages:
-            continue
-        catchall = "annexures" if family == ANNEXURE_FAMILY else "applications"
-        prefix = "annexure" if family == ANNEXURE_FAMILY else "application"
-        mapped.pop(catchall, None)
+    families = {
+        ANNEXURE_FAMILY: ("annexures", "annexure"),
+        APPLICATION_FAMILY: ("applications", "application"),
+    }
+    generic_pages = {
+        family: set(mapped.pop(catchall, []))
+        for family, (catchall, _prefix) in families.items()
+    }
+    assigned: dict[str, set[int]] = {family: set() for family in families}
+    counters = {family: 0 for family in families}
+
+    def add_segment(family: str, pages: list[int]) -> None:
+        prefix = families[family][1]
         counters[family] += 1
         slot_id = f"{prefix}_{counters[family]}"
         while slot_id in mapped:
             counters[family] += 1
             slot_id = f"{prefix}_{counters[family]}"
         mapped[slot_id] = pages
+
+    for segment in segments:
+        labels = parts_on_page(segment.get("category"))
+        if len(labels) != 1:
+            continue
+        family = family_split_name(labels[0])
+        if family not in families:
+            continue
+        pages = sorted(
+            {int(page) for page in segment.get("pages") or []} & generic_pages[family]
+        )
+        if not pages:
+            continue
+        add_segment(family, pages)
+        # Do not subtract these pages from the next segment: adjacent
+        # documents can legitimately share a physical PDF page.
+        assigned[family].update(pages)
+
+    for family in families:
+        remaining = sorted(generic_pages[family] - assigned[family])
+        for span in page_ranges(remaining):
+            add_segment(family, list(range(span["start"], span["end"] + 1)))
     return mapped
 
 
@@ -318,8 +345,10 @@ def slice_bundle_pdf(
     exists and leftover pages remain. Annexure P-n and Application n names
     are used as LlamaSplit returned them. Printed headings are not used to
     invent or renumber those labels. When raw segments are provided, generic
-    Annexures/Application segments receive distinct ordinal upload IDs; the
-    ordinals are not printed exhibit numbers and do not infer new boundaries.
+    Annexures/Application segments receive distinct ordinal upload IDs within
+    the final page labels. Repaired assignments take precedence over raw
+    categories; raw boundaries keep otherwise indistinguishable documents
+    separate. The ordinals are not printed exhibit numbers.
     """
     normalized: dict[int, list[str]] = {}
     for page, raw in page_parts.items():
@@ -332,9 +361,7 @@ def slice_bundle_pdf(
             normalized[number] = labels
     reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
     pages_by_slot = dict(
-        map_slot_pages(
-            catalog, normalized, promote_repeatable=split_segments is None
-        )
+        map_slot_pages(catalog, normalized, promote_repeatable=split_segments is None)
     )
     if split_segments is not None:
         pages_by_slot = _map_repeatable_segments(pages_by_slot, split_segments)

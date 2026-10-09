@@ -510,6 +510,18 @@ def split_labels_match_expected_slot(
                 for part in actual_dynamic.parts
             )
         )
+    if expected_dynamic and all(
+        family_split_name(part) == "Application" for part in expected_dynamic.parts
+    ):
+        if dominant == "applications":
+            return True
+        if dominant == "application_1":
+            # The catalog mapper promotes an unnumbered Application to slot 1.
+            # That synthetic ordinal cannot disprove the expected upload ID.
+            # An explicit Application 1 label must still match only slot 1.
+            unpromoted = map_slot_pages(catalog, page_parts, promote_repeatable=False)
+            if "applications" in unpromoted and "application_1" not in unpromoted:
+                return True
     return dominant == expected
 
 
@@ -925,9 +937,11 @@ async def _wait_for_split(client: AsyncLlamaCloud, job_id: str) -> Any:
     )
 
 
-# Official Split API: splitting_strategy.custom_instructions max 5000 chars.
-# https://developers.llamaindex.ai/llamaparse/split/getting_started/
+# Official Split API field limits; reject invalid rules instead of cutting them.
+# https://developers.llamaindex.ai/reference/resources/split/methods/create/
 _SPLIT_CUSTOM_INSTRUCTIONS_MAX = 5000
+_SPLIT_CATEGORY_NAME_MAX = 200
+_SPLIT_CATEGORY_DESCRIPTION_MAX = 2000
 
 
 def _split_strategy_payload(raw: Any) -> dict[str, Any] | None:
@@ -940,25 +954,48 @@ def _split_strategy_payload(raw: Any) -> dict[str, Any] | None:
     else:
         return None
     instructions = dumped.get("custom_instructions")
-    if (
-        isinstance(instructions, str)
-        and len(instructions) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX
-    ):
-        dumped["custom_instructions"] = instructions[:_SPLIT_CUSTOM_INSTRUCTIONS_MAX]
+    if instructions is not None:
+        if not isinstance(instructions, str):
+            raise ValueError("split.splitting_strategy.custom_instructions must be a string.")
+        if len(instructions) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
+            raise ValueError(
+                "split.splitting_strategy.custom_instructions has "
+                f"{len(instructions)} characters; the Split API limit is "
+                f"{_SPLIT_CUSTOM_INSTRUCTIONS_MAX}. Shorten the rules before submitting; "
+                "instructions will not be truncated."
+            )
     return dumped or None
 
 
 def _split_api_configuration(split_config: SplitConfig) -> dict[str, Any]:
-    """LlamaSplit categories plus splitting_strategy (custom_instructions ≤ 5000)."""
+    """Validate inline Split rules and preserve their complete supported payload."""
     dumped = dump_api_configuration(split_config)
-    dumped["categories"] = [
-        {
-            "name": item["name"],
-            **({"description": item["description"]} if item.get("description") else {}),
-        }
-        for item in dumped.get("categories") or []
-        if isinstance(item, dict) and item.get("name")
-    ]
+    categories: list[dict[str, str]] = []
+    for index, item in enumerate(dumped.get("categories") or []):
+        name = item.get("name") if isinstance(item, dict) else None
+        field = f"split.categories[{index}]"
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{field}.name must be a non-empty string.")
+        if len(name) > _SPLIT_CATEGORY_NAME_MAX:
+            raise ValueError(
+                f"{field}.name has {len(name)} characters; the Split API limit is "
+                f"{_SPLIT_CATEGORY_NAME_MAX}. Shorten the category name before submitting."
+            )
+        category = {"name": name}
+        description = item.get("description")
+        if description is not None:
+            if not isinstance(description, str):
+                raise ValueError(f"{field}.description must be a string.")
+            if len(description) > _SPLIT_CATEGORY_DESCRIPTION_MAX:
+                raise ValueError(
+                    f"{field}.description for {name!r} has {len(description)} characters; "
+                    f"the Split API limit is {_SPLIT_CATEGORY_DESCRIPTION_MAX}. "
+                    "Shorten the description before submitting; rules will not be truncated."
+                )
+            if description:
+                category["description"] = description
+        categories.append(category)
+    dumped["categories"] = categories
     strategy = _split_strategy_payload(
         dumped.get("splitting_strategy")
         or getattr(split_config, "splitting_strategy", None)
@@ -2122,15 +2159,15 @@ class ProcessFileWorkflow(Workflow):
                 ),
             )
         )
-        # Only the Llama-only mode uses raw segment boundaries. Passing them
-        # after local repair would restore the old, uncorrected page assignments.
+        # Keep remote document identities in every mode. The slicer intersects
+        # these boundaries with final labels, so local repairs stay authoritative.
         returned = llama_split["returned"]
         split_segments = (returned.get("result") or {}).get("segments") or []
         slices = slice_bundle_pdf(
             pdf_bytes,
             catalog,
             page_parts,
-            split_segments=None if use_python_rules else split_segments,
+            split_segments=split_segments,
         )
         ctx.write_event_to_stream(
             Status(
