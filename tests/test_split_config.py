@@ -72,7 +72,7 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         ("Listing Proforma", ("PRO FORMA", "LISTED PROFORMA", "closing date")),
         (
             "Main Petition",
-            ("substantive SLP", "populated SLP number", "Form 28"),
+            ("primary substantive pleading", "Writ Petition", "Form 28"),
         ),
         (
             "Impugned Order",
@@ -96,7 +96,7 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         ),
         (
             "Affidavit",
-            ("main petition's affidavit", "stays with that Application"),
+            ("primary pleading's affidavit", "stays with that Application"),
         ),
         (
             "Vakalatnama",

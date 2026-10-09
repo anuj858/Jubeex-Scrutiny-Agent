@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from extraction_review.structure_split import (
     DOCUMENT_TYPES,
+    PageClassification,
     PageUnit,
     build_logical_documents,
     classify_page,
     detect_boundaries,
+    reconcile_compiled_split,
     structure_aware_split,
 )
 
@@ -48,6 +50,143 @@ def test_classify_page_uses_llama_on_ocr_needed_empty_page() -> None:
     assert result.document_type == "Main Petition"
     assert "llama_hint" in result.signals
     assert result.confidence < 0.7
+
+
+def test_targeted_reconciliation_preserves_supported_llama_segment() -> None:
+    baseline = {1: ["Synopsis"], 2: ["Synopsis"]}
+    proposed = {1: ["Annexure P-7"], 2: ["Annexure P-7"]}
+    classifications = [
+        PageClassification(
+            page=page,
+            document_type="Synopsis",
+            confidence=0.55,
+            signals=("llama_hint_only",),
+            llama_hint="Synopsis",
+        )
+        for page in (1, 2)
+    ]
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        classifications,
+        {1: "Synopsis narrative", 2: "Narrative continuation"},
+        page_count=2,
+    )
+
+    assert result == baseline
+    assert changes == []
+
+
+def test_targeted_reconciliation_applies_anchored_document_continuation() -> None:
+    baseline = {
+        1: ["Main Petition"],
+        2: ["Main Petition"],
+        3: ["Main Petition"],
+    }
+    proposed = {1: ["Synopsis"], 2: ["Synopsis"], 3: ["Main Petition"]}
+    classifications = [
+        PageClassification(
+            page=1,
+            document_type="Synopsis",
+            confidence=0.9,
+            signals=("outer_anchor",),
+            llama_hint="Main Petition",
+        ),
+        PageClassification(
+            page=2,
+            document_type="Main Petition",
+            confidence=0.5,
+            signals=("llama_hint_only",),
+            llama_hint="Main Petition",
+        ),
+        PageClassification(
+            page=3,
+            document_type="Main Petition",
+            confidence=0.55,
+            signals=("llama_hint_only",),
+            llama_hint="Main Petition",
+        ),
+    ]
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        classifications,
+        {1: "SYNOPSIS\nCase summary", 2: "Summary continuation", 3: "PETITION"},
+        page_count=3,
+    )
+
+    assert result == proposed
+    assert [change.page for change in changes] == [1, 2]
+    assert "explicit_outer_boundary" in changes[0].evidence
+    assert "anchored_continuation" in changes[1].evidence
+
+    repeated, repeated_changes = reconcile_compiled_split(
+        result,
+        proposed,
+        classifications,
+        {1: "SYNOPSIS\nCase summary", 2: "Summary continuation", 3: "PETITION"},
+        page_count=3,
+    )
+    assert repeated == result
+    assert repeated_changes == []
+
+
+def test_targeted_reconciliation_does_not_swallow_multiple_llama_documents() -> None:
+    baseline = {
+        1: ["Synopsis"],
+        2: ["Main Petition"],
+        3: ["Affidavit"],
+    }
+    proposed = {
+        1: ["Main Petition"],
+        2: ["Main Petition"],
+        3: ["Main Petition"],
+    }
+    classifications = [
+        PageClassification(
+            page=1,
+            document_type="Main Petition",
+            confidence=0.9,
+            signals=("form28_lookalike",),
+            llama_hint="Synopsis",
+        )
+    ]
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        classifications,
+        {1: "FORM 28", 2: "PETITION", 3: "AFFIDAVIT"},
+        page_count=3,
+    )
+
+    assert result[1] == ["Main Petition"]
+    assert result[2] == ["Main Petition"]
+    assert result[3] == ["Affidavit"]
+    assert [change.page for change in changes] == [1]
+
+
+def test_targeted_reconciliation_fills_only_missing_pages_without_evidence() -> None:
+    baseline = {1: ["Index"], 3: ["Main Petition"]}
+    proposed = {
+        1: ["Index"],
+        2: ["Synopsis"],
+        3: ["Main Petition"],
+    }
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        [],
+        {1: "INDEX", 2: "continuation", 3: "PETITION"},
+        page_count=3,
+    )
+
+    assert result == proposed
+    assert len(changes) == 1
+    assert changes[0].evidence == ("missing_or_unidentified",)
 
 
 def test_boundary_detector_scores_heading_change() -> None:

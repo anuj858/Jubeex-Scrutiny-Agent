@@ -1727,6 +1727,54 @@ def test_lod_annexure_page_cites_are_not_stamps() -> None:
     assert repaired[20] != ["Annexure P-7"]
 
 
+def test_multiline_annexure_citation_is_not_an_attached_boundary() -> None:
+    from extraction_review.document_parts import annexure_ref_in_heading
+
+    lod = (
+        "LIST OF DATES & EVENTS\n"
+        "A True Copy of the notice issued by the Authority\n"
+        "is annexed\n"
+        "herewith and marked as\n"
+        "ANNEXURE P-6\n"
+        "03.07.2012"
+    )
+
+    assert annexure_ref_in_heading(lod) is None
+
+
+def test_outer_annexure_stamp_can_share_line_with_local_exhibit_label() -> None:
+    from extraction_review.document_parts import annexure_ref_in_heading
+
+    mark = annexure_ref_in_heading(
+        "ANNEXURE P/4 Exhibit-P-13\n"
+        "BEFORE THE KERALA COASTAL ZONE MANAGEMENT AUTHORITY\n"
+        "31"
+    )
+
+    assert mark is not None
+    assert mark.label == "Annexure P-4"
+
+
+def test_margin_folio_geometry_prefers_corner_letter_over_body_page_cite() -> None:
+    from extraction_review.split_pdf_layout import _is_margin_folio_candidate
+
+    width, height = 595.0, 842.0
+
+    # Lettered List-of-Dates folio in the upper-right corner.
+    assert _is_margin_folio_candidate(
+        "P", (505.0, 42.0, 526.0, 78.0), width=width, height=height
+    )
+    # A numeric Annexure page reference near the end of body prose is not a
+    # physical folio merely because PDF text extraction emits it last.
+    assert not _is_margin_folio_candidate(
+        "26", (297.0, 728.0, 316.0, 749.0), width=width, height=height
+    )
+    # Ordinary numeric folios centred in the upper margin remain valid.
+    assert _is_margin_folio_candidate(
+        "25", (284.0, 25.0, 312.0, 52.0), width=width, height=height
+    )
+
+
 def test_repair_keeps_synopsis_out_of_main_petition_when_llama_mislabels() -> None:
     """Synopsis continuation pages often say 'Special Leave Petition'; Llama tags Main."""
     petition_start = (

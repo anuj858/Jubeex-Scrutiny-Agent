@@ -143,11 +143,32 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     ],
 )
 def test_split_python_rules_flag(monkeypatch, value, enabled):
+    monkeypatch.delenv("SPLIT_RECONCILIATION_MODE", raising=False)
     if value is None:
         monkeypatch.delenv("SPLIT_PYTHON_RULES_ENABLED", raising=False)
     else:
         monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", value)
     assert process_file.split_python_rules_enabled() is enabled
+
+
+@pytest.mark.parametrize(
+    ("configured", "legacy", "expected"),
+    [
+        ("llama_only", "true", "llama_only"),
+        ("targeted", "false", "targeted"),
+        ("legacy_full", "false", "legacy_full"),
+        ("invalid", "true", "targeted"),
+        (None, "false", "llama_only"),
+    ],
+)
+def test_split_reconciliation_mode(monkeypatch, configured, legacy, expected):
+    if configured is None:
+        monkeypatch.delenv("SPLIT_RECONCILIATION_MODE", raising=False)
+    else:
+        monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", configured)
+    monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", legacy)
+
+    assert process_file.split_reconciliation_mode() == expected
 
 
 @pytest.mark.asyncio
@@ -232,6 +253,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     repair.assert_called_once()
     assert repair.call_args.kwargs["page_units"] is units
     assert repair.call_args.kwargs["run_hybrid_repair"] is True
+    assert repair.call_args.kwargs["reconciliation_mode"] == "targeted"
     audit.assert_called_once_with(
         repaired, {unit.pdf_page: unit.text for unit in units}, page_count=6
     )
@@ -247,7 +269,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     assert saved["duplicate_parts"] == [duplicate]
     assert saved["split_audit"]["structure"] == structured.report()
     assert saved["split_audit"]["flags"] == [{"code": "test_flag"}]
-    assert "mode=llama_with_python_rules" in caplog.text
+    assert "mode=targeted" in caplog.text
     assert "repair_and_audit=" in caplog.text
 
 

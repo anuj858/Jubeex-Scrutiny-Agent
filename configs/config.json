@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.26",
+  "config_version": "1.0.27",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -13,7 +13,7 @@
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.26"
+      "config_version": "1.0.27"
     }
   },
   "classify": {
@@ -962,7 +962,7 @@
     "categories": [
       {
         "name": "Advocate's Checklist",
-        "description": "The independent advocate/AOR filing-compliance checklist for the current Supreme Court SLP. Identify a checklist heading together with numbered compliance questions and YES/NO/N.A. responses concerning this filing, such as limitation, court fees, copies or annexure certification. Accept CHECK LIST, CHECKLIST, CHECK-LIST and clear OCR/spelling variants. Include all continuation questions and the checklist's own compliance declaration, date and AOR signature/details. These closing elements are not separate AOR's Declaration or AOR's Certificate sections. A government, registry or lower-court checklist reproduced inside another document retains that enclosing document's category."
+        "description": "The independent advocate/AOR filing-compliance checklist for the current Supreme Court filing, irrespective of petition or appeal type. Identify a checklist heading together with numbered compliance questions and YES/NO/N.A. responses concerning this filing, such as limitation, court fees, copies or annexure certification. Accept CHECK LIST, CHECKLIST, CHECK-LIST and clear OCR/spelling variants. Include all continuation questions and the checklist's own compliance declaration, date and AOR signature/details. These closing elements are not separate AOR's Declaration or AOR's Certificate sections. A government, registry or lower-court checklist reproduced inside another document retains that enclosing document's category."
       },
       {
         "name": "Cover Page",
@@ -978,7 +978,7 @@
       },
       {
         "name": "AOR's Certificate",
-        "description": "An independent certificate by the AOR for the current Supreme Court petition, identified by CERTIFICATE or a clear OCR/letter-spaced variant and the AOR's certification that the petition is confined to the pleadings/documents before the court whose order is challenged, or equivalent petition-certification language. Confirm the current case from the title or surrounding outer filing context; do not require a fixed heading position. Include its own filing date and signature. A signature block alone is insufficient. Certificates inside a Checklist, Listing Proforma, Annexure, Appendix or other enclosing document remain there; defect-curing declarations belong to AOR's Declaration."
+        "description": "An independent certificate by the AOR for the current Supreme Court filing, identified by CERTIFICATE or a clear OCR/letter-spaced variant and the AOR's certification that the primary pleading is confined to the pleadings/documents before the court or authority whose decision is challenged, or equivalent filing-certification language. Confirm the current case from the title or surrounding outer filing context; do not require a fixed heading position. Include its own filing date and signature. A signature block alone is insufficient. Certificates inside a Checklist, Listing Proforma, Annexure, Appendix or other enclosing document remain there; defect-curing declarations belong to AOR's Declaration."
       },
       {
         "name": "Index",
@@ -990,23 +990,23 @@
       },
       {
         "name": "Listing Proforma",
-        "description": "The independent first-listing information form for the current Supreme Court SLP. Require the form's purpose and prompt/value structure, not an exact spelling: accept PROFORMA, PERFORMA, PRO FORMA, LISTING PROFORMA/PERFORMA, PROFORMA/PERFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTED PROFORMA and clear OCR variants. Corroborating fields include Acts/sections/rules, the challenged court/order/date, judges, nature or classification of the matter, parties, related cases or listing restrictions. A bare PROFORMA heading without this context is insufficient. Keep all continuation fields and the form's closing date, AOR code, advocate details and signature together, even when the final page lacks its heading. Those closing details are not AOR's Certificate. A similar form inside a reproduced record retains its enclosing category."
+        "description": "The independent first-listing information form for the current Supreme Court filing, irrespective of petition or appeal type. Require the form's purpose and prompt/value structure, not an exact spelling: accept PROFORMA, PERFORMA, PRO FORMA, LISTING PROFORMA/PERFORMA, PROFORMA/PERFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTED PROFORMA and clear OCR variants. Corroborating fields include Acts/sections/rules, the challenged court/order/date, judges, nature or classification of the matter, parties, related cases or listing restrictions. A bare PROFORMA heading without this context is insufficient. Keep all continuation fields and the form's closing date, AOR code, advocate details and signature together, even when the final page lacks its heading. Those closing details are not AOR's Certificate. A similar form inside a reproduced record retains its enclosing category."
       },
       {
         "name": "Synopsis",
-        "description": "The current Supreme Court petition's narrative summary of the dispute, issues and reasons for seeking relief, normally introduced by SYNOPSIS or a clear OCR variant. Keep its narrative continuation pages, quotations of judgments and document references together. End at the next independently established outer section; a separately introduced LIST OF DATES, LIST OF DATES AND EVENTS or LIST OF EVENTS begins List of Dates & Events. Ordinary dates in narrative do not create that boundary. For a combined SYNOPSIS AND LIST OF DATES heading, classify narrative pages here and date/event chronology pages as List of Dates & Events, subject to the shared-page rule. A synopsis within a reproduced lower-court record stays with that record."
+        "description": "The current Supreme Court filing's narrative summary of the dispute, issues and reasons for seeking relief, normally introduced by SYNOPSIS or a clear OCR variant. Keep its narrative continuation pages, quotations of judgments and document references together. End at the next independently established outer section; a separately introduced LIST OF DATES, LIST OF DATES AND EVENTS or LIST OF EVENTS begins List of Dates & Events. Ordinary dates in narrative do not create that boundary. For a combined SYNOPSIS AND LIST OF DATES heading, classify narrative pages here and date/event chronology pages as List of Dates & Events, subject to the shared-page rule. A synopsis within a reproduced lower-court record stays with that record."
       },
       {
         "name": "List of Dates & Events",
-        "description": "The independent chronological date/event account prepared for the current Supreme Court petition, usually headed LIST OF DATES, LIST OF DATES AND EVENTS, LIST OF DATES & EVENTS, LIST OF EVENTS or a clear OCR variant. Identify a sequence of dates/date ranges linked to events, arranged as a table or chronological entries. Dates can be full or partial; continuation text and continuation pages need not repeat a date or heading. Keep references to annexures and quoted passages within the chronology. A combined SYNOPSIS AND LIST OF DATES heading belongs here when the page is a chronology rather than a narrative summary. Distinguish from narrative Synopsis and court-generated Record of Proceedings. A lower-court chronology inside a reproduced record retains that record's category."
+        "description": "The independent chronological date/event account prepared for the current Supreme Court filing, usually headed LIST OF DATES, LIST OF DATES AND EVENTS, LIST OF DATES & EVENTS, LIST OF EVENTS or a clear OCR variant. Identify a sequence of dates/date ranges linked to events, arranged as a table or chronological entries. Dates can be full or partial; continuation text and continuation pages need not repeat a date or heading. Keep references to annexures and quoted passages within the chronology. A combined SYNOPSIS AND LIST OF DATES heading belongs here when the page is a chronology rather than a narrative summary. Distinguish from narrative Synopsis and court-generated Record of Proceedings. A lower-court chronology inside a reproduced record retains that record's category."
       },
       {
         "name": "Main Petition",
-        "description": "The substantive SLP seeking special leave in the current Supreme Court proceeding. Identify its own petition opening/title and party block followed by the petition's pleadings, such as facts, questions of law, declarations, grounds and prayers. Include the petition's dedicated opening pages and all continuations through its own prayer, verification if integral, drafting/filing dates and advocate details. A matching Supreme Court caption alone is insufficient. Do not require a populated SLP number or one exact Form 28 layout when current identity is otherwise established. Separately introduced AOR's Certificate and main supporting Affidavit are separate sections. Incidental I.A.s are Application, not Main Petition. A lower-court petition or earlier Supreme Court petition reproduced inside another document remains with that enclosing document."
+        "description": "The primary substantive pleading for the detected current Supreme Court filing: Special Leave Petition, Writ Petition, Civil or Criminal Appeal, Transfer Petition, Review Petition, Curative Petition, Arbitration Petition, Contempt Petition, Original Suit or another supported main proceeding. Identify its own opening/title and party block followed by substantive pleadings such as facts, questions of law, grounds, declarations and prayers. Include its dedicated opening pages and all continuations through its own prayer, integral verification, drafting/filing dates and advocate details. A matching Supreme Court caption alone is insufficient. Do not require one fixed form, populated case number or SLP-specific Form 28 layout when the current filing identity is otherwise established. Separately introduced AOR's Certificate and main supporting Affidavit are separate sections. Incidental I.A.s are Application, not Main Petition. A lower-court petition or other pleading, or an earlier proceeding reproduced inside another document, remains with that enclosing document."
       },
       {
         "name": "Affidavit",
-        "description": "The independent sworn affidavit verifying or supporting the Main Petition in the current Supreme Court SLP. Identify AFFIDAVIT or a clear OCR/letter-spaced variant together with sworn statements and deponent, verification or oath/notarial attestation features. Use the affidavit's stated purpose and current case context; party names or an affidavit heading alone are insufficient. Keep all sworn statements, verification and attestation pages together. An affidavit expressly verifying an Application stays with that Application, even if separately headed; this category is reserved for the main petition's affidavit. Affidavits reproduced inside Annexures or other records stay with those records. An unsworn AOR certificate/declaration is not Affidavit."
+        "description": "The independent sworn affidavit verifying or supporting the primary pleading in the current Supreme Court filing, irrespective of petition or appeal type. Identify AFFIDAVIT or a clear OCR/letter-spaced variant together with sworn statements and deponent, verification or oath/notarial attestation features. Use the affidavit's stated purpose and current case context; party names or an affidavit heading alone are insufficient. Keep all sworn statements, verification and attestation pages together. An affidavit expressly verifying an Application stays with that Application, even if separately headed; this category is reserved for the primary pleading's affidavit. Affidavits reproduced inside Annexures or other records stay with those records. An unsworn AOR certificate/declaration is not Affidavit."
       },
       {
         "name": "Annexures",
@@ -1014,7 +1014,7 @@
       },
       {
         "name": "Application",
-        "description": "Each independent application/I.A. made in the current Supreme Court proceeding for incidental or procedural relief, introduced by its application title or I.A. identity and supported by a body requesting that relief. APPLICATION, I.A., INTERLOCUTORY APPLICATION and clear OCR variants are cues; RESPECTFULLY SHOWETH/SHEWETH or PRAYER alone are not. Keep its pleadings, prayer, signature and affidavit expressly supporting that application together. Internal attachments stay within its supported package unless independently established as outer exhibits or other outer documents. Start a new Application segment for each genuinely separate application, including adjacent applications. Do not use for the main request for special leave itself, or for an application reproduced inside an Annexure or another earlier proceeding."
+        "description": "Each independent application/I.A. made in the current Supreme Court proceeding for incidental or procedural relief, introduced by its application title or I.A. identity and supported by a body requesting that relief. APPLICATION, I.A., INTERLOCUTORY APPLICATION and clear OCR variants are cues; RESPECTFULLY SHOWETH/SHEWETH or PRAYER alone are not. Keep its pleadings, prayer, signature and affidavit expressly supporting that application together. Internal attachments stay within its supported package unless independently established as outer exhibits or other outer documents. Start a new Application segment for each genuinely separate application, including adjacent applications. Do not use for the primary substantive relief sought by the current filing, or for an application reproduced inside an Annexure or another earlier proceeding."
       },
       {
         "name": "Appendix",

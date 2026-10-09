@@ -78,6 +78,9 @@ logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 _TRUTHY = frozenset({"1", "true", "yes"})
+_SPLIT_RECONCILIATION_MODES = frozenset(
+    {"llama_only", "targeted", "legacy_full"}
+)
 DEFAULT_SLOT_UPLOAD_CONCURRENCY = 8
 _FILE_BYTES: dict[str, bytes] = {}
 
@@ -97,9 +100,28 @@ def slot_upload_concurrency() -> int:
     return positive_int_env("SLOT_UPLOAD_CONCURRENCY", DEFAULT_SLOT_UPLOAD_CONCURRENCY)
 
 
+def split_reconciliation_mode() -> str:
+    """Resolve the split mode while preserving the legacy boolean switch.
+
+    ``SPLIT_RECONCILIATION_MODE`` is authoritative when present. Existing
+    deployments that only set ``SPLIT_PYTHON_RULES_ENABLED=true`` move to the
+    safer targeted reconciler; ``legacy_full`` remains available for rollback
+    and controlled regression comparison.
+    """
+    configured = (
+        os.getenv("SPLIT_RECONCILIATION_MODE") or ""
+    ).strip().lower()
+    if configured in _SPLIT_RECONCILIATION_MODES:
+        return configured
+    legacy_enabled = (
+        os.getenv("SPLIT_PYTHON_RULES_ENABLED") or ""
+    ).strip().lower() in _TRUTHY
+    return "targeted" if legacy_enabled else "llama_only"
+
+
 def split_python_rules_enabled() -> bool:
-    """One opt-in switch for local OCR, structure detection, repair and audit."""
-    return (os.getenv("SPLIT_PYTHON_RULES_ENABLED") or "").strip().lower() in _TRUTHY
+    """Compatibility predicate for local OCR, reconciliation and audit."""
+    return split_reconciliation_mode() != "llama_only"
 
 
 def remember_file_bytes(file_id: str | None, data: bytes | None) -> None:
@@ -1929,8 +1951,8 @@ class ProcessFileWorkflow(Workflow):
         )
         split_started = start_timer()
         # Snapshot once so all stages of this job use the same mode.
-        use_python_rules = split_python_rules_enabled()
-        split_mode = "llama_with_python_rules" if use_python_rules else "llama_only"
+        split_mode = split_reconciliation_mode()
+        use_python_rules = split_mode != "llama_only"
         logger.info("[SplitMode] mode=%s file=%s", split_mode, state.filename)
 
         async def run_llama_split() -> tuple[dict[int, list[str]], str, dict[str, Any]]:
@@ -2020,8 +2042,17 @@ class ProcessFileWorkflow(Workflow):
                 page_units=page_units,
                 source_pdf=state.filename,
                 run_hybrid_repair=True,
+                reconciliation_mode=split_mode,
             )
             page_parts = structured.page_parts
+            reconciliation_changes = getattr(
+                structured, "reconciliation_changes", []
+            )
+            logger.info(
+                "[SplitReconciliation] mode=%s committed_pages=%s",
+                split_mode,
+                len(reconciliation_changes),
+            )
             split_duplicates = [
                 hit.as_dict() if hasattr(hit, "as_dict") else hit
                 for hit in structured.duplicates

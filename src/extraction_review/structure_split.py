@@ -36,10 +36,14 @@ from .document_parts import (
 from .split_ocr import ocr_sparse_pages, pages_with_large_images
 from .split_pdf_layout import extract_split_layout
 from .split_repair import (
+    _apply_indexed_annexure_ranges,
+    _apply_indexed_outer_document_ranges,
     _heading_window,
     _is_near_blank_page,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
+    _restore_index_bridge_pages,
+    _restore_master_volume_sections,
     repair_compiled_split,
 )
 
@@ -162,6 +166,24 @@ class LogicalDocument:
         }
 
 
+@dataclass(frozen=True)
+class ReconciliationChange:
+    """Internal provenance for one committed targeted page correction."""
+
+    page: int
+    old_labels: tuple[str, ...]
+    new_labels: tuple[str, ...]
+    evidence: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page,
+            "old_labels": list(self.old_labels),
+            "new_labels": list(self.new_labels),
+            "evidence": list(self.evidence),
+        }
+
+
 @dataclass
 class StructureSplitResult:
     page_units: list[PageUnit]
@@ -171,6 +193,8 @@ class StructureSplitResult:
     page_parts: PagePartMap
     duplicates: list[Any] = field(default_factory=list)
     ocr_needed_pages: list[int] = field(default_factory=list)
+    # Kept internal so existing split artifact/API schemas remain unchanged.
+    reconciliation_changes: list[ReconciliationChange] = field(default_factory=list)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -631,6 +655,159 @@ def logical_documents_to_page_parts(
     return page_parts
 
 
+_STRONG_RECONCILIATION_SIGNALS = frozenset(
+    {
+        "annexure_stamp",
+        "outer_anchor",
+        "form28_lookalike",
+        "centered_title",
+        "application_start",
+    }
+)
+_UNIDENTIFIED_LABELS = frozenset({"Undefined", "Unidentified", "other"})
+
+
+def _copy_page_parts(page_parts: Mapping[int, Sequence[str] | str | None]) -> PagePartMap:
+    copied: PagePartMap = {}
+    for page, names in page_parts.items():
+        labels = parts_on_page(names)
+        if labels:
+            copied[int(page)] = list(labels)
+    return copied
+
+
+def _same_document_type(left: str, right: str) -> bool:
+    """Compare canonical types without equating different numbered exhibits."""
+    if left == right:
+        return True
+    left_family = family_split_name(left)
+    right_family = family_split_name(right)
+    if left_family != right_family:
+        return False
+    return left_family not in {ANNEXURE_FAMILY, "Application"}
+
+
+def _labels_match_type(labels: Sequence[str], document_type: str) -> bool:
+    return any(_same_document_type(label, document_type) for label in labels)
+
+
+def _index_supported_map(
+    baseline: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Build only the deterministic master-Index/folio reconciliation map."""
+    indexed = _restore_master_volume_sections(baseline, page_text, page_count)
+    indexed = _restore_index_bridge_pages(indexed, page_text)
+    indexed = _apply_indexed_outer_document_ranges(indexed, page_text, page_count)
+    indexed = _apply_indexed_annexure_ranges(indexed, page_text, page_count)
+    return indexed
+
+
+def reconcile_compiled_split(
+    baseline: PagePartMap,
+    proposed: PagePartMap,
+    classifications: Sequence[PageClassification],
+    page_text: Mapping[int, str],
+    *,
+    page_count: int,
+) -> tuple[PagePartMap, list[ReconciliationChange]]:
+    """Apply repair proposals only to missing or strongly evidenced ranges.
+
+    ``baseline`` is the immutable Llama result plus anchors for pages Llama did
+    not label. ``proposed`` may be produced by the legacy repair pipeline, but
+    disagreement alone is not authority to overwrite Llama.  A proposal is
+    committed only for an unassigned/ambiguous page, an Index+folio-supported
+    page, or a continuous proposed span with a verified outer opening.
+    """
+    original = _copy_page_parts(baseline)
+    candidate = _copy_page_parts(proposed)
+    indexed = _index_supported_map(original, page_text, page_count)
+    result = _copy_page_parts(original)
+    changes: list[ReconciliationChange] = []
+
+    strong_by_page = {
+        item.page: item
+        for item in classifications
+        if item.confidence >= 0.85
+        and item.document_type != "other"
+        and set(item.signals) & _STRONG_RECONCILIATION_SIGNALS
+    }
+
+    # Describe each continuous proposed document once. An explicit opening can
+    # support its captionless continuation, but only while it replaces at most
+    # one existing Llama family. This prevents a single heading from swallowing
+    # several otherwise distinct, correctly labelled documents.
+    span_policy: dict[int, bool] = {}
+    pages = sorted(candidate)
+    start_index = 0
+    while start_index < len(pages):
+        start = pages[start_index]
+        labels = tuple(parts_on_page(candidate[start]))
+        end_index = start_index
+        while end_index + 1 < len(pages):
+            next_page = pages[end_index + 1]
+            if next_page != pages[end_index] + 1:
+                break
+            if tuple(parts_on_page(candidate[next_page])) != labels:
+                break
+            end_index += 1
+        span_pages = pages[start_index : end_index + 1]
+        anchored = any(
+            item
+            and any(_same_document_type(label, item.document_type) for label in labels)
+            for page in span_pages
+            if (item := strong_by_page.get(page))
+        )
+        replaced_families = {
+            family_split_name(label)
+            for page in span_pages
+            if tuple(parts_on_page(original.get(page))) != labels
+            for label in parts_on_page(original.get(page))
+            if label not in _UNIDENTIFIED_LABELS
+        }
+        allow_continuation = anchored and len(replaced_families) <= 1
+        for page in span_pages:
+            span_policy[page] = allow_continuation
+        start_index = end_index + 1
+
+    for page in range(1, page_count + 1):
+        old = tuple(parts_on_page(original.get(page)))
+        new = tuple(parts_on_page(candidate.get(page)))
+        if not new or new == old:
+            continue
+
+        evidence: list[str] = []
+        if not old or all(label in _UNIDENTIFIED_LABELS for label in old):
+            evidence.append("missing_or_unidentified")
+        if len(old) > 1:
+            evidence.append("overlapping_labels")
+
+        indexed_labels = tuple(parts_on_page(indexed.get(page)))
+        if indexed_labels == new and indexed_labels != old:
+            evidence.append("master_index_and_folio")
+
+        direct = strong_by_page.get(page)
+        if direct and _labels_match_type(new, direct.document_type):
+            evidence.append("explicit_outer_boundary")
+        elif span_policy.get(page):
+            evidence.append("anchored_continuation")
+
+        if not evidence:
+            continue
+        result[page] = list(new)
+        changes.append(
+            ReconciliationChange(
+                page=page,
+                old_labels=old,
+                new_labels=new,
+                evidence=tuple(evidence),
+            )
+        )
+
+    return result, changes
+
+
 def structure_aware_split(
     pdf_bytes: bytes,
     *,
@@ -641,6 +818,7 @@ def structure_aware_split(
     page_units: Sequence[PageUnit] | None = None,
     source_pdf: str = "bundle.pdf",
     run_hybrid_repair: bool = True,
+    reconciliation_mode: str = "targeted",
 ) -> StructureSplitResult:
     """Full structure-aware split. Physical slicing stays outside this function.
 
@@ -685,12 +863,24 @@ def structure_aware_split(
         page_parts[c.page] = [c.document_type]
 
     duplicates: list[Any] = []
+    reconciliation_changes: list[ReconciliationChange] = []
     if run_hybrid_repair and units:
-        page_parts, duplicates = repair_compiled_split(
+        baseline = _copy_page_parts(page_parts)
+        proposed, duplicates = repair_compiled_split(
             page_parts,
             texts,
             page_count=len(units),
         )
+        if reconciliation_mode == "legacy_full":
+            page_parts = proposed
+        else:
+            page_parts, reconciliation_changes = reconcile_compiled_split(
+                baseline,
+                proposed,
+                classifications,
+                texts,
+                page_count=len(units),
+            )
     elif not run_hybrid_repair:
         # Offline path: resolve carries without hybrid repair.
         page_labels = _resolve_page_labels(classifications, boundaries)
@@ -714,4 +904,5 @@ def structure_aware_split(
         page_parts=page_parts,
         duplicates=duplicates,
         ocr_needed_pages=ocr_pages,
+        reconciliation_changes=reconciliation_changes,
     )

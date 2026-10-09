@@ -20,10 +20,12 @@ def test_map_index_particulars_to_common_parts() -> None:
         "Office Report on Limitation"
     )
     assert map_index_particulars_to_part("Listing Proforma") == "Listing Proforma"
+    assert map_index_particulars_to_part("LISTING PERFORMA") == "Listing Proforma"
     assert map_index_particulars_to_part(
         "Synopsis and List of Dates"
     ) == "Synopsis"
     assert map_index_particulars_to_part("Special Leave Petition") == "Main Petition"
+    assert map_index_particulars_to_part("SLP WITH AFFIDAVIT") == "Main Petition"
     assert map_index_particulars_to_part("ANNEXURE-P/4") == "Annexure P-4"
     assert map_index_particulars_to_part("ANNEXURE-E/2") == "Annexure P-2"
     assert map_index_particulars_to_part("Annexure E-1") == "Annexure P-1"
@@ -31,6 +33,46 @@ def test_map_index_particulars_to_common_parts() -> None:
         "Application 1"
     )
     assert map_index_particulars_to_part("Vakalatnama") == "Vakalatnama"
+    assert map_index_particulars_to_part("F/M") == "Filing Memo"
+    assert map_index_particulars_to_part("V/A") == "Vakalatnama"
+
+
+def test_master_index_continuations_survive_mutated_split_labels() -> None:
+    """Geometry-backed master Index pages are immutable split evidence."""
+    from extraction_review.split_audit import aligned_index_printed_rows
+
+    page_parts = {1: ["Index"], 2: ["Annexure P-5"], 3: ["Annexure P-8"]}
+    texts = {
+        1: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "16.\tANNEXURE P-5 Letter\t32-33\n"
+            "17.\tANNEXURE P-6 Notice\t34-36"
+        ),
+        2: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "18.\tANNEXURE P-7 Demolition order\t55-67 37-40"
+        ),
+        3: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "19.\tANNEXURE P-8 Common judgment\t41-188\n"
+            "20.\tANNEXURE P-9 Appeal\t189-199"
+        ),
+    }
+
+    rows = aligned_index_printed_rows(page_parts, texts)
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert set(by_part) >= {
+        "Annexure P-5",
+        "Annexure P-6",
+        "Annexure P-7",
+        "Annexure P-8",
+        "Annexure P-9",
+    }
+    assert (by_part["Annexure P-7"].start, by_part["Annexure P-7"].end) == (
+        37,
+        40,
+    )
 
 
 def test_parse_index_rows_extracts_page_spans() -> None:
@@ -95,6 +137,48 @@ def test_sequence_ok_when_order_matches() -> None:
         {"name": "Vakalatnama", "start_page": 51, "end_page": 51},
     ]
     assert check_document_sequence(spans) == []
+
+
+def test_sequence_allows_document_type_families_with_variable_order() -> None:
+    """Valid filing layouts must not be rejected by one rigid template."""
+    spans = [
+        {"name": "AOR's Certificate", "start_page": 60, "end_page": 60},
+        {"name": "Affidavit", "start_page": 61, "end_page": 61},
+        {"name": "Annexure P-11", "start_page": 243, "end_page": 243},
+        {"name": "Application 1", "start_page": 244, "end_page": 245},
+        {"name": "Annexure P-12", "start_page": 251, "end_page": 268},
+        {"name": "Filing Memo", "start_page": 269, "end_page": 269},
+        {"name": "Memo of Parties", "start_page": 270, "end_page": 271},
+    ]
+
+    assert check_document_sequence(spans) == []
+
+
+def test_aor_declaration_is_optional_in_part_one_index() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 10-20\n")
+    spans = [
+        {"name": "AOR's Declaration", "start_page": 1, "end_page": 1},
+        {"name": "Main Petition", "start_page": 10, "end_page": 20},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=20)
+
+    assert all(flag.part != "AOR's Declaration" for flag in flags)
+
+
+def test_slp_with_affidavit_index_row_mentions_both_document_types() -> None:
+    rows = parse_index_rows("1. SLP WITH AFFIDAVIT 10-31\n")
+    spans = [
+        {"name": "Main Petition", "start_page": 10, "end_page": 30},
+        {"name": "Affidavit", "start_page": 31, "end_page": 31},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=31)
+
+    assert all(
+        not (flag.code == "in_file_missing_in_index" and flag.part == "Affidavit")
+        for flag in flags
+    )
 
 
 def test_index_lists_missing_document() -> None:

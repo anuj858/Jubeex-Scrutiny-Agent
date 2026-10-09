@@ -4,13 +4,42 @@ from __future__ import annotations
 
 import re
 
-
 _INDEX_SERIAL_WORD_RE = re.compile(r"(?P<serial>\d{1,3})[.)]")
 _INDEX_SPAN_CELL_RE = re.compile(
     r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})"
     r"(?:\s*[-–—]\s*(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2}))?",
     re.IGNORECASE,
 )
+
+
+def _is_margin_folio_candidate(
+    value: str,
+    bbox: tuple[float, float, float, float],
+    *,
+    width: float,
+    height: float,
+) -> bool:
+    """Return whether a compact token is physically printed in a page margin.
+
+    Paper books commonly put lettered front-matter folios (B, P, AA) in the
+    upper-right corner, while Annexure page references such as ``26`` occur at
+    the bottom of List-of-Dates prose.  Text order alone cannot distinguish
+    them, so only geometry-confirmed margin tokens are accepted.
+    """
+    token = value.strip()
+    if not re.fullmatch(
+        r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})", token
+    ) or re.fullmatch(r"(?:19|20)\d{2}", token):
+        return False
+    x0, y0, x1, y1 = (float(item) for item in bbox)
+    center_x = (x0 + x1) / 2
+    horizontally_centered = width * 0.30 <= center_x <= width * 0.70
+    in_horizontal_corner = x1 <= width * 0.25 or x0 >= width * 0.75
+    numeric_folio = bool(re.fullmatch(r"(?:\d{1,4}[A-Za-z]?|A\d{1,2})", token))
+    return y0 > height * 0.92 or (
+        y1 < height * 0.11
+        and (horizontally_centered or in_horizontal_corner or numeric_folio)
+    )
 
 
 def _geometry_index_rows(page: object) -> list[str]:
@@ -139,24 +168,14 @@ def extract_split_layout(
                     for line in block.get("lines", []):
                         value = "".join(span["text"] for span in line["spans"]).strip()
                         _x0, y0, _x1, y1 = line["bbox"]
-                        horizontally_centered = (
-                            page.rect.width * 0.30
-                            <= (float(_x0) + float(_x1)) / 2
-                            <= page.rect.width * 0.70
-                        )
-                        numeric_folio = bool(
-                            re.fullmatch(r"(?:\d{1,4}[A-Za-z]?|A\d{1,2})", value)
-                        )
-                        in_margin = y0 > page.rect.height * 0.92 or (
-                            y1 < page.rect.height * 0.11
-                            and (horizontally_centered or numeric_folio)
-                        )
-                        if not in_margin:
+                        if not _is_margin_folio_candidate(
+                            value,
+                            (float(_x0), float(y0), float(_x1), float(y1)),
+                            width=float(page.rect.width),
+                            height=float(page.rect.height),
+                        ):
                             continue
-                        if re.fullmatch(
-                            r"(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})", value
-                        ) and not re.fullmatch(r"(?:19|20)\d{2}", value):
-                            folios.add(value)
+                        folios.add(value)
                 folio = next(iter(folios)) if len(folios) == 1 else None
                 is_heading = bool(
                     re.search(r"(?mi)^\s*(?:master\s+)?index\s*$", text)

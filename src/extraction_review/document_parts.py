@@ -761,10 +761,11 @@ def _annexure_mark_from_title_or_stamp(
         return mark
 
     def _mark_from_title_line(
-        line: str, *, allow_body_tail: bool, prev_line: str = ""
+        line: str, *, allow_body_tail: bool, prev_context: str = ""
     ) -> AnnexureMark | None:
         if _INDEX_ROW_ANNEXURE_RE.match(line):
             return None
+        prev_line = prev_context.splitlines()[-1] if prev_context else ""
         if re.fullmatch(r"\d{1,3}[.)]", prev_line.strip()):
             return None
         # AOR address lines ("E-28, Second Floor, Lajpat Nagar") are not stamps.
@@ -791,7 +792,11 @@ def _annexure_mark_from_title_or_stamp(
         if mark is None:
             return None
         # LOD narrative: "... marked as" / "annexed herewith" then ANNEXURE P-n [Pg].
-        if _ANNEXURE_CITATION_PREV_RE.search(prev_line):
+        # OCR commonly wraps "is annexed herewith and marked as" over two or
+        # three lines before the ANNEXURE P-n reference.  Looking at only the
+        # immediately previous line promoted List-of-Dates/Main-Petition prose
+        # into an attached-document boundary.
+        if _ANNEXURE_CITATION_PREV_RE.search(prev_context):
             return None
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-~_|")
@@ -807,15 +812,19 @@ def _annexure_mark_from_title_or_stamp(
             if _ANNEXURE_PAGE_CITE_RE.search(remainder):
                 return None
             if not remainder.isdigit() and not re.match(
-                r"(?i)^true\s+(?:typed\s+|translated\s+)?cop(?:y|ies)\b",
+                r"(?i)^(?:true\s+(?:typed\s+|translated\s+)?cop(?:y|ies)|"
+                r"exhibit\s*[-–—/:.]?\s*[a-z]?\s*[-–—/:.]?\s*\d+)\b",
                 remainder,
             ):
                 return None
         return mark
 
     for index, line in enumerate(lines[:24]):
-        prev = lines[index - 1] if index else ""
-        mark = _mark_from_title_line(line, allow_body_tail=True, prev_line=prev)
+        context_start = max(0, index - 4)
+        previous = "\n".join(lines[context_start:index])
+        mark = _mark_from_title_line(
+            line, allow_body_tail=True, prev_context=previous
+        )
         if mark is not None:
             return mark
     tail_start = max(0, len(lines) - 10)
@@ -823,8 +832,11 @@ def _annexure_mark_from_title_or_stamp(
         line = lines[index]
         if len(line) > 40:
             continue
-        prev = lines[index - 1] if index else ""
-        mark = _mark_from_title_line(line, allow_body_tail=False, prev_line=prev)
+        context_start = max(0, index - 4)
+        previous = "\n".join(lines[context_start:index])
+        mark = _mark_from_title_line(
+            line, allow_body_tail=False, prev_context=previous
+        )
         if mark is not None:
             return mark
     return None

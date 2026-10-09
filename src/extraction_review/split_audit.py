@@ -31,6 +31,7 @@ _INDEX_OPTIONAL_PARTS = frozenset(
         "Court Fees",
         "PoA/BR",
         "Undefined",
+        "AOR's Declaration",  # commonly precedes the indexed paper book
         "AOR's Certificate",  # often omitted from Part-I Index table
     }
 )
@@ -62,6 +63,23 @@ _SEQUENCE_ORDER: tuple[str, ...] = (
 )
 
 _SEQUENCE_RANK = {name: index for index, name in enumerate(_SEQUENCE_ORDER)}
+
+# These document families have no single universal order in SCI paper books.
+# Treat them as order-equivalent instead of producing false audit warnings.
+_SEQUENCE_FLEXIBLE_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"Affidavit", "AOR's Certificate"}),
+    frozenset({"Annexures", "Applications"}),
+    frozenset(
+        {
+            "Memo of Parties",
+            "Memo of Appearance",
+            "Vakalatnama",
+            "PoA/BR",
+            "Court Fees",
+            "Filing Memo",
+        }
+    ),
+)
 
 _COMBINED_SEQUENCE_ALIASES: dict[str, tuple[str, ...]] = {
     "Synopsis + List of Dates & Events": ("Synopsis", "List of Dates & Events"),
@@ -175,6 +193,16 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
     if text.startswith("s.no") or text.startswith("particulars"):
         return None
 
+    # Common SCI Index abbreviations.  These appear as standalone particulars
+    # in the master Index and must be resolved before the generic word tests
+    # below.  Keeping them document-type based also covers spelling/layout
+    # variants without tying the split to a particular filing.
+    compact = re.sub(r"[^a-z]", "", text)
+    if compact == "fm":
+        return "Filing Memo"
+    if compact == "va":
+        return "Vakalatnama"
+
     # An Annexure description can itself be an application or affidavit. Its
     # leading outer-paper-book label is authoritative (for example
     # ``ANNEXURE P-11: Anticipatory Bail Application ...``).
@@ -215,9 +243,12 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         "limitation" in text and "report" in text
     ):
         return "Office Report on Limitation"
-    if "listing" in text and "proforma" in text:
+    if "listing" in text and ("proforma" in text or "performa" in text):
         return "Listing Proforma"
-    if "proforma for first listing" in text:
+    if (
+        "proforma for first listing" in text
+        or "performa for first listing" in text
+    ):
         return "Listing Proforma"
     if "synopsis" in text and ("list of date" in text or "dates" in text):
         # Combined row — prefer Synopsis as primary; LOD checked via siblings.
@@ -232,11 +263,16 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         # The Index names an appeal pleading directly (often "Criminal Appeal
         # with affidavit") rather than calling it a petition or Form 28.
         return "Main Petition"
-    if "special leave" in text or "form 28" in text or (
-        "petition" in text
-        and "transfer" not in text
-        and "writ" not in text
-        and "application" not in text
+    if (
+        "special leave" in text
+        or re.search(r"\bs\.?\s*l\.?\s*p\.?\b", text)
+        or "form 28" in text
+        or (
+            "petition" in text
+            and "transfer" not in text
+            and "writ" not in text
+            and "application" not in text
+        )
     ):
         # "SLP along with Affidavit" is still the petition slot in the Index.
         return "Main Petition"
@@ -1065,18 +1101,27 @@ def attached_annexures(page_parts: PagePartMap) -> set[str]:
 
 
 def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> str:
-    pages = sorted(
+    labeled_pages = {
         page
         for page, names in page_parts.items()
         if "Index" in parts_on_page(names)
-    )
-    if not pages:
-        pages = [
-            page
-            for page, text in page_text.items()
-            if "index" in _fold(text[:400])
-            and ("particulars" in _fold(text[:800]) or "page no" in _fold(text[:800]))
-        ]
+    }
+    # Every geometry-rebuilt master-Index continuation repeats the synthetic
+    # ``INDEX / S.No. / Particulars / Page No.`` header.  Always union those
+    # pages with the mutable split labels.  Repair/collapse passes may retain
+    # only the first Index page; relying on that mutated map then drops the
+    # remaining inventory and makes later reconciliation non-idempotent.
+    detected_pages = {
+        page
+        for page, text in page_text.items()
+        if "index" in _fold(text[:400])
+        and ("particulars" in _fold(text[:800]) or "page no" in _fold(text[:800]))
+        and (
+            "\t" in text
+            or len(re.findall(r"(?m)^\s*\d{1,3}[.),]\s+", text)) >= 2
+        )
+    }
+    pages = sorted(labeled_pages | detected_pages)
     if not pages:
         return ""
     runs: list[list[int]] = []
@@ -1131,6 +1176,21 @@ def _sequence_family_rank(part: str) -> tuple[int, int]:
     return (len(_SEQUENCE_ORDER) + 10, 0)
 
 
+def _sequence_family_name(part: str) -> str:
+    """Return the stable family used for flexible-order comparisons."""
+    folded = _fold(part)
+    if re.fullmatch(r"annexure [a-z]-?\d+", folded):
+        return "Annexures"
+    if re.fullmatch(r"application \d+", folded):
+        return "Applications"
+    return family_split_name(part)
+
+
+def _sequence_order_is_flexible(left: str, right: str) -> bool:
+    families = {_sequence_family_name(left), _sequence_family_name(right)}
+    return any(families <= group for group in _SEQUENCE_FLEXIBLE_GROUPS)
+
+
 def check_document_sequence(
     spans: Sequence[Mapping[str, Any]],
 ) -> list[SplitAuditFlag]:
@@ -1151,7 +1211,7 @@ def check_document_sequence(
     for index in range(1, len(items)):
         earlier_name, earlier_start, earlier_rank = items[index - 1]
         name, start, rank = items[index]
-        if earlier_rank <= rank:
+        if earlier_rank <= rank or _sequence_order_is_flexible(earlier_name, name):
             continue
         flags.append(
             SplitAuditFlag(
@@ -1207,6 +1267,8 @@ def check_index_consistency(
         mentioned.add(part)
         if part == "Synopsis" and "list of date" in _fold(row.particulars):
             mentioned.add("List of Dates & Events")
+        if part == "Main Petition" and "affidavit" in _fold(row.particulars):
+            mentioned.add("Affidavit")
 
         # Part-II letter pages (A/A1) often OCR as tiny integers — skip mismatch.
         if (
@@ -1400,11 +1462,18 @@ def audit_compiled_split(
             checked_rows = []
             app_number = 0
             for row in rows:
-                part = row.mapped_part
+                printed_row = by_description.get(row.particulars)
+                # The geometry-backed row contains the complete table-cell
+                # text. Prefer its document classification over a flattened
+                # OCR row, which can lose leading words such as "SLP WITH".
+                part = (
+                    printed_row.mapped_part
+                    if printed_row and printed_row.mapped_part
+                    else row.mapped_part
+                )
                 if part and part.startswith("Application "):
                     app_number += 1
                     part = f"Application {app_number}"
-                printed_row = by_description.get(row.particulars)
                 pages = []
                 if printed_row:
                     for page, text in page_text.items():
