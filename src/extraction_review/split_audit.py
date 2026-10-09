@@ -755,6 +755,53 @@ def aligned_index_printed_rows(
         return []
     rows = index_rows_with_printed_pages(index_text)
 
+    # Preserve every inventory row, including blank page-column cells and
+    # mixed tabular/plain continuations. One numeric gap can contain several
+    # documents: P-1=26, P-2/P-3 blank, P-4=31 does not prove P-2=27-30.
+    # An unnumbered application row before an annexure is equally material.
+    serial_starts = list(
+        re.finditer(r"(?m)^\s*\d{1,3}[.),](?:\s+|$)", index_text)
+    )
+    inventory: list[IndexRow] = []
+    for index, match in enumerate(serial_starts):
+        stop = (
+            serial_starts[index + 1].start()
+            if index + 1 < len(serial_starts)
+            else len(index_text)
+        )
+        inventory.extend(parse_index_rows(index_text[match.start() : stop]))
+
+    def matches_explicit_row(item: IndexRow, row: IndexPrintedRow) -> bool:
+        return bool(
+            item.mapped_part == row.mapped_part
+            and item.start_page == row.start
+            and item.end_page == row.end
+            and item.start_page > 0
+            and row.kind == "number"
+        )
+
+    def single_unresolved_inventory_row(
+        previous: IndexPrintedRow, following: IndexPrintedRow, label: str
+    ) -> bool:
+        prior_positions = [
+            index for index, item in enumerate(inventory)
+            if matches_explicit_row(item, previous)
+        ]
+        later_positions = [
+            index for index, item in enumerate(inventory)
+            if matches_explicit_row(item, following)
+        ]
+        if len(prior_positions) != 1 or len(later_positions) != 1:
+            return False
+        start, stop = prior_positions[0], later_positions[0]
+        if stop <= start:
+            return False
+        unresolved = [
+            item for item in inventory[start + 1 : stop]
+            if not any(matches_explicit_row(item, row) for row in rows)
+        ]
+        return len(unresolved) == 1 and unresolved[0].mapped_part == label
+
     # A long particulars cell can cross an Index page boundary. In that case
     # OCR may leave ``ANNEXURE P-6`` at the bottom of one sheet and put only
     # its particulars plus ``120-149`` on the next sheet, so neither fragment
@@ -797,6 +844,8 @@ def aligned_index_printed_rows(
             re.IGNORECASE,
         )
         if not explicit:
+            continue
+        if not single_unresolved_inventory_row(previous, following, missing_label):
             continue
         recovered = IndexPrintedRow(
             mapped_part=missing_label,
@@ -890,11 +939,18 @@ def aligned_index_printed_rows(
             and row.mapped_part in back_matter
             and row.start > previous.end
         ]
-        upper = min(
-            [row.start for row in following_annexure + following_back],
-            default=0,
+        following = min(
+            following_annexure + following_back,
+            key=lambda row: row.start,
+            default=None,
         )
+        upper = following.start if following else 0
         if upper <= previous.end + 1:
+            continue
+        label = f"Annexure {series}-{number}"
+        if following is None or not single_unresolved_inventory_row(
+            previous, following, label
+        ):
             continue
         covered = sorted(
             (
@@ -917,7 +973,6 @@ def aligned_index_printed_rows(
         if len(gaps) != 1:
             continue
         start, end = gaps[0]
-        label = f"Annexure {series}-{number}"
         unique[(label, "number", start, end, "")] = IndexPrintedRow(
             mapped_part=label,
             particulars=label,
@@ -1403,19 +1458,146 @@ def check_index_consistency(
     return flags
 
 
+_SOURCE_CASE_HEADER_RE = re.compile(
+    r"(?mi)^[ \t]*(?P<kind>W\s*\.?\s*(?:P\s*\.?\s*"
+    r"(?:\(\s*[A-Z]+\s*\))?|A\s*\.?))\s*(?:No\.?\s*)?"
+    r"(?P<number>\d{1,7})\s*(?:/\s*|of\s+)(?P<year>(?:19|20)\d{2})\b"
+)
+_JUDGMENT_TITLE_RE = re.compile(
+    r"(?mi)^[ \t]*(?:COMMON\s+)?J\s*U\s*D\s*G\s*E?\s*M\s*E\s*N\s*T[ \t]*$"
+)
+_CERTIFIED_END_RE = re.compile(
+    r"(?mi)^[ \t/\\|]*(?:true|certified)[ \t]+copy[ \t/\\|]*"
+    r"(?:\r?\n[ \t]*\d+)?\s*\Z"
+)
+_COURT_FILING_TITLE_RE = re.compile(
+    r"(?mi)^[ \t]*(?:AFFIDAVIT|MEMO(?:RANDUM)?\s+OF\s+(?:APPEAL|APPEARANCE)|"
+    r"PETITION\s+FILED\s+UNDER\b[^\n]*)[ \t]*$"
+)
+_STANDALONE_OUTER_ANNEXURE_RE = re.compile(
+    r"(?mi)^[ \t]*ANNEXURE[ \t:-]*[PR][ \t/-]*\d+[ \t]*$"
+)
+
+
+def _source_case_header(text: str) -> tuple[str, str, str] | None:
+    """Read a source-case running header, never a case cited in body prose."""
+    match = _SOURCE_CASE_HEADER_RE.search(text[:400])
+    if not match:
+        return None
+    return (
+        re.sub(r"[^A-Z]", "", match.group("kind").upper()),
+        match.group("number"),
+        match.group("year"),
+    )
+
+
+def check_unresolved_source_transitions(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    *,
+    page_count: int,
+) -> list[SplitAuditFlag]:
+    """Warn about a completed judgment merged with a different court packet.
+
+    A new affidavit, application, exhibit list or court caption alone is not
+    an outer boundary. Require the judgment's own heading and repeated source
+    header, its terminal certification, and a different source header repeated
+    over a newly captioned filing. These signals justify review, not a guessed
+    annexure identity or an automatic split of a historical court bundle.
+    """
+    judgment_cases: dict[str, tuple[str, str, str]] = {}
+    flags: list[SplitAuditFlag] = []
+    previous_parts: set[str] = set()
+    for page in range(1, page_count + 1):
+        current_parts = {
+            name
+            for name in parts_on_page(page_parts.get(page))
+            if family_split_name(name) in {"Annexures", "Impugned Order"}
+        }
+        judgment_cases = {
+            part: case
+            for part, case in judgment_cases.items()
+            if part in current_parts and part in previous_parts
+        }
+        text = page_text.get(page, "")
+        source_case = _source_case_header(text)
+        if source_case and _JUDGMENT_TITLE_RE.search(text[:1200]):
+            judgment_cases.update({part: source_case for part in current_parts})
+
+        prior_text = page_text.get(page - 1, "")
+        prior_case = _source_case_header(prior_text)
+        older_case = _source_case_header(page_text.get(page - 2, ""))
+        next_case = _source_case_header(page_text.get(page + 1, ""))
+        next_parts = set(parts_on_page(page_parts.get(page + 1)))
+        if (
+            prior_case
+            and source_case
+            and prior_case != source_case
+            and older_case == prior_case
+            and next_case == source_case
+            and _CERTIFIED_END_RE.search(prior_text[-300:])
+            and _COURT_FILING_TITLE_RE.search(text[:1600])
+            and re.search(r"(?i)\bBEFORE\b.{0,60}\bHIGH\s+COURT\b", _fold(text[:800]))
+            and not _STANDALONE_OUTER_ANNEXURE_RE.search(text[:800])
+        ):
+            for part in sorted(current_parts & previous_parts & next_parts):
+                if judgment_cases.get(part) != prior_case:
+                    continue
+                flags.append(
+                    SplitAuditFlag(
+                        code="unresolved_source_transition",
+                        part=part,
+                        message=(
+                            f"{part} contains a completed judgment at p.{page - 1} "
+                            f"followed by a different court filing packet at p.{page}. "
+                            "Check the original paper-book Index and source PDF to "
+                            "confirm the outer boundary and annexure identity; "
+                            "these source signals do not authorize an automatic split."
+                        ),
+                        details={
+                            "boundary_after_page": page - 1,
+                            "boundary_before_page": page,
+                            "previous_source_case": " ".join(
+                                (prior_case[0], "/".join(prior_case[1:]))
+                            ),
+                            "next_source_case": " ".join(
+                                (source_case[0], "/".join(source_case[1:]))
+                            ),
+                            "evidence": [
+                                "judgment_heading_in_same_contiguous_part",
+                                "repeated_judgment_source_header",
+                                "terminal_copy_certification",
+                                "new_court_caption_and_filing_title",
+                                "different_repeated_source_case_header",
+                            ],
+                            "resolution": "original_index_and_source_required",
+                            "auto_split": False,
+                        },
+                    )
+                )
+                judgment_cases.pop(part, None)
+        previous_parts = current_parts
+    return flags
+
+
 def audit_compiled_split(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
     *,
     page_count: int,
 ) -> dict[str, Any]:
-    """Run sequence + Index consistency checks on a repaired split map."""
+    """Run sequence, Index and unresolved source checks on a repaired split map."""
     spans = document_spans_from_page_parts(page_parts)
     index_text = _index_pages_text(page_parts, page_text)
     rows = parse_index_rows(index_text) if index_text.strip() else []
 
     flags: list[SplitAuditFlag] = []
     flags.extend(check_document_sequence(spans))
+    flags.extend(
+        check_unresolved_source_transitions(
+            page_parts, page_text, page_count=page_count
+        )
+    )
     if not rows and any(
         "Index" in parts_on_page(names) for names in page_parts.values()
     ):

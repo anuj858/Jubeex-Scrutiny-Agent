@@ -23,6 +23,10 @@
       ],
       "environment": [
         {
+          "name": "SPLIT_RECONCILIATION_MODE",
+          "value": "targeted"
+        },
+        {
           "name": "VECTOR_BACKEND",
           "value": "pinecone"
         },

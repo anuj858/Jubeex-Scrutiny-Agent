@@ -81,6 +81,7 @@ required_env_vars = [
 
 # Optional runtime defaults. .env overrides these. Do not put secrets here.
 [tool.llamadeploy.env]
+SPLIT_RECONCILIATION_MODE = "targeted"
 VECTOR_BACKEND = "pinecone"
 PINECONE_INDEX = "legal-document-knowledge"
 PINECONE_CLOUD = "aws"

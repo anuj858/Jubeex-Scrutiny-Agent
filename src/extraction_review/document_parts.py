@@ -557,7 +557,9 @@ _ANNEXURE_PAGE_CITE_RE = re.compile(
 )
 _ANNEXURE_CITATION_PREV_RE = re.compile(
     r"annexed\s+(?:herewith|hereto|to|with)\b|hereto\s+annexed|"
-    r"marked\s+as|true\s+cop(?:y|ies)\s+of",
+    r"marked\s+as|true\s+cop(?:y|ies)\s+of|"
+    r"produced\s+(?:herewith|hereto|with|as)\b|"
+    r"(?:appended|attached)\s+(?:as|hereto|herewith|to)\b",
     re.IGNORECASE,
 )
 _APPLICATION_CAUSE_RE = re.compile(
@@ -662,6 +664,25 @@ def _annexure_mark_in_window(text: str) -> AnnexureMark | None:
     return _annexure_mark_from_match(match)
 
 
+def _looks_like_lower_court_exhibit_list(text: str) -> bool:
+    """A case-qualified judgment appendix lists exhibits, not outer documents.
+
+    Kerala judgments, for example, finish with ``APPENDIX OF WP(C) ...``
+    and ``PETITIONER EXHIBITS``. Their P1/P2 rows and wrapped descriptions
+    belong to the judgment. This identifies the enclosed list even when an
+    explicit outer stamp or APPENDIX title precedes it.
+    """
+    head = _heading_window(text, lines=16)
+    return bool(
+        re.search(
+            r"(?im)^\s*appendix\s+of\s+(?:w\.?\s*p\b|w\.?\s*a\b|r\.?\s*f\.?\s*a\b|"
+            r"o\.?\s*p\b|c\.?\s*r\.?\s*p\b|civil\s+appeal\b)",
+            head,
+        )
+        and re.search(r"(?i)\b(?:petitioner|respondent)s?\s+exhibits\b", head)
+    )
+
+
 def _annexure_mark_from_title_or_stamp(
     text: str, *, require_series: bool = False
 ) -> AnnexureMark | None:
@@ -669,6 +690,7 @@ def _annexure_mark_from_title_or_stamp(
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return None
+    nested_exhibits = _looks_like_lower_court_exhibit_list(text)
     # An outer paper-book stamp can sit above an enclosed tribunal document's
     # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
     # the Supreme Court paper-book Index and must not hide the A-n boundary.
@@ -706,6 +728,8 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match or _INDEX_ROW_ANNEXURE_RE.match(line):
             continue
+        if nested_exhibits and match.groupdict().get("bare_num"):
+            continue
         remainder = line[match.end() :].strip(" .;:-~_|")
         if remainder:
             continue
@@ -732,6 +756,8 @@ def _annexure_mark_from_title_or_stamp(
     for index, line in enumerate(lines[:1]):
         match = _ANNEXURE_HEADING_RE.search(line)
         if not match or len(line) > 80:
+            continue
+        if nested_exhibits and match.groupdict().get("bare_num"):
             continue
         # A real first-line stamp begins at the left margin (allowing only a
         # few OCR-noise characters such as ``i so ANNEXURE-P-11``).  Petition
@@ -778,6 +804,8 @@ def _annexure_mark_from_title_or_stamp(
             return None
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
+            return None
+        if nested_exhibits and match.groupdict().get("bare_num"):
             return None
         if require_series and re.match(
             r"(?i)^\s*(?:\d{1,4}\s+)?annexure\s*(?:no\.?\s*)\d+\b",
@@ -955,6 +983,8 @@ def annexure_label_from_text(text: str) -> str | None:
 
 
 def page_starts_application(text: str) -> bool:
+    if _looks_like_lower_court_exhibit_list(text):
+        return False
     if _is_sci_application_start(text):
         return True
     head = "\n".join((text or "").splitlines()[:20])[:2000]

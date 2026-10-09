@@ -122,6 +122,9 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     assert not any("Structure-aware" in event.message for event in events)
     assert artifact.call_args.args[1]["duplicate_parts"] == []
     assert artifact.call_args.args[1]["split_audit"]["flags"] == []
+    assert (
+        artifact.call_args.args[1]["split_audit"]["reconciliation_mode"] == "llama_only"
+    )
     # Same response fields, including compatibility fields; no added API format.
     assert "llama_split" in result.model_dump()
     assert result.agent_data_id is None
@@ -268,6 +271,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     saved = artifact.call_args.args[1]
     assert saved["duplicate_parts"] == [duplicate]
     assert saved["split_audit"]["structure"] == structured.report()
+    assert saved["split_audit"]["reconciliation_mode"] == "targeted"
     assert saved["split_audit"]["flags"] == [{"code": "test_flag"}]
     assert "mode=targeted" in caplog.text
     assert "repair_and_audit=" in caplog.text

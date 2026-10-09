@@ -71,6 +71,10 @@ A valid mode overrides the compatibility flag `SPLIT_PYTHON_RULES_ENABLED`.
 Otherwise that flag selects `targeted` for `true`, `1` or `yes` and `llama_only`
 for other values or when unset. Values are case-insensitive. The mode is
 captured once per split job. `.env.template` explicitly selects `targeted`.
+The worker task definitions and llamadeploy defaults also explicitly select
+`targeted`; deploying only new category descriptions while leaving a worker in
+`llama_only` bypasses all local boundary corrections. The split audit artifact
+records `reconciliation_mode` so the actual job mode can be checked later.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 
@@ -88,6 +92,31 @@ upload IDs): these are segment ordinals, not inferred printed P/A/R numbers.
 Explicit numbered categories returned by LlamaCloud are preserved. Existing
 catalog grouping (for example Synopsis + LOD and Vakalatnama + Memo of Appearance)
 is retained for frontend compatibility; it does not reclassify page content.
+
+Local boundary checks distinguish outer annexure stamps from wrapped narrative
+references and case-specific exhibit-list appendices inside a common judgment.
+They also retain an application's numbered body, prayer and filing signature
+before the actual exhibit it introduces. These complement the positive
+`START`/`CONTINUE`/`END` criteria and negative `DO NOT SPLIT` rules in the config;
+adding an unused JSON rule field alone does not affect the splitter.
+Reproduced e-filing packets retain their internal Index and affidavit when
+matching docket/source headers establish continuity. A completed judgment
+followed by a different court packet without a verified outer boundary receives
+an advisory `unresolved_source_transition` flag, not a guessed annexure number.
+Blank Index cells remain unknown when more than one document occupies the gap;
+an entire gap is never assigned to its first unresolved annexure. A consistent
+sequence of explicit exhibit stamps can reject a stale, contradictory Index
+range. Geometry-recovered narrative range citations may resolve an unstamped
+indexed court packet only with a matching source case, consistent folio offsets
+at both ends, and no conflicting outer document. A citation does not move its
+own page out of the citing application or chronology.
+Court neutral citations are not chronology year entries; a judgment's initial
+party-caption pages remain with its later judgment title when source identity
+and pagination corroborate that continuation.
+Sparse scanned text (for example just a case number) still requires OCR;
+inherited court page numbers are not assumed
+to be physical PDF positions. A missing source range cannot be reconstructed
+from incorrectly sliced outputs alone: rerun the original combined paper book.
 
 Extraction, separate-file verification and scrutiny checks are unchanged.
 Deploy the updated ingestion worker image, set the mode on that worker's

@@ -99,11 +99,26 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         ),
         (
             "Annexures",
-            ("one segment", "without renumbering", "imposing a maximum"),
+            (
+                "one segment",
+                "without renumbering",
+                "imposing a maximum",
+                "own issuer/date",
+                "case-specific APPENDIX OF WP(C) exhibit lists",
+            ),
         ),
         (
             "Application",
-            ("affidavit expressly supporting", "adjacent applications"),
+            (
+                "affidavit expressly supporting",
+                "adjacent applications",
+                "Kindly see Pages",
+                "body or prayer",
+            ),
+        ),
+        (
+            "Appendix",
+            ("APPENDIX OF WP(C)", "PETITIONER/RESPONDENT EXHIBITS", "stays enclosed"),
         ),
         (
             "Affidavit",
@@ -148,6 +163,14 @@ def test_shared_guidance_does_not_restore_conflicting_old_requirements() -> None
     assert "reason/metadata fields" in instructions
     assert "do not infer a missing annexure from a numbering gap" in instructions
     assert "Do not extrapolate one offset across volumes" in instructions
+    assert (
+        "never give one document a whole gap shared by multiple unresolved Index rows"
+        in instructions
+    )
+    assert (
+        "case-specific exhibit-list appendices remain in that same judgment"
+        in instructions
+    )
     assert "Main Petition is Form 28 in this Court" not in instructions
     assert (
         "only the standalone memo matching this Supreme Court petition"

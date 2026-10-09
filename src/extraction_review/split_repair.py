@@ -24,6 +24,7 @@ from .document_parts import (
     _is_real_split_label,
     _is_sci_application_start,
     _looks_like_index_table,
+    _looks_like_lower_court_exhibit_list,
     _looks_like_sci_interlocutory,
     _memo_of_parties_heading,
     _vakalatnama_heading,
@@ -42,6 +43,7 @@ from .split_audit import (
     collect_expected_annexures,
     collect_index_annexure_entries,
 )
+from .split_pdf_layout import annexure_cited_page_ranges
 from .split_pdf_layout import printed_folio as _printed_folio
 
 _SCI_CAPTION_RE = re.compile(
@@ -614,6 +616,25 @@ _HC_ORDER_SHEET_RE = re.compile(r"(?mi)^\s*order\s+sheet\s*$")
 _HC_APPEAL_CASE_RE = re.compile(
     r"(?i)\b(?:cra|cr\.?\s*a\.?|criminal\s+appeal)\s*(?:no\.?)?\s*\d+"
 )
+_NEUTRAL_CITATION_LINE_RE = re.compile(
+    r"(?m)^\s*(\d{4}\s*:\s*[A-Z][A-Z0-9]*\s*:\s*\d{1,8})\s*$"
+)
+_RUNNING_COURT_CASE_RE = re.compile(
+    r"(?im)^\s*(?:w\.?\s*[ap]\.?\s*(?:\([a-z]\))?|"
+    r"r\.?\s*f\.?\s*a\.?|c\.?\s*r\.?\s*a\.?)\s*"
+    r"(?:no\.?\s*)?\d+\s*(?:/|of\s+)\s*\d{2,4}\b"
+)
+
+
+def _court_record_neutral_citation(text: str) -> str | None:
+    """Recognize a court record header, not a year in chronology prose."""
+    head = _heading_window(text, lines=12)
+    match = _NEUTRAL_CITATION_LINE_RE.search(head)
+    if match and (
+        _is_lower_court_caption(text) or _RUNNING_COURT_CASE_RE.search(head)
+    ):
+        return re.sub(r"\s+", "", match.group(1))
+    return None
 
 
 def _restore_front_impugned_judgment(
@@ -648,6 +669,32 @@ def _restore_front_impugned_judgment(
                 re.IGNORECASE,
             )
         )
+        # Some certified judgments have a two-page party caption before the
+        # title on folio 3. Require the same court-issued neutral citation and
+        # consecutive folios on every sheet; a later unrelated ORDER heading
+        # is not evidence that the preceding pages belong to that judgment.
+        neutral_citation = _court_record_neutral_citation(text)
+        source_consistent_delayed_title = bool(
+            neutral_citation
+            and any(
+                _JUDGMENT_TITLE_RE.search(
+                    _heading_window(page_text.get(start + distance, ""), lines=40)
+                )
+                and all(
+                    _printed_folio(page_text.get(start + offset, ""))
+                    == ("number", offset + 1, "")
+                    and _court_record_neutral_citation(
+                        page_text.get(start + offset, "")
+                    ) == neutral_citation
+                    and not annexure_mark_in_heading(
+                        page_text.get(start + offset, "")
+                    )
+                    for offset in range(1, distance + 1)
+                )
+                for distance in (1, 2)
+                if start + distance <= page_count
+            )
+        )
         # High Court bail/suspension orders are often exported as an ``Order
         # Sheet`` rather than titled ``Order``.  In the outer paper-book
         # position (after LOD, before Form 28), a dated CRA/Cr.A order sheet
@@ -657,7 +704,10 @@ def _restore_front_impugned_judgment(
             and _HC_APPEAL_CASE_RE.search(heading)
             and re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", heading)
         )
-        if not (titled_judgment or dated_appeal_order_sheet or two_page_judgment_start):
+        if not (
+            titled_judgment or dated_appeal_order_sheet or two_page_judgment_start
+            or source_consistent_delayed_title
+        ):
             continue
         if not any(
             front_labels.intersection(parts_on_page(updated.get(page)))
@@ -917,6 +967,8 @@ def _looks_like_indexed_application_body(text: str) -> bool:
 
 def _looks_like_lod_continuation(text: str) -> bool:
     """Recognize date/event rows on continuation pages of a chronology."""
+    if _court_record_neutral_citation(text):
+        return False
     return bool(
         re.search(
             r"(?mi)^\s*(?:\d{1,3}[.)]\s+)?(?:"
@@ -1245,9 +1297,17 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Synopsis"
     if _LOD_RE.search(_heading_window(text, lines=8)):
         return "List of Dates & Events"
-    if _APPENDIX_RE.search(
-        _heading_window(text, lines=6)
-    ) and not annexure_ref_in_heading(text):
+    appendix_heading = _APPENDIX_RE.search(_heading_window(text, lines=6))
+    if (
+        appendix_heading
+        and not annexure_ref_in_heading(text)
+        and (
+            not _looks_like_lower_court_exhibit_list(text)
+            # A real outer APPENDIX title may precede a reproduced case's
+            # appendix. Only the case-qualified heading itself is nested.
+            or not re.match(r"\s+of\b", text[appendix_heading.end() :], re.IGNORECASE)
+        )
+    ):
         return "Appendix"
     # Affidavit before AOR: curative affidavits often say "confined only to the
     # pleadings" and would otherwise steal the AOR Certificate slot.
@@ -4187,6 +4247,254 @@ def _extend_explicit_affidavit_continuation(
     return updated
 
 
+def _apply_cited_annexure_ranges(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Resolve blank Index ranges using corroborated outer pleading citations.
+
+    A citation never starts an exhibit on the citing page. Only a unique range
+    for an indexed exhibit, matched to the source case at its actual opening
+    and a stable folio offset at both ends, can recover an unstamped packet.
+    """
+    inventory = dict(collect_index_annexure_entries(page_parts, page_text))
+    if not inventory:
+        return page_parts
+    indexed: dict[str, set[tuple[int, int]]] = {}
+    for row in aligned_index_printed_rows(page_parts, page_text):
+        if row.mapped_part and row.kind == "number" and row.start > 0:
+            indexed.setdefault(row.mapped_part, set()).add((row.start, row.end))
+    citations: dict[str, set[tuple[int, int]]] = {}
+    trusted_families = {
+        MAIN_PETITION_PART,
+        "Synopsis",
+        "List of Dates & Events",
+        "Synopsis + List of Dates & Events",
+        "Application",
+    }
+    for page, names in page_parts.items():
+        if not any(
+            family_split_name(name) in trusted_families for name in parts_on_page(names)
+        ):
+            continue
+        citation_text = page_text.get(page, "")
+        if (
+            _is_lower_court_caption(citation_text)
+            or _looks_like_lower_court_exhibit_list(citation_text)
+            or any(
+                _is_lower_court_caption(line) for line in citation_text.splitlines()[:16]
+            )
+            or re.search(
+                r"(?mi)^\s*(?:\d{1,4}\s+)?(?:i\.?\s*a\.?\s*\d+/\d{4}\s+in\s+)?"
+                r"w\.?\s*[ap]\.?(?:\s*\(\s*c\s*\))?\s*(?:no\.?\s*)?"
+                r"\d+\s*/\s*\d{4}\s*[-:]",
+                citation_text[:400],
+            )
+        ):
+            continue
+        for label, start, end in annexure_cited_page_ranges(citation_text):
+            if label in inventory:
+                citations.setdefault(label, set()).add((start, end))
+    if not citations:
+        return page_parts
+
+    folios = {page: _printed_folio(text) for page, text in page_text.items()}
+    supports: dict[int, set[int]] = {}
+    for page in range(1, page_count):
+        left, right = folios.get(page), folios.get(page + 1)
+        if (
+            left
+            and right
+            and left[0] == right[0] == "number"
+            and not left[2]
+            and not right[2]
+            and right[1] == left[1] + 1
+        ):
+            supports.setdefault(page - left[1], set()).update((page, page + 1))
+    case_pattern = re.compile(
+        r"\b(w\s*\.?\s*[ap]\s*\.?(?:\s*\(\s*c\s*\))?)\s*"
+        r"(?:no\.?\s*)?(\d{1,7})\s*(?:/|of\s+)\s*(\d{4})\b",
+        re.IGNORECASE,
+    )
+
+    def cases(text: str) -> set[tuple[str, str, str]]:
+        return {
+            (re.sub(r"\W", "", match[0]).upper(), match[1], match[2])
+            for match in case_pattern.findall(text)
+        }
+
+    claims: dict[int, set[str]] = {}
+    for label, ranges in citations.items():
+        if len(ranges) != 1:
+            continue
+        start, end = next(iter(ranges))
+        if label in indexed and indexed[label] != {(start, end)}:
+            continue
+        if any(
+            start <= other_end and other_start <= end
+            for other_label, other_ranges in indexed.items()
+            if other_label != label
+            for other_start, other_end in other_ranges
+        ):
+            continue
+        candidate_spans = []
+        for offset, anchors in supports.items():
+            first, last = start + offset, end + offset
+            if not 1 <= first <= last <= page_count:
+                continue
+            # Adjacent numeric folios corroborate each end independently;
+            # isolated internal court page numbers cannot establish an offset.
+            if not any(first - 25 <= p <= first + 1 for p in anchors):
+                continue
+            if not any(last - 1 <= p <= last + 25 for p in anchors):
+                continue
+            opening = page_text.get(first, "")
+            court_opening = _is_lower_court_caption(opening) or any(
+                _is_lower_court_caption(line) for line in opening.splitlines()[:16]
+            )
+            if not court_opening or _is_sci_caption(opening):
+                continue
+            if not cases(inventory[label]) & cases(opening[:1800]):
+                continue
+            if any(
+                _is_sci_caption(page_text.get(page, ""))
+                or (
+                    any(
+                        _is_lower_court_caption(line)
+                        for line in page_text.get(page, "").splitlines()[:16]
+                    )
+                    and cases(page_text.get(page, "")[:1800])
+                    and not cases(inventory[label])
+                    & cases(page_text.get(page, "")[:1800])
+                )
+                or (
+                    (stamp := annexure_label_from_text(page_text.get(page, "")))
+                    and stamp != label
+                )
+                or any(
+                    family_split_name(name) != ANNEXURE_FAMILY
+                    and name not in {"Undefined", "Unidentified", "other"}
+                    for name in parts_on_page(page_parts.get(page))
+                )
+                for page in range(first, last + 1)
+            ):
+                continue
+            candidate_spans.append((first, last))
+        if len(candidate_spans) != 1:
+            continue
+        first, last = candidate_spans[0]
+        for page in range(first, last + 1):
+            claims.setdefault(page, set()).add(label)
+    updated = {page: list(names) for page, names in page_parts.items()}
+    for page, labels in claims.items():
+        if len(labels) == 1:
+            updated[page] = [next(iter(labels))]
+    return updated
+
+
+def _preserve_historical_efile_annexure_packets(
+    page_parts: PagePartMap,
+    original_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep a reproduced court e-filing packet inside its original exhibit.
+
+    A running source header (I.A. number/year + parent case) is stronger than
+    the packet's internal Index/Affidavit headings. Body citations to the same
+    case are deliberately insufficient. Require an annexure-owned lower-court
+    docket followed by its matching Index and petition pages, and never cross
+    an independently evidenced outer boundary.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    source_prefix = re.compile(
+        r"^\s*[ijt1l]\.?\s*a\.?\s*(\d{1,6})\s*/\s*(\d{4})\s+in\s+",
+        re.IGNORECASE,
+    )
+    parent_case = re.compile(
+        r"\b(w\s*\.?\s*[ap]\s*\.?(?:\s*\(\s*[a-z]\s*\))?)\s*"
+        r"(?:no\.?\s*)?(\d{1,7})\s*(?:/|of\s+)\s*(\d{4})\b",
+        re.IGNORECASE,
+    )
+    lower_court = re.compile(
+        r"\b(?:in|before)\s+the\s+"
+        r"(?:(?:hon['’]?ble|honou?rable)\s+)?high\s+court\b",
+        re.IGNORECASE,
+    )
+
+    def identity(text: str) -> tuple[str, ...] | None:
+        prefix = source_prefix.match(text or "")
+        if not prefix:
+            return None
+        # OCR can damage the parent-case running header while leaving the
+        # repeated cause title intact. Limit that fallback to the page heading.
+        parent = parent_case.search(text[:800])
+        if not parent:
+            return None
+        return (
+            *prefix.groups(),
+            re.sub(r"\W", "", parent.group(1)).upper(),
+            parent.group(2),
+            parent.group(3),
+        )
+
+    # Preserve master-Index corrections even when a model supplied one stale
+    # Annexure label over both the packet and a subsequent outer document.
+    indexed = _apply_indexed_outer_document_ranges(
+        original_parts, page_text, page_count
+    )
+    for start in range(1, page_count + 1):
+        owners = parts_on_page(original_parts.get(start))
+        if len(owners) != 1 or family_split_name(owners[0]) != ANNEXURE_FAMILY:
+            continue
+        owner = owners[0]
+        first = page_text.get(start, "")
+        packet_id = identity(first)
+        if (
+            packet_id is None
+            or not re.search(r"\bdocket\b", first.splitlines()[0], re.IGNORECASE)
+            or not lower_court.search(first[:1200])
+            or _is_sci_caption(first)
+        ):
+            continue
+        packet: list[int] = []
+        for page in range(start, page_count + 1):
+            text = page_text.get(page, "")
+            current = parts_on_page(updated.get(page))
+            stamp = annexure_ref_in_heading(text)
+            if (
+                parts_on_page(original_parts.get(page)) != owners
+                or parts_on_page(indexed.get(page)) != owners
+                or identity(text) != packet_id
+                or _is_sci_caption(text)
+                or _looks_like_volume_cover(text)
+                or (stamp and stamp != owner)
+                or any(
+                    family_split_name(name) == ANNEXURE_FAMILY and name != owner
+                    for name in current
+                )
+            ):
+                break
+            packet.append(page)
+        if (
+            len(packet) < 3
+            or not re.search(
+                r"\bindex\b", page_text[packet[1]].splitlines()[0], re.IGNORECASE
+            )
+            or not any(
+                re.search(
+                    r"\bpetition\b", page_text[page].splitlines()[0], re.IGNORECASE
+                )
+                for page in packet[2:]
+            )
+        ):
+            continue
+        for page in packet:
+            updated[page] = [owner]
+    return updated
+
+
 def repair_compiled_split(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -4323,6 +4631,9 @@ def repair_compiled_split(
     # A model label alone must never populate the limitation slot. In
     # particular, REPORT OF FRESH CASE is a different Registry document.
     repaired = _demote_unverified_office_reports(repaired, page_text, page_count)
+    # A cited annexure can steal the body/prayer of the application introducing
+    # it. Recover only evidenced continuations of a current Supreme Court I.A.
+    repaired = _reclaim_application_continuations(repaired, page_text, page_count)
     # LlamaSplit can assign a new Application number to a continuation,
     # signature, or supporting-affidavit page of the same I.A. A distinct
     # adjacent application is valid only when its first page actually carries
@@ -4364,6 +4675,10 @@ def repair_compiled_split(
     repaired = _apply_indexed_outer_document_ranges(repaired, page_text, page_count)
     repaired = _apply_indexed_annexure_ranges(repaired, page_text, page_count)
     repaired = _add_same_page_representation_labels(repaired, page_text)
+    repaired = _preserve_historical_efile_annexure_packets(
+        repaired, page_parts, page_text, page_count
+    )
+    repaired = _apply_cited_annexure_ranges(repaired, page_text, page_count)
     return repaired, duplicates
 
 
@@ -4652,6 +4967,42 @@ def _index_row_confirmed(text: str, part: str | None) -> bool:
     return False
 
 
+def _consecutive_stamped_annexure_folios(
+    page_text: Mapping[int, str],
+    folios: Mapping[int, tuple[str, int, str] | None],
+) -> dict[str, tuple[int, int]]:
+    """Folio intervals proven by at least three unique consecutive stamps.
+
+    An isolated local P-n inside a reproduced record is insufficient. Require
+    a same-series sequence, one occurrence per label, and consistent physical
+    versus printed pagination before treating an Index range as contradictory.
+    """
+    starts: list[tuple[int, str, str, int, int]] = []
+    counts: dict[str, int] = {}
+    for page in sorted(page_text):
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
+        if mark is None:
+            continue
+        counts[mark.label] = counts.get(mark.label, 0) + 1
+        folio = folios.get(page)
+        if folio and folio[0] == "number" and not folio[2]:
+            starts.append((page, mark.label, mark.series, mark.number, folio[1]))
+
+    confirmed: dict[str, tuple[int, int]] = {}
+    for first, second, third in zip(starts, starts[1:], starts[2:]):
+        if not (
+            first[2] == second[2] == third[2]
+            and second[3] == first[3] + 1
+            and third[3] == second[3] + 1
+            and first[0] - first[4] == second[0] - second[4] == third[0] - third[4]
+            and all(counts[item[1]] == 1 for item in (first, second, third))
+        ):
+            continue
+        confirmed[first[1]] = (first[4], second[4] - 1)
+        confirmed[second[1]] = (second[4], third[4] - 1)
+    return confirmed
+
+
 def _apply_indexed_annexure_ranges(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
@@ -4732,6 +5083,7 @@ def _apply_indexed_annexure_ranges(
         page: _printed_folio(page_text.get(page, ""))
         for page in range(1, page_count + 1)
     }
+    stamped_intervals = _consecutive_stamped_annexure_folios(page_text, folios)
     volume_hints = _master_volume_offsets(page_text, folios, page_count)
     owner_candidates: dict[int, set[str]] = {}
     supported_labels: set[str] = set()
@@ -4750,6 +5102,14 @@ def _apply_indexed_annexure_ranges(
         if not row.mapped_part:
             continue
         label = application_labels.get(id(row), row.mapped_part)
+        stamped_interval = stamped_intervals.get(label)
+        if stamped_interval and row.start > stamped_interval[1]:
+            # A source Index can contain genuinely stale page numbers. Once
+            # three consecutive outer stamps establish P-7 before P-8, a
+            # P-7 row beginning inside the later exhibit must not split that
+            # exhibit or erase the real P-7 pages. Leave ownership to the
+            # verified openings rather than making this row authoritative.
+            continue
         preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
         row_pages = _physical_pages_for_index_row(
             row,
@@ -5434,6 +5794,98 @@ def _fill_application_gaps(
                 last_app = None
                 continue
         updated[page] = [last_app]
+    return updated
+
+
+def _reclaim_application_continuations(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Keep an I.A.'s body/prayer out of the annexure it merely references.
+
+    Unlike gap filling, this may correct an existing Annexure label, but only
+    after an explicit Supreme Court application opening and with affirmative
+    continuation evidence. A new exhibit, lower-court record or outer heading
+    stops the carry. Historical applications inside exhibits never open it.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    active: str | None = None
+    previous_text = ""
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "")
+        names = parts_on_page(updated.get(page))
+        anchor = _outer_anchor_label(text)
+        if (
+            _is_sci_caption(text)
+            and not _is_lower_court_caption(text)
+            and anchor
+            and family_split_name(anchor) == "Application"
+            and page_starts_application(text)
+            and not annexure_label_from_text(text)
+            and all(
+                family_split_name(name) in {ANNEXURE_FAMILY, "Application"}
+                or name in {"Undefined", "Unidentified", "other"}
+                for name in names
+            )
+        ):
+            active = next(
+                (name for name in names if family_split_name(name) == "Application"),
+                "Application 1",
+            )
+            updated[page] = [active]
+            previous_text = text
+            continue
+        if not active:
+            continue
+
+        ended = bool(
+            re.search(r"duty\s+bound\s+shall|ever\s+pray", previous_text, re.IGNORECASE)
+            and re.search(r"filed\s+(?:by|on)", previous_text, re.IGNORECASE)
+        )
+        if (
+            ended
+            or not text.strip()
+            or _is_lower_court_caption(text)
+            or annexure_label_from_text(text)
+            or page_starts_application(text)
+            or _FILING_MEMO_RE.search(_heading_window(text, lines=8))
+            or (anchor and family_split_name(anchor) != "Application")
+            or any(
+                family_split_name(name) not in {ANNEXURE_FAMILY, "Application"}
+                and name not in {"Undefined", "Unidentified", "other"}
+                for name in names
+            )
+        ):
+            active = None
+            continue
+
+        numbered = re.search(r"(?mi)^\s*(?:\d{1,3}|[a-z])[.)]\s+\S", text)
+        application_body = re.search(
+            r"\bapplication\b|\bapplicant\b|grant\s+permission|additional\s+documents",
+            text,
+            re.IGNORECASE,
+        )
+        prayer_or_closing = re.search(
+            r"(?mi)^\s*prayer\s*$|most\s+respectfully\s+prayed|"
+            r"duty\s+bound\s+shall|pass\s+such\s+further|filed\s+(?:by|on)",
+            text,
+        )
+        prior_folio = _printed_folio(previous_text)
+        folio = _printed_folio(text)
+        conflicting_folios = bool(
+            prior_folio
+            and folio
+            and prior_folio[0] == folio[0] == "number"
+            and folio[1] != prior_folio[1] + 1
+        )
+        if conflicting_folios or not (
+            (numbered and application_body) or prayer_or_closing
+        ):
+            active = None
+            continue
+        updated[page] = [active]
+        previous_text = text
     return updated
 
 

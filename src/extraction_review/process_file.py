@@ -2056,6 +2056,7 @@ class ProcessFileWorkflow(Workflow):
         # or duplicate filtering is performed in the LlamaCloud-only flow.
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
+            "reconciliation_mode": split_mode,
             "index_rows": [],
             "document_spans": [],
             "flags": [],
@@ -2101,6 +2102,7 @@ class ProcessFileWorkflow(Workflow):
                 page_count=pdf_page_count,
             )
             split_audit["structure"] = structured.report()
+            split_audit["reconciliation_mode"] = split_mode
             logger.info(
                 "[SplitTiming] mode=%s repair_and_audit=%.1fs",
                 split_mode,

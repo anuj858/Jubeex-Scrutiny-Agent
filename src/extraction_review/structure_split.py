@@ -36,6 +36,7 @@ from .document_parts import (
 from .split_ocr import ocr_sparse_pages, pages_with_large_images
 from .split_pdf_layout import extract_split_layout
 from .split_repair import (
+    _apply_cited_annexure_ranges,
     _apply_indexed_annexure_ranges,
     _apply_indexed_outer_document_ranges,
     _heading_window,
@@ -701,6 +702,7 @@ def _index_supported_map(
     indexed = _restore_index_bridge_pages(indexed, page_text)
     indexed = _apply_indexed_outer_document_ranges(indexed, page_text, page_count)
     indexed = _apply_indexed_annexure_ranges(indexed, page_text, page_count)
+    indexed = _apply_cited_annexure_ranges(indexed, page_text, page_count)
     return indexed
 
 
@@ -734,6 +736,30 @@ def reconcile_compiled_split(
         and set(item.signals) & _STRONG_RECONCILIATION_SIGNALS
     }
 
+    def classification_supports_labels(
+        item: PageClassification, labels: Sequence[str]
+    ) -> bool:
+        # Heading classification uses Application 1 as a taxonomy placeholder;
+        # it has no knowledge of this opening's order in the complete filing.
+        # Let that real opening support a repaired Application 2+ span, while
+        # retaining any explicit numbered identity already supplied by Llama.
+        if (
+            item.document_type == "Application 1"
+            and set(item.signals) & {"outer_anchor", "application_start"}
+            and page_starts_application(page_text.get(item.page, ""))
+        ):
+            seeded_identities = {
+                name
+                for name in parts_on_page(original.get(item.page))
+                if re.fullmatch(r"Application \d+", name)
+            }
+            return any(
+                family_split_name(label) == "Application"
+                and (not seeded_identities or label in seeded_identities)
+                for label in labels
+            )
+        return _labels_match_type(labels, item.document_type)
+
     # Describe each continuous proposed document once. An explicit opening can
     # support its captionless continuation, but only while it replaces at most
     # one existing Llama family. This prevents a single heading from swallowing
@@ -754,8 +780,7 @@ def reconcile_compiled_split(
             end_index += 1
         span_pages = pages[start_index : end_index + 1]
         anchored = any(
-            item
-            and any(_same_document_type(label, item.document_type) for label in labels)
+            classification_supports_labels(item, labels)
             for page in span_pages
             if (item := strong_by_page.get(page))
         )
@@ -788,7 +813,7 @@ def reconcile_compiled_split(
             evidence.append("master_index_and_folio")
 
         direct = strong_by_page.get(page)
-        if direct and _labels_match_type(new, direct.document_type):
+        if direct and classification_supports_labels(direct, new):
             evidence.append("explicit_outer_boundary")
         elif span_policy.get(page):
             evidence.append("anchored_continuation")

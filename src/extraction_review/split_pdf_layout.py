@@ -10,6 +10,53 @@ _INDEX_SPAN_CELL_RE = re.compile(
     r"(?:\s*[-–—]\s*(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2}))?",
     re.IGNORECASE,
 )
+_ANNEXURE_CITED_RANGE_RE = re.compile(
+    r"\bannexure\s*[-–—:]?\s*(?P<prefix>[a-z])\s*[-/–—]\s*"
+    r"(?P<number>\d{1,4})\s*\(\s*(?:kindly|please)\s+see\s+pages?"
+    r"[\s_]*(?P<start>\d{1,4})[\s_]*to[\s_]*(?P<end>\d{1,4})[\s_]*\)",
+    re.IGNORECASE,
+)
+
+
+def annexure_cited_page_ranges(text: str) -> list[tuple[str, int, int]]:
+    """Read explicit narrative page-range references, never document starts.
+
+    Both numeric endpoints must appear within the complete parenthetical
+    ``Annexure P-9 (Kindly see Pages 189 to 199)`` reference. Filled underline
+    placeholders are allowed; detached page numbers and bare exhibit headings
+    are not evidence. The caller must establish the citing document's owner
+    before using these ranges to identify an outer annexure.
+    """
+    ranges: list[tuple[str, int, int]] = []
+    for match in _ANNEXURE_CITED_RANGE_RE.finditer(text or ""):
+        number = int(match.group("number"))
+        start, end = int(match.group("start")), int(match.group("end"))
+        if number < 1 or not 1 <= start <= end:
+            continue
+        label = f"Annexure {match.group('prefix').upper()}-{number}"
+        reference = (label, start, end)
+        if reference not in ranges:
+            ranges.append(reference)
+    return ranges
+
+
+def _append_geometry_annexure_references(page: object, text: str) -> str:
+    """Recover inline numbers inserted separately without reordering prose."""
+    try:
+        words = page.get_text("words", sort=True)  # type: ignore[attr-defined]
+        sorted_text = " ".join(str(word[4]) for word in words)
+    except Exception:  # noqa: BLE001 - optional geometry enrichment
+        return text
+    existing = set(annexure_cited_page_ranges(text))
+    references = [
+        f"Reference to {label} (Kindly see Pages {start} to {end})."
+        for label, start, end in annexure_cited_page_ranges(sorted_text)
+        if (label, start, end) not in existing
+    ]
+    if not references:
+        return text
+    separator = "" if text.endswith("\n") else "\n"
+    return text + separator + "\n".join(references)
 
 
 def _is_margin_folio_candidate(
@@ -247,6 +294,10 @@ def extract_split_layout(
                             result[number - 1] = continuation
                 index_active = table_text is not None
                 index_seen = index_seen or index_active
+                if table_text is None and not re.search(
+                    r"(?mi)^\s*(?:master\s+)?index\s*$", text
+                ):
+                    text = _append_geometry_annexure_references(page, text)
                 result[number] = (text, table_text, folio)
             except Exception:  # noqa: BLE001 - optional PDF enrichment must fail open
                 # Unsupported/damaged layout must not prevent text splitting.

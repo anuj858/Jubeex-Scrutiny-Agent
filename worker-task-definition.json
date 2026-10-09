@@ -13,6 +13,10 @@
       ],
       "environment": [
         {
+          "name": "SPLIT_RECONCILIATION_MODE",
+          "value": "targeted"
+        },
+        {
           "name": "PINECONE_POOL_THREADS",
           "value": "32"
         },
