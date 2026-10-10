@@ -1407,11 +1407,32 @@ def check_index_consistency(
             )
             continue
 
+        # Some Indexes use one row for the petition plus its supporting
+        # affidavit even though the splitter emits separate filing slots.
+        # Compare the row to their combined span, not to the petition alone.
+        if part == "Main Petition" and "affidavit" in _fold(row.particulars):
+            combined = [
+                span
+                for span in (
+                    found,
+                    by_part.get("AOR's Certificate"),
+                    by_part.get("Affidavit"),
+                )
+                if span
+            ]
+            if combined:
+                found = (
+                    min(span[0] for span in combined),
+                    max(span[1] for span in combined),
+                )
+
         if row.start_page <= 0:
             continue
 
         found_start, found_end = found
-        if not (found_start - 1 <= row.start_page <= found_end + 1):
+        start_matches = abs(found_start - row.start_page) <= 1
+        end_matches = abs(found_end - row.end_page) <= 1
+        if not start_matches:
             flags.append(
                 SplitAuditFlag(
                     code="index_page_mismatch",
@@ -1426,6 +1447,27 @@ def check_index_consistency(
                     message=(
                         f"Index lists {part!r} at pp. {row.start_page}–{row.end_page}, "
                         f"but split found it at pp. {found_start}–{found_end}"
+                    ),
+                )
+            )
+        elif row.end_page > 0 and not end_matches:
+            # Checking only the indexed start misses the most damaging split
+            # defect: a correct opening page followed by pages from the next
+            # document (for example, a Main Petition that absorbs an annexure).
+            flags.append(
+                SplitAuditFlag(
+                    code="index_end_page_mismatch",
+                    severity="error",
+                    part=part,
+                    index_particulars=row.particulars,
+                    expected_pages={
+                        "start_page": row.start_page,
+                        "end_page": row.end_page,
+                    },
+                    found_pages={"start_page": found_start, "end_page": found_end},
+                    message=(
+                        f"Index lists {part!r} through p. {row.end_page}, but split "
+                        f"continues through p. {found_end}; verify the ending boundary"
                     ),
                 )
             )
@@ -1585,11 +1627,35 @@ def audit_compiled_split(
     page_text: Mapping[int, str],
     *,
     page_count: int,
+    llama_page_parts: PagePartMap | None = None,
+    classifications: Sequence[Any] = (),
+    reconciliation_changes: Sequence[Any] = (),
 ) -> dict[str, Any]:
-    """Run sequence, Index and unresolved source checks on a repaired split map."""
+    """Run sequence, Index and unresolved source checks on a repaired split map.
+
+    Keep a compact per-page evidence ledger with the split result so a wrong
+    boundary can be traced to OCR/page evidence, Llama's initial label, or a
+    local reconciliation change instead of inferred from the sliced PDF alone.
+    """
     spans = document_spans_from_page_parts(page_parts)
     index_text = _index_pages_text(page_parts, page_text)
     rows = parse_index_rows(index_text) if index_text.strip() else []
+    index_source_pages = sorted(
+        {
+            page
+            for page, names in page_parts.items()
+            if "Index" in parts_on_page(names)
+        }
+        | {
+            page
+            for page, text in page_text.items()
+            if "index" in _fold(text[:400])
+            and (
+                "particulars" in _fold(text[:800])
+                or "page no" in _fold(text[:800])
+            )
+        }
+    )
 
     flags: list[SplitAuditFlag] = []
     flags.extend(check_document_sequence(spans))
@@ -1744,8 +1810,61 @@ def audit_compiled_split(
                     }
                 )
 
+    classification_by_page = {
+        int(item.page): item
+        for item in classifications
+        if getattr(item, "page", None) is not None
+    }
+    changes_by_page = {
+        int(item.page): item
+        for item in reconciliation_changes
+        if getattr(item, "page", None) is not None
+    }
+    page_evidence: list[dict[str, Any]] = []
+    for page in range(1, page_count + 1):
+        text = page_text.get(page, "") or ""
+        compact_text = re.sub(r"\s+", " ", text).strip()
+        folio = printed_folio(text)
+        classification = classification_by_page.get(page)
+        change = changes_by_page.get(page)
+        raw_labels = (llama_page_parts or {}).get(
+            page, (llama_page_parts or {}).get(str(page))
+        )
+        page_evidence.append(
+            {
+                "source_page": page,
+                "printed_folio": list(folio) if folio else None,
+                "assigned_labels": parts_on_page(page_parts.get(page)),
+                "llama_labels": parts_on_page(raw_labels),
+                "annexure_labels_detected": sorted(
+                    annexure_labels_from_text(text),
+                    key=lambda item: (item.casefold(), item),
+                ),
+                "classification": (
+                    classification.as_dict()
+                    if classification and hasattr(classification, "as_dict")
+                    else None
+                ),
+                "reconciliation": (
+                    change.as_dict()
+                    if change and hasattr(change, "as_dict")
+                    else None
+                ),
+                "text_excerpt": compact_text[:320],
+            }
+        )
+
     return {
+        "index_status": (
+            "parsed"
+            if rows
+            else "unreadable"
+            if index_text.strip() or index_source_pages
+            else "missing"
+        ),
+        "index_source_pages": index_source_pages,
         "index_rows": [row.as_dict() for row in rows],
+        "page_evidence": page_evidence,
         "document_spans": list(spans),
         "unidentified_reasons": unidentified_reasons,
         "annexure_inventory": {

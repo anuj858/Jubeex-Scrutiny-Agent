@@ -175,10 +175,24 @@ def test_slp_with_affidavit_index_row_mentions_both_document_types() -> None:
 
     flags = check_index_consistency(rows, spans, page_count=31)
 
+    assert not any(flag.code == "index_end_page_mismatch" for flag in flags)
     assert all(
         not (flag.code == "in_file_missing_in_index" and flag.part == "Affidavit")
         for flag in flags
     )
+
+
+def test_slp_affidavit_index_row_checks_combined_document_span() -> None:
+    rows = parse_index_rows("1. SLP WITH AFFIDAVIT 41-61\n")
+    spans = [
+        {"name": "Main Petition", "start_page": 41, "end_page": 59},
+        {"name": "AOR's Certificate", "start_page": 60, "end_page": 60},
+        {"name": "Affidavit", "start_page": 61, "end_page": 61},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=100)
+
+    assert not any(flag.code == "index_end_page_mismatch" for flag in flags)
 
 
 def test_index_lists_missing_document() -> None:
@@ -215,6 +229,80 @@ def test_index_page_out_of_range() -> None:
     spans = [{"name": "Main Petition", "start_page": 10, "end_page": 20}]
     flags = check_index_consistency(rows, spans, page_count=50)
     assert any(flag.code == "index_page_out_of_range" for flag in flags)
+
+
+def test_index_audit_catches_document_that_runs_past_indexed_end() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 41-59\n")
+    spans = [{"name": "Main Petition", "start_page": 41, "end_page": 77}]
+
+    flags = check_index_consistency(rows, spans, page_count=271)
+
+    mismatch = next(flag for flag in flags if flag.code == "index_end_page_mismatch")
+    assert mismatch.part == "Main Petition"
+    assert mismatch.expected_pages == {"start_page": 41, "end_page": 59}
+    assert mismatch.found_pages == {"start_page": 41, "end_page": 77}
+
+
+def test_audit_records_no_index_as_fallback_mode() -> None:
+    result = audit_compiled_split(
+        {1: ["Main Petition"]},
+        {1: "SPECIAL LEAVE PETITION\nMost respectfully showeth"},
+        page_count=1,
+    )
+
+    assert result["index_status"] == "missing"
+    assert any(flag["code"] == "index_missing" for flag in result["flags"])
+
+
+def test_audit_keeps_page_level_split_evidence() -> None:
+    from extraction_review.structure_split import (
+        PageClassification,
+        ReconciliationChange,
+    )
+
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Annexure P-9"]},
+        {
+            1: "INDEX\n1. Annexure P-9 189-199",
+            2: "ANNEXURE P/9\nHigh Court order\n189",
+        },
+        page_count=2,
+        llama_page_parts={2: ["Main Petition"]},
+        classifications=[
+            PageClassification(
+                page=2,
+                document_type="Annexure P-9",
+                confidence=0.95,
+                signals=("annexure_stamp",),
+            )
+        ],
+        reconciliation_changes=[
+            ReconciliationChange(
+                page=2,
+                old_labels=("Main Petition",),
+                new_labels=("Annexure P-9",),
+                evidence=("explicit_outer_boundary",),
+            )
+        ],
+    )
+
+    evidence = result["page_evidence"][1]
+    assert evidence["source_page"] == 2
+    assert evidence["assigned_labels"] == ["Annexure P-9"]
+    assert evidence["llama_labels"] == ["Main Petition"]
+    assert evidence["classification"]["signals"] == ["annexure_stamp"]
+    assert evidence["reconciliation"]["evidence"] == ["explicit_outer_boundary"]
+    assert "High Court order" in evidence["text_excerpt"]
+
+
+def test_audit_marks_present_but_unreadable_index() -> None:
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Main Petition"]},
+        {1: " ", 2: "SPECIAL LEAVE PETITION"},
+        page_count=2,
+    )
+
+    assert result["index_status"] == "unreadable"
 
 
 def test_audit_compiled_split_end_to_end() -> None:

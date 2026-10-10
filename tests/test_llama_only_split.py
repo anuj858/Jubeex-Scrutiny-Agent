@@ -258,7 +258,12 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     assert repair.call_args.kwargs["run_hybrid_repair"] is True
     assert repair.call_args.kwargs["reconciliation_mode"] == "targeted"
     audit.assert_called_once_with(
-        repaired, {unit.pdf_page: unit.text for unit in units}, page_count=6
+        repaired,
+        {unit.pdf_page: unit.text for unit in units},
+        page_count=6,
+        llama_page_parts={page: ["Annexures"] for page in range(1, 7)},
+        classifications=(),
+        reconciliation_changes=[],
     )
     assert result.slot_pages == {
         "index": [{"start": 1, "end": 1}],

@@ -2026,6 +2026,7 @@ class ProcessFileWorkflow(Workflow):
             run_llama_split(), load_and_prepare_pdf()
         )
         page_parts, split_job_id, llama_split = split_result
+        llama_page_parts = page_parts
         pdf_bytes, page_units, local_read_seconds = local_result
         with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
             pdf_page_count = pdf.page_count
@@ -2056,6 +2057,7 @@ class ProcessFileWorkflow(Workflow):
         # or duplicate filtering is performed in the LlamaCloud-only flow.
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
+            "index_status": "not_checked",
             "reconciliation_mode": split_mode,
             "index_rows": [],
             "document_spans": [],
@@ -2100,6 +2102,9 @@ class ProcessFileWorkflow(Workflow):
                 page_parts,
                 {unit.pdf_page: unit.text for unit in structured.page_units},
                 page_count=pdf_page_count,
+                llama_page_parts=llama_page_parts,
+                classifications=getattr(structured, "classifications", ()),
+                reconciliation_changes=reconciliation_changes,
             )
             split_audit["structure"] = structured.report()
             split_audit["reconciliation_mode"] = split_mode
@@ -2145,6 +2150,44 @@ class ProcessFileWorkflow(Workflow):
                         message=(
                             f"Split audit raised {audit_total} flag(s) "
                             "(sequence / Index consistency)"
+                        ),
+                    )
+                )
+            index_status = split_audit.get("index_status")
+            if index_status in {"missing", "unreadable"}:
+                ctx.write_event_to_stream(
+                    Status(
+                        level="warning",
+                        message=(
+                            "No usable Index was available; document boundaries were "
+                            "reconciled from page headings, folios, and document cues. "
+                            "Check split-audit flags for unresolved ranges."
+                        ),
+                    )
+                )
+            boundary_flags = [
+                flag
+                for flag in split_audit.get("flags", [])
+                if flag.get("code")
+                in {"index_page_mismatch", "index_end_page_mismatch"}
+            ]
+            if boundary_flags:
+                examples = []
+                for flag in boundary_flags[:3]:
+                    part = flag.get("part") or "document"
+                    expected = flag.get("expected_pages") or {}
+                    found = flag.get("found_pages") or {}
+                    examples.append(
+                        f"{part}: Index {expected.get('start_page', '?')}–"
+                        f"{expected.get('end_page', '?')}, split "
+                        f"{found.get('start_page', '?')}–{found.get('end_page', '?')}"
+                    )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="warning",
+                        message=(
+                            "Index/split boundary mismatch; verify before accepting: "
+                            + "; ".join(examples)
                         ),
                     )
                 )

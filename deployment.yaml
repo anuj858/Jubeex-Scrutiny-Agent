@@ -11,7 +11,7 @@ name: jubeex-scrutiny-agent
 spec:
   repo_url: https://github.com/anuj858/Jubeex-Scrutiny-Agent.git
   deployment_file_path: "."
-  git_ref: main
+  git_ref: latest_sc
   secrets:
     PINECONE_API_KEY: ${PINECONE_API_KEY}
     PINECONE_INDEX: ${PINECONE_INDEX}

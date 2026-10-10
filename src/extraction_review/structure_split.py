@@ -800,6 +800,17 @@ def reconcile_compiled_split(
     for page in range(1, page_count + 1):
         old = tuple(parts_on_page(original.get(page)))
         new = tuple(parts_on_page(candidate.get(page)))
+        indexed_labels = tuple(parts_on_page(indexed.get(page)))
+        index_overrides_candidate = bool(
+            indexed_labels
+            and indexed_labels != old
+            and indexed_labels != new
+        )
+        if index_overrides_candidate:
+            # A folio-mapped master-Index range is stronger than an ambiguous
+            # local repair proposal. In particular, do not let an adjacent
+            # Main Petition span absorb pages that the Index maps to P-n.
+            new = indexed_labels
         if not new or new == old:
             continue
 
@@ -809,7 +820,6 @@ def reconcile_compiled_split(
         if len(old) > 1:
             evidence.append("overlapping_labels")
 
-        indexed_labels = tuple(parts_on_page(indexed.get(page)))
         if indexed_labels == new and indexed_labels != old:
             evidence.append("master_index_and_folio")
 

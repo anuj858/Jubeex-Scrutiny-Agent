@@ -78,6 +78,37 @@ def test_targeted_reconciliation_preserves_supported_llama_segment() -> None:
     assert changes == []
 
 
+def test_targeted_reconciliation_uses_index_range_over_main_span(monkeypatch) -> None:
+    import extraction_review.structure_split as structure_split_module
+
+    monkeypatch.setattr(
+        structure_split_module,
+        "_index_supported_map",
+        lambda baseline, page_text, page_count: {
+            1: ["Main Petition"],
+            2: ["Annexure P-12"],
+            3: ["Annexure P-12"],
+        },
+    )
+    baseline = {page: ["Main Petition"] for page in range(1, 4)}
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        baseline,
+        [],
+        {},
+        page_count=3,
+    )
+
+    assert result == {
+        1: ["Main Petition"],
+        2: ["Annexure P-12"],
+        3: ["Annexure P-12"],
+    }
+    assert [change.page for change in changes] == [2, 3]
+    assert all("master_index_and_folio" in change.evidence for change in changes)
+
+
 def test_targeted_reconciliation_applies_anchored_document_continuation() -> None:
     baseline = {
         1: ["Main Petition"],
