@@ -142,10 +142,10 @@ async def test_metadata_workflow() -> None:
     ]
     assert "court_fees" not in criminal_ids
     assert result.config["config_id"] == "jubeex_parse"
-    assert result.config["config_version"] == "1.0.30"
+    assert result.config["config_version"] == "1.0.33"
     assert result.config["classify"]["config_version"] == "1.0.0"
     assert result.config["extract"]["config_version"] == "1.0.1"
-    assert result.config["split"]["config_version"] == "1.0.30"
+    assert result.config["split"]["config_version"] == "1.0.33"
     assert result.upload_sliced_slot_pdfs is False
 
 

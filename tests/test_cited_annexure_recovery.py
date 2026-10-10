@@ -93,6 +93,7 @@ def test_citation_alone_does_not_reassign_pages(change):
         texts[6] = "IN THE SUPREME COURT OF INDIA\nAPPLICATION FOR EXEMPTION"
     elif change == "protected_document":
         parts[6] = ["Application 2"]
+        texts[6] = "Uncorroborated application body without source header or folio."
     assert _apply_cited_annexure_ranges(parts, texts, len(texts)) == parts
 
 
@@ -121,3 +122,36 @@ def test_cited_range_does_not_swallow_a_different_court_case_opening():
     texts, parts = fixture()
     texts[6] = "IN THE HIGH COURT OF KERALA\nW.A.No.999 of 2014\nAFFIDAVIT"
     assert _apply_cited_annexure_ranges(parts, texts, len(texts)) == parts
+
+
+def test_cited_range_reclaims_lower_court_document_mislabeled_as_outer_application():
+    texts, parts = fixture()
+    parts[6] = ["Application 2"]
+    result = _apply_cited_annexure_ranges(parts, texts, len(texts))
+    assert all(result[p] == ["Annexure P-9"] for p in range(5, 8))
+
+
+def test_common_judgment_keeps_connected_case_captions_inside_stamped_annexure():
+    texts = {
+        1: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "1.\tANNEXURE P-8 Common judgment in WP(C) No.28199 of 2012\t10-14"
+        ),
+        2: "LIST OF DATES & EVENTS\nANNEXURE P-8 (Kindly see Pages 10 to 14).\nX",
+        3: "IN THE HIGH COURT OF KERALA\nW.P.(C) No.32639 of 2015\nANNEXURE P-8\nJudgment text\n10",
+        4: "WP(C) No.28199 of 2012 and connected cases\nWP(C) No. 1078 of 2009\nJudgment text\n11",
+        5: "WP(C) No.28199 of 2012 and connected cases\nJudgment text\n12",
+        6: "WP(C) No.28199 of 2012 and connected cases\nJudgment text\n13",
+        7: "WP(C) No.28199 of 2012 and connected cases\nJudgment text\n14",
+    }
+    parts = {
+        1: ["Index"],
+        2: ["List of Dates & Events"],
+        3: ["Annexure P-8"],
+        4: ["Record of Proceedings"],
+        5: ["Main Petition"],
+        6: ["Affidavit"],
+        7: ["Application 4"],
+    }
+    result = _apply_cited_annexure_ranges(parts, texts, len(texts))
+    assert all(result[p] == ["Annexure P-8"] for p in range(3, 8))

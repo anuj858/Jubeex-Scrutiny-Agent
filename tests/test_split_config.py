@@ -60,6 +60,10 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         "Filing Memo",
         "Court Fees",
         "Custody Certificate",
+        "Rejoinder",
+        "Written Submissions",
+        "Proof of Service",
+        "Translation Certificate",
     ]
     for category in sent["categories"]:
         assert set(category) == {"name", "description"}
@@ -145,10 +149,8 @@ def test_shared_guidance_does_not_restore_conflicting_old_requirements() -> None
     instructions = _config_payload()["split"]["splitting_strategy"][
         "custom_instructions"
     ]
-    assert (
-        "Follow the category descriptions for document identity and boundaries"
-        in instructions
-    )
+    assert "Only then classify a new standalone document" in instructions
+    assert "category descriptions" in instructions
     assert "combined SYNOPSIS AND LIST OF DATES heading" in instructions
     assert "without a fixed heading-position requirement" in instructions
     assert (
@@ -177,6 +179,28 @@ def test_shared_guidance_does_not_restore_conflicting_old_requirements() -> None
         not in instructions
     )
     assert "marks Main Petition or Impugned Order" not in instructions
+    assert "Do not force optional categories to appear" in instructions
+
+
+@pytest.mark.parametrize(
+    "category",
+    ("Rejoinder", "Written Submissions", "Proof of Service", "Translation Certificate"),
+)
+def test_additional_split_categories_are_optional(category: str) -> None:
+    descriptions = {
+        item["name"]: item["description"]
+        for item in _config_payload()["split"]["categories"]
+    }
+    assert "This category is optional and must not be inferred as present." in descriptions[
+        category
+    ]
+
+
+def test_split_prompt_keeps_headroom_below_provider_limit() -> None:
+    split = _config_payload()["split"]
+    instructions = split["splitting_strategy"]["custom_instructions"]
+    assert len(instructions) <= 4500
+    assert all(len(item["description"]) <= 2000 for item in split["categories"])
 
 
 def test_description_examples_do_not_create_aliases_for_other_categories() -> None:

@@ -40,6 +40,7 @@ from .split_repair import (
     _apply_indexed_annexure_ranges,
     _apply_indexed_outer_document_ranges,
     _heading_window,
+    _is_lower_court_caption,
     _is_near_blank_page,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
@@ -384,7 +385,7 @@ def classify_page(
             doc_type = MAIN_PETITION_PART
             score = 0.9
             signals.append("form28_lookalike")
-        elif page_starts_application(text):
+        elif page_starts_application(text) and not _is_lower_court_caption(text):
             doc_type = "Application 1"
             score = 0.85
             signals.append("application_start")
