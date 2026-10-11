@@ -15,6 +15,10 @@
       "essential": true,
       "environment": [
         {
+          "name": "SPLIT_OUTPUT_DOCUMENTS",
+          "value": "All"
+        },
+        {
           "name": "SCRUTINY_MAX_CHUNKS",
           "value": "12 here"
         },

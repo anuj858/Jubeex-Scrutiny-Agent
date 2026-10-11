@@ -27,6 +27,10 @@
           "value": "targeted"
         },
         {
+          "name": "SPLIT_OUTPUT_DOCUMENTS",
+          "value": "All"
+        },
+        {
           "name": "VECTOR_BACKEND",
           "value": "pinecone"
         },

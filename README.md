@@ -91,11 +91,11 @@ list selects matching canonical document names, for example
 `Annexure P-9, Main Petition`. Non-selected source pages remain in the immutable
 compiled PDF and page manifest with `excluded_by_split_output_filter`; they
 are not silently reassigned or copied into another document. The audit records
-the configured filter and selected/excluded slots. The default in
-`.env.template` and the LlamaDeploy project settings is `Annexures`. To change it in
-production, set the same variable in the agent deployment environment and the
-worker task environment; this repository change does not update either live
-environment.
+the configured filter and selected/excluded slots. The repository deployment
+defaults in `.env.template`, the LlamaDeploy project settings, and the ECS task
+templates explicitly select `All`. An unset runtime variable still falls back
+to `Annexures, Cover Page`. Deploy updated agent and worker task definitions for
+this repository setting to take effect in a live environment.
 
 In either mode, Python downloads the source PDF, maps document categories to
 configured upload slots, copies pages and uploads the resulting PDFs. Pages

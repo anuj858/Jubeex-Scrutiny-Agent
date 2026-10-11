@@ -17,6 +17,10 @@
           "value": "targeted"
         },
         {
+          "name": "SPLIT_OUTPUT_DOCUMENTS",
+          "value": "All"
+        },
+        {
           "name": "PINECONE_POOL_THREADS",
           "value": "32"
         },
