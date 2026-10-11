@@ -60,11 +60,15 @@ instructions are never silently truncated.
 
 `SPLIT_RECONCILIATION_MODE` selects compiled-upload and split-petition behavior:
 
-- `llama_only`: LlamaCloud only. No local OCR, heading/Index/folio rules,
-  structure detection, repairs, duplicate filtering or audits run.
+- `llama_only`: compatibility mode. Page parsing and extraction still run;
+  Llama boundary detection and complete-segment classification are separate
+  calls. Deterministic structural page-ownership validation remains mandatory.
+  Semantic reconciliation is skipped, so unresolved semantic concerns remain
+  flagged for review rather than being treated as validated.
 - `targeted`: Local text/layout extraction, OCR and repairs run, but label
   changes are limited to missing/ambiguous pages or supported outer boundaries
-  and Index/folio evidence. Local page reading runs alongside the remote split.
+  and Index/folio evidence. The workflow reads the source PDF page-by-page
+  before it runs the separate remote boundary and classification passes.
 - `legacy_full`: Apply the full local repair result, for regression comparison.
 
 A valid mode overrides the compatibility flag `SPLIT_PYTHON_RULES_ENABLED`.
@@ -72,9 +76,10 @@ Otherwise that flag selects `targeted` for `true`, `1` or `yes` and `llama_only`
 for other values or when unset. Values are case-insensitive. The mode is
 captured once per split job. `.env.template` explicitly selects `targeted`.
 The worker task definitions and llamadeploy defaults also explicitly select
-`targeted`; deploying only new category descriptions while leaving a worker in
-`llama_only` bypasses all local boundary corrections. The split audit artifact
-records `reconciliation_mode` so the actual job mode can be checked later.
+`targeted`. The split audit artifact records `reconciliation_mode` so the
+actual job mode can be checked later. Both modes perform the separate Llama
+boundary and classification passes; their latency and model-call costs have
+not yet been benchmarked.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 

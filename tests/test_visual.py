@@ -301,7 +301,16 @@ def test_notary_defect_matches_seal_or_page_only_without_inventing_box() -> None
     assert matched[0].bounding_boxes[0].w == 0.18
 
 
-def test_build_finding_does_not_change_status_when_attaching_marks() -> None:
+def test_build_finding_does_not_change_status_when_attaching_marks(monkeypatch) -> None:
+    # This is a schema/localization unit test, not a catalogue DB integration
+    # test. build_finding consults the catalogue only for source-name mapping;
+    # use the checked-in fixture so the test never needs a hub database URL.
+    from extraction_review.scrutiny.rules import _load_file_catalogue
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.schema.get_catalogue",
+        _load_file_catalogue,
+    )
     defect = _defect(
         defect="Name/signature of the Advocate for the petitioner not provided",
         requirement="The Main Petition must bear the Advocate signature",

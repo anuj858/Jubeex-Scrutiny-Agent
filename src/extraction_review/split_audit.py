@@ -1630,6 +1630,12 @@ def audit_compiled_split(
     llama_page_parts: PagePartMap | None = None,
     classifications: Sequence[Any] = (),
     reconciliation_changes: Sequence[Any] = (),
+    boundaries: Sequence[Any] = (),
+    page_units: Sequence[Any] = (),
+    segment_classifications: Sequence[Any] = (),
+    llama_boundary_proposals: Sequence[Any] = (),
+    source_document_id: str | None = None,
+    source_pdf_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run sequence, Index and unresolved source checks on a repaired split map.
 
@@ -1854,7 +1860,159 @@ def audit_compiled_split(
             }
         )
 
+    units_by_page = {
+        int(unit.pdf_page): unit
+        for unit in page_units
+        if getattr(unit, "pdf_page", None) is not None
+    }
+    boundaries_by_page = {
+        int(item.page): item
+        for item in boundaries
+        if getattr(item, "page", None) is not None
+    }
+    segment_by_page = {
+        page: item
+        for item in segment_classifications
+        for page in range(
+            int(getattr(item, "start_page", 0)),
+            int(getattr(item, "end_page", -1)) + 1,
+        )
+    }
+    segment_ids: dict[int, str] = {}
+    previous_labels: tuple[str, ...] | None = None
+    segment_number = 0
+    for page in range(1, page_count + 1):
+        labels = tuple(parts_on_page(page_parts.get(page))) or ("Unidentified",)
+        if labels != previous_labels:
+            segment_number += 1
+        segment_ids[page] = f"segment_{segment_number:04d}"
+        previous_labels = labels
+
+    manifest_pages: list[dict[str, Any]] = []
+    for item in page_evidence:
+        page = int(item["source_page"])
+        labels = list(item["assigned_labels"])
+        unit = units_by_page.get(page)
+        boundary = boundaries_by_page.get(page)
+        segment_classification = segment_by_page.get(page)
+        reasons: list[str] = []
+        if not labels:
+            reasons.append("unassigned_source_page")
+        if len(labels) > 1:
+            reasons.append("multiple_document_labels")
+        if boundary and getattr(boundary, "action", "") == "verify":
+            reasons.append("uncertain_boundary")
+        classification = classification_by_page.get(page)
+        if classification and float(getattr(classification, "confidence", 0.0)) < 0.55:
+            reasons.append("low_classification_confidence")
+        if unit and getattr(unit, "text_quality", "") == "empty":
+            reasons.append("text_unavailable")
+        if any(
+            flag.severity in {"error", "warning"} and flag.part in labels
+            for flag in flags
+        ):
+            reasons.append("document_level_audit_flag")
+        if (
+            segment_classification
+            and float(getattr(segment_classification, "confidence", 0.0)) >= 0.75
+            and not any(
+                family_split_name(label)
+                == family_split_name(
+                    str(getattr(segment_classification, "document_type", "other"))
+                )
+                for label in labels
+            )
+        ):
+            reasons.append("segment_classification_conflict")
+        row = dict(item)
+        row.update(
+            {
+                "source_document_id": source_document_id,
+                "segment_id": segment_ids[page],
+                "effective_owner": labels[0] if len(labels) == 1 else (
+                    "Unidentified" if not labels else None
+                ),
+                "boundary_before": (
+                    boundary.as_dict()
+                    if boundary and hasattr(boundary, "as_dict")
+                    else None
+                ),
+                "segment_classification": (
+                    segment_classification.as_dict()
+                    if segment_classification
+                    and hasattr(segment_classification, "as_dict")
+                    else None
+                ),
+                "extraction": (
+                    {
+                        "method": getattr(unit, "extraction_method", None),
+                        "quality": getattr(unit, "text_quality", None),
+                        "native_text_chars": len(getattr(unit, "native_text", "") or ""),
+                        "ocr_text_chars": len(getattr(unit, "ocr_text", "") or ""),
+                        "native_excerpt": str(
+                            getattr(unit, "native_text", "") or ""
+                        )[:1000],
+                        "native_excerpt_truncated": len(
+                            getattr(unit, "native_text", "") or ""
+                        ) > 1000,
+                        "ocr_excerpt": str(getattr(unit, "ocr_text", "") or "")[:1000],
+                        "ocr_excerpt_truncated": len(
+                            getattr(unit, "ocr_text", "") or ""
+                        ) > 1000,
+                        "ocr_needed": bool(getattr(unit, "requires_ocr", False)),
+                        "headings": list(getattr(unit, "headings", ()) or ()),
+                        "paragraph_starts": list(
+                            getattr(unit, "paragraph_starts", ()) or ()
+                        ),
+                        "sentence_continues_previous": bool(
+                            getattr(unit, "sentence_continues_previous", False)
+                        ),
+                        "paragraph_continues_previous": bool(
+                            getattr(unit, "paragraph_continues_previous", False)
+                        ),
+                        "signature_detected": bool(
+                            getattr(unit, "signature_detected", False)
+                        ),
+                        "closing_section": getattr(unit, "closing_section", None),
+                        "annexure_labels": list(
+                            getattr(unit, "annexure_labels", ()) or ()
+                        ),
+                        "layout_fingerprint": list(
+                            getattr(unit, "layout_fingerprint", ()) or ()
+                        ),
+                    }
+                    if unit
+                    else None
+                ),
+                "review_status": "needs_review" if reasons else "clear",
+                "review_reasons": reasons,
+            }
+        )
+        manifest_pages.append(row)
+
+    review_status = (
+        "needs_review"
+        if any(page["review_status"] == "needs_review" for page in manifest_pages)
+        or any(flag.severity in {"error", "warning"} for flag in flags)
+        else "clear"
+    )
     return {
+        "source_document_id": source_document_id,
+        "source_pdf_sha256": source_pdf_sha256,
+        "llama_boundary_proposals": [
+            item.as_dict() if hasattr(item, "as_dict") else item
+            for item in llama_boundary_proposals
+        ],
+        "segment_classifications": [
+            item.as_dict() if hasattr(item, "as_dict") else item
+            for item in segment_classifications
+        ],
+        "review_status": review_status,
+        "page_manifest": {
+            "schema_version": "1.0",
+            "source_page_count": page_count,
+            "pages": manifest_pages,
+        },
         "index_status": (
             "parsed"
             if rows

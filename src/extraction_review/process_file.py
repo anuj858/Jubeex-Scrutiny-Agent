@@ -35,7 +35,13 @@ from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .bundle_slicer import map_slot_pages, slice_bundle_pdf
+from .bundle_slicer import (
+    map_slot_pages,
+    slice_bundle_pdf,
+    validate_page_manifest_output,
+    validate_shared_page_evidence,
+    validate_sliced_page_ownership,
+)
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
@@ -101,21 +107,21 @@ def slot_upload_concurrency() -> int:
 
 
 def split_reconciliation_mode() -> str:
-    """Resolve the split mode while preserving the legacy boolean switch.
+    """Resolve the split mode; the staged boundary/review flow is the default.
 
-    ``SPLIT_RECONCILIATION_MODE`` is authoritative when present. Existing
-    deployments that only set ``SPLIT_PYTHON_RULES_ENABLED=true`` move to the
-    safer targeted reconciler; ``legacy_full`` remains available for rollback
-    and controlled regression comparison.
+    ``SPLIT_RECONCILIATION_MODE`` is authoritative when valid. The legacy
+    boolean remains an explicit compatibility switch, while ``llama_only``
+    and ``legacy_full`` remain available for controlled rollback/comparison.
     """
     configured = (
         os.getenv("SPLIT_RECONCILIATION_MODE") or ""
     ).strip().lower()
     if configured in _SPLIT_RECONCILIATION_MODES:
         return configured
-    legacy_enabled = (
-        os.getenv("SPLIT_PYTHON_RULES_ENABLED") or ""
-    ).strip().lower() in _TRUTHY
+    legacy_value = os.getenv("SPLIT_PYTHON_RULES_ENABLED")
+    if legacy_value is None:
+        return "targeted"
+    legacy_enabled = legacy_value.strip().lower() in _TRUTHY
     return "targeted" if legacy_enabled else "llama_only"
 
 
@@ -1012,7 +1018,15 @@ def _json_value(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     if isinstance(value, dict):
-        return value
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return {
+            key: _json_value(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_")
+        }
     return value
 
 
@@ -1022,6 +1036,7 @@ async def _split_page_parts(
     file_id: str | None,
     split_config: SplitConfig | None,
     filename: str | None = None,
+    api_configuration: dict[str, Any] | None = None,
 ) -> tuple[dict[int, list[str]], str, dict[str, Any]]:
     """Label pages with Split categories.
 
@@ -1044,7 +1059,18 @@ async def _split_page_parts(
             f"Split categories are empty, so document parts cannot be labelled for {label}."
         )
 
-    if split_config.configuration_id:
+    if api_configuration is not None:
+        sent = {
+            "file_input": file_id,
+            "configuration": api_configuration,
+            "project_id": project_id,
+        }
+        job = await client.split.create(
+            file_input=file_id,
+            configuration=api_configuration,
+            project_id=project_id,
+        )
+    elif split_config.configuration_id:
         sent: dict[str, Any] = {
             "file_input": file_id,
             "configuration_id": split_config.configuration_id,
@@ -1079,6 +1105,419 @@ async def _split_page_parts(
     # An entirely uncategorized result is still usable: preserve the pages in
     # Unidentified rather than manufacturing local labels or dropping the PDF.
     return mapping, str(getattr(completed, "id", None) or job.id), exchange
+
+
+def _boundary_detection_configuration(
+    page_units: Sequence[PageUnit], *, page_count: int
+) -> dict[str, Any]:
+    """Build a compact, boundary-only Split request from parsed page evidence."""
+    evidence: list[str] = []
+    selected = list(page_units)
+    for unit in selected:
+        headings = getattr(unit, "headings", ())
+        annexure_labels = getattr(unit, "annexure_labels", ())
+        paragraph_starts = getattr(unit, "paragraph_starts", ())
+        closing_section = getattr(unit, "closing_section", None)
+        text_quality = getattr(unit, "text_quality", "usable")
+        cues = [*headings[:2], *annexure_labels[:2]]
+        if paragraph_starts:
+            cues.append("paragraphs=" + ",".join(paragraph_starts[:3]))
+        if closing_section:
+            cues.append("closing=" + closing_section)
+        if getattr(unit, "signature_detected", False):
+            cues.append("signature_block")
+        if getattr(unit, "sentence_continues_previous", False):
+            cues.append("continues_sentence_from_previous")
+        if getattr(unit, "paragraph_continues_previous", False):
+            cues.append("continues_paragraph_from_previous")
+        if getattr(unit, "printed_page", None):
+            cues.append("folio=" + unit.printed_page)
+        if text_quality != "usable":
+            cues.append("extraction=" + text_quality)
+        if not cues:
+            excerpt = re.sub(r"\s+", " ", getattr(unit, "text", "")).strip()[:100]
+            if excerpt:
+                cues.append("text=" + excerpt)
+        evidence.append(f"PDF page {unit.pdf_page}: " + "; ".join(cues))
+    prefix = (
+        "BOUNDARY DETECTION ONLY. Do not classify legal document types. "
+        f"Analyze all {page_count} physical PDF pages and propose document starts, "
+        "continuations, ends, and uncertain transitions. Use the page evidence below "
+        "and neighboring-page context. Preserve page order; do not omit pages. Return "
+        "one segment per plausible complete document, and do not merge merely because "
+        "a continuation page lacks a repeated heading. Mark ambiguous transitions for review.\n"
+        "Parsed page cues (physical page order):\n"
+    )
+    cue_lines = list(evidence)
+    omission = "[additional page cues omitted because of request-size limit; review]"
+    instruction = prefix + "\n".join(cue_lines)
+    while len(instruction) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX and cue_lines:
+        cue_lines.pop()
+        instruction = prefix + "\n".join(cue_lines + [omission])
+    if len(instruction) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
+        raise ValueError("Boundary-only instructions exceed the Split API character limit")
+    return {
+        "product_type": "split_v1",
+        "categories": [
+            {
+                "name": "Document Segment",
+                "description": "A complete contiguous document segment; this stage detects boundaries only.",
+            }
+        ],
+        "splitting_strategy": {"custom_instructions": instruction},
+    }
+
+
+def _validated_segment_pages(
+    segment: Any, *, page_count: int, segment_id: str
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Validate a model's original page list before deriving any range from it."""
+    issues: list[dict[str, Any]] = []
+
+    def add(code: str, **details: Any) -> None:
+        issues.append({"code": code, "segment_id": segment_id, **details})
+
+    if not isinstance(segment, Mapping):
+        add("segment_is_not_an_object")
+        return [], issues
+    raw_pages = segment.get("pages")
+    if not isinstance(raw_pages, (list, tuple)) or not raw_pages:
+        add("segment_pages_missing_or_invalid")
+        return [], issues
+
+    pages: list[int] = []
+    for value in raw_pages:
+        if type(value) is not int:
+            add("invalid_page_number", value_type=type(value).__name__)
+            continue
+        pages.append(value)
+    if len(set(pages)) != len(pages):
+        add("duplicate_page_within_segment", pages=pages)
+    if pages != sorted(pages):
+        add("pages_out_of_order", pages=pages)
+    if any(page < 1 or page > page_count for page in pages):
+        add(
+            "page_out_of_range",
+            pages=[page for page in pages if page < 1 or page > page_count],
+            page_count=page_count,
+        )
+    if pages and pages == sorted(set(pages)) and pages != list(
+        range(pages[0], pages[-1] + 1)
+    ):
+        add("segment_pages_not_contiguous", pages=pages)
+
+    has_start = "start_page" in segment
+    has_end = "end_page" in segment
+    if has_start != has_end:
+        add("segment_range_incomplete")
+    elif has_start and has_end:
+        start, end = segment.get("start_page"), segment.get("end_page")
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or start < 1
+            or end < start
+            or end > page_count
+        ):
+            add("segment_range_invalid")
+        elif pages and (start != pages[0] or end != pages[-1]):
+            add("segment_range_conflicts_with_pages", start_page=start, end_page=end)
+
+    return pages, issues
+
+
+def _boundary_proposals_from_exchange(
+    exchange: Mapping[str, Any], *, page_count: int
+) -> dict[str, Any]:
+    """Validate boundary page lists and report gaps/shares instead of guessing ranges."""
+    response = exchange.get("returned") or {}
+    result = response.get("result") or {}
+    raw_segments = result.get("segments") or []
+    issues: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
+    if not isinstance(raw_segments, (list, tuple)):
+        raw_segments = []
+        issues.append({"code": "boundary_segments_invalid"})
+
+    accepted_pages: list[list[int]] = []
+    accepted_segment_indexes: list[int] = []
+    pages_by_segment_index: dict[int, list[int]] = {}
+    for index, segment in enumerate(raw_segments, start=1):
+        segment_id = f"boundary-{index}"
+        pages, segment_issues = _validated_segment_pages(
+            segment, page_count=page_count, segment_id=segment_id
+        )
+        issues.extend(segment_issues)
+        if not pages or segment_issues:
+            continue
+        accepted_pages.append(pages)
+        accepted_segment_indexes.append(index)
+        pages_by_segment_index[index] = pages
+        proposals.append(
+            {
+                "segment_id": segment_id,
+                "start_page": pages[0],
+                "end_page": pages[-1],
+                "pages": pages,
+                "start_proposal": True,
+                "end_proposal": True,
+                "continuation_pages": pages[1:],
+                "source": "llama_boundary_detection",
+                "final": False,
+            }
+        )
+
+    if not raw_segments:
+        issues.append({"code": "boundary_segments_missing"})
+    if [pages[0] for pages in accepted_pages] != sorted(
+        pages[0] for pages in accepted_pages
+    ):
+        issues.append({"code": "boundary_segments_out_of_order"})
+
+    page_segments: dict[int, list[int]] = {}
+    for segment_index, pages in zip(accepted_segment_indexes, accepted_pages, strict=True):
+        for page in pages:
+            page_segments.setdefault(page, []).append(segment_index)
+    shared_boundary_pages: list[int] = []
+    for page, segment_indexes in sorted(page_segments.items()):
+        if len(segment_indexes) < 2:
+            continue
+        adjacent_edge_share = (
+            len(segment_indexes) == 2
+            and segment_indexes[1] == segment_indexes[0] + 1
+            and pages_by_segment_index[segment_indexes[0]][-1] == page
+            and pages_by_segment_index[segment_indexes[1]][0] == page
+        )
+        if adjacent_edge_share:
+            shared_boundary_pages.append(page)
+            issues.append({"code": "shared_boundary_page", "source_page": page})
+        else:
+            issues.append(
+                {
+                    "code": "contradictory_boundary_overlap",
+                    "source_page": page,
+                    "segment_indexes": segment_indexes,
+                }
+            )
+
+    covered = set(page_segments)
+    missing_pages = sorted(set(range(1, page_count + 1)) - covered)
+    if missing_pages:
+        issues.append({"code": "boundary_pages_missing", "pages": missing_pages})
+    return {
+        "proposals": proposals,
+        "issues": issues,
+        "missing_pages": missing_pages,
+        "shared_boundary_pages": shared_boundary_pages,
+        "status": "clear" if not issues else "needs_review",
+    }
+
+
+def _classification_configuration(
+    split_config: SplitConfig,
+    proposals: Sequence[Mapping[str, Any]],
+    *,
+    proposal_issues: Sequence[Mapping[str, Any]] = (),
+) -> tuple[dict[str, Any] | None, str]:
+    """Apply candidate ranges to the canonical split_v1 classifier if they fit."""
+    if getattr(split_config, "configuration_id", None):
+        return None, "remote_configuration_cannot_be_augmented"
+    if not proposals:
+        return None, "no_valid_boundary_guidance"
+    blocking_issues = [
+        issue for issue in proposal_issues if issue.get("code") != "shared_boundary_page"
+    ]
+    if blocking_issues:
+        return None, "boundary_proposals_invalid"
+    for item in proposals:
+        if not isinstance(item, Mapping):
+            return None, "boundary_proposals_invalid"
+        pages = item.get("pages")
+        if (
+            not isinstance(pages, list)
+            or not pages
+            or any(type(page) is not int for page in pages)
+            or pages != sorted(set(pages))
+            or pages != list(range(pages[0], pages[-1] + 1))
+            or item.get("start_page") != pages[0]
+            or item.get("end_page") != pages[-1]
+            or not item.get("segment_id")
+        ):
+            return None, "boundary_proposals_invalid"
+    configuration = _split_api_configuration(split_config)
+    page_lists = "; ".join(
+        f"{item['segment_id']}={item['pages']}" for item in proposals
+    )
+    directive = (
+        "\nCLASSIFICATION PASS: classify each proposed complete segment using the "
+        "canonical split_v1 categories and rules. Keep candidate boundaries unless "
+        "page evidence clearly shows the proposal is wrong. These are exact physical "
+        "PDF page lists; do not fill gaps between listed pages: "
+        + page_lists
+    )
+    strategy = dict(configuration.get("splitting_strategy") or {})
+    instructions = str(strategy.get("custom_instructions") or "")
+    if len(instructions) + len(directive) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
+        return None, "candidate_ranges_exceed_custom_instruction_limit"
+    strategy["custom_instructions"] = instructions + directive
+    configuration["splitting_strategy"] = strategy
+    status = (
+        "sent_with_shared_boundary_pages"
+        if any(issue.get("code") == "shared_boundary_page" for issue in proposal_issues)
+        else "sent"
+    )
+    return configuration, status
+
+
+def _classification_call_evidence(
+    exchange: Mapping[str, Any], *, boundary_guidance_status: str
+) -> dict[str, Any]:
+    """Persist which kind of classification configuration was actually sent."""
+    sent = exchange.get("sent") or {}
+    if not isinstance(sent, Mapping):
+        sent = {}
+    inline = sent.get("configuration") or {}
+    if not isinstance(inline, Mapping):
+        inline = {}
+    strategy = inline.get("splitting_strategy") or {}
+    if not isinstance(strategy, Mapping):
+        strategy = {}
+    instructions = str(strategy.get("custom_instructions") or "")
+    configuration_id = sent.get("configuration_id")
+    return {
+        "kind": "remote_configuration_id" if configuration_id else "inline_configuration",
+        "configuration_id": configuration_id,
+        "boundary_guidance_sent": (
+            boundary_guidance_status.startswith("sent")
+            and "These are exact physical PDF page lists" in instructions
+        ),
+        "boundary_guidance_status": boundary_guidance_status,
+    }
+
+
+def _split_page_review_reasons(
+    boundary_validation: Mapping[str, Any],
+    classification_report: Mapping[str, Any],
+    sharing_validation: Mapping[str, Any] | None = None,
+) -> dict[int, list[str]]:
+    """Map explicit boundary/classification concerns back to physical pages."""
+    reasons: dict[int, list[str]] = {}
+
+    def add_pages(values: Any, code: str) -> None:
+        if not isinstance(values, (list, tuple, set)):
+            return
+        for value in values:
+            if type(value) is int:
+                reasons.setdefault(value, []).append(code)
+
+    add_pages(boundary_validation.get("missing_pages"), "boundary_page_missing")
+    add_pages(classification_report.get("missing_pages"), "classification_page_missing")
+    add_pages(classification_report.get("overlapping_pages"), "classification_page_overlap")
+    add_pages(classification_report.get("out_of_range_pages"), "classification_page_out_of_range")
+    for issue in boundary_validation.get("issues", ()):
+        if not isinstance(issue, Mapping):
+            continue
+        code = str(issue.get("code") or "boundary_uncertain")
+        add_pages(issue.get("pages"), f"boundary:{code}")
+        add_pages([issue.get("source_page")], f"boundary:{code}")
+    for issue in (sharing_validation or {}).get("issues", ()):
+        if not isinstance(issue, Mapping):
+            continue
+        code = str(issue.get("code") or "shared_page_uncertain")
+        add_pages(issue.get("pages"), f"sharing:{code}")
+        add_pages([issue.get("source_page")], f"sharing:{code}")
+    return reasons
+
+
+def _segment_classification_report(
+    exchange: Mapping[str, Any], *, page_count: int
+) -> dict[str, Any]:
+    """Validate canonical category output and exact source-page coverage."""
+    response = exchange.get("returned") or {}
+    result = response.get("result") or {}
+    raw_segments = result.get("segments") or []
+    segments: list[dict[str, Any]] = []
+    owners: dict[int, list[int]] = {}
+    issues: list[str] = []
+    if not isinstance(raw_segments, (list, tuple)):
+        raw_segments = []
+        issues.append("classified_segments_invalid")
+    normalized_segments: list[list[int]] = []
+    observed_segments: list[list[int]] = []
+    valid_segment_indexes: set[int] = set()
+    for index, segment in enumerate(raw_segments, start=1):
+        pages, page_issues = _validated_segment_pages(
+            segment, page_count=page_count, segment_id=f"classified-{index}"
+        )
+        observed_segments.append(pages)
+        issues.extend(issue["code"] for issue in page_issues)
+        if not pages:
+            continue
+        for page in pages:
+            owners.setdefault(page, []).append(index)
+        if page_issues:
+            continue
+        valid_segment_indexes.add(index)
+        category = str(segment.get("category") or "").strip()
+        if not category:
+            issues.append(f"segment_{index}_has_no_category")
+        normalized_segments.append(pages)
+        segments.append(
+            {
+                "segment_id": f"classified-{index}",
+                "document_type": category or None,
+                "start_page": pages[0],
+                "end_page": pages[-1],
+                "source_pages": pages,
+                "category": category or None,
+                "pages": pages,
+            }
+        )
+    observed_in_range = {page for page in owners if 1 <= page <= page_count}
+    missing = sorted(set(range(1, page_count + 1)) - observed_in_range)
+    overlap = sorted(page for page, indexes in owners.items() if len(indexes) > 1)
+    out_of_range = sorted(page for page in owners if not 1 <= page <= page_count)
+    if missing:
+        issues.append("classified_segments_missing_source_pages")
+    if overlap:
+        issues.append("classified_segments_overlap_source_pages")
+    if out_of_range:
+        issues.append("classified_segments_out_of_range")
+    shared_boundary_pages: list[int] = []
+    unsupported_overlaps: list[int] = []
+    for page in overlap:
+        indexes = owners[page]
+        is_adjacent_edge_share = (
+            len(indexes) == 2
+            and indexes[1] == indexes[0] + 1
+            and indexes[0] in valid_segment_indexes
+            and indexes[1] in valid_segment_indexes
+            and observed_segments[indexes[0] - 1][-1] == page
+            and observed_segments[indexes[1] - 1][0] == page
+        )
+        if is_adjacent_edge_share:
+            shared_boundary_pages.append(page)
+        else:
+            unsupported_overlaps.append(page)
+    if [pages[0] for pages in normalized_segments] != sorted(
+        pages[0] for pages in normalized_segments
+    ):
+        issues.append("classified_segments_out_of_order")
+    return {
+        "status": "clear" if not issues else "needs_review",
+        "segments": segments,
+        "source_page_count": page_count,
+        "missing_pages": missing,
+        "overlapping_pages": overlap,
+        "shared_boundary_pages": shared_boundary_pages,
+        "unsupported_overlapping_pages": unsupported_overlaps,
+        "out_of_range_pages": out_of_range,
+        "issues": issues,
+        "boundary_segments": [
+            {"category": item["category"], "pages": item["pages"]}
+            for item in segments
+        ],
+    }
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
@@ -1992,25 +2431,25 @@ class ProcessFileWorkflow(Workflow):
         use_python_rules = split_mode != "llama_only"
         logger.info("[SplitMode] mode=%s file=%s", split_mode, state.filename)
 
-        async def run_llama_split() -> tuple[dict[int, list[str]], str, dict[str, Any]]:
+        async def run_llama_split(
+            *, api_configuration: dict[str, Any] | None = None
+        ) -> tuple[dict[int, list[str]], str, dict[str, Any]]:
             return await _split_page_parts(
                 llama_cloud_client,
                 file_id=state.file_id,
                 split_config=split_config,
                 filename=state.filename,
+                api_configuration=api_configuration,
             )
 
-        async def load_and_prepare_pdf() -> tuple[
-            bytes, list[PageUnit] | None, float
-        ]:
+        async def load_and_prepare_pdf() -> tuple[bytes, list[PageUnit], float]:
             pdf_bytes = await _load_bundle_pdf(
                 llama_cloud_client,
                 file_id=state.file_id,
                 source_documents=state.source_documents,
             )
-            if not use_python_rules:
-                return pdf_bytes, None, 0.0
-            # Do not even load local rule dependencies in LlamaCloud-only mode.
+            # Parsing and OCR are mandatory for every accepted result, including
+            # the explicit legacy mode. That mode disables local repair only.
             from .structure_split import extract_page_units
 
             local_started = start_timer()
@@ -2021,29 +2460,53 @@ class ProcessFileWorkflow(Workflow):
             )
             return pdf_bytes, units, elapsed_seconds(local_started) or 0.0
 
-        # Download (and optional local OCR) can run alongside the remote split.
-        split_result, local_result = await asyncio.gather(
-            run_llama_split(), load_and_prepare_pdf()
+        # Establish the immutable physical-page map before either model pass.
+        pdf_bytes, page_units, local_read_seconds = await load_and_prepare_pdf()
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+            pdf_page_count = pdf.page_count
+        boundary_started = start_timer()
+        boundary_config = _boundary_detection_configuration(
+            page_units, page_count=pdf_page_count
+        )
+        _boundary_pages, boundary_job_id, boundary_exchange = await run_llama_split(
+            api_configuration=boundary_config
+        )
+        boundary_validation = _boundary_proposals_from_exchange(
+            boundary_exchange, page_count=pdf_page_count
+        )
+        boundary_proposals = boundary_validation["proposals"]
+        boundary_seconds = elapsed_seconds(boundary_started) or 0.0
+        # Classification is a distinct second SplitV1 pass with the canonical
+        # configured categories/rules; boundary labels are never reused as types.
+        classification_config, boundary_guidance_status = _classification_configuration(
+            split_config,
+            boundary_proposals,
+            proposal_issues=boundary_validation["issues"],
+        )
+        split_result = await run_llama_split(
+            api_configuration=classification_config
         )
         page_parts, split_job_id, llama_split = split_result
         llama_page_parts = page_parts
-        pdf_bytes, page_units, local_read_seconds = local_result
-        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-            pdf_page_count = pdf.page_count
         llama_split_seconds = elapsed_seconds(split_started)
         logger.info(
-            "[SplitTiming] mode=%s split_and_prepare=%.1fs local_page_read=%.1fs pages=%s",
+            "[SplitTiming] mode=%s boundary=%.1fs classification=%.1fs "
+            "local_page_read=%.1fs pages=%s",
             split_mode,
+            boundary_seconds,
             llama_split_seconds or 0.0,
             local_read_seconds,
             pdf_page_count,
+        )
+        boundary_usage = await collect_optional_usage(
+            llama_cloud_client, product="split", job_id=boundary_job_id
         )
         split_usage = await collect_optional_usage(
             llama_cloud_client,
             product="split",
             job_id=split_job_id,
         )
-        usage_jobs = [*(state.llamacloud_jobs or []), split_usage]
+        usage_jobs = [*(state.llamacloud_jobs or []), boundary_usage, split_usage]
         usage_summary = summarize_llamacloud_usage(usage_jobs)
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
@@ -2053,8 +2516,9 @@ class ProcessFileWorkflow(Workflow):
                 message=f"Loading {state.filename} to slice labeled pages",
             )
         )
-        # Keep existing artifact keys for consumers; no local rule-based audit
-        # or duplicate filtering is performed in the LlamaCloud-only flow.
+        # Structural ownership and page-level extraction are mandatory for
+        # every output. llama_only preserves legacy labels and skips repair,
+        # but its output remains explicitly unvalidated semantically.
         split_duplicates: list[dict[str, Any]] = []
         split_audit: dict[str, Any] = {
             "index_status": "not_checked",
@@ -2063,134 +2527,219 @@ class ProcessFileWorkflow(Workflow):
             "document_spans": [],
             "flags": [],
             "flag_counts": {"error": 0, "warning": 0, "total": 0},
+            "llama_boundary_detection": {
+                "job_id": boundary_job_id,
+                "proposals": boundary_proposals,
+                "seconds": round(boundary_seconds, 3),
+                "evidence_page_count": len(page_units),
+            },
         }
-        if use_python_rules:
-            from .split_audit import audit_compiled_split
-            from .structure_split import structure_aware_split
+        from .split_audit import audit_compiled_split
+        from .structure_split import structure_aware_split
 
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    "Applying split structure rules and audit"
+                    if use_python_rules
+                    else "Running mandatory page and ownership audit in legacy mode"
+                ),
+            )
+        )
+        rules_started = start_timer()
+        structured = await asyncio.to_thread(
+            structure_aware_split,
+            pdf_bytes,
+            llama_page_parts=page_parts,
+            page_units=page_units,
+            source_pdf=state.filename,
+            run_hybrid_repair=use_python_rules,
+            reconciliation_mode=split_mode,
+        )
+        page_parts = structured.page_parts
+        reconciliation_changes = getattr(structured, "reconciliation_changes", [])
+        logger.info(
+            "[SplitReconciliation] mode=%s committed_pages=%s",
+            split_mode,
+            len(reconciliation_changes),
+        )
+        split_duplicates = [
+            hit.as_dict() if hasattr(hit, "as_dict") else hit
+            for hit in structured.duplicates
+        ]
+        split_audit = await asyncio.to_thread(
+            audit_compiled_split,
+            page_parts,
+            {unit.pdf_page: unit.text for unit in structured.page_units},
+            page_count=pdf_page_count,
+            llama_page_parts=llama_page_parts,
+            classifications=getattr(structured, "classifications", ()),
+            segment_classifications=getattr(structured, "segment_classifications", ()),
+            llama_boundary_proposals=getattr(structured, "llama_boundary_proposals", ()),
+            reconciliation_changes=reconciliation_changes,
+            boundaries=getattr(structured, "boundaries", ()),
+            page_units=structured.page_units,
+            source_document_id=state.file_id,
+            source_pdf_sha256=hashlib.sha256(pdf_bytes).hexdigest(),
+        )
+        split_audit["llama_boundary_detection"] = {
+            "job_id": boundary_job_id,
+            "proposals": boundary_proposals,
+            "validation": boundary_validation,
+            "seconds": round(boundary_seconds, 3),
+            "evidence_page_count": len(page_units),
+            "evidence_complete": "additional page cues omitted"
+            not in boundary_config["splitting_strategy"]["custom_instructions"],
+        }
+        classification_report = _segment_classification_report(
+            llama_split, page_count=pdf_page_count
+        )
+        proposed_ranges = {
+            tuple(item["pages"])
+            for item in boundary_proposals
+        }
+        classified_ranges = {
+            tuple(item["source_pages"])
+            for item in classification_report["segments"]
+        }
+        if proposed_ranges != classified_ranges:
+            classification_report["issues"].append(
+                "classification_ranges_differ_from_boundary_proposals"
+            )
+            classification_report["status"] = "needs_review"
+        split_audit["llama_segment_classification"] = {
+            "job_id": split_job_id,
+            "boundary_guidance_status": boundary_guidance_status,
+            "configuration_used": _classification_call_evidence(
+                llama_split, boundary_guidance_status=boundary_guidance_status
+            ),
+            **classification_report,
+        }
+        if (
+            split_audit["llama_segment_classification"]["status"] != "clear"
+            or boundary_guidance_status != "sent"
+            or boundary_validation["status"] != "clear"
+        ):
+            split_audit.setdefault("flags", []).append(
+                {
+                    "code": "llama_segment_classification_incomplete",
+                    "severity": "warning",
+                    "message": "The complete-segment classification could not be fully validated or was not supplied all candidate boundaries.",
+                    "details": [
+                        *split_audit["llama_segment_classification"]["issues"],
+                        *[
+                            f"boundary:{issue['code']}"
+                            for issue in boundary_validation["issues"]
+                        ],
+                        *([] if boundary_guidance_status == "sent" else [boundary_guidance_status]),
+                    ],
+                }
+            )
+            split_audit["review_status"] = "needs_review"
+            split_audit.setdefault("flag_counts", {})["warning"] = (
+                split_audit.get("flag_counts", {}).get("warning", 0) + 1
+            )
+            split_audit["flag_counts"]["total"] = (
+                split_audit.get("flag_counts", {}).get("total", 0) + 1
+            )
+        split_audit["structure"] = structured.report()
+        split_audit["reconciliation"] = {
+            "summary": getattr(structured, "reconciliation_summary", {}),
+            "operations": [
+                item.as_dict() if hasattr(item, "as_dict") else item
+                for item in getattr(structured, "reconciliation_operations", ())
+            ],
+        }
+        unresolved_reconciliation = [
+            item
+            for item in getattr(structured, "reconciliation_operations", ())
+            if getattr(item, "status", None) in {"left_for_review", "rolled_back", "rejected"}
+            and getattr(item, "operation_type", None) != "reconciliation_stop"
+        ]
+        if unresolved_reconciliation:
+            split_audit.setdefault("flags", []).append(
+                {
+                    "code": "reconciliation_proposal_needs_review",
+                    "severity": "warning",
+                    "message": "One or more proposed page-map corrections were unresolved or rolled back; review the reconciliation audit before accepting the split.",
+                    "details": [
+                        {
+                            "operation_id": item.operation_id,
+                            "pass_index": item.pass_index,
+                            "status": item.status,
+                            "reason": item.reason,
+                            "pages": format_page_span(item.proposed_pages),
+                        }
+                        for item in unresolved_reconciliation
+                    ],
+                }
+            )
+            split_audit["review_status"] = "needs_review"
+            split_audit.setdefault("flag_counts", {})["warning"] = (
+                split_audit.get("flag_counts", {}).get("warning", 0) + 1
+            )
+            split_audit["flag_counts"]["total"] = (
+                split_audit.get("flag_counts", {}).get("total", 0) + 1
+            )
+        split_audit["reconciliation_mode"] = split_mode
+        if not use_python_rules:
+            split_audit["semantic_validation"] = {
+                "status": "not_assessed_legacy_mode",
+                "reason": "llama_only compatibility mode disables local reconciliation",
+            }
+        logger.info(
+            "[SplitTiming] mode=%s repair_and_audit=%.1fs",
+            split_mode,
+            elapsed_seconds(rules_started) or 0.0,
+        )
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    f"Structure-aware split found {len(structured.logical_documents)} "
+                    "logical document(s) after local processing"
+                ),
+            )
+        )
+        audit_total = int((split_audit.get("flag_counts") or {}).get("total") or 0)
+        if audit_total:
+            ctx.write_event_to_stream(
+                Status(level="info", message=f"Split audit raised {audit_total} flag(s)")
+            )
+        index_status = split_audit.get("index_status")
+        if index_status in {"missing", "unreadable"}:
             ctx.write_event_to_stream(
                 Status(
-                    level="info",
-                    message="Applying local split structure rules, repairs and audit",
-                )
-            )
-            rules_started = start_timer()
-            structured = await asyncio.to_thread(
-                structure_aware_split,
-                pdf_bytes,
-                llama_page_parts=page_parts,
-                page_units=page_units,
-                source_pdf=state.filename,
-                run_hybrid_repair=True,
-                reconciliation_mode=split_mode,
-            )
-            page_parts = structured.page_parts
-            reconciliation_changes = getattr(
-                structured, "reconciliation_changes", []
-            )
-            logger.info(
-                "[SplitReconciliation] mode=%s committed_pages=%s",
-                split_mode,
-                len(reconciliation_changes),
-            )
-            split_duplicates = [
-                hit.as_dict() if hasattr(hit, "as_dict") else hit
-                for hit in structured.duplicates
-            ]
-            split_audit = await asyncio.to_thread(
-                audit_compiled_split,
-                page_parts,
-                {unit.pdf_page: unit.text for unit in structured.page_units},
-                page_count=pdf_page_count,
-                llama_page_parts=llama_page_parts,
-                classifications=getattr(structured, "classifications", ()),
-                reconciliation_changes=reconciliation_changes,
-            )
-            split_audit["structure"] = structured.report()
-            split_audit["reconciliation_mode"] = split_mode
-            logger.info(
-                "[SplitTiming] mode=%s repair_and_audit=%.1fs",
-                split_mode,
-                elapsed_seconds(rules_started) or 0.0,
-            )
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
+                    level="warning",
                     message=(
-                        f"Structure-aware split found {len(structured.logical_documents)} "
-                        "logical document(s) after local repair"
+                        "No usable Index was available; boundaries were assessed from "
+                        "page headings, folios, and document cues. Review audit flags."
                     ),
                 )
             )
-            if structured.ocr_needed_pages:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Marked {len(structured.ocr_needed_pages)} page(s) "
-                            "as OCR-needed"
-                        ),
-                    )
+        boundary_flags = [
+            flag
+            for flag in split_audit.get("flags", [])
+            if flag.get("code") in {"index_page_mismatch", "index_end_page_mismatch"}
+        ]
+        if boundary_flags:
+            examples = []
+            for flag in boundary_flags[:3]:
+                part = flag.get("part") or "document"
+                expected = flag.get("expected_pages") or {}
+                found = flag.get("found_pages") or {}
+                examples.append(
+                    f"{part}: Index {expected.get('start_page', '?')}–"
+                    f"{expected.get('end_page', '?')}, split "
+                    f"{found.get('start_page', '?')}–{found.get('end_page', '?')}"
                 )
-            if split_duplicates:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Detected {len(split_duplicates)} duplicate document "
-                            "span(s) after split repair"
-                        ),
-                    )
+            ctx.write_event_to_stream(
+                Status(
+                    level="warning",
+                    message="Index/split boundary mismatch; verify: " + "; ".join(examples),
                 )
-            audit_total = int((split_audit.get("flag_counts") or {}).get("total") or 0)
-            if audit_total:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="info",
-                        message=(
-                            f"Split audit raised {audit_total} flag(s) "
-                            "(sequence / Index consistency)"
-                        ),
-                    )
-                )
-            index_status = split_audit.get("index_status")
-            if index_status in {"missing", "unreadable"}:
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=(
-                            "No usable Index was available; document boundaries were "
-                            "reconciled from page headings, folios, and document cues. "
-                            "Check split-audit flags for unresolved ranges."
-                        ),
-                    )
-                )
-            boundary_flags = [
-                flag
-                for flag in split_audit.get("flags", [])
-                if flag.get("code")
-                in {"index_page_mismatch", "index_end_page_mismatch"}
-            ]
-            if boundary_flags:
-                examples = []
-                for flag in boundary_flags[:3]:
-                    part = flag.get("part") or "document"
-                    expected = flag.get("expected_pages") or {}
-                    found = flag.get("found_pages") or {}
-                    examples.append(
-                        f"{part}: Index {expected.get('start_page', '?')}–"
-                        f"{expected.get('end_page', '?')}, split "
-                        f"{found.get('start_page', '?')}–{found.get('end_page', '?')}"
-                    )
-                ctx.write_event_to_stream(
-                    Status(
-                        level="warning",
-                        message=(
-                            "Index/split boundary mismatch; verify before accepting: "
-                            + "; ".join(examples)
-                        ),
-                    )
-                )
+            )
         parts_found = sorted(
             {name for names in page_parts.values() for name in parts_on_page(names)}
         )
@@ -2206,14 +2755,140 @@ class ProcessFileWorkflow(Workflow):
         )
         # Keep remote document identities in every mode. The slicer intersects
         # these boundaries with final labels, so local repairs stay authoritative.
-        returned = llama_split["returned"]
-        split_segments = (returned.get("result") or {}).get("segments") or []
+        split_segments = classification_report["boundary_segments"]
+        sharing_validation = validate_shared_page_evidence(
+            page_parts,
+            split_segments,
+            page_count=pdf_page_count,
+        )
         slices = slice_bundle_pdf(
             pdf_bytes,
             catalog,
             page_parts,
             split_segments=split_segments,
         )
+        ownership = validate_sliced_page_ownership(
+            slices,
+            page_count=pdf_page_count,
+            page_parts=page_parts,
+            split_segments=split_segments,
+            catalog=catalog,
+        )
+        split_audit["shared_page_validation"] = sharing_validation
+        if sharing_validation["issues"]:
+            split_audit.setdefault("flags", []).append(
+                {
+                    "code": "shared_page_authorization_needs_review",
+                    "severity": "warning",
+                    "message": "Some page sharing lacked sufficient classification evidence; the page remains single-owner.",
+                    "details": sharing_validation["issues"],
+                }
+            )
+            split_audit["review_status"] = "needs_review"
+            split_audit.setdefault("flag_counts", {})["warning"] = (
+                split_audit.get("flag_counts", {}).get("warning", 0) + 1
+            )
+            split_audit["flag_counts"]["total"] = (
+                split_audit.get("flag_counts", {}).get("total", 0) + 1
+            )
+        owners_by_page: dict[int, list[str]] = {}
+        for sliced in slices:
+            for source_page in sliced.pages:
+                owners_by_page.setdefault(source_page, []).append(sliced.slot_id)
+
+        page_manifest = (split_audit.get("page_manifest") or {}).get("pages")
+        if not isinstance(page_manifest, list):
+            page_manifest = [
+                {
+                    "source_page": page,
+                    "source_document_id": state.file_id,
+                    "assigned_labels": parts_on_page(page_parts.get(page)),
+                    "effective_owner": (
+                        parts_on_page(page_parts.get(page)) or ["Unidentified"]
+                    )[0],
+                    "segment_id": None,
+                    "extraction": None,
+                    "boundary_before": None,
+                    "classification": None,
+                    "reconciliation": None,
+                    "review_status": "needs_review",
+                    "review_reasons": [
+                        "page_manifest_fallback_used",
+                        *(
+                            ["unassigned_source_page"]
+                            if not parts_on_page(page_parts.get(page))
+                            else []
+                        ),
+                    ],
+                }
+                for page in range(1, pdf_page_count + 1)
+            ]
+            # The fallback path has no local extraction evidence, but still
+            # records one manifest row per immutable source page.
+            for row in page_manifest:
+                row["review_reasons"] = list(row["review_reasons"])
+
+        page_review_reasons = _split_page_review_reasons(
+            boundary_validation, classification_report, sharing_validation
+        )
+        for row in page_manifest:
+            page = int(row["source_page"])
+            reasons_for_page = page_review_reasons.get(page, [])
+            if reasons_for_page:
+                reasons = row.setdefault("review_reasons", [])
+                reasons.extend(
+                    reason for reason in reasons_for_page if reason not in reasons
+                )
+                row["review_status"] = "needs_review"
+            slots = sorted(set(owners_by_page.get(page, [])))
+            row["output_slots"] = slots
+            if len(slots) > 1:
+                reasons = row.setdefault("review_reasons", [])
+                if "shared_source_page" not in reasons:
+                    reasons.append("shared_source_page")
+                row["review_status"] = "needs_review"
+                row["shared_page_evidence"] = next(
+                    (
+                        item
+                        for item in ownership["shared_ownership"]
+                        if item["source_page"] == page
+                    ),
+                    None,
+                )
+        manifest_consistency = validate_page_manifest_output(
+            page_manifest,
+            slices,
+            page_count=pdf_page_count,
+            source_pdf=pdf_bytes,
+        )
+        if not manifest_consistency["valid"]:
+            raise ValueError(
+                "Split page manifest does not match final output slices: "
+                + ", ".join(
+                    str(item["code"]) for item in manifest_consistency["errors"]
+                )
+            )
+        ownership["review_status"] = (
+            "needs_review"
+            if ownership["overlapping_ownership"]
+            or ownership["shared_ownership"]
+            or split_audit.get("review_status") == "needs_review"
+            else "clear"
+            if split_audit.get("reconciliation_mode") != "llama_only"
+            else "needs_review"
+        )
+        split_audit["structural_validation"] = ownership
+        split_audit["manifest_consistency"] = manifest_consistency
+        split_audit["page_manifest"] = {
+            "schema_version": "1.0",
+            "ownership_policy": "single_owner_with_explicit_shared_copies",
+            "shared_source_pages_require_review": True,
+            "source_document_id": state.file_id,
+            "source_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+            "source_page_count": pdf_page_count,
+            "pages": page_manifest,
+        }
+        split_audit["review_status"] = ownership["review_status"]
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -2313,6 +2988,17 @@ class ProcessFileWorkflow(Workflow):
                         "slot_pages": slot_pages,
                         "duplicate_parts": split_duplicates,
                         "split_audit": split_audit,
+                        "split_review": {
+                            "status": ownership["review_status"],
+                            "error_count": int(
+                                (split_audit.get("flag_counts") or {}).get("error") or 0
+                            ),
+                            "warning_count": int(
+                                (split_audit.get("flag_counts") or {}).get("warning") or 0
+                            ),
+                            "overlap_count": len(ownership["overlapping_ownership"]),
+                            "source_page_count": pdf_page_count,
+                        },
                     }
                 ),
                 timing,

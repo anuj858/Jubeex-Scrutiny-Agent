@@ -126,7 +126,12 @@ def test_split_guidance_is_sent_in_full_with_existing_category_contract() -> Non
         ),
         (
             "Affidavit",
-            ("primary pleading's affidavit", "stays with that Application"),
+            (
+                "primary pleading's affidavit",
+                "stays with that Application",
+                "High Court, district-court or tribunal affidavit",
+                "not the current Supreme Court primary Affidavit",
+            ),
         ),
         (
             "Vakalatnama",

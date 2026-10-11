@@ -256,7 +256,9 @@ def test_audit_records_no_index_as_fallback_mode() -> None:
 
 def test_audit_keeps_page_level_split_evidence() -> None:
     from extraction_review.structure_split import (
+        BoundaryCandidate,
         PageClassification,
+        PageUnit,
         ReconciliationChange,
     )
 
@@ -284,6 +286,26 @@ def test_audit_keeps_page_level_split_evidence() -> None:
                 evidence=("explicit_outer_boundary",),
             )
         ],
+        boundaries=[
+            BoundaryCandidate(
+                page=2,
+                document_type="Annexure P-9",
+                score=0.9,
+                signals=("annexure_marker",),
+                action="verify",
+            )
+        ],
+        page_units=[
+            PageUnit(
+                pdf_page=2,
+                text="ANNEXURE P/9\nHigh Court order\n189",
+                native_text="ANNEXURE P/9\nHigh Court order\n189",
+                extraction_method="native",
+                text_quality="usable",
+            )
+        ],
+        source_document_id="source-id",
+        source_pdf_sha256="abc123",
     )
 
     evidence = result["page_evidence"][1]
@@ -293,6 +315,15 @@ def test_audit_keeps_page_level_split_evidence() -> None:
     assert evidence["classification"]["signals"] == ["annexure_stamp"]
     assert evidence["reconciliation"]["evidence"] == ["explicit_outer_boundary"]
     assert "High Court order" in evidence["text_excerpt"]
+    manifest = result["page_manifest"]
+    assert manifest["source_page_count"] == 2
+    assert manifest["pages"][1]["source_document_id"] == "source-id"
+    assert manifest["pages"][1]["segment_id"]
+    assert manifest["pages"][1]["boundary_before"]["action"] == "verify"
+    assert manifest["pages"][1]["extraction"]["method"] == "native"
+    assert "ANNEXURE P/9" in manifest["pages"][1]["extraction"]["native_excerpt"]
+    assert manifest["pages"][1]["review_status"] == "needs_review"
+    assert result["source_pdf_sha256"] == "abc123"
 
 
 def test_audit_marks_present_but_unreadable_index() -> None:

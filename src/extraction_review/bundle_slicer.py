@@ -120,6 +120,8 @@ def map_slot_pages(
 def _map_repeatable_segments(
     pages_by_slot: dict[str, list[int]],
     segments: Sequence[Mapping[str, Any]],
+    *,
+    allowed_shared_pages: set[int] | None = None,
 ) -> dict[str, list[int]]:
     """Preserve remote document boundaries within the final page assignments.
 
@@ -144,6 +146,7 @@ def _map_repeatable_segments(
     }
     assigned: dict[str, set[int]] = {family: set() for family in families}
     counters = {family: 0 for family in families}
+    shared_pages = allowed_shared_pages or set()
 
     def add_segment(family: str, pages: list[int]) -> None:
         prefix = families[family][1]
@@ -166,9 +169,16 @@ def _map_repeatable_segments(
         )
         if not pages:
             continue
+        repeated = set(pages) & assigned[family]
+        unexpected_repeats = repeated - shared_pages
+        if unexpected_repeats:
+            # Deterministically retain the earlier physical segment as owner;
+            # malformed/contradictory boundaries are separately flagged by
+            # classification validation and must not duplicate output pages.
+            pages = [page for page in pages if page not in unexpected_repeats]
+        if not pages:
+            continue
         add_segment(family, pages)
-        # Do not subtract these pages from the next segment: adjacent
-        # documents can legitimately share a physical PDF page.
         assigned[family].update(pages)
 
     for family in families:
@@ -176,6 +186,153 @@ def _map_repeatable_segments(
         for span in page_ranges(remaining):
             add_segment(family, list(range(span["start"], span["end"] + 1)))
     return mapped
+
+
+def validate_shared_page_evidence(
+    page_parts: Mapping[int, Sequence[str] | str | None],
+    segments: Sequence[Mapping[str, Any]],
+    *,
+    page_count: int,
+) -> dict[str, Any]:
+    """Authorize copies only when final labels and complete-segment evidence agree.
+
+    An explicit multi-document page must be classified as exactly those
+    document types on that physical page. An adjacent boundary share must be
+    the sole overlap of two consecutive, contiguous classified segments at
+    the left segment's end and the right segment's start. Every other overlap
+    is unsupported and remains single-owner/review-needed.
+    """
+    issues: list[dict[str, Any]] = []
+    normalized_parts: dict[int, list[str]] = {}
+    for raw_page, labels in page_parts.items():
+        if type(raw_page) is not int or not 1 <= raw_page <= page_count:
+            issues.append({"code": "page_assignment_out_of_range", "page": raw_page})
+            continue
+        normalized_parts[raw_page] = parts_on_page(labels)
+
+    segment_pages: list[list[int]] = []
+    segment_labels: list[list[str]] = []
+    page_segments: dict[int, list[int]] = {}
+    for index, segment in enumerate(segments):
+        raw_pages = segment.get("pages") if isinstance(segment, Mapping) else None
+        category = segment.get("category") if isinstance(segment, Mapping) else None
+        if (
+            not isinstance(raw_pages, (list, tuple))
+            or not raw_pages
+            or any(type(page) is not int for page in raw_pages)
+        ):
+            issues.append({"code": "classified_segment_pages_invalid", "segment_index": index})
+            segment_pages.append([])
+            segment_labels.append([])
+            continue
+        pages = list(raw_pages)
+        if (
+            pages != sorted(set(pages))
+            or any(page < 1 or page > page_count for page in pages)
+            or pages != list(range(pages[0], pages[-1] + 1))
+        ):
+            issues.append({"code": "classified_segment_range_invalid", "segment_index": index})
+            segment_pages.append([])
+            segment_labels.append([])
+            continue
+        labels = parts_on_page(category)
+        if not labels:
+            issues.append({"code": "classified_segment_category_invalid", "segment_index": index})
+            segment_pages.append([])
+            segment_labels.append([])
+            continue
+        segment_pages.append(pages)
+        segment_labels.append(labels)
+        for page in pages:
+            page_segments.setdefault(page, []).append(index)
+
+    authorizations: dict[int, dict[str, Any]] = {}
+    fatal_codes = {
+        "page_assignment_out_of_range",
+        "classified_segment_pages_invalid",
+        "classified_segment_range_invalid",
+    }
+    candidate_pages = set(page_segments)
+    candidate_pages.update(
+        page for page, labels in normalized_parts.items() if len(labels) > 1
+    )
+    for page in sorted(candidate_pages):
+        labels = normalized_parts.get(page, [])
+        indexes = page_segments.get(page, [])
+        if len(labels) > 1:
+            singleton_matches = [
+                index
+                for index in indexes
+                if segment_pages[index] == [page]
+                and set(segment_labels[index]).issubset(set(labels))
+            ]
+            covered_labels = {
+                label for index in singleton_matches for label in segment_labels[index]
+            }
+            if (
+                covered_labels == set(labels)
+                and len(singleton_matches) == len(indexes)
+                and len(singleton_matches) <= 2
+            ):
+                authorizations[page] = {
+                    "source_page": page,
+                    "reason": "explicit_classified_multi_document_page",
+                    "labels": labels,
+                    "segment_indexes": singleton_matches,
+                    "segment_categories": [segment_labels[i] for i in singleton_matches],
+                    "segment_pages": [segment_pages[i] for i in singleton_matches],
+                    "review_status": "needs_review",
+                }
+                continue
+
+        if len(indexes) == 2 and indexes[1] == indexes[0] + 1:
+            left, right = indexes
+            left_pages, right_pages = segment_pages[left], segment_pages[right]
+            category_labels = set(segment_labels[left]) | set(segment_labels[right])
+            is_valid_edge = (
+                left_pages
+                and right_pages
+                and left_pages[-1] == page
+                and right_pages[0] == page
+                and len(indexes) == 2
+                and set(labels) == category_labels
+            )
+            if is_valid_edge:
+                authorizations[page] = {
+                    "source_page": page,
+                    "reason": "adjacent_classified_segment_boundary",
+                    "labels": labels,
+                    "segment_indexes": [left, right],
+                    "segment_categories": [segment_labels[left], segment_labels[right]],
+                    "segment_pages": [left_pages, right_pages],
+                    "review_status": "needs_review",
+                }
+                continue
+
+        if len(labels) > 1:
+            issues.append(
+                {
+                    "code": "multi_label_page_lacks_classification_evidence",
+                    "source_page": page,
+                    "labels": labels,
+                    "segment_indexes": indexes,
+                }
+            )
+        if len(indexes) > 1 and page not in authorizations:
+            issues.append(
+                {
+                    "code": "unsupported_classification_overlap",
+                    "source_page": page,
+                    "segment_indexes": indexes,
+                }
+            )
+
+    return {
+        "status": "needs_review" if issues or authorizations else "clear",
+        "fatal": any(issue.get("code") in fatal_codes for issue in issues),
+        "authorizations": authorizations,
+        "issues": issues,
+    }
 
 
 def leftover_pages(
@@ -350,6 +507,18 @@ def slice_bundle_pdf(
     categories; raw boundaries keep otherwise indistinguishable documents
     separate. The ordinals are not printed exhibit numbers.
     """
+    reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
+    page_count = len(reader.pages) if reader is not None else 0
+    segments = list(split_segments or [])
+    sharing = validate_shared_page_evidence(
+        page_parts, segments, page_count=page_count
+    )
+    if sharing["fatal"]:
+        raise ValueError(
+            "Invalid page-sharing evidence: "
+            + ", ".join(issue["code"] for issue in sharing["issues"])
+        )
+    authorized_pages = set(sharing["authorizations"])
     normalized: dict[int, list[str]] = {}
     for page, raw in page_parts.items():
         try:
@@ -358,13 +527,20 @@ def slice_bundle_pdf(
             continue
         labels = parts_on_page(raw)
         if labels:
+            if len(labels) > 1 and number not in authorized_pages:
+                # Preserve one deterministic owner while keeping the rejected
+                # authorization visible through validate_shared_page_evidence.
+                labels = labels[:1]
             normalized[number] = labels
-    reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else None
     pages_by_slot = dict(
         map_slot_pages(catalog, normalized, promote_repeatable=split_segments is None)
     )
     if split_segments is not None:
-        pages_by_slot = _map_repeatable_segments(pages_by_slot, split_segments)
+        pages_by_slot = _map_repeatable_segments(
+            pages_by_slot,
+            segments,
+            allowed_shared_pages=authorized_pages,
+        )
     if reader is not None:
         invalid_pages = {
             page
@@ -419,3 +595,248 @@ def slot_page_spans(
     slices: Sequence[SlotSlice],
 ) -> dict[str, list[dict[str, int]]]:
     return {item.slot_id: list(item.page_span) for item in slices if item.page_span}
+
+
+def validate_sliced_page_ownership(
+    slices: Sequence[SlotSlice],
+    *,
+    page_count: int,
+    page_parts: Mapping[int, Sequence[str] | str | None],
+    split_segments: Sequence[Mapping[str, Any]],
+    catalog: UploadTypeCatalog,
+) -> dict[str, Any]:
+    """Check complete source coverage; only explicitly evidenced copies may share.
+
+    A source page normally belongs to one output slot. A copy may appear in
+    multiple slots only when a multi-document page label or a validated
+    adjacent segment boundary explicitly authorized it.
+    """
+    owners: dict[int, list[str]] = {}
+    for item in slices:
+        if len(set(item.pages)) != len(item.pages):
+            raise ValueError(f"Output slot {item.slot_id} repeats a source page")
+        for page in item.pages:
+            owners.setdefault(int(page), []).append(item.slot_id)
+
+    invalid_pages = sorted(page for page in owners if not 1 <= page <= page_count)
+    missing_pages = sorted(set(range(1, page_count + 1)) - set(owners))
+    if invalid_pages or missing_pages:
+        details = []
+        if invalid_pages:
+            details.append(f"out-of-range pages {invalid_pages}")
+        if missing_pages:
+            details.append(f"unassigned source pages {missing_pages}")
+        raise ValueError("Invalid split output ownership: " + "; ".join(details))
+
+    sharing = validate_shared_page_evidence(
+        page_parts, split_segments, page_count=page_count
+    )
+    if sharing["fatal"]:
+        raise ValueError(
+            "Invalid page-sharing evidence: "
+            + ", ".join(issue["code"] for issue in sharing["issues"])
+        )
+    authorizations = sharing["authorizations"]
+    shared = []
+    for page, slot_ids in sorted(owners.items()):
+        actual_slots = sorted(set(slot_ids))
+        if len(actual_slots) <= 1:
+            continue
+        authorization = authorizations.get(page)
+        if authorization is None:
+            continue
+        if not _authorization_matches_slots(authorization, actual_slots, catalog):
+            raise ValueError(
+                f"Shared page {page} output slots do not match classified evidence"
+            )
+        shared.append(
+            {
+                **authorization,
+                "source_page": page,
+                "output_slots": actual_slots,
+                "review_status": "needs_review",
+            }
+        )
+    overlaps = [
+        {"source_page": page, "output_slots": sorted(set(slot_ids))}
+        for page, slot_ids in sorted(owners.items())
+        if len(set(slot_ids)) > 1 and page not in authorizations
+    ]
+    if overlaps:
+        details = ", ".join(
+            f"page {item['source_page']} in {item['output_slots']}" for item in overlaps
+        )
+        raise ValueError(
+            "Invalid split output ownership: source pages have multiple owners: "
+            + details
+        )
+    return {
+        "ownership_policy": "single_owner_with_explicit_shared_copies",
+        "source_page_count": page_count,
+        "accounted_page_count": len(owners),
+        "missing_pages": [],
+        "out_of_range_pages": [],
+        "overlapping_ownership": overlaps,
+        "shared_ownership": shared,
+        "shared_pages_require_review": bool(shared),
+        "sharing_validation": sharing,
+        "review_status": "needs_review"
+        if shared or sharing["issues"]
+        else "clear",
+    }
+
+
+def _authorization_matches_slots(
+    authorization: Mapping[str, Any],
+    actual_slots: Sequence[str],
+    catalog: UploadTypeCatalog,
+) -> bool:
+    categories = {
+        label
+        for category in authorization.get("segment_categories", ())
+        for label in category
+    }
+    expected_slots: set[str] = set()
+    generic_families: set[str] = set()
+    for label in categories:
+        family = family_split_name(label)
+        if family in {ANNEXURE_FAMILY, APPLICATION_FAMILY}:
+            generic_families.add(family)
+        else:
+            expected_slots.update(_slot_ids_for_labels([label], catalog))
+    actual = set(actual_slots)
+    if not generic_families:
+        return actual == expected_slots
+    for family in generic_families:
+        prefix = "annexure_" if family == ANNEXURE_FAMILY else "application_"
+        family_slots = {slot for slot in actual if slot.startswith(prefix)}
+        expected_count = sum(
+            any(family_split_name(label) == family for label in categories_for_segment)
+            for categories_for_segment in authorization.get("segment_categories", ())
+        )
+        if len(family_slots) != expected_count:
+            return False
+        if family == ANNEXURE_FAMILY and any(
+            not _is_numbered_annexure_slot(slot) for slot in family_slots
+        ):
+            return False
+        if family == APPLICATION_FAMILY and any(
+            not slot.startswith("application_") for slot in family_slots
+        ):
+            return False
+        expected_slots.update(family_slots)
+    return actual == expected_slots
+
+
+def validate_page_manifest_output(
+    page_manifest: Sequence[Mapping[str, Any]],
+    slices: Sequence[SlotSlice],
+    *,
+    page_count: int,
+    source_pdf: bytes,
+) -> dict[str, Any]:
+    """Require exact manifest/slot/range agreement and verify sliced page text."""
+    errors: list[dict[str, Any]] = []
+    rows_by_page: dict[int, list[Mapping[str, Any]]] = {}
+    for row in page_manifest:
+        page = row.get("source_page")
+        if type(page) is not int:
+            errors.append({"code": "manifest_page_number_invalid"})
+            continue
+        rows_by_page.setdefault(page, []).append(row)
+    for page, rows in sorted(rows_by_page.items()):
+        if page < 1 or page > page_count:
+            errors.append({"code": "manifest_page_out_of_range", "page": page})
+        if len(rows) > 1:
+            errors.append({"code": "manifest_page_duplicated", "page": page})
+    missing = sorted(set(range(1, page_count + 1)) - set(rows_by_page))
+    if missing:
+        errors.append({"code": "manifest_pages_missing", "pages": missing})
+
+    source_reader = PdfReader(io.BytesIO(source_pdf))
+    if len(source_reader.pages) != page_count:
+        errors.append(
+            {
+                "code": "source_pdf_page_count_mismatch",
+                "expected_page_count": page_count,
+                "pdf_page_count": len(source_reader.pages),
+            }
+        )
+    actual_slots: dict[int, list[str]] = {}
+    with pymupdf.open(stream=source_pdf, filetype="pdf") as original_doc:
+        for item in slices:
+            if tuple(item.page_span) != tuple(page_ranges(item.pages)):
+                errors.append(
+                    {"code": "slice_page_span_mismatch", "slot_id": item.slot_id}
+                )
+            sliced_reader = PdfReader(io.BytesIO(item.pdf_bytes))
+            sliced_page_count = len(sliced_reader.pages)
+            if sliced_page_count != len(item.pages):
+                errors.append(
+                    {
+                        "code": "slice_pdf_page_count_mismatch",
+                        "slot_id": item.slot_id,
+                        "metadata_page_count": len(item.pages),
+                        "pdf_page_count": sliced_page_count,
+                    }
+                )
+            for page in item.pages:
+                actual_slots.setdefault(int(page), []).append(item.slot_id)
+            with pymupdf.open(stream=item.pdf_bytes, filetype="pdf") as sliced_doc:
+                for output_index, (source_page, output_page) in enumerate(
+                    zip(item.pages, sliced_reader.pages, strict=False)
+                ):
+                    if not 1 <= source_page <= len(source_reader.pages):
+                        continue
+                    original_page = source_reader.pages[source_page - 1]
+                    source_text = " ".join((original_page.extract_text() or "").split())
+                    output_text = " ".join((output_page.extract_text() or "").split())
+                    if source_text != output_text:
+                        errors.append(
+                            {
+                                "code": "slice_source_content_mismatch",
+                                "slot_id": item.slot_id,
+                                "source_page": source_page,
+                            }
+                        )
+                    original_pixmap = original_doc[source_page - 1].get_pixmap(
+                        matrix=pymupdf.Matrix(1.5, 1.5), alpha=False
+                    )
+                    output_pixmap = sliced_doc[output_index].get_pixmap(
+                        matrix=pymupdf.Matrix(1.5, 1.5), alpha=False
+                    )
+                    source_visual = hashlib.sha256(original_pixmap.samples).digest()
+                    output_visual = hashlib.sha256(output_pixmap.samples).digest()
+                    if (
+                        original_pixmap.width != output_pixmap.width
+                        or original_pixmap.height != output_pixmap.height
+                        or source_visual != output_visual
+                    ):
+                        errors.append(
+                            {
+                                "code": "slice_source_visual_mismatch",
+                                "slot_id": item.slot_id,
+                                "source_page": source_page,
+                            }
+                        )
+
+    for page in range(1, page_count + 1):
+        rows = rows_by_page.get(page) or []
+        if not rows:
+            continue
+        expected_slots = sorted(set(actual_slots.get(page, [])))
+        for row in rows:
+            recorded_slots = row.get("output_slots")
+            if (
+                not isinstance(recorded_slots, list)
+                or any(not isinstance(slot, str) for slot in recorded_slots)
+                or sorted(set(recorded_slots)) != expected_slots
+            ):
+                errors.append(
+                    {
+                        "code": "manifest_output_slots_mismatch",
+                        "page": page,
+                        "expected_slots": expected_slots,
+                    }
+                )
+    return {"valid": not errors, "errors": errors}

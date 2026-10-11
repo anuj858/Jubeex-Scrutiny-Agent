@@ -1,0 +1,30 @@
+{
+  "schema_version": "jubeex.split-ground-truth.v1",
+  "cases": [
+    {
+      "case_id": "reviewed_case_0001",
+      "source": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "physical_page_count": 4,
+      "input_quality": "mixed",
+      "documents": [
+        {
+          "document_id": "doc_01",
+          "category": "Index",
+          "start_page": 1,
+          "end_page": 1,
+          "reviewer_notes": "Optional; do not include personal data or petition text.",
+          "ambiguity_flags": []
+        },
+        {
+          "document_id": "doc_02",
+          "category": "Main Petition",
+          "start_page": 2,
+          "end_page": 4,
+          "ambiguity_flags": []
+        }
+      ]
+    }
+  ]
+}

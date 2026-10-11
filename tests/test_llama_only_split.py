@@ -1,5 +1,6 @@
 """Production split routing and lossless slot mapping, with no live AI calls."""
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -63,15 +64,13 @@ def _fail_local_rules(*_args, **_kwargs):
 async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     monkeypatch, caplog, upload_slots, rules_flag
 ) -> None:
+    monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", "llama_only")
     if rules_flag is None:
         monkeypatch.delenv("SPLIT_PYTHON_RULES_ENABLED", raising=False)
     else:
         monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", rules_flag)
     for target in (
-        "structure_split.extract_page_units",
-        "structure_split.structure_aware_split",
         "split_repair.repair_compiled_split",
-        "split_audit.audit_compiled_split",
         "split_ocr.ocr_sparse_pages",
         "split_pdf_layout.extract_split_layout",
         "document_parts.reclassify_pages_from_headings",
@@ -80,8 +79,14 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     ):
         monkeypatch.setattr(f"extraction_review.{target}", _fail_local_rules)
     monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "false" if upload_slots else "true")
+    from extraction_review.structure_split import PageUnit
+
     monkeypatch.setattr(
         process_file, "_load_bundle_pdf", AsyncMock(return_value=_pdf_bytes())
+    )
+    monkeypatch.setattr(
+        "extraction_review.structure_split.extract_page_units",
+        Mock(return_value=[PageUnit(pdf_page=i, text=f"page {i}") for i in range(1, 7)]),
     )
     monkeypatch.setattr(
         process_file, "collect_optional_usage", AsyncMock(return_value={})
@@ -119,12 +124,18 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     assert all(bool(part.file_id) == upload_slots for part in result.parts)
     assert client.files.create.await_count == (4 if upload_slots else 0)
     assert "[SplitTiming] mode=llama_only" in caplog.text
-    assert not any("Structure-aware" in event.message for event in events)
+    assert any("mandatory page and ownership audit" in event.message for event in events)
     assert artifact.call_args.args[1]["duplicate_parts"] == []
-    assert artifact.call_args.args[1]["split_audit"]["flags"] == []
+    assert any(
+        flag["code"] == "index_missing"
+        for flag in artifact.call_args.args[1]["split_audit"]["flags"]
+    )
     assert (
         artifact.call_args.args[1]["split_audit"]["reconciliation_mode"] == "llama_only"
     )
+    assert artifact.call_args.args[1]["split_audit"]["review_status"] == "needs_review"
+    assert artifact.call_args.args[1]["split_audit"]["semantic_validation"]["status"] == "not_assessed_legacy_mode"
+    assert client.split.create.await_count == 2
     # Same response fields, including compatibility fields; no added API format.
     assert "llama_split" in result.model_dump()
     assert result.agent_data_id is None
@@ -133,7 +144,7 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
 @pytest.mark.parametrize(
     ("value", "enabled"),
     [
-        (None, False),
+        (None, True),
         ("", False),
         ("false", False),
         ("0", False),
@@ -162,6 +173,7 @@ def test_split_python_rules_flag(monkeypatch, value, enabled):
         ("legacy_full", "false", "legacy_full"),
         ("invalid", "true", "targeted"),
         (None, "false", "llama_only"),
+        (None, None, "targeted"),
     ],
 )
 def test_split_reconciliation_mode(monkeypatch, configured, legacy, expected):
@@ -169,7 +181,10 @@ def test_split_reconciliation_mode(monkeypatch, configured, legacy, expected):
         monkeypatch.delenv("SPLIT_RECONCILIATION_MODE", raising=False)
     else:
         monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", configured)
-    monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", legacy)
+    if legacy is None:
+        monkeypatch.delenv("SPLIT_PYTHON_RULES_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", legacy)
 
     assert process_file.split_reconciliation_mode() == expected
 
@@ -206,8 +221,10 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
         report=lambda: {"auto_boundaries": 3, "verify_boundaries": 0},
     )
 
+    execution_order: list[str] = []
     def read_local_pages(*_args, **_kwargs):
         # An in-flight job must not switch mode between OCR and repair/audit.
+        execution_order.append("extract_original_pages")
         monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", "false")
         return units
 
@@ -245,14 +262,35 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
         ),
         write_event_to_stream=Mock(),
     )
+    client = _client(segments)
+    create_split = client.split.create
+    split_requests = []
+
+    async def record_llama_boundary_call(*args, **kwargs):
+        execution_order.append("llama_split_proposals")
+        split_requests.append(kwargs)
+        return await create_split(*args, **kwargs)
+
+    client.split.create = AsyncMock(side_effect=record_llama_boundary_call)
     with caplog.at_level("INFO"):
         result = await process_file.ProcessFileWorkflow().prepare_bundle(
             process_file.FileClassifiedEvent(filing_type="SLP_CIVIL"),
             ctx,
-            _client(segments),
+            client,
             _config().split,
         )
+    assert execution_order == [
+        "extract_original_pages",
+        "llama_split_proposals",
+        "llama_split_proposals",
+    ]
+    assert split_requests[0]["configuration"]["categories"][0]["name"] == "Document Segment"
+    assert split_requests[1]["configuration"]["categories"]
+    assert split_requests[1]["configuration"]["categories"][0]["name"] != "Document Segment"
+    assert "boundary-1=[1, 2, 3, 4, 5, 6]" in split_requests[1]["configuration"]["splitting_strategy"]["custom_instructions"]
     read.assert_called_once_with(pdf_bytes, source_pdf="source.pdf")
+    # This test stubs structure_aware_split; the wrapper's repair mock is only
+    # asserted for the initial local extraction path.
     repair.assert_called_once()
     assert repair.call_args.kwargs["page_units"] is units
     assert repair.call_args.kwargs["run_hybrid_repair"] is True
@@ -264,6 +302,12 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
         llama_page_parts={page: ["Annexures"] for page in range(1, 7)},
         classifications=(),
         reconciliation_changes=[],
+        boundaries=(),
+        page_units=units,
+        segment_classifications=(),
+        llama_boundary_proposals=(),
+        source_document_id="dfl-source",
+        source_pdf_sha256=hashlib.sha256(pdf_bytes).hexdigest(),
     )
     assert result.slot_pages == {
         "index": [{"start": 1, "end": 1}],
@@ -276,6 +320,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     saved = artifact.call_args.args[1]
     assert saved["duplicate_parts"] == [duplicate]
     assert saved["split_audit"]["structure"] == structured.report()
+    assert saved["split_audit"]["llama_boundary_detection"]["proposals"]
     assert saved["split_audit"]["reconciliation_mode"] == "targeted"
     assert saved["split_audit"]["flags"] == [{"code": "test_flag"}]
     assert "mode=targeted" in caplog.text
@@ -386,7 +431,9 @@ async def test_enabled_flag_reaches_ocr_and_real_repair_and_audit(monkeypatch):
     )
     ocr.assert_called_once()
     assert ocr.call_args.args[1]  # Sparse pages were selected for OCR.
-    repair.assert_called_once()
+    # The real targeted flow makes an initial proposal and one fresh global
+    # reassessment after accepted mutations.
+    assert repair.call_count == 2
     audit.assert_called_once()
     assert result.parts
     assert "structure" in artifact.call_args.args[1]["split_audit"]
@@ -426,19 +473,16 @@ def test_generic_segments_remain_separate_without_inventing_printed_annexure_num
             assert pdf.page_count == len(item.pages)
 
 
-def test_explicit_annexure_names_and_noncontiguous_page_lists_are_not_repaired():
+def test_explicit_annexure_names_with_noncontiguous_segment_fail_validation():
     segments = [
         {"category": "Annexure A-14", "pages": [1, 3, 5]},
         {"category": "Annexures", "pages": [2, 4]},
     ]
     mapping = page_parts_from_split(SimpleNamespace(result={"segments": segments}))
-    slices = slice_bundle_pdf(
-        _pdf_bytes(), type_catalog("SLP_CIVIL"), mapping, split_segments=segments
-    )
-    by_id = {item.slot_id: item for item in slices}
-    assert by_id["annexure_a14"].pages == (1, 3, 5)
-    assert by_id["annexure_1"].pages == (2, 4)
-    assert by_id["undefined"].pages == (6,)
+    with pytest.raises(ValueError, match="classified_segment_range_invalid"):
+        slice_bundle_pdf(
+            _pdf_bytes(), type_catalog("SLP_CIVIL"), mapping, split_segments=segments
+        )
 
 
 @pytest.mark.asyncio
@@ -468,7 +512,7 @@ async def test_empty_remote_result_still_fails():
 
 
 def test_invalid_page_assignment_fails_instead_of_silently_dropping_pages():
-    with pytest.raises(ValueError, match="out-of-range PDF pages"):
+    with pytest.raises(ValueError, match="page_assignment_out_of_range"):
         slice_bundle_pdf(
             _pdf_bytes(), type_catalog("SLP_CIVIL"), {7: ["Main Petition"]}
         )

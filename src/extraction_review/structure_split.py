@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import io
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -30,6 +30,7 @@ from .document_parts import (
     annexure_label_from_text,
     family_split_name,
     normalize_part_name,
+    page_ranges,
     page_starts_application,
     parts_on_page,
 )
@@ -103,6 +104,18 @@ class PageUnit:
     header: str = ""
     footer: str = ""
     source_pdf: str = "bundle.pdf"
+    native_text: str = ""
+    ocr_text: str = ""
+    extraction_method: str = "native"
+    text_quality: str = "usable"
+    headings: tuple[str, ...] = ()
+    paragraph_starts: tuple[str, ...] = ()
+    sentence_continues_previous: bool = False
+    paragraph_continues_previous: bool = False
+    signature_detected: bool = False
+    closing_section: str | None = None
+    annexure_labels: tuple[str, ...] = ()
+    layout_fingerprint: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -147,6 +160,45 @@ class BoundaryCandidate:
 
 
 @dataclass(frozen=True)
+class LlamaBoundaryProposal:
+    """A boundary proposal derived from LlamaSplit's segment transitions."""
+
+    page: int
+    previous_labels: tuple[str, ...] = ()
+    proposed_labels: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "page": self.page,
+            "previous_labels": list(self.previous_labels),
+            "proposed_labels": list(self.proposed_labels),
+            "source": "llama_split_segment_transition",
+        }
+
+
+@dataclass(frozen=True)
+class SegmentClassification:
+    """Classification evidence for a complete, contiguous proposed segment."""
+
+    segment_id: str
+    start_page: int
+    end_page: int
+    document_type: str
+    confidence: float
+    signals: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "segment_id": self.segment_id,
+            "start_page": self.start_page,
+            "end_page": self.end_page,
+            "document_type": self.document_type,
+            "confidence": round(self.confidence, 3),
+            "signals": list(self.signals),
+        }
+
+
+@dataclass(frozen=True)
 class LogicalDocument:
     """Confirmed page range — physical PDF is created only after this exists."""
 
@@ -186,6 +238,52 @@ class ReconciliationChange:
         }
 
 
+@dataclass(frozen=True)
+class ReconciliationOperation:
+    operation_id: str
+    operation_type: str
+    original_pages: tuple[int, ...]
+    proposed_pages: tuple[int, ...]
+    original_labels: tuple[str, ...]
+    proposed_labels: tuple[str, ...]
+    original_segment_range: tuple[int, int] | None
+    proposed_segment_range: tuple[int, int] | None
+    evidence: tuple[str, ...]
+    classification_before: str | None
+    classification_after: str | None
+    validation: dict[str, Any]
+    status: str
+    reason: str | None = None
+    pass_index: int = 1
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "operation_id": self.operation_id,
+            "operation_type": self.operation_type,
+            "original_page_ranges": page_ranges(self.original_pages),
+            "proposed_page_ranges": page_ranges(self.proposed_pages),
+            "original_labels": list(self.original_labels),
+            "proposed_labels": list(self.proposed_labels),
+            "original_segment_range": (
+                {"start": self.original_segment_range[0], "end": self.original_segment_range[1]}
+                if self.original_segment_range
+                else None
+            ),
+            "proposed_segment_range": (
+                {"start": self.proposed_segment_range[0], "end": self.proposed_segment_range[1]}
+                if self.proposed_segment_range
+                else None
+            ),
+            "evidence": list(self.evidence),
+            "classification_before": self.classification_before,
+            "classification_after": self.classification_after,
+            "validation": dict(self.validation),
+            "status": self.status,
+            "reason": self.reason,
+            "pass_index": self.pass_index,
+        }
+
+
 @dataclass
 class StructureSplitResult:
     page_units: list[PageUnit]
@@ -197,6 +295,10 @@ class StructureSplitResult:
     ocr_needed_pages: list[int] = field(default_factory=list)
     # Kept internal so existing split artifact/API schemas remain unchanged.
     reconciliation_changes: list[ReconciliationChange] = field(default_factory=list)
+    llama_boundary_proposals: list[LlamaBoundaryProposal] = field(default_factory=list)
+    segment_classifications: list[SegmentClassification] = field(default_factory=list)
+    reconciliation_operations: list[ReconciliationOperation] = field(default_factory=list)
+    reconciliation_summary: dict[str, Any] = field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -206,6 +308,16 @@ class StructureSplitResult:
             "ocr_needed_count": len(self.ocr_needed_pages),
             "classifications": [c.as_dict() for c in self.classifications],
             "boundaries": [b.as_dict() for b in self.boundaries],
+            "llama_boundary_proposals": [
+                item.as_dict() for item in self.llama_boundary_proposals
+            ],
+            "segment_classifications": [
+                item.as_dict() for item in self.segment_classifications
+            ],
+            "reconciliation_operations": [
+                item.as_dict() for item in self.reconciliation_operations
+            ],
+            "reconciliation_summary": dict(self.reconciliation_summary),
             "logical_documents": [d.as_dict() for d in self.logical_documents],
             "auto_boundaries": sum(1 for b in self.boundaries if b.action == "auto"),
             "verify_boundaries": sum(
@@ -260,6 +372,7 @@ def extract_page_units(
             and len(alt.strip()) >= len((text or "").strip()) * 0.5
         ):
             text = alt
+        native_text = (text or "").strip()
         ocr_text = ocr_texts.get(number, "").strip()
         if ocr_text:
             native_stamp = annexure_label_from_text(text)
@@ -302,9 +415,69 @@ def extract_page_units(
             text = text.rstrip() + "\n" + folio
         stripped = (text or "").strip()
         requires_ocr = len(stripped) < _OCR_TEXT_MIN
+        extraction_method = (
+            "native+ocr"
+            if native_text and ocr_text
+            else "ocr"
+            if ocr_text
+            else "native"
+            if native_text
+            else "unavailable"
+        )
+        text_quality = (
+            "empty"
+            if not stripped
+            else "sparse"
+            if requires_ocr
+            else "usable"
+        )
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         header = "\n".join(lines[:3])
         footer = "\n".join(lines[-2:]) if len(lines) > 3 else ""
+        headings = tuple(
+            line[:180]
+            for line in lines[:12]
+            if _CENTERED_TITLE_RE.search(line) or line.isupper() and 4 <= len(line) <= 100
+        )[:5]
+        paragraph_starts = tuple(
+            match.group(0)[:80]
+            for line in lines
+            if (
+                match := re.match(
+                    r"\s*(?:\(?\d{1,3}[.)]|[a-z][.)]|\([a-z]\))\s+",
+                    line,
+                    re.IGNORECASE,
+                )
+            )
+        )[:12]
+        lower_text = stripped.casefold()
+        signature_detected = bool(
+            re.search(r"\b(?:signed|signature|deponent|advocate|aor)\b", lower_text)
+            and re.search(r"\b(?:place|dated|date|deponent|advocate|aor)\b", lower_text)
+        )
+        closing_match = re.search(
+            r"(?i)\b(prayer|wherefore|verification|solemnly affirmed|sworn|deponent)\b",
+            stripped[-900:],
+        )
+        annexure_labels = tuple(
+            dict.fromkeys(
+                f"Annexure {match.group(1).upper()}-{match.group(2)}"
+                for match in re.finditer(
+                    r"(?i)\bannexure\s*[-–—:]?\s*([a-z])\s*[-–—/]\s*(\d+)\b",
+                    stripped,
+                )
+            )
+        )
+        layout_fingerprint = tuple(
+            name
+            for name, pattern in (
+                ("table", r"\S.{0,60}\s{2,}\S"),
+                ("numbered_paragraphs", r"(?m)^\s*\(?\d{1,3}[.)]"),
+                ("signature_block", r"(?i)\b(?:signature|signed|deponent)\b"),
+                ("all_caps_heading", r"(?m)^\s*[A-Z][A-Z .,/()'-]{5,}$"),
+            )
+            if re.search(pattern, stripped)
+        )
         printed = folio
         if not printed and lines and re.fullmatch(r"\d{1,4}[A-Za-z]?", lines[-1]):
             printed = lines[-1]
@@ -318,6 +491,28 @@ def extract_page_units(
                 header=header,
                 footer=footer,
                 source_pdf=source_pdf,
+                native_text=native_text,
+                ocr_text=ocr_text,
+                extraction_method=extraction_method,
+                text_quality=text_quality,
+                headings=headings,
+                paragraph_starts=paragraph_starts,
+                sentence_continues_previous=bool(
+                    number > 1
+                    and stripped
+                    and not re.match(r"\s*(?:[A-Z][A-Z\s]{5,}|\d+[.)])", stripped)
+                    and not re.search(r"[.!?][\"')\]]?\s*$", (units[-1].text or "").strip())
+                ),
+                paragraph_continues_previous=bool(
+                    number > 1
+                    and stripped
+                    and not paragraph_starts
+                    and not headings
+                ),
+                signature_detected=signature_detected,
+                closing_section=closing_match.group(1).casefold() if closing_match else None,
+                annexure_labels=annexure_labels,
+                layout_fingerprint=layout_fingerprint,
             )
         )
     return units
@@ -440,6 +635,83 @@ def classify_pages(
     return [classify_page(unit, llama_hint=hints.get(unit.pdf_page)) for unit in units]
 
 
+def propose_llama_boundaries(
+    llama_page_parts: PagePartMap
+    | Mapping[int, Sequence[str] | str | None]
+    | None,
+    *,
+    page_count: int,
+) -> list[LlamaBoundaryProposal]:
+    """Record LlamaSplit segment transitions before local classification runs.
+
+    These are proposals, not final ownership decisions. Missing/unclassified
+    pages are represented as empty labels so a gap cannot hide a transition.
+    """
+    if page_count < 1:
+        return []
+    labels_by_page = {
+        page: tuple(parts_on_page((llama_page_parts or {}).get(page)))
+        for page in range(1, page_count + 1)
+    }
+    proposals: list[LlamaBoundaryProposal] = []
+    previous: tuple[str, ...] | None = None
+    for page in range(1, page_count + 1):
+        labels = labels_by_page[page]
+        if page == 1 or labels != previous:
+            proposals.append(
+                LlamaBoundaryProposal(
+                    page=page,
+                    previous_labels=previous or (),
+                    proposed_labels=labels,
+                )
+            )
+        previous = labels
+    return proposals
+
+
+def classify_complete_segments(
+    page_parts: Mapping[int, Sequence[str] | str | None],
+    units: Sequence[PageUnit],
+) -> list[SegmentClassification]:
+    """Classify each complete contiguous assigned segment from its full text."""
+    units_by_page = {unit.pdf_page: unit for unit in units}
+    pages = sorted(page_parts)
+    result: list[SegmentClassification] = []
+    index = 0
+    number = 0
+    while index < len(pages):
+        start = pages[index]
+        labels = tuple(parts_on_page(page_parts.get(start)))
+        end_index = index
+        while end_index + 1 < len(pages):
+            next_page = pages[end_index + 1]
+            if next_page != pages[end_index] + 1:
+                break
+            if tuple(parts_on_page(page_parts.get(next_page))) != labels:
+                break
+            end_index += 1
+        end = pages[end_index]
+        text = "\n".join(
+            units_by_page[page].text
+            for page in range(start, end + 1)
+            if page in units_by_page
+        )
+        evidence = classify_page(PageUnit(pdf_page=start, text=text))
+        number += 1
+        result.append(
+            SegmentClassification(
+                segment_id=f"segment_{number:04d}",
+                start_page=start,
+                end_page=end,
+                document_type=evidence.document_type,
+                confidence=evidence.confidence,
+                signals=evidence.signals,
+            )
+        )
+        index = end_index + 1
+    return result
+
+
 def _boundary_score(
     prev: PageClassification | None,
     curr: PageClassification,
@@ -495,15 +767,21 @@ def _boundary_score(
 def detect_boundaries(
     classifications: Sequence[PageClassification],
     units: Sequence[PageUnit],
+    *,
+    llama_boundary_proposals: Sequence[LlamaBoundaryProposal] = (),
 ) -> list[BoundaryCandidate]:
     """Stage B — candidate boundaries with auto / verify / skip actions."""
     by_page = {unit.pdf_page: unit for unit in units}
+    llama_pages = {item.page for item in llama_boundary_proposals}
     boundaries: list[BoundaryCandidate] = []
     prev: PageClassification | None = None
     prev_unit: PageUnit | None = None
     for curr in classifications:
         unit = by_page.get(curr.page) or PageUnit(pdf_page=curr.page, text="")
         score, signals = _boundary_score(prev, curr, unit, prev_unit)
+        if curr.page in llama_pages and prev is not None:
+            score = min(1.0, score + 0.15)
+            signals.append("llama_segment_transition")
         if prev is None:
             action = "auto"
         elif score >= _AUTO_SPLIT_THRESHOLD:
@@ -693,6 +971,18 @@ def _labels_match_type(labels: Sequence[str], document_type: str) -> bool:
     return any(_same_document_type(label, document_type) for label in labels)
 
 
+def _segment_classification_supports_labels(
+    segment: SegmentClassification, labels: Sequence[str]
+) -> bool:
+    if _labels_match_type(labels, segment.document_type):
+        return True
+    return bool(
+        segment.document_type == "Application 1"
+        and set(segment.signals) & {"outer_anchor", "application_start"}
+        and any(family_split_name(label) == "Application" for label in labels)
+    )
+
+
 def _index_supported_map(
     baseline: PagePartMap,
     page_text: Mapping[int, str],
@@ -707,6 +997,101 @@ def _index_supported_map(
     return indexed
 
 
+def validate_reconciliation_page_map(
+    page_parts: Mapping[int, Sequence[str] | str | None], *, page_count: int
+) -> dict[str, Any]:
+    """Validate map structure independently of legal-document semantics.
+
+    Unlabelled in-range source pages are represented by the downstream
+    ``Unidentified`` output slot; they are not silently dropped.
+    """
+    normalized_pages: list[int] = []
+    invalid: list[Any] = []
+    for raw_page in page_parts:
+        try:
+            page = int(raw_page)
+        except (TypeError, ValueError):
+            invalid.append(raw_page)
+            continue
+        normalized_pages.append(page)
+        if not 1 <= page <= page_count:
+            invalid.append(page)
+    multi_owned = sorted(
+        int(page)
+        for page, labels in page_parts.items()
+        if str(page).isdigit() and len(parts_on_page(labels)) > 1
+    )
+    missing_labels = sorted(set(range(1, page_count + 1)) - set(normalized_pages))
+    return {
+        # A single physical page may intentionally carry a combined page label
+        # that maps to one combined upload slot. Exact slot ownership is
+        # verified after slicing by validate_sliced_page_ownership.
+        "valid": not invalid,
+        "source_page_count": page_count,
+        "invalid_pages": invalid,
+        "multiple_label_pages": multi_owned,
+        "unlabelled_pages_routed_to_unidentified": missing_labels,
+        "single_physical_owner": not invalid,
+        "combined_labels_require_slot_validation": bool(multi_owned),
+    }
+
+
+def _operation_type_for_page(
+    page: int,
+    old: tuple[str, ...],
+    new: tuple[str, ...],
+    before: Mapping[int, Sequence[str] | str | None],
+    after: Mapping[int, Sequence[str] | str | None],
+    unit: PageUnit | None = None,
+) -> str:
+    if not old or all(label in _UNIDENTIFIED_LABELS for label in old):
+        return "relabel_segment"
+    left_old = tuple(parts_on_page(before.get(page - 1))) if page > 1 else ()
+    right_old = tuple(parts_on_page(before.get(page + 1)))
+    left_new = tuple(parts_on_page(after.get(page - 1))) if page > 1 else ()
+    right_new = tuple(parts_on_page(after.get(page + 1)))
+    if old and new and new != old and (left_old == old or right_old == old):
+        return "split_segment"
+    if unit and (
+        unit.sentence_continues_previous
+        or unit.paragraph_continues_previous
+        or unit.signature_detected
+        or unit.closing_section
+    ):
+        return "boundary_adjustment"
+    if old and new and old != new and (left_new == new or right_new == new):
+        return "merge_segments"
+    if old and new and old != new:
+        return "boundary_adjustment"
+    return "relabel_segment"
+
+
+def _contiguous_segment_range(
+    page: int,
+    page_parts: Mapping[int, Sequence[str] | str | None],
+    labels: Sequence[str],
+    *,
+    page_count: int,
+) -> tuple[int, int] | None:
+    if not labels or tuple(parts_on_page(page_parts.get(page))) != tuple(labels):
+        return None
+    start = page
+    end = page
+    while start > 1 and tuple(parts_on_page(page_parts.get(start - 1))) == tuple(labels):
+        start -= 1
+    while end < page_count and tuple(parts_on_page(page_parts.get(end + 1))) == tuple(labels):
+        end += 1
+    return start, end
+
+
+def _record_reconciliation_state(state: str, seen_states: set[str]) -> bool:
+    """Return False for a repeated page map, which stops oscillating repairs."""
+    if state in seen_states:
+        return False
+    seen_states.add(state)
+    return True
+
+
 def reconcile_compiled_split(
     baseline: PagePartMap,
     proposed: PagePartMap,
@@ -714,6 +1099,11 @@ def reconcile_compiled_split(
     page_text: Mapping[int, str],
     *,
     page_count: int,
+    operation_log: list[ReconciliationOperation] | None = None,
+    max_iterations: int = 3,
+    max_model_calls: int = 0,
+    proposal_generator: Callable[[PagePartMap, int], PagePartMap] | None = None,
+    page_units: Sequence[PageUnit] = (),
 ) -> tuple[PagePartMap, list[ReconciliationChange]]:
     """Apply repair proposals only to missing or strongly evidenced ranges.
 
@@ -725,6 +1115,36 @@ def reconcile_compiled_split(
     """
     original = _copy_page_parts(baseline)
     candidate = _copy_page_parts(proposed)
+    operations = operation_log if operation_log is not None else []
+    before_validation = validate_reconciliation_page_map(original, page_count=page_count)
+    candidate_validation = validate_reconciliation_page_map(candidate, page_count=page_count)
+    if not before_validation["valid"] or not candidate_validation["valid"]:
+        operations.append(
+            ReconciliationOperation(
+                operation_id="reconcile-0001",
+                operation_type="global_candidate_map",
+                original_pages=tuple(sorted(original)),
+                proposed_pages=tuple(sorted(candidate)),
+                original_labels=tuple(
+                    sorted({label for labels in original.values() for label in labels})
+                ),
+                proposed_labels=tuple(
+                    sorted({label for labels in candidate.values() for label in labels})
+                ),
+                original_segment_range=None,
+                proposed_segment_range=None,
+                evidence=("complete_map_preflight",),
+                classification_before=None,
+                classification_after=None,
+                validation={
+                    "before": before_validation,
+                    "proposed": candidate_validation,
+                },
+                status="rejected",
+                reason="Page map failed structural preflight; no correction applied",
+            )
+        )
+        return original, []
     indexed = _index_supported_map(original, page_text, page_count)
     result = _copy_page_parts(original)
     changes: list[ReconciliationChange] = []
@@ -751,7 +1171,7 @@ def reconcile_compiled_split(
         ):
             seeded_identities = {
                 name
-                for name in parts_on_page(original.get(item.page))
+                for name in parts_on_page(result.get(item.page))
                 if re.fullmatch(r"Application \d+", name)
             }
             return any(
@@ -761,85 +1181,345 @@ def reconcile_compiled_split(
             )
         return _labels_match_type(labels, item.document_type)
 
-    # Describe each continuous proposed document once. An explicit opening can
-    # support its captionless continuation, but only while it replaces at most
-    # one existing Llama family. This prevents a single heading from swallowing
-    # several otherwise distinct, correctly labelled documents.
-    span_policy: dict[int, bool] = {}
-    pages = sorted(candidate)
-    start_index = 0
-    while start_index < len(pages):
-        start = pages[start_index]
-        labels = tuple(parts_on_page(candidate[start]))
-        end_index = start_index
-        while end_index + 1 < len(pages):
-            next_page = pages[end_index + 1]
-            if next_page != pages[end_index] + 1:
-                break
-            if tuple(parts_on_page(candidate[next_page])) != labels:
-                break
-            end_index += 1
-        span_pages = pages[start_index : end_index + 1]
-        anchored = any(
-            classification_supports_labels(item, labels)
-            for page in span_pages
-            if (item := strong_by_page.get(page))
+    seen_states = {repr(sorted((p, tuple(v)) for p, v in result.items()))}
+    iteration_limit = max(1, min(int(max_iterations), 3))
+    operation_limit = 500
+    iteration = 0
+    model_call_budget = max(0, min(int(max_model_calls), 1))
+    model_calls = 0
+    stop_reason = "no_further_supported_mutations"
+    for pass_number in range(1, iteration_limit + 1):
+        iteration = pass_number
+        pass_input = _copy_page_parts(result)
+        pass_start = len(changes)
+        changed_in_iteration = False
+        candidate_validation = validate_reconciliation_page_map(
+            candidate, page_count=page_count
         )
-        replaced_families = {
-            family_split_name(label)
-            for page in span_pages
-            if tuple(parts_on_page(original.get(page))) != labels
-            for label in parts_on_page(original.get(page))
-            if label not in _UNIDENTIFIED_LABELS
-        }
-        allow_continuation = anchored and len(replaced_families) <= 1
-        for page in span_pages:
-            span_policy[page] = allow_continuation
-        start_index = end_index + 1
+        if not candidate_validation["valid"]:
+            operations.append(
+                ReconciliationOperation(
+                    operation_id=f"reconcile-{len(operations) + 1:04d}",
+                    operation_type="reconciliation_pass",
+                    original_pages=tuple(sorted(result)),
+                    proposed_pages=tuple(sorted(candidate)),
+                    original_labels=tuple(
+                        sorted({label for labels in result.values() for label in labels})
+                    ),
+                    proposed_labels=tuple(
+                        sorted({label for labels in candidate.values() for label in labels})
+                    ),
+                    original_segment_range=None,
+                    proposed_segment_range=None,
+                    evidence=("fresh_global_reassessment",),
+                    classification_before=None,
+                    classification_after=None,
+                    validation={"proposed": candidate_validation},
+                    status="rejected",
+                    reason="Fresh proposal failed structural preflight; current map retained",
+                    pass_index=pass_number,
+                )
+            )
+            stop_reason = "invalid_fresh_proposal"
+            break
 
-    for page in range(1, page_count + 1):
-        old = tuple(parts_on_page(original.get(page)))
-        new = tuple(parts_on_page(candidate.get(page)))
-        indexed_labels = tuple(parts_on_page(indexed.get(page)))
-        index_overrides_candidate = bool(
-            indexed_labels
-            and indexed_labels != old
-            and indexed_labels != new
-        )
-        if index_overrides_candidate:
-            # A folio-mapped master-Index range is stronger than an ambiguous
-            # local repair proposal. In particular, do not let an adjacent
-            # Main Petition span absorb pages that the Index maps to P-n.
-            new = indexed_labels
-        if not new or new == old:
-            continue
+        # An explicit opening may support captionless continuations in its
+        # proposed span, but only if it replaces at most one existing family.
+        span_policy: dict[int, bool] = {}
+        pages = sorted(candidate)
+        start_index = 0
+        while start_index < len(pages):
+            start = pages[start_index]
+            labels = tuple(parts_on_page(candidate[start]))
+            end_index = start_index
+            while end_index + 1 < len(pages):
+                next_page = pages[end_index + 1]
+                if next_page != pages[end_index] + 1:
+                    break
+                if tuple(parts_on_page(candidate[next_page])) != labels:
+                    break
+                end_index += 1
+            span_pages = pages[start_index : end_index + 1]
+            anchored = any(
+                classification_supports_labels(item, labels)
+                for page in span_pages
+                if (item := strong_by_page.get(page))
+            )
+            replaced_families = {
+                family_split_name(label)
+                for page in span_pages
+                if tuple(parts_on_page(result.get(page))) != labels
+                for label in parts_on_page(result.get(page))
+                if label not in _UNIDENTIFIED_LABELS
+            }
+            allow_continuation = anchored and len(replaced_families) <= 1
+            for page in span_pages:
+                span_policy[page] = allow_continuation
+            start_index = end_index + 1
 
-        evidence: list[str] = []
-        if not old or all(label in _UNIDENTIFIED_LABELS for label in old):
-            evidence.append("missing_or_unidentified")
-        if len(old) > 1:
-            evidence.append("overlapping_labels")
+        for page in range(1, page_count + 1):
+            old = tuple(parts_on_page(result.get(page)))
+            new = tuple(parts_on_page(candidate.get(page)))
+            indexed_labels = tuple(parts_on_page(indexed.get(page)))
+            if indexed_labels and indexed_labels != old and indexed_labels != new:
+                # Master-Index + folio ranges override ambiguous page proposals.
+                new = indexed_labels
+            if not new or new == old:
+                continue
+            if len(operations) >= operation_limit:
+                stop_reason = "operation_limit_reached"
+                break
 
-        if indexed_labels == new and indexed_labels != old:
-            evidence.append("master_index_and_folio")
+            evidence: list[str] = []
+            if not old or all(label in _UNIDENTIFIED_LABELS for label in old):
+                evidence.append("missing_or_unidentified")
+            if len(old) > 1:
+                evidence.append("overlapping_labels")
+            if indexed_labels == new and indexed_labels != old:
+                evidence.append("master_index_and_folio")
+            direct = strong_by_page.get(page)
+            if direct and classification_supports_labels(direct, new):
+                evidence.append("explicit_outer_boundary")
+            elif span_policy.get(page):
+                evidence.append("anchored_continuation")
 
-        direct = strong_by_page.get(page)
-        if direct and classification_supports_labels(direct, new):
-            evidence.append("explicit_outer_boundary")
-        elif span_policy.get(page):
-            evidence.append("anchored_continuation")
+            units_by_page = {unit.pdf_page: unit for unit in page_units}
+            op_type = _operation_type_for_page(
+                page, old, new, result, candidate, units_by_page.get(page)
+            )
+            op_id = f"reconcile-{len(operations) + 1:04d}"
+            original_segment_range = _contiguous_segment_range(
+                page, result, old, page_count=page_count
+            )
+            proposed_segment_range = _contiguous_segment_range(
+                page, candidate, new, page_count=page_count
+            )
+            direct_type = direct.document_type if direct else None
+            if not evidence:
+                operations.append(
+                    ReconciliationOperation(
+                        operation_id=op_id,
+                        operation_type=op_type,
+                        original_pages=(page,),
+                        proposed_pages=(page,),
+                        original_labels=old,
+                        proposed_labels=new,
+                        original_segment_range=original_segment_range,
+                        proposed_segment_range=proposed_segment_range,
+                        evidence=(),
+                        classification_before=direct_type,
+                        classification_after=direct_type,
+                        validation={"structural": before_validation},
+                        status="left_for_review",
+                        reason="No independent boundary, Index, or continuity evidence supports this change",
+                        pass_index=pass_number,
+                    )
+                )
+                continue
 
-        if not evidence:
-            continue
-        result[page] = list(new)
-        changes.append(
-            ReconciliationChange(
-                page=page,
-                old_labels=old,
-                new_labels=new,
-                evidence=tuple(evidence),
+            proposed_state = _copy_page_parts(result)
+            proposed_state[page] = list(new)
+            structural = validate_reconciliation_page_map(
+                proposed_state, page_count=page_count
+            )
+            affected_segments = classify_complete_segments(proposed_state, page_units)
+            affected = [
+                segment
+                for segment in affected_segments
+                if segment.start_page <= page <= segment.end_page
+            ]
+            semantic_conflicts = [
+                segment.as_dict()
+                for segment in affected
+                if segment.confidence >= 0.85
+                and not _segment_classification_supports_labels(segment, new)
+            ]
+            semantic_ok = not (
+                direct
+                and direct.confidence >= 0.85
+                and not classification_supports_labels(direct, new)
+            ) and not semantic_conflicts
+            validation = {
+                "structural": structural,
+                "semantic": {
+                    "valid": semantic_ok,
+                    "classification": direct_type,
+                    "proposed_labels": list(new),
+                    "affected_segment_classifications": [
+                        segment.as_dict() for segment in affected
+                    ],
+                    "conflicts": semantic_conflicts,
+                },
+            }
+            if not structural["valid"] or not semantic_ok:
+                operations.append(
+                    ReconciliationOperation(
+                        operation_id=op_id,
+                        operation_type=op_type,
+                        original_pages=(page,),
+                        proposed_pages=(page,),
+                        original_labels=old,
+                        proposed_labels=new,
+                        original_segment_range=original_segment_range,
+                        proposed_segment_range=proposed_segment_range,
+                        evidence=tuple(evidence),
+                        classification_before=direct_type,
+                        classification_after=direct_type,
+                        validation=validation,
+                        status="rolled_back",
+                        reason="Mutation failed structural or semantic revalidation",
+                        pass_index=pass_number,
+                    )
+                )
+                continue
+
+            result = proposed_state
+            changed_in_iteration = True
+            changes.append(
+                ReconciliationChange(
+                    page=page,
+                    old_labels=old,
+                    new_labels=new,
+                    evidence=tuple(evidence),
+                )
+            )
+            operations.append(
+                ReconciliationOperation(
+                    operation_id=op_id,
+                    operation_type=op_type,
+                    original_pages=(page,),
+                    proposed_pages=(page,),
+                    original_labels=old,
+                    proposed_labels=new,
+                    original_segment_range=original_segment_range,
+                    proposed_segment_range=_contiguous_segment_range(
+                        page, proposed_state, new, page_count=page_count
+                    ),
+                    evidence=tuple(evidence),
+                    classification_before=direct_type,
+                    classification_after=direct_type,
+                    validation=validation,
+                    status="accepted",
+                    pass_index=pass_number,
+                )
+            )
+        operations.append(
+            ReconciliationOperation(
+                operation_id=f"reconcile-{len(operations) + 1:04d}",
+                operation_type="reconciliation_pass",
+                original_pages=tuple(sorted(pass_input)),
+                proposed_pages=tuple(sorted(result)),
+                original_labels=(),
+                proposed_labels=(),
+                original_segment_range=None,
+                proposed_segment_range=None,
+                evidence=("deterministic_global_reassessment",),
+                classification_before=None,
+                classification_after=None,
+                validation={
+                    "structural": validate_reconciliation_page_map(
+                        result, page_count=page_count
+                    )
+                },
+                status="evaluated",
+                reason=(
+                    f"accepted_mutations={len(changes) - pass_start}; "
+                    f"model_calls={model_calls}/{model_call_budget}"
+                ),
+                pass_index=pass_number,
             )
         )
+        state = repr(sorted((p, tuple(v)) for p, v in result.items()))
+        is_new_state = _record_reconciliation_state(state, seen_states)
+        if not is_new_state and changed_in_iteration:
+            stop_reason = "repeated_state_oscillation_guard"
+            break
+        if stop_reason == "operation_limit_reached":
+            break
+        if not changed_in_iteration:
+            stop_reason = "no_further_supported_mutations"
+            break
+        if pass_number >= iteration_limit:
+            stop_reason = "iteration_budget_reached"
+            break
+        if proposal_generator is None:
+            stop_reason = "no_fresh_proposal_generator"
+            break
+        try:
+            fresh_candidate = _copy_page_parts(
+                proposal_generator(_copy_page_parts(result), pass_number + 1)
+            )
+        except Exception as exc:  # noqa: BLE001 — record provider failures for review.
+            operations.append(
+                ReconciliationOperation(
+                    operation_id=f"reconcile-{len(operations) + 1:04d}",
+                    operation_type="reconciliation_pass",
+                    original_pages=tuple(sorted(result)),
+                    proposed_pages=tuple(sorted(result)),
+                    original_labels=(),
+                    proposed_labels=(),
+                    original_segment_range=None,
+                    proposed_segment_range=None,
+                    evidence=("fresh_proposal_generation_failed",),
+                    classification_before=None,
+                    classification_after=None,
+                    validation={},
+                    status="left_for_review",
+                    reason=f"Fresh reassessment failed: {type(exc).__name__}",
+                    pass_index=pass_number + 1,
+                )
+            )
+            stop_reason = "fresh_proposal_generation_failed"
+            break
+        fresh_state = repr(sorted((p, tuple(v)) for p, v in fresh_candidate.items()))
+        if fresh_state == state:
+            stop_reason = "no_actionable_fresh_proposals"
+            break
+        if fresh_state in seen_states:
+            operations.append(
+                ReconciliationOperation(
+                    operation_id=f"reconcile-{len(operations) + 1:04d}",
+                    operation_type="reconciliation_pass",
+                    original_pages=tuple(sorted(result)),
+                    proposed_pages=tuple(sorted(fresh_candidate)),
+                    original_labels=(),
+                    proposed_labels=(),
+                    original_segment_range=None,
+                    proposed_segment_range=None,
+                    evidence=("repeated_state_guard",),
+                    classification_before=None,
+                    classification_after=None,
+                    validation={"structural": candidate_validation},
+                    status="rejected",
+                    reason="Fresh proposal repeated a previous page-map state",
+                    pass_index=pass_number + 1,
+                )
+            )
+            stop_reason = "repeated_state_oscillation_guard"
+            break
+        candidate = fresh_candidate
+    operations.append(
+        ReconciliationOperation(
+            operation_id=f"reconcile-{len(operations) + 1:04d}",
+            operation_type="reconciliation_stop",
+            original_pages=tuple(range(1, page_count + 1)),
+            proposed_pages=tuple(sorted(result)),
+            original_labels=(),
+            proposed_labels=(),
+            original_segment_range=None,
+            proposed_segment_range=None,
+            evidence=("bounded_iterations",),
+            classification_before=None,
+            classification_after=None,
+            validation={
+                "structural": validate_reconciliation_page_map(
+                    result, page_count=page_count
+                )
+            },
+            status="stopped",
+            reason=f"iterations={iteration}; max_iterations={iteration_limit}; max_operations={operation_limit}; {stop_reason}",
+        )
+    )
 
     return result, changes
 
@@ -871,8 +1551,21 @@ def structure_aware_split(
     )
     texts = {unit.pdf_page: unit.text for unit in units}
 
-    classifications = classify_pages(units, llama_page_parts=llama_page_parts)
-    boundaries = detect_boundaries(classifications, units)
+    # LlamaSplit returns candidate segments; preserve those transitions first.
+    # Local content classification is evidence for validating/refining them,
+    # not the source of the initial boundary proposal.
+    llama_boundary_proposals = propose_llama_boundaries(
+        llama_page_parts,
+        page_count=len(units),
+    )
+    # Do not feed Llama's category labels back into final local classification;
+    # only its segment transitions are boundary evidence at this stage.
+    classifications = classify_pages(units)
+    boundaries = detect_boundaries(
+        classifications,
+        units,
+        llama_boundary_proposals=llama_boundary_proposals,
+    )
 
     # Seed: Llama first, then only high-confidence anchors on still-empty pages.
     page_parts: PagePartMap = {}
@@ -900,6 +1593,13 @@ def structure_aware_split(
 
     duplicates: list[Any] = []
     reconciliation_changes: list[ReconciliationChange] = []
+    reconciliation_operations: list[ReconciliationOperation] = []
+    reconciliation_summary: dict[str, Any] = {
+        "status": "not_run_legacy_mode",
+        "max_iterations": 0,
+        "iterations": 0,
+        "stop_reason": "compatibility mode skips semantic reconciliation",
+    }
     if run_hybrid_repair and units:
         baseline = _copy_page_parts(page_parts)
         proposed, duplicates = repair_compiled_split(
@@ -907,22 +1607,57 @@ def structure_aware_split(
             texts,
             page_count=len(units),
         )
-        if reconciliation_mode == "legacy_full":
-            page_parts = proposed
-        else:
-            page_parts, reconciliation_changes = reconcile_compiled_split(
-                baseline,
-                proposed,
-                classifications,
+
+        def reassess_current_map(
+            current: PagePartMap, _pass_index: int
+        ) -> PagePartMap:
+            # Deterministic global repair is recomputed against the current
+            # accepted map. No Llama call is warranted here: only the already
+            # extracted page evidence and initial Llama classification are
+            # available; any unresolved semantic conflict stays review-only.
+            fresh, _fresh_duplicates = repair_compiled_split(
+                current,
                 texts,
                 page_count=len(units),
             )
-    elif not run_hybrid_repair:
-        # Offline path: resolve carries without hybrid repair.
-        page_labels = _resolve_page_labels(classifications, boundaries)
-        page_parts = logical_documents_to_page_parts(
-            build_logical_documents(page_labels, classifications)
+            return fresh
+
+        page_parts, reconciliation_changes = reconcile_compiled_split(
+            baseline,
+            proposed,
+            classifications,
+            texts,
+            page_count=len(units),
+            operation_log=reconciliation_operations,
+            proposal_generator=reassess_current_map,
+            page_units=units,
         )
+        stop_operation = next(
+            (
+                item
+                for item in reversed(reconciliation_operations)
+                if item.operation_type == "reconciliation_stop"
+            ),
+            None,
+        )
+        reconciliation_summary = {
+            "status": "completed",
+            "max_iterations": 3,
+            "iterations": sum(
+                item.operation_type == "reconciliation_pass"
+                and item.status == "evaluated"
+                for item in reconciliation_operations
+            ),
+            "model_call_budget": 0,
+            "model_calls": 0,
+            "stop_reason": stop_operation.reason if stop_operation else "no_operations",
+            "accepted": sum(item.status == "accepted" for item in reconciliation_operations),
+            "rejected": sum(item.status in {"rejected", "rolled_back"} for item in reconciliation_operations),
+            "left_for_review": sum(item.status == "left_for_review" for item in reconciliation_operations),
+        }
+    # With repair disabled, preserve the supplied Llama ownership map. The
+    # extracted page analysis and structural audit still run; this is the
+    # compatibility path, not a way to bypass mandatory parsing.
 
     repaired_labels = {
         page: parts_on_page(names)[0]
@@ -930,6 +1665,7 @@ def structure_aware_split(
         if parts_on_page(names)
     }
     logical_docs = build_logical_documents(repaired_labels, classifications)
+    segment_classifications = classify_complete_segments(page_parts, units)
 
     ocr_pages = [unit.pdf_page for unit in units if unit.requires_ocr]
     return StructureSplitResult(
@@ -941,4 +1677,8 @@ def structure_aware_split(
         duplicates=duplicates,
         ocr_needed_pages=ocr_pages,
         reconciliation_changes=reconciliation_changes,
+        llama_boundary_proposals=llama_boundary_proposals,
+        segment_classifications=segment_classifications,
+        reconciliation_operations=reconciliation_operations,
+        reconciliation_summary=reconciliation_summary,
     )

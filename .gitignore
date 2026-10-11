@@ -15,7 +15,10 @@ ui/node_modules/
 ui/dist/
 .pnpm-store/
 .DS_Store
-docs
+docs/
+!docs/
+docs/*
+!docs/SPLIT_EVALUATION.md
 .cursor
 AGENTS.md
 # Local secrets

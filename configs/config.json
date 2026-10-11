@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.33",
+  "config_version": "1.0.35",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -13,7 +13,7 @@
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.33"
+      "config_version": "1.0.35"
     }
   },
   "classify": {
@@ -986,11 +986,11 @@
       },
       {
         "name": "Office Report on Limitation",
-        "description": "IDENTITY: The independent Supreme Court Registry limitation report for the current filing.\nSTART: OFFICE REPORT ON LIMITATION, O/R ON LIMITATION or a clear OCR variant, supported by filing/refiling timeliness or delay fields.\nCONTINUE: Include all report fields, continuation and registry certification.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Ordinary limitation discussion and condonation-of-delay applications do not qualify. REPORT OF FRESH CASE, OFFICE REPORT OF FRESH CASE and FRESH CASE REPORT are not this category merely because they discuss limitation. A report reproduced inside an exhibit stays there.\nREPEAT: Only a separate qualifying report starts another segment; never invent a missing report."
+        "description": "IDENTITY: The independent Supreme Court Registry limitation report for the current filing.\nSTART: OFFICE REPORT ON LIMITATION, (O/R) ON LIMITATION or a clear OCR variant, supported by filing/refiling timeliness or delay fields.\nCONTINUE: Include all report fields, continuation and registry certification.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Ordinary limitation discussion and condonation-of-delay applications do not qualify. REPORT OF FRESH CASE, OFFICE REPORT OF FRESH CASE and FRESH CASE REPORT are not this category merely because they discuss limitation. A report reproduced inside an exhibit stays there.\nREPEAT: Only a separate qualifying report starts another segment; never invent a missing report."
       },
       {
         "name": "Listing Proforma",
-        "description": "IDENTITY: The independent first-listing information form for the current Supreme Court filing.\nSTART: PROFORMA/PERFORMA, PRO FORMA, LISTING PROFORMA/PERFORMA, PROFORMA/PERFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTED PROFORMA or a clear variant, supported by prompt/value fields about Acts/sections, challenged court/order/date, judges, nature of matter, parties or related cases.\nCONTINUE: Keep all continuation fields, closing date, AOR code, advocate details, declaration/certificate and signature, even without a repeated heading.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Bare PROFORMA without listing context is insufficient. Its closing advocate details are not AOR's Certificate. A similar form reproduced inside a record keeps that enclosing category.\nREPEAT: A separately presented first-listing form starts a new segment."
+        "description": "IDENTITY: The independent first-listing information form for the current Supreme Court filing.\nSTART: PROFORMA/PERFORMA, PRO FORMA, LISTING PROFORMA/PERFORMA, (Proforma for First Listing), PROFORMA/PERFORMA FOR FIRST LISTING, PROFORMA OF FIRST LISTING, LISTED PROFORMA or a clear variant, supported by prompt/value fields about Acts/sections, challenged court/order/date, judges, nature of matter, parties or related cases.\nCONTINUE: Keep all continuation fields, closing date, AOR code, advocate details, declaration/certificate and signature, even without a repeated heading.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Bare PROFORMA without listing context is insufficient. Its closing advocate details are not AOR's Certificate. A similar form reproduced inside a record keeps that enclosing category.\nREPEAT: A separately presented first-listing form starts a new segment."
       },
       {
         "name": "Synopsis",
@@ -1006,7 +1006,7 @@
       },
       {
         "name": "Affidavit",
-        "description": "IDENTITY: The independent primary pleading's affidavit in the current Supreme Court filing.\nSTART: AFFIDAVIT or a clear OCR/letter-spaced variant with sworn statements and deponent, verification or oath/notarial features. Its stated purpose and current case context must support the current primary pleading, not an earlier proceeding or incidental application.\nCONTINUE: Keep all sworn statements, verification, signatures and attestation pages, including captionless continuations.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Party names or an AFFIDAVIT heading alone are insufficient. An affidavit expressly verifying an Application stays with that Application, even if separately headed or Supreme Court-captioned. Lower-court affidavits and historical Supreme Court affidavits reproduced inside an Annexure stay enclosed, even with a matching heading or the same parties. Unsworn AOR certificates/declarations are not Affidavit; missing attestation alone does not disqualify an otherwise established affidavit.\nREPEAT: A separate current primary-supporting affidavit starts a new segment."
+        "description": "IDENTITY: The independent primary pleading's affidavit in the current Supreme Court filing.\nSTART: AFFIDAVIT or a clear OCR/letter-spaced variant with sworn statements and deponent, verification or oath/notarial features. Its stated purpose and current case context must support the current primary pleading, not an earlier proceeding or incidental application.\nCONTINUE: Keep all sworn statements, verification, signatures and attestation pages, including captionless continuations.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Party names or an AFFIDAVIT heading alone are insufficient. An affidavit expressly verifying an Application stays with that Application, even if separately headed or Supreme Court-captioned. A lower-court affidavit (including a High Court, district-court or tribunal affidavit) filed in that earlier proceeding is not the current Supreme Court primary Affidavit; classify it only as an independently established outer document or keep it enclosed in its source packet. Historical Supreme Court affidavits reproduced inside an Annexure stay enclosed, even with a matching heading or the same parties. Unsworn AOR certificates/declarations are not Affidavit; missing attestation alone does not disqualify an otherwise established affidavit.\nREPEAT: A separate current primary-supporting affidavit starts a new segment."
       },
       {
         "name": "Annexures",
@@ -1034,7 +1034,7 @@
       },
       {
         "name": "Vakalatnama",
-        "description": "IDENTITY: An independent instrument appointing counsel/AOR to act for a party in the current Supreme Court proceeding.\nSTART: VAKALATNAMA, VAKALAT NAMA, VAKALTNAMA, V/A or a clear OCR variant, supported by appointment/authorization-of-counsel language and current proceeding context; an abbreviation or matching parties alone is insufficient.\nCONTINUE: Include party signatures, counsel acceptance and captionless integral continuations.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Court-fee stamps do not change this category. Lower-court instruments and historical Supreme Court instruments reproduced inside an Annexure/Application stay enclosed, even with an exact VAKALATNAMA heading. A lower-court Memo of Appearance inside an annexure is not a current Vakalatnama. PoA/BR authorizes a representative and is a different function. If Memo of Appearance shares the same physical page, use Vakalatnama; a separately starting Memo of Appearance on another page remains separate.\nREPEAT: A distinct current-proceeding appointment instrument starts a new segment."
+        "description": "IDENTITY: An independent instrument appointing counsel/AOR to act for a party in the current Supreme Court proceeding.\nSTART: VAKALATNAMA, VAKALAT NAMA, VAKALTNAMA, (V/A) or a clear OCR variant, supported by appointment/authorization-of-counsel language and current proceeding context; an abbreviation or matching parties alone is insufficient.\nCONTINUE: Include party signatures, counsel acceptance and captionless integral continuations.\nEND: Before the next independently established outer document.\nDO NOT SPLIT: Court-fee stamps do not change this category. Lower-court instruments and historical Supreme Court instruments reproduced inside an Annexure/Application stay enclosed, even with an exact VAKALATNAMA heading. A lower-court Memo of Appearance inside an annexure is not a current Vakalatnama. PoA/BR authorizes a representative and is a different function. If Memo of Appearance shares the same physical page, use Vakalatnama; a separately starting Memo of Appearance on another page remains separate.\nREPEAT: A distinct current-proceeding appointment instrument starts a new segment."
       },
       {
         "name": "PoA/BR",

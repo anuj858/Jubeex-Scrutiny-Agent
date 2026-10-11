@@ -7,6 +7,7 @@ from extraction_review.structure_split import (
     PageClassification,
     PageUnit,
     build_logical_documents,
+    classify_complete_segments,
     classify_page,
     detect_boundaries,
     reconcile_compiled_split,
@@ -31,6 +32,66 @@ def test_document_types_are_controlled_taxonomy() -> None:
     assert "Main Petition" in DOCUMENT_TYPES
     assert "cover_page" not in DOCUMENT_TYPES  # canonical Split names only
     assert "other" in DOCUMENT_TYPES
+
+
+def test_llama_boundaries_are_proposed_before_local_classification(monkeypatch) -> None:
+    import extraction_review.structure_split as module
+
+    events: list[str] = []
+    original = module.classify_pages
+
+    def record_classification(*args, **kwargs):
+        events.append("classify")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "classify_pages", record_classification)
+    original_propose = module.propose_llama_boundaries
+
+    def record_boundary(*args, **kwargs):
+        events.append("boundary")
+        return original_propose(*args, **kwargs)
+
+    monkeypatch.setattr(module, "propose_llama_boundaries", record_boundary)
+    result = module.structure_aware_split(
+        _blank_pdf(3),
+        page_units=[
+            PageUnit(pdf_page=1, text="SYNOPSIS\nSummary"),
+            PageUnit(pdf_page=2, text="Summary continuation"),
+            PageUnit(pdf_page=3, text="ANNEXURE P-1\nOrder"),
+        ],
+        llama_page_parts={1: ["Synopsis"], 2: ["Synopsis"], 3: ["Annexures"]},
+        run_hybrid_repair=False,
+    )
+
+    assert events[:2] == ["boundary", "classify"]
+    assert [proposal.page for proposal in result.llama_boundary_proposals] == [1, 3]
+    assert result.llama_boundary_proposals[1].previous_labels == ("Synopsis",)
+    assert result.llama_boundary_proposals[1].proposed_labels == ("Annexures",)
+    assert any(
+        "llama_segment_transition" in boundary.signals
+        for boundary in result.boundaries
+        if boundary.page == 3
+    )
+
+
+def test_complete_segment_classification_uses_full_physical_span() -> None:
+    page_parts = {
+        1: ["Synopsis"],
+        2: ["Synopsis"],
+        3: ["Annexure P-1"],
+        4: ["Annexure P-1"],
+    }
+    units = [
+        PageUnit(pdf_page=1, text="SYNOPSIS\nSummary"),
+        PageUnit(pdf_page=2, text="Summary continued"),
+        PageUnit(pdf_page=3, text="ANNEXURE P-1\nCertified order"),
+        PageUnit(pdf_page=4, text="Order continuation"),
+    ]
+
+    segments = classify_complete_segments(page_parts, units)
+
+    assert [(item.start_page, item.end_page) for item in segments] == [(1, 2), (3, 4)]
+    assert [item.document_type for item in segments] == ["Synopsis", "Annexure P-1"]
 
 
 def test_classify_page_prefers_annexure_stamp() -> None:
