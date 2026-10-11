@@ -15,6 +15,11 @@ from extraction_review.document_parts import page_parts_from_split
 from extraction_review.split_upload import ordered_parts, type_catalog, validate_parts
 
 
+@pytest.fixture(autouse=True)
+def _preserve_all_outputs_for_legacy_contract_tests(monkeypatch):
+    monkeypatch.setenv("SPLIT_OUTPUT_DOCUMENTS", "All")
+
+
 def _pdf_bytes() -> bytes:
     # Deliberately conflicting headings: local content must not override Split.
     with pymupdf.open() as pdf:
@@ -64,6 +69,12 @@ def _fail_local_rules(*_args, **_kwargs):
 async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     monkeypatch, caplog, upload_slots, rules_flag
 ) -> None:
+    # Import before monkeypatching the layout module so structure_split keeps
+    # its real function reference for later tests after this patch is undone.
+    from extraction_review import structure_split
+    from extraction_review.structure_split import PageUnit
+
+    assert structure_split.extract_split_layout is not _fail_local_rules
     monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", "llama_only")
     if rules_flag is None:
         monkeypatch.delenv("SPLIT_PYTHON_RULES_ENABLED", raising=False)
@@ -79,8 +90,6 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     ):
         monkeypatch.setattr(f"extraction_review.{target}", _fail_local_rules)
     monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "false" if upload_slots else "true")
-    from extraction_review.structure_split import PageUnit
-
     monkeypatch.setattr(
         process_file, "_load_bundle_pdf", AsyncMock(return_value=_pdf_bytes())
     )
@@ -329,12 +338,14 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["targeted", "legacy_full"])
+@pytest.mark.parametrize("output_filter", ["All", "Annexures"])
 async def test_reconciled_workflow_preserves_adjacent_remote_documents(
-    monkeypatch, mode
+    monkeypatch, mode, output_filter
 ):
     from extraction_review import split_audit, structure_split
 
     monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", mode)
+    monkeypatch.setenv("SPLIT_OUTPUT_DOCUMENTS", output_filter)
     monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
     segments = [
         {"category": "Annexures", "pages": [1, 2]},
@@ -365,7 +376,8 @@ async def test_reconciled_workflow_preserves_adjacent_remote_documents(
     monkeypatch.setattr(
         process_file, "collect_optional_usage", AsyncMock(return_value={})
     )
-    monkeypatch.setattr(process_file, "upload_step_json", Mock())
+    artifact = Mock()
+    monkeypatch.setattr(process_file, "upload_step_json", artifact)
     ctx = SimpleNamespace(
         store=SimpleNamespace(
             get_state=AsyncMock(
@@ -382,13 +394,28 @@ async def test_reconciled_workflow_preserves_adjacent_remote_documents(
         _client(segments),
         _config().split,
     )
-    assert result.slot_pages == {
+    expected_slots = {
         "index": [{"start": 1, "end": 1}],
         "annexure_1": [{"start": 2, "end": 2}],
         "annexure_2": [{"start": 3, "end": 4}],
         "application_1": [{"start": 5, "end": 5}],
         "application_2": [{"start": 6, "end": 6}],
     }
+    if output_filter == "Annexures":
+        expected_slots = {
+            "annexure_1": [{"start": 2, "end": 2}],
+            "annexure_2": [{"start": 3, "end": 4}],
+        }
+    assert result.slot_pages == expected_slots
+    saved = artifact.call_args.args[1]
+    if output_filter == "Annexures":
+        filter_report = saved["split_audit"]["output_filter"]
+        assert filter_report["selected_slots"] == ["annexure_1", "annexure_2"]
+        assert filter_report["source_pages_excluded_from_outputs"] == [1, 5, 6]
+        manifest = saved["split_audit"]["page_manifest"]["pages"]
+        assert manifest[0]["output_slots"] == []
+        assert manifest[0]["output_disposition"] == "excluded_by_split_output_filter"
+        assert manifest[1]["output_slots"] == ["annexure_1"]
 
 
 @pytest.mark.asyncio

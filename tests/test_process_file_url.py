@@ -13,11 +13,13 @@ from extraction_review.process_file import (
     _extract_sliced_parts,
     _filename_from_url,
     _load_bundle_pdf,
+    _split_output_matches,
     _upload_filename,
     _upload_sliced_slots,
     clear_file_bytes_cache,
     compiled_catalog_override,
     compiled_source,
+    filter_split_outputs,
     ingest_remote_file,
     intake_echo,
     intake_mode,
@@ -26,6 +28,7 @@ from extraction_review.process_file import (
     resolve_compiled_filing_type,
     slot_id_from_name,
     slot_upload_concurrency,
+    split_output_selection,
     take_file_bytes,
     upload_sliced_slot_pdfs,
 )
@@ -72,6 +75,62 @@ def test_upload_sliced_slot_pdfs_skip_flag(
     assert upload_sliced_slot_pdfs() is True
     monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
     assert upload_sliced_slot_pdfs() is True
+
+
+def test_split_output_selection_defaults_to_annexures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPLIT_OUTPUT_DOCUMENTS", raising=False)
+    assert split_output_selection() == {
+        "mode": "selected",
+        "configured_value": "Annexures, Cover Page",
+        "requested": ["Annexures", "Cover Page"],
+    }
+    assert split_output_selection("")["requested"] == ["Annexures", "Cover Page"]
+    assert split_output_selection("All")["mode"] == "all"
+    monkeypatch.setenv("SPLIT_OUTPUT_DOCUMENTS", "Annexures")
+    assert split_output_selection()["requested"] == ["Annexures"]
+
+
+def test_split_output_selection_accepts_annexure_family_and_multiple_names() -> None:
+    annexures = split_output_selection("Annexures")
+    annexure = SimpleNamespace(slot_id="annexure_p_9", label="Annexure P-9")
+    petition = SimpleNamespace(slot_id="main_petition", label="Main Petition")
+    cover = SimpleNamespace(slot_id="cover_page", label="Cover Page")
+    assert _split_output_matches(annexure, annexures)
+    assert not _split_output_matches(petition, annexures)
+
+    selected = split_output_selection("Annexure P-9, Main Petition")
+    assert _split_output_matches(annexure, selected)
+    assert _split_output_matches(petition, selected)
+    configured_selection = split_output_selection("Annexures, Cover Page")
+    assert _split_output_matches(annexure, configured_selection)
+    assert _split_output_matches(cover, configured_selection)
+    assert not _split_output_matches(petition, configured_selection)
+    assert not _split_output_matches(
+        SimpleNamespace(slot_id="affidavit", label="Affidavit"), selected
+    )
+
+
+def test_filter_split_outputs_reports_pages_and_slots_excluded_by_filter() -> None:
+    outputs = [
+        SimpleNamespace(slot_id="annexure_p_9", label="Annexure P-9", pages=(10, 11)),
+        SimpleNamespace(slot_id="main_petition", label="Main Petition", pages=(1, 9)),
+    ]
+    selected, report = filter_split_outputs(
+        outputs, split_output_selection("Annexures")
+    )
+    assert [item.slot_id for item in selected] == ["annexure_p_9"]
+    assert report["selected_slots"] == ["annexure_p_9"]
+    assert report["excluded_slots"] == ["main_petition"]
+    assert report["source_pages_excluded_from_outputs"] == [1, 9]
+    assert report["matched"] == ["Annexures"]
+    assert report["unmatched"] == []
+
+
+def test_split_output_selection_rejects_ambiguous_all_mix() -> None:
+    with pytest.raises(ValueError, match="cannot combine 'All'"):
+        split_output_selection("All, Annexures")
 
 
 def test_full_petition_from_parts_slot() -> None:

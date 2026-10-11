@@ -14,6 +14,16 @@
 !scrutiny_harness/
 !scrutiny_harness/rules/
 !scrutiny_harness/rules/**
+!ui/
+!ui/package.json
+!ui/package-lock.json
+!ui/index.html
+!ui/components.json
+!ui/postcss.config.mjs
+!ui/tsconfig.json
+!ui/vite.config.ts
+!ui/src/
+!ui/src/**
 
 # Defense in depth: never re-include credentials, local state, or build/test
 # artifacts, even if the allowlist is broadened later.

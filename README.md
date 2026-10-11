@@ -83,9 +83,24 @@ not yet been benchmarked.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 
+`SPLIT_OUTPUT_DOCUMENTS` controls which sliced PDFs are emitted, without
+changing extraction, classification, reconciliation, or page-level auditing.
+Unset or blank defaults to `Annexures, Cover Page`; explicit `All` preserves every detected output. `Annexures` selects all
+numbered and generic annexure outputs. A comma-, semicolon-, or pipe-separated
+list selects matching canonical document names, for example
+`Annexure P-9, Main Petition`. Non-selected source pages remain in the immutable
+compiled PDF and page manifest with `excluded_by_split_output_filter`; they
+are not silently reassigned or copied into another document. The audit records
+the configured filter and selected/excluded slots. The default in
+`.env.template` and the LlamaDeploy project settings is `Annexures`. To change it in
+production, set the same variable in the agent deployment environment and the
+worker task environment; this repository change does not update either live
+environment.
+
 In either mode, Python downloads the source PDF, maps document categories to
 configured upload slots, copies pages and uploads the resulting PDFs. Pages
-without an assigned slot are retained as Unidentified.
+without an assigned slot are retained as Unidentified when `All` is selected;
+with a restrictive output filter, that slot is emitted only if it is selected.
 
 In every mode, separate generic `Annexures` and `Application` segments remain
 separate files when their pages retain those generic labels. The slicer uses

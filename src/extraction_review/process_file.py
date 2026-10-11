@@ -50,8 +50,10 @@ from .config import (
     with_config_identity,
 )
 from .document_parts import (
+    ANNEXURE_FAMILY,
     family_split_name,
     format_page_span,
+    normalize_part_name,
     page_parts_from_split,
     parts_on_page,
 )
@@ -128,6 +130,94 @@ def split_reconciliation_mode() -> str:
 def split_python_rules_enabled() -> bool:
     """Compatibility predicate for local OCR, reconciliation and audit."""
     return split_reconciliation_mode() != "llama_only"
+
+
+def split_output_selection(value: str | None = None) -> dict[str, Any]:
+    """Resolve the optional output filter without changing page classification.
+
+    ``SPLIT_OUTPUT_DOCUMENTS`` accepts ``Annexures, Cover Page`` (the default),
+    ``All``, or a comma/semicolon/pipe-separated list of canonical document
+    names. Parsing and auditing always cover the
+    complete source PDF; this setting only selects which sliced PDFs are
+    emitted.
+    """
+    raw = os.getenv("SPLIT_OUTPUT_DOCUMENTS") if value is None else value
+    configured = (raw or "Annexures, Cover Page").strip()
+    if not configured:
+        configured = "Annexures, Cover Page"
+    requested = [token.strip() for token in re.split(r"[,;|\n]+", configured) if token.strip()]
+    if not requested:
+        requested = ["Annexures", "Cover Page"]
+    all_tokens = [token for token in requested if token.casefold() == "all"]
+    if all_tokens and len(requested) != 1:
+        raise ValueError("SPLIT_OUTPUT_DOCUMENTS cannot combine 'All' with other names")
+    if all_tokens:
+        return {"mode": "all", "configured_value": configured, "requested": ["All"]}
+
+    normalized = list(dict.fromkeys(normalize_part_name(token) for token in requested))
+    if any(not token for token in normalized):
+        raise ValueError("SPLIT_OUTPUT_DOCUMENTS contains an empty document name")
+    return {
+        "mode": "selected",
+        "configured_value": configured,
+        "requested": normalized,
+    }
+
+
+def _split_output_matches(item: Any, selection: Mapping[str, Any]) -> bool:
+    if selection.get("mode") == "all":
+        return True
+    wanted = set(selection.get("requested") or ())
+    candidates = {
+        normalize_part_name(str(getattr(item, "label", "") or "")),
+        normalize_part_name(str(getattr(item, "slot_id", "") or "").replace("_", " ")),
+    }
+    for candidate in candidates - {""}:
+        family = family_split_name(candidate)
+        for requested in wanted:
+            if candidate == requested:
+                return True
+            if requested == ANNEXURE_FAMILY and family == ANNEXURE_FAMILY:
+                return True
+            if requested == family and family in {ANNEXURE_FAMILY, "Application"}:
+                return True
+    return False
+
+
+def filter_split_outputs(
+    items: Sequence[Any], selection: Mapping[str, Any]
+) -> tuple[list[Any], dict[str, Any]]:
+    """Select output slices while retaining a trace of omitted source pages."""
+    selected = [item for item in items if _split_output_matches(item, selection)]
+    selected_slots = {str(item.slot_id) for item in selected}
+    all_slots = {str(item.slot_id) for item in items}
+    requested = list(selection.get("requested") or ())
+    matched = [
+        name
+        for name in requested
+        if name == "All"
+        or any(
+            _split_output_matches(item, {"mode": "selected", "requested": [name]})
+            for item in items
+        )
+    ]
+    selected_pages = {int(page) for item in selected for page in item.pages}
+    excluded_pages = {
+        int(page)
+        for item in items
+        if str(item.slot_id) not in selected_slots
+        for page in item.pages
+    } - selected_pages
+    report = {
+        **dict(selection),
+        "matched": matched,
+        "unmatched": [name for name in requested if name not in matched],
+        "selected_slots": sorted(selected_slots),
+        "excluded_slots": sorted(all_slots - selected_slots),
+        "source_pages_excluded_from_outputs": sorted(excluded_pages),
+        "status": "all" if selection.get("mode") == "all" else "filtered",
+    }
+    return selected, report
 
 
 def remember_file_bytes(file_id: str | None, data: bytes | None) -> None:
@@ -2428,6 +2518,7 @@ class ProcessFileWorkflow(Workflow):
         split_started = start_timer()
         # Snapshot once so all stages of this job use the same mode.
         split_mode = split_reconciliation_mode()
+        output_selection = split_output_selection()
         use_python_rules = split_mode != "llama_only"
         logger.info("[SplitMode] mode=%s file=%s", split_mode, state.filename)
 
@@ -2748,8 +2839,8 @@ class ProcessFileWorkflow(Workflow):
             Status(
                 level="info",
                 message=(
-                    f"Split {state.filename} into {len(parts_found)} document part(s) "
-                    f"across {labeled_pages}/{pdf_page_count or labeled_pages} page(s)"
+                    f"Classified {len(parts_found)} document part(s) across "
+                    f"{labeled_pages}/{pdf_page_count or labeled_pages} page(s)"
                 ),
             )
         )
@@ -2761,19 +2852,45 @@ class ProcessFileWorkflow(Workflow):
             split_segments,
             page_count=pdf_page_count,
         )
-        slices = slice_bundle_pdf(
+        classified_slices = slice_bundle_pdf(
             pdf_bytes,
             catalog,
             page_parts,
             split_segments=split_segments,
         )
         ownership = validate_sliced_page_ownership(
-            slices,
+            classified_slices,
             page_count=pdf_page_count,
             page_parts=page_parts,
             split_segments=split_segments,
             catalog=catalog,
         )
+        slices, output_filter_report = filter_split_outputs(
+            classified_slices, output_selection
+        )
+        selected_output_slots = {item.slot_id for item in slices}
+        classified_output_slots = {item.slot_id for item in classified_slices}
+        output_filter_report["environment_variable"] = "SPLIT_OUTPUT_DOCUMENTS"
+        output_filter_report["selected_slots"] = sorted(selected_output_slots)
+        output_filter_report["excluded_slots"] = sorted(
+            classified_output_slots - selected_output_slots
+        )
+        split_audit["output_filter"] = {
+            **output_filter_report,
+        }
+        if output_filter_report["unmatched"]:
+            split_audit.setdefault("flags", []).append(
+                {
+                    "code": "split_output_filter_unmatched",
+                    "severity": "warning",
+                    "message": "One or more configured output document names were not found in this split.",
+                    "details": output_filter_report["unmatched"],
+                }
+            )
+            split_audit["review_status"] = "needs_review"
+            counts = split_audit.setdefault("flag_counts", {})
+            counts["warning"] = counts.get("warning", 0) + 1
+            counts["total"] = counts.get("total", 0) + 1
         split_audit["shared_page_validation"] = sharing_validation
         if sharing_validation["issues"]:
             split_audit.setdefault("flags", []).append(
@@ -2792,9 +2909,13 @@ class ProcessFileWorkflow(Workflow):
                 split_audit.get("flag_counts", {}).get("total", 0) + 1
             )
         owners_by_page: dict[int, list[str]] = {}
-        for sliced in slices:
+        for sliced in classified_slices:
             for source_page in sliced.pages:
                 owners_by_page.setdefault(source_page, []).append(sliced.slot_id)
+        selected_owners_by_page: dict[int, list[str]] = {}
+        for sliced in slices:
+            for source_page in sliced.pages:
+                selected_owners_by_page.setdefault(source_page, []).append(sliced.slot_id)
 
         page_manifest = (split_audit.get("page_manifest") or {}).get("pages")
         if not isinstance(page_manifest, list):
@@ -2840,8 +2961,21 @@ class ProcessFileWorkflow(Workflow):
                     reason for reason in reasons_for_page if reason not in reasons
                 )
                 row["review_status"] = "needs_review"
-            slots = sorted(set(owners_by_page.get(page, [])))
+            classified_slots = sorted(set(owners_by_page.get(page, [])))
+            slots = sorted(set(selected_owners_by_page.get(page, [])))
+            row["classified_slots"] = classified_slots
             row["output_slots"] = slots
+            row["output_disposition"] = (
+                "included"
+                if slots
+                else "excluded_by_split_output_filter"
+                if classified_slots and output_selection["mode"] != "all"
+                else "unassigned"
+            )
+            if not slots and classified_slots and output_selection["mode"] != "all":
+                reasons = row.setdefault("review_reasons", [])
+                if "excluded_by_split_output_filter" not in reasons:
+                    reasons.append("excluded_by_split_output_filter")
             if len(slots) > 1:
                 reasons = row.setdefault("review_reasons", [])
                 if "shared_source_page" not in reasons:
@@ -2882,6 +3016,7 @@ class ProcessFileWorkflow(Workflow):
         split_audit["page_manifest"] = {
             "schema_version": "1.0",
             "ownership_policy": "single_owner_with_explicit_shared_copies",
+            "output_filter": split_audit["output_filter"],
             "shared_source_pages_require_review": True,
             "source_document_id": state.file_id,
             "source_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
@@ -2893,7 +3028,7 @@ class ProcessFileWorkflow(Workflow):
             Status(
                 level="info",
                 message=(
-                    f"Sliced {len(slices)} document file(s) from {state.filename}"
+                    f"Sliced {len(slices)} selected document file(s) from {state.filename}"
                 ),
             )
         )
