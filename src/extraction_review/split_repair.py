@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from .document_parts import (
@@ -1221,6 +1222,7 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     )
 
 
+@lru_cache(maxsize=4096)
 def _outer_anchor_label(text: str) -> str | None:
     """Return a strong outer-document label from page text, or None."""
     if not (text or "").strip():

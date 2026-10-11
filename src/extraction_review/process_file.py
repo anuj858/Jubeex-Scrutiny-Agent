@@ -1448,8 +1448,33 @@ def _classification_configuration(
     strategy = dict(configuration.get("splitting_strategy") or {})
     instructions = str(strategy.get("custom_instructions") or "")
     if len(instructions) + len(directive) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
-        return None, "candidate_ranges_exceed_custom_instruction_limit"
-    strategy["custom_instructions"] = instructions + directive
+        # Large paper-books can produce dozens of valid candidates. Repeating
+        # every physical page number alongside the normal boundary-discovery
+        # prompt exceeded SplitV1's 5,000-character limit, silently causing the
+        # second pass to run without first-pass guidance. The classification
+        # pass already has the canonical per-category rules, so replace the
+        # boundary-discovery prompt with a compact range-only directive.
+        compact_ranges = ";".join(
+            f"{item['segment_id']}:{item['start_page']}"
+            + (
+                f"-{item['end_page']}"
+                if item["end_page"] != item["start_page"]
+                else ""
+            )
+            for item in proposals
+        )
+        compact_directive = (
+            "CLASSIFICATION PASS. Treat each listed physical PDF range as one "
+            "candidate document and assign one canonical category to the complete "
+            "range. Preserve these boundaries unless page evidence clearly proves "
+            "one is wrong; do not infer pages outside a listed range. RANGES:"
+            + compact_ranges
+        )
+        if len(compact_directive) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
+            return None, "candidate_ranges_exceed_custom_instruction_limit"
+        strategy["custom_instructions"] = compact_directive
+    else:
+        strategy["custom_instructions"] = instructions + directive
     configuration["splitting_strategy"] = strategy
     status = (
         "sent_with_shared_boundary_pages"
@@ -2515,7 +2540,6 @@ class ProcessFileWorkflow(Workflow):
         ctx.write_event_to_stream(
             Status(level="info", message=f"Splitting file {state.filename}")
         )
-        split_started = start_timer()
         # Snapshot once so all stages of this job use the same mode.
         split_mode = split_reconciliation_mode()
         output_selection = split_output_selection()
@@ -2574,18 +2598,19 @@ class ProcessFileWorkflow(Workflow):
             boundary_proposals,
             proposal_issues=boundary_validation["issues"],
         )
+        classification_started = start_timer()
         split_result = await run_llama_split(
             api_configuration=classification_config
         )
         page_parts, split_job_id, llama_split = split_result
         llama_page_parts = page_parts
-        llama_split_seconds = elapsed_seconds(split_started)
+        classification_seconds = elapsed_seconds(classification_started) or 0.0
         logger.info(
             "[SplitTiming] mode=%s boundary=%.1fs classification=%.1fs "
             "local_page_read=%.1fs pages=%s",
             split_mode,
             boundary_seconds,
-            llama_split_seconds or 0.0,
+            classification_seconds,
             local_read_seconds,
             pdf_page_count,
         )

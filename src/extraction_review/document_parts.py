@@ -870,6 +870,7 @@ def _annexure_mark_from_title_or_stamp(
     return None
 
 
+@lru_cache(maxsize=4096)
 def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     """Return printed Annexure series+number from a page title or stamp."""
     folded_head = _fold(_heading_window(text, lines=6))

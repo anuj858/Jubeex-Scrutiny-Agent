@@ -194,6 +194,31 @@ def test_classification_call_receives_boundaries_and_keeps_canonical_categories(
     assert len(instructions) <= 5000
 
 
+def test_large_classification_call_compacts_boundary_ranges_instead_of_dropping_them() -> None:
+    config = Config.model_validate_json(
+        (Path(__file__).resolve().parents[1] / "configs/config.json").read_text()
+    ).split
+    proposals = [
+        {
+            "segment_id": f"boundary-{number}",
+            "start_page": number,
+            "end_page": number,
+            "pages": [number],
+        }
+        for number in range(1, 96)
+    ]
+
+    adapted, status = _classification_configuration(config, proposals)
+
+    assert status == "sent"
+    assert adapted is not None
+    instructions = adapted["splitting_strategy"]["custom_instructions"]
+    assert instructions.startswith("CLASSIFICATION PASS.")
+    assert "boundary-1:1" in instructions
+    assert "boundary-95:95" in instructions
+    assert len(instructions) <= 5000
+
+
 def test_remote_classification_configuration_fallback_is_explicit():
     config = Config.model_validate_json(
         (Path(__file__).resolve().parents[1] / "configs/config.json").read_text()

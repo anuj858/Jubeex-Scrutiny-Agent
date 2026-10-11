@@ -1156,6 +1156,7 @@ def reconcile_compiled_split(
         and item.document_type != "other"
         and set(item.signals) & _STRONG_RECONCILIATION_SIGNALS
     }
+    units_by_page = {unit.pdf_page: unit for unit in page_units}
 
     def classification_supports_labels(
         item: PageClassification, labels: Sequence[str]
@@ -1283,7 +1284,6 @@ def reconcile_compiled_split(
             elif span_policy.get(page):
                 evidence.append("anchored_continuation")
 
-            units_by_page = {unit.pdf_page: unit for unit in page_units}
             op_type = _operation_type_for_page(
                 page, old, new, result, candidate, units_by_page.get(page)
             )
