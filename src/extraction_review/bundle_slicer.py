@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pymupdf
+from PIL import Image, ImageChops
 from pypdf import PdfReader
 
 from .document_parts import (
@@ -33,6 +34,38 @@ from .split_upload import (
     _numbered_slot_sort_key,
     resolve_upload_slot,
 )
+
+# MuPDF can rasterize a page with channel values a few levels apart after
+# insert_pdf rewrites otherwise equivalent image/color-space resources. Exact
+# byte hashes therefore reject valid slices. A delta above this small
+# rasterization allowance still catches changed, missing, or swapped content.
+_VISUAL_CHANNEL_TOLERANCE = 8
+
+
+def _pixmaps_visually_equivalent(
+    source: pymupdf.Pixmap,
+    output: pymupdf.Pixmap,
+) -> bool:
+    """Compare RGB page renders while tolerating harmless raster rounding."""
+    if (
+        source.width != output.width
+        or source.height != output.height
+        or source.n != output.n
+    ):
+        return False
+    if source.samples == output.samples:
+        return True
+
+    mode = "RGB" if source.n == 3 else "L" if source.n == 1 else None
+    if mode is None:
+        return False
+    size = (source.width, source.height)
+    source_image = Image.frombytes(mode, size, source.samples)
+    output_image = Image.frombytes(mode, size, output.samples)
+    extrema = ImageChops.difference(source_image, output_image).getextrema()
+    if mode == "L":
+        return extrema[1] <= _VISUAL_CHANNEL_TOLERANCE
+    return all(high <= _VISUAL_CHANNEL_TOLERANCE for _low, high in extrema)
 
 
 def _is_numbered_annexure_slot(slot_id: str) -> bool:
@@ -800,17 +833,17 @@ def validate_page_manifest_output(
                             }
                         )
                     original_pixmap = original_doc[source_page - 1].get_pixmap(
-                        matrix=pymupdf.Matrix(1.5, 1.5), alpha=False
+                        matrix=pymupdf.Matrix(1.5, 1.5),
+                        colorspace=pymupdf.csRGB,
+                        alpha=False,
                     )
                     output_pixmap = sliced_doc[output_index].get_pixmap(
-                        matrix=pymupdf.Matrix(1.5, 1.5), alpha=False
+                        matrix=pymupdf.Matrix(1.5, 1.5),
+                        colorspace=pymupdf.csRGB,
+                        alpha=False,
                     )
-                    source_visual = hashlib.sha256(original_pixmap.samples).digest()
-                    output_visual = hashlib.sha256(output_pixmap.samples).digest()
-                    if (
-                        original_pixmap.width != output_pixmap.width
-                        or original_pixmap.height != output_pixmap.height
-                        or source_visual != output_visual
+                    if not _pixmaps_visually_equivalent(
+                        original_pixmap, output_pixmap
                     ):
                         errors.append(
                             {

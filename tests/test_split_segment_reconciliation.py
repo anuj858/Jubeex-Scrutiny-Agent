@@ -1,10 +1,13 @@
 """Remote boundaries survive local label repairs without restoring stale pages."""
 
+from types import SimpleNamespace
+
 import pymupdf
 import pytest
 
 from extraction_review.bundle_slicer import (
     SlotSlice,
+    _pixmaps_visually_equivalent,
     extract_pdf_pages,
     slice_bundle_pdf,
     validate_page_manifest_output,
@@ -22,6 +25,37 @@ def source_pdf() -> bytes:
             page = pdf.new_page()
             page.insert_text((72, 72), f"Physical page {number}")
         return pdf.tobytes()
+
+
+def test_visual_comparison_allows_harmless_raster_rounding():
+    source = SimpleNamespace(
+        width=2,
+        height=1,
+        n=3,
+        samples=bytes([0, 10, 20, 30, 40, 50]),
+    )
+    output = SimpleNamespace(
+        width=2,
+        height=1,
+        n=3,
+        samples=bytes([4, 6, 24, 26, 44, 46]),
+    )
+
+    assert _pixmaps_visually_equivalent(source, output) is True
+
+
+def test_visual_comparison_rejects_meaningful_or_different_sized_content():
+    source = SimpleNamespace(width=1, height=1, n=3, samples=bytes([0, 10, 20]))
+    changed = SimpleNamespace(width=1, height=1, n=3, samples=bytes([9, 10, 20]))
+    resized = SimpleNamespace(
+        width=2,
+        height=1,
+        n=3,
+        samples=bytes([0, 10, 20, 0, 0, 0]),
+    )
+
+    assert _pixmaps_visually_equivalent(source, changed) is False
+    assert _pixmaps_visually_equivalent(source, resized) is False
 
 
 def _slice(source_pdf, page_parts, segments):

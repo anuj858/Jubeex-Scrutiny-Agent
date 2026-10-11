@@ -18,6 +18,7 @@ dependencies = [
     "pinecone>=7.0.0,<8",
     "pypdf>=5.0.0,<7",
     "pymupdf>=1.24,<2",
+    "pillow>=11,<13",
     "boto3>=1.35,<2.0",
     "awscrt>=0.23,<1.0",
     "botocore[crt]>=1.43.89",
