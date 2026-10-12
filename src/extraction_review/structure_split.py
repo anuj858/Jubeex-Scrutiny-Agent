@@ -265,12 +265,18 @@ class ReconciliationOperation:
             "original_labels": list(self.original_labels),
             "proposed_labels": list(self.proposed_labels),
             "original_segment_range": (
-                {"start": self.original_segment_range[0], "end": self.original_segment_range[1]}
+                {
+                    "start": self.original_segment_range[0],
+                    "end": self.original_segment_range[1],
+                }
                 if self.original_segment_range
                 else None
             ),
             "proposed_segment_range": (
-                {"start": self.proposed_segment_range[0], "end": self.proposed_segment_range[1]}
+                {
+                    "start": self.proposed_segment_range[0],
+                    "end": self.proposed_segment_range[1],
+                }
                 if self.proposed_segment_range
                 else None
             ),
@@ -297,7 +303,9 @@ class StructureSplitResult:
     reconciliation_changes: list[ReconciliationChange] = field(default_factory=list)
     llama_boundary_proposals: list[LlamaBoundaryProposal] = field(default_factory=list)
     segment_classifications: list[SegmentClassification] = field(default_factory=list)
-    reconciliation_operations: list[ReconciliationOperation] = field(default_factory=list)
+    reconciliation_operations: list[ReconciliationOperation] = field(
+        default_factory=list
+    )
     reconciliation_summary: dict[str, Any] = field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
@@ -425,11 +433,7 @@ def extract_page_units(
             else "unavailable"
         )
         text_quality = (
-            "empty"
-            if not stripped
-            else "sparse"
-            if requires_ocr
-            else "usable"
+            "empty" if not stripped else "sparse" if requires_ocr else "usable"
         )
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         header = "\n".join(lines[:3])
@@ -437,7 +441,9 @@ def extract_page_units(
         headings = tuple(
             line[:180]
             for line in lines[:12]
-            if _CENTERED_TITLE_RE.search(line) or line.isupper() and 4 <= len(line) <= 100
+            if _CENTERED_TITLE_RE.search(line)
+            or line.isupper()
+            and 4 <= len(line) <= 100
         )[:5]
         paragraph_starts = tuple(
             match.group(0)[:80]
@@ -501,16 +507,17 @@ def extract_page_units(
                     number > 1
                     and stripped
                     and not re.match(r"\s*(?:[A-Z][A-Z\s]{5,}|\d+[.)])", stripped)
-                    and not re.search(r"[.!?][\"')\]]?\s*$", (units[-1].text or "").strip())
+                    and not re.search(
+                        r"[.!?][\"')\]]?\s*$", (units[-1].text or "").strip()
+                    )
                 ),
                 paragraph_continues_previous=bool(
-                    number > 1
-                    and stripped
-                    and not paragraph_starts
-                    and not headings
+                    number > 1 and stripped and not paragraph_starts and not headings
                 ),
                 signature_detected=signature_detected,
-                closing_section=closing_match.group(1).casefold() if closing_match else None,
+                closing_section=closing_match.group(1).casefold()
+                if closing_match
+                else None,
                 annexure_labels=annexure_labels,
                 layout_fingerprint=layout_fingerprint,
             )
@@ -636,9 +643,7 @@ def classify_pages(
 
 
 def propose_llama_boundaries(
-    llama_page_parts: PagePartMap
-    | Mapping[int, Sequence[str] | str | None]
-    | None,
+    llama_page_parts: PagePartMap | Mapping[int, Sequence[str] | str | None] | None,
     *,
     page_count: int,
 ) -> list[LlamaBoundaryProposal]:
@@ -947,7 +952,9 @@ _STRONG_RECONCILIATION_SIGNALS = frozenset(
 _UNIDENTIFIED_LABELS = frozenset({"Undefined", "Unidentified", "other"})
 
 
-def _copy_page_parts(page_parts: Mapping[int, Sequence[str] | str | None]) -> PagePartMap:
+def _copy_page_parts(
+    page_parts: Mapping[int, Sequence[str] | str | None],
+) -> PagePartMap:
     copied: PagePartMap = {}
     for page, names in page_parts.items():
         labels = parts_on_page(names)
@@ -969,6 +976,106 @@ def _same_document_type(left: str, right: str) -> bool:
 
 def _labels_match_type(labels: Sequence[str], document_type: str) -> bool:
     return any(_same_document_type(label, document_type) for label in labels)
+
+
+_DIRECT_DOCUMENT_START_SIGNALS = frozenset(
+    {
+        "annexure_stamp",
+        "outer_anchor",
+        "form28_lookalike",
+        "application_start",
+    }
+)
+
+
+def _classification_opens_labels(
+    classification: PageClassification | None,
+    labels: Sequence[str],
+) -> bool:
+    """Return whether this page independently opens ``labels``.
+
+    A Llama segment transition is deliberately not sufficient here.  The page
+    itself must carry a document-start cue.  This prevents a continuation page
+    from leaving its current document merely because its body text resembles a
+    different configured category.
+
+    Generic ``Annexures`` / ``Application`` labels are allowed to match a
+    numbered local opening in the same family.  Different numbered annexures
+    and applications are never treated as the same identity.
+    """
+    if classification is None or classification.confidence < 0.85:
+        return False
+    if not (set(classification.signals) & _DIRECT_DOCUMENT_START_SIGNALS):
+        return False
+    if _labels_match_type(labels, classification.document_type):
+        return True
+    classified_family = family_split_name(classification.document_type)
+    return any(
+        label in {ANNEXURE_FAMILY, "Application", "Applications"}
+        and family_split_name(label) == classified_family
+        for label in labels
+    )
+
+
+def _stabilize_document_continuity(
+    page_parts: PagePartMap,
+    classifications: Sequence[PageClassification],
+) -> PagePartMap:
+    """Reject unsupported page-by-page label changes inside an open document.
+
+    The first independently headed page opens a document state.  Its following
+    assigned pages keep that owner until another page independently proves a
+    new document start.  Index/folio reconciliation and the existing repair
+    pipeline can still replace these ranges later when they have stronger
+    evidence.
+
+    This rule is document-type agnostic: it protects annexures, applications,
+    petitions, judgments and front/back-matter documents alike.  It does not
+    infer an ending from phrases such as ``True Copy`` because those phrases
+    are optional, OCR-sensitive and also occur inside reproduced records.
+    """
+    updated = _copy_page_parts(page_parts)
+    by_page = {item.page: item for item in classifications}
+    active_labels: tuple[str, ...] = ()
+    active_has_opening = False
+    previous_page: int | None = None
+
+    for page in sorted(updated):
+        labels = tuple(parts_on_page(updated.get(page)))
+        if not labels:
+            continue
+
+        # Do not carry ownership across a gap that has not yet been resolved.
+        # The normal gap/Index repair stages decide those pages with their
+        # richer evidence instead of this transition guard guessing them.
+        if previous_page is None or page != previous_page + 1:
+            active_labels = labels
+            active_has_opening = _classification_opens_labels(by_page.get(page), labels)
+            previous_page = page
+            continue
+
+        if labels == active_labels:
+            active_has_opening = active_has_opening or _classification_opens_labels(
+                by_page.get(page), labels
+            )
+            previous_page = page
+            continue
+
+        candidate_has_opening = _classification_opens_labels(by_page.get(page), labels)
+        if candidate_has_opening or not active_has_opening:
+            # A verified heading starts the next document.  When neither side
+            # has a verified heading, retain Llama's proposal and leave it for
+            # audit/review rather than inventing continuity.
+            active_labels = labels
+            active_has_opening = candidate_has_opening
+        else:
+            # The current document has a verified opening, while the proposed
+            # new label has only page-body similarity.  Keep the page with the
+            # open document until a real next-document boundary appears.
+            updated[page] = list(active_labels)
+        previous_page = page
+
+    return updated
 
 
 def _segment_classification_supports_labels(
@@ -1077,9 +1184,13 @@ def _contiguous_segment_range(
         return None
     start = page
     end = page
-    while start > 1 and tuple(parts_on_page(page_parts.get(start - 1))) == tuple(labels):
+    while start > 1 and tuple(parts_on_page(page_parts.get(start - 1))) == tuple(
+        labels
+    ):
         start -= 1
-    while end < page_count and tuple(parts_on_page(page_parts.get(end + 1))) == tuple(labels):
+    while end < page_count and tuple(parts_on_page(page_parts.get(end + 1))) == tuple(
+        labels
+    ):
         end += 1
     return start, end
 
@@ -1116,8 +1227,12 @@ def reconcile_compiled_split(
     original = _copy_page_parts(baseline)
     candidate = _copy_page_parts(proposed)
     operations = operation_log if operation_log is not None else []
-    before_validation = validate_reconciliation_page_map(original, page_count=page_count)
-    candidate_validation = validate_reconciliation_page_map(candidate, page_count=page_count)
+    before_validation = validate_reconciliation_page_map(
+        original, page_count=page_count
+    )
+    candidate_validation = validate_reconciliation_page_map(
+        candidate, page_count=page_count
+    )
     if not before_validation["valid"] or not candidate_validation["valid"]:
         operations.append(
             ReconciliationOperation(
@@ -1205,10 +1320,14 @@ def reconcile_compiled_split(
                     original_pages=tuple(sorted(result)),
                     proposed_pages=tuple(sorted(candidate)),
                     original_labels=tuple(
-                        sorted({label for labels in result.values() for label in labels})
+                        sorted(
+                            {label for labels in result.values() for label in labels}
+                        )
                     ),
                     proposed_labels=tuple(
-                        sorted({label for labels in candidate.values() for label in labels})
+                        sorted(
+                            {label for labels in candidate.values() for label in labels}
+                        )
                     ),
                     original_segment_range=None,
                     proposed_segment_range=None,
@@ -1334,11 +1453,14 @@ def reconcile_compiled_split(
                 if segment.confidence >= 0.85
                 and not _segment_classification_supports_labels(segment, new)
             ]
-            semantic_ok = not (
-                direct
-                and direct.confidence >= 0.85
-                and not classification_supports_labels(direct, new)
-            ) and not semantic_conflicts
+            semantic_ok = (
+                not (
+                    direct
+                    and direct.confidence >= 0.85
+                    and not classification_supports_labels(direct, new)
+                )
+                and not semantic_conflicts
+            )
             validation = {
                 "structural": structural,
                 "semantic": {
@@ -1591,6 +1713,14 @@ def structure_aware_split(
             continue
         page_parts[c.page] = [c.document_type]
 
+    # Llama remains the warm-start, but an isolated page-level label change is
+    # not a legal-document boundary.  Once a directly headed document opens,
+    # preserve its continuous pages until the next independently supported
+    # opening.  Keep llama_only byte-for-byte compatible by applying this gate
+    # only when semantic reconciliation is enabled.
+    if run_hybrid_repair:
+        page_parts = _stabilize_document_continuity(page_parts, classifications)
+
     duplicates: list[Any] = []
     reconciliation_changes: list[ReconciliationChange] = []
     reconciliation_operations: list[ReconciliationOperation] = []
@@ -1608,9 +1738,7 @@ def structure_aware_split(
             page_count=len(units),
         )
 
-        def reassess_current_map(
-            current: PagePartMap, _pass_index: int
-        ) -> PagePartMap:
+        def reassess_current_map(current: PagePartMap, _pass_index: int) -> PagePartMap:
             # Deterministic global repair is recomputed against the current
             # accepted map. No Llama call is warranted here: only the already
             # extracted page evidence and initial Llama classification are
@@ -1651,9 +1779,16 @@ def structure_aware_split(
             "model_call_budget": 0,
             "model_calls": 0,
             "stop_reason": stop_operation.reason if stop_operation else "no_operations",
-            "accepted": sum(item.status == "accepted" for item in reconciliation_operations),
-            "rejected": sum(item.status in {"rejected", "rolled_back"} for item in reconciliation_operations),
-            "left_for_review": sum(item.status == "left_for_review" for item in reconciliation_operations),
+            "accepted": sum(
+                item.status == "accepted" for item in reconciliation_operations
+            ),
+            "rejected": sum(
+                item.status in {"rejected", "rolled_back"}
+                for item in reconciliation_operations
+            ),
+            "left_for_review": sum(
+                item.status == "left_for_review" for item in reconciliation_operations
+            ),
         }
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the

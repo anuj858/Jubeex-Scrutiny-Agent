@@ -450,6 +450,97 @@ def test_structure_split_cuts_sci_application_out_of_annexure_carry() -> None:
     assert slices["application_1"].filename == "Application 1.pdf"
 
 
+def test_annexure_continuation_waits_for_next_strong_heading() -> None:
+    """A body-like page cannot leave an opened annexure on Llama label alone."""
+    texts = {
+        1: "ANNEXURE P-1\nTrue copy of the registered lease deed\n26",
+        2: (
+            "Schedule of property\nBounded on the north by the public road\n"
+            "continued terms and conditions\n27"
+        ),
+        3: "ANNEXURE P-2\nTrue copy of the subsequent agreement\n28",
+    }
+    llama = {
+        1: ["Annexure P-1"],
+        # Reproduce the bad page-wise classification reported in production.
+        2: ["Listing Proforma"],
+        3: ["Annexure P-2"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(3),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert result.page_parts[1] == ["Annexure P-1"]
+    assert result.page_parts[2] == ["Annexure P-1"]
+    assert result.page_parts[3] == ["Annexure P-2"]
+
+
+def test_structure_split_continuity_gate_applies_to_non_annexure_documents() -> None:
+    """The same stateful boundary rule protects every multi-page document."""
+    texts = {
+        1: "SYNOPSIS\nThe present petition challenges the impugned judgment.",
+        2: "The controversy arose when the respondent issued the notice.",
+        3: "LIST OF DATES AND EVENTS\n01.01.2024 Notice was issued.",
+    }
+    llama = {
+        1: ["Synopsis"],
+        2: ["Main Petition"],
+        3: ["List of Dates & Events"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(3),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert result.page_parts[1] == ["Synopsis"]
+    assert result.page_parts[2] == ["Synopsis"]
+    assert result.page_parts[3] == ["List of Dates & Events"]
+
+
+def test_structure_split_accepts_verified_heading_as_real_boundary() -> None:
+    """Continuity must not swallow a genuinely headed next document."""
+    texts = {
+        1: "ANNEXURE P-1\nTrue copy of the registered lease deed\n26",
+        2: "LISTING PROFORMA\nSECTION: IV-A\nThe case pertains to service law.",
+    }
+    llama = {1: ["Annexure P-1"], 2: ["Listing Proforma"]}
+
+    result = structure_aware_split(
+        _blank_pdf(2),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert result.page_parts[1] == ["Annexure P-1"]
+    assert result.page_parts[2] == ["Listing Proforma"]
+
+
+def test_llama_only_preserves_remote_page_assignments_without_python_gate() -> None:
+    """The compatibility mode remains a true Llama-only ownership path."""
+    texts = {
+        1: "ANNEXURE P-1\nTrue copy of an order",
+        2: "Continuation of the order",
+    }
+    llama = {1: ["Annexure P-1"], 2: ["Listing Proforma"]}
+
+    result = structure_aware_split(
+        _blank_pdf(2),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=False,
+    )
+
+    assert result.page_parts == llama
+
+
 def test_extract_page_units_prefers_clean_layout_over_control_corrupted_date(
     monkeypatch,
 ) -> None:

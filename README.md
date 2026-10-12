@@ -115,6 +115,15 @@ is retained for frontend compatibility; it does not reclassify page content.
 
 Local boundary checks distinguish outer annexure stamps from wrapped narrative
 references and case-specific exhibit-list appendices inside a common judgment.
+They are stateful rather than page-by-page: once a page independently opens a
+document, later pages keep that document owner until another page provides a
+verified document-start heading. A Llama category change based only on body
+text cannot cut a continuation page out of an annexure, application, petition,
+judgment, Synopsis, LOD or other multi-page filing document. Master-Index and
+folio evidence can still replace the resulting range when it provides stronger
+filing-level boundaries. ``True Copy`` is supporting evidence only, not a
+mandatory end marker, because it is optional, OCR-sensitive and can appear
+inside reproduced records.
 They also retain an application's numbered body, prayer and filing signature
 before the actual exhibit it introduces. These complement the positive
 `START`/`CONTINUE`/`END` criteria and negative `DO NOT SPLIT` rules in the config;
