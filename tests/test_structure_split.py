@@ -170,6 +170,40 @@ def test_targeted_reconciliation_uses_index_range_over_main_span(monkeypatch) ->
     assert all("master_index_and_folio" in change.evidence for change in changes)
 
 
+def test_application_prayer_mentioning_impugned_order_is_not_new_order() -> None:
+    text = (
+        "209\napplication for exemption from filing certified copy of the\n"
+        "impugned judgment. The present application is made bonafide.\n"
+        "PRAYER\nexempt the petitioner from filing the certified copy of the\n"
+        "Impugned Judgment and Final Order dated 18.03.2026.\n209"
+    )
+    classification = classify_page(PageUnit(pdf_page=2, text=text))
+    assert classification.document_type != "Impugned Order"
+
+
+def test_numbered_application_does_not_revert_to_generic_on_reassessment() -> None:
+    baseline = {1: ["Application"], 2: ["Application"]}
+    numbered = {1: ["Application 1"], 2: ["Application 1"]}
+    classifications = [
+        PageClassification(
+            page=1,
+            document_type="Application 1",
+            confidence=0.9,
+            signals=("application_start",),
+            llama_hint="Application",
+        )
+    ]
+    result, _changes = reconcile_compiled_split(
+        baseline,
+        numbered,
+        classifications,
+        {1: "APPLICATION FOR EXEMPTION", 2: "PRAYER"},
+        page_count=2,
+        proposal_generator=lambda _current, _pass: baseline,
+    )
+    assert result == numbered
+
+
 def test_targeted_reconciliation_applies_anchored_document_continuation() -> None:
     baseline = {
         1: ["Main Petition"],

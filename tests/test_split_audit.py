@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from extraction_review.split_audit import (
+    aligned_index_printed_rows,
     annexure_labels_from_text,
     audit_compiled_split,
     check_document_sequence,
@@ -13,6 +14,40 @@ from extraction_review.split_audit import (
     map_index_particulars_to_part,
     parse_index_rows,
 )
+
+
+def test_index_recovers_two_missing_ranges_only_from_unique_openings() -> None:
+    index = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1.\tI.A. AN APPLICATION FOR EXEMPTION FROM FILING CERTIFIED COPY\t210-211\n"
+        "2.\tI.A. AN APPLICATION FOR PERMISSION TO FILE ADDITIONAL DOCUMENTS\t\n"
+        "3.\tANNEXURE-P/12 True copy of W.P.(C) No. 28199 of 2012\t\n"
+        "4.\tF/M\t216"
+    )
+    texts = {
+        1: index,
+        10: "prior application\n210",
+        11: "application continuation\n211",
+        12: "IN THE SUPREME COURT OF INDIA\n"
+        "AN APPLICATION FOR PERMISSION TO FILE ADDITIONAL DOCUMENTS\n212",
+        13: "application prayer\n213",
+        14: "BEFORE THE HONBLE HIGH COURT OF KERALA\n"
+        "W.P.(C) No. 28199 of 2012\n214",
+        15: "writ continuation\n215",
+        16: "FILING MEMO\n216",
+    }
+    rows = aligned_index_printed_rows({1: ["Index"]}, texts)
+    assert {(row.mapped_part, row.start, row.end) for row in rows} >= {
+        ("Application 1", 212, 213),
+        ("Annexure P-12", 214, 215),
+    }
+
+    # The case number alone in application prose cannot open an annexure.
+    texts[14] = "The applicant cites W.P.(C) No. 28199 of 2012\n214"
+    rows_without_opening = aligned_index_printed_rows({1: ["Index"]}, texts)
+    assert not any(
+        row.mapped_part == "Annexure P-12" for row in rows_without_opening
+    )
 
 
 def test_map_index_particulars_to_common_parts() -> None:

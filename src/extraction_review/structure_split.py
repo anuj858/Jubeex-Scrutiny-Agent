@@ -1489,6 +1489,15 @@ def reconcile_compiled_split(
                 new = indexed_labels
             if not new or new == old:
                 continue
+            if (
+                len(old) == len(new) == 1
+                and re.fullmatch(r"Application \d+", old[0])
+                and new[0] == "Application"
+            ):
+                # A fresh repair pass may emit the family-only placeholder
+                # after an earlier pass has established the numbered IA from
+                # the Index. Never degrade that confirmed identity.
+                continue
             if len(operations) >= operation_limit:
                 stop_reason = "operation_limit_reached"
                 break

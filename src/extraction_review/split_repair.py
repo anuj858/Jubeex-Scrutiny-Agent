@@ -645,6 +645,17 @@ def _looks_like_impugned_order_start(text: str) -> bool:
         return False
     if "matter in issue" in folded or "res judicata" in folded:
         return False
+    # An IA continuation can quote the *impugned judgment* in its prayer.
+    # In OCR the quote may start a line inside the heading window, but it is
+    # not the opening of a separate judgment. Require the application/prayer
+    # context to lose to an actual document title, not a body reference.
+    if re.search(
+        r"\b(?:present\s+)?application\s+for\s+(?:exemption|permission)\b",
+        folded,
+    ) and re.search(
+        r"\b(?:present application|prayer|exempt the petitioner)\b", folded
+    ):
+        return False
     if _is_sci_caption(text) and (
         "special leave" in folded or "petition for special leave" in folded
     ):

@@ -14,6 +14,7 @@ from typing import Any
 
 from .document_parts import (
     PagePartMap,
+    annexure_label_from_text,
     document_spans_from_page_parts,
     family_split_name,
     parts_on_page,
@@ -980,6 +981,117 @@ def aligned_index_printed_rows(
             start=start,
             end=end,
         )
+
+    # A damaged Index page column can leave *several* consecutive inventory
+    # rows without ranges (for example an IA followed by an annexed writ).
+    # Do not distribute the numeric gap by guesswork. Recover it only when
+    # the two surrounding printed folios map one-to-one to physical pages and
+    # each missing document has one distinct, content-matching opening there.
+    numbered_inventory = [
+        (position, item)
+        for position, item in enumerate(inventory)
+        if item.start_page > 0 and item.end_page >= item.start_page
+    ]
+    folios_by_page = {
+        page: printed_folio(text)
+        for page, text in page_text.items()
+    }
+
+    def opening_matches(item: IndexRow, text: str) -> bool:
+        head = text[:1600]
+        if item.mapped_part and family_split_name(item.mapped_part) == "Application":
+            row_phrase = re.search(
+                r"\bapplication\s+for\s+(.{6,100})",
+                item.particulars,
+                re.IGNORECASE,
+            )
+            if not row_phrase:
+                return False
+            words = re.findall(r"[a-z]{3,}", _fold(row_phrase.group(1)))[:4]
+            return len(words) >= 2 and all(word in _fold(head) for word in words)
+        if item.mapped_part and family_split_name(item.mapped_part) == "Annexures":
+            label = item.mapped_part
+            if annexure_label_from_text(head) == label:
+                return True
+            # The annexure stamp can be illegible even when the reproduced
+            # court case number is clear. Both Index and opening must name the
+            # same case; a citation later in the exhibit is not an opening.
+            case_pattern = re.compile(
+                r"\bW\s*\.?\s*P\s*\.?\s*(?:\(\s*[A-Z]\s*\))?\s*"
+                r"(?:No\s*\.?)?\s*(\d{4,7})\s*(?:/|of\s+)(\d{4})\b",
+                re.IGNORECASE,
+            )
+            row_case = case_pattern.search(item.particulars)
+            page_case = case_pattern.search(head)
+            lower_court_opening = bool(
+                re.search(
+                    r"\b(?:in|before)\s+the\s+(?:hon.?ble\s+)?high\s+court\b",
+                    head,
+                    re.IGNORECASE,
+                )
+                and not re.search(
+                    r"\bsupreme\s+court\b", head[:500], re.IGNORECASE
+                )
+            )
+            return bool(
+                row_case
+                and page_case
+                and row_case.groups() == page_case.groups()
+                and lower_court_opening
+            )
+        return False
+
+    for (left_pos, left), (right_pos, right) in pairwise(numbered_inventory):
+        missing = inventory[left_pos + 1 : right_pos]
+        if not missing or any(item.start_page or not item.mapped_part for item in missing):
+            continue
+        gap_start, gap_end = left.end_page + 1, right.start_page - 1
+        if gap_end < gap_start or gap_end - gap_start + 1 > 100:
+            continue
+        left_pages = [
+            page for page, folio in folios_by_page.items()
+            if folio == ("number", left.end_page, "")
+        ]
+        right_pages = [
+            page for page, folio in folios_by_page.items()
+            if folio == ("number", right.start_page, "")
+        ]
+        pairs = [
+            (start, stop) for start in left_pages for stop in right_pages
+            if stop - start - 1 == gap_end - gap_start + 1
+        ]
+        if len(pairs) != 1:
+            continue
+        left_page, _right_page = pairs[0]
+        openings: list[tuple[IndexRow, int]] = []
+        for item in missing:
+            candidates = [
+                folio
+                for folio in range(gap_start, gap_end + 1)
+                if folios_by_page.get(left_page + folio - left.end_page)
+                == ("number", folio, "")
+                and opening_matches(
+                    item, page_text.get(left_page + folio - left.end_page, "")
+                )
+            ]
+            if len(candidates) != 1:
+                break
+            openings.append((item, candidates[0]))
+        if len(openings) != len(missing):
+            continue
+        starts = [start for _item, start in openings]
+        if starts != sorted(set(starts)) or starts[0] != gap_start:
+            continue
+        for index, (item, start) in enumerate(openings):
+            end = starts[index + 1] - 1 if index + 1 < len(starts) else gap_end
+            row = IndexPrintedRow(
+                mapped_part=item.mapped_part,
+                particulars=item.particulars,
+                kind="number",
+                start=start,
+                end=end,
+            )
+            unique[(row.mapped_part, row.kind, start, end, "")] = row
 
     return list(unique.values())
 
