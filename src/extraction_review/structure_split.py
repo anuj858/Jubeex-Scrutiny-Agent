@@ -36,6 +36,7 @@ from .document_parts import (
 )
 from .split_ocr import ocr_sparse_pages, pages_with_large_images
 from .split_pdf_layout import extract_split_layout
+from .split_pdf_layout import printed_folio as _printed_folio
 from .split_repair import (
     _apply_cited_annexure_ranges,
     _apply_indexed_annexure_ranges,
@@ -579,7 +580,14 @@ def classify_page(
         signals.append("annexure_stamp")
     else:
         anchor = _outer_anchor_label(text)
-        if anchor:
+        if anchor == "Application 1" and not page_starts_application(text):
+            # IA body/prayer language identifies the document family, not a
+            # new outer opening. Treating it as an outer_anchor protects a
+            # false Llama boundary before a captionless continuation page.
+            doc_type = anchor
+            score = 0.65
+            signals.append("application_body")
+        elif anchor:
             doc_type = anchor
             score = 0.88
             signals.append("outer_anchor")
@@ -1145,6 +1153,58 @@ def _index_supported_map(
     return indexed
 
 
+def _confirmed_application_continuation(
+    page: int,
+    old: Sequence[str],
+    new: Sequence[str],
+    current: PagePartMap,
+    page_text: Mapping[int, str],
+) -> bool:
+    """Permit correcting a false IA boundary only with physical continuity.
+
+    A preceding application assignment, consecutive printed folios and a
+    body/prayer opening establish continuation. A fresh application caption,
+    another outer heading or missing folio evidence leaves the model boundary
+    for human review rather than merging two possible applications.
+    """
+    if (
+        page <= 1
+        or len(old) != 1
+        or len(new) != 1
+        or old == new
+        or any(family_split_name(label) != "Application" for label in (*old, *new))
+        or tuple(parts_on_page(current.get(page - 1))) != tuple(new)
+    ):
+        return False
+    text = page_text.get(page, "")
+    previous = page_text.get(page - 1, "")
+    if (
+        not text.strip()
+        or page_starts_application(text)
+        or annexure_label_from_text(text)
+        or _is_lower_court_caption(text)
+        or _looks_like_sci_main_petition(text)
+        or _outer_anchor_label(text) not in {None, "Application 1"}
+    ):
+        return False
+    prior_folio = _printed_folio(previous)
+    folio = _printed_folio(text)
+    if not (
+        prior_folio
+        and folio
+        and prior_folio[0] == folio[0] == "number"
+        and folio[1] == prior_folio[1] + 1
+    ):
+        return False
+    return bool(
+        re.search(
+            r"(?mi)^\s*(?:(?:[2-9]|\d{2,3})[.)]\s+|PRAYER\b|FILED\s+BY\b|"
+            r"VERIFICATION\b|AND\s+FOR\s+THIS\s+ACT\b)",
+            text,
+        )
+    )
+
+
 def validate_reconciliation_page_map(
     page_parts: Mapping[int, Sequence[str] | str | None], *, page_count: int
 ) -> dict[str, Any]:
@@ -1445,6 +1505,8 @@ def reconcile_compiled_split(
                 evidence.append("explicit_outer_boundary")
             elif span_policy.get(page):
                 evidence.append("anchored_continuation")
+            if _confirmed_application_continuation(page, old, new, result, page_text):
+                evidence.append("application_continuation")
 
             op_type = _operation_type_for_page(
                 page, old, new, result, candidate, units_by_page.get(page)
@@ -1463,6 +1525,7 @@ def reconcile_compiled_split(
             if protected_boundary and not {
                 "master_index_and_folio",
                 "explicit_outer_boundary",
+                "application_continuation",
             }.intersection(evidence):
                 operations.append(
                     ReconciliationOperation(

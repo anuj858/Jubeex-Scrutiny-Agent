@@ -1633,6 +1633,20 @@ def _annexure_run_bounds(
                     break
                 stripped = (text or "").strip()
                 if len(stripped) < 40:
+                    # A scanned exhibit can expose only its printed folios for
+                    # many consecutive pages. Those folios are affirmative
+                    # continuation evidence, not a streak of empty sheets.
+                    prior_folio = _printed_folio(page_text.get(page - 1, ""))
+                    folio = _printed_folio(text)
+                    if (
+                        prior_folio
+                        and folio
+                        and prior_folio[0] == folio[0] == "number"
+                        and folio[1] == prior_folio[1] + 1
+                    ):
+                        blank_streak = 0
+                        end = page
+                        continue
                     blank_streak += 1
                     # Keep at most one OCR-blank sheet inside an exhibit.
                     if blank_streak > 1:
@@ -1705,7 +1719,6 @@ def _force_annexure_nesting(
                         "AOR's Declaration",
                         "AOR's Certificate",
                         "Affidavit",
-                        "Appendix",
                     }
                     for name in names
                 ):
@@ -3007,10 +3020,23 @@ def _extend_explicit_appendix_continuation(
     the Appendix instead.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    annexure_owner = {
+        page: label
+        for start, end, label in _annexure_run_bounds(page_text, page_count)
+        for page in range(start, end + 1)
+    }
     active = False
     for page in range(1, page_count + 1):
         text = page_text.get(page, "")
         anchor = _outer_anchor_label(text)
+        if page in annexure_owner:
+            # A reproduced case may contain its own APPENDIX heading. The
+            # enclosing paper-book annexure wins; do not re-promote it during
+            # this final Appendix-continuation pass.
+            if anchor == "Appendix" or "Appendix" in parts_on_page(updated.get(page)):
+                updated[page] = [annexure_owner[page]]
+            active = False
+            continue
         if anchor == "Appendix":
             updated[page] = ["Appendix"]
             active = True

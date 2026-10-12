@@ -612,6 +612,131 @@ def test_dedicated_boundary_pass_survives_weak_page_text() -> None:
     assert result.page_parts[4] == ["List of Dates & Events"]
 
 
+def test_application_prayer_continuation_does_not_become_new_application() -> None:
+    """A wrong dedicated boundary cannot promote an IA's prayer to a new IA."""
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nI. A. NO. OF 2026\n"
+            "AN APPLICATION FOR EXEMPTION FROM FILING CERTIFIED COPY\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner applies for exemption.\n208"
+        ),
+        2: (
+            "2. The certified copy is not readily available.\n"
+            "3. The present application is made bonafide.\nPRAYER\n"
+            "The petitioner prays for exemption.\nFILED BY ADVOCATE\n209"
+        ),
+        3: (
+            "IN THE SUPREME COURT OF INDIA\nI. A. NO. OF 2026\n"
+            "AN APPLICATION FOR EXEMPTION FROM FILING OFFICIAL TRANSLATION\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner seeks leave.\n"
+            "2. That Annexure P/4 is in Tamil.\n210"
+        ),
+        4: (
+            "3. That due to paucity of time the translation could not be arranged.\n"
+            "4. That the annexure was translated by an Advocate.\n"
+            "5. The present application is made bonafide in the interest of justice.\n"
+            "PRAYER\nIt is most respectfully prayed that this Hon'ble Court be pleased "
+            "to exempt the petitioner from filing the official translation.\n"
+            "FILED BY ADVOCATE\n211"
+        ),
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nI. A. NO. OF 2026\n"
+            "AN APPLICATION FOR PERMISSION TO FILE ADDITIONAL DOCUMENTS\n"
+            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner seeks permission.\n212"
+        ),
+    }
+    result = structure_aware_split(
+        _blank_pdf(5),
+        page_units=[PageUnit(pdf_page=page, text=text) for page, text in texts.items()],
+        llama_page_parts={
+            1: ["Application 1"],
+            2: ["Application 1"],
+            3: ["Application 2"],
+            4: ["Application 1"],
+            5: ["Application 3"],
+        },
+        run_hybrid_repair=True,
+        authoritative_boundary_pages=[3, 4, 5],
+    )
+
+    assert result.page_parts[1] == result.page_parts[2] == ["Application 1"]
+    assert result.page_parts[3] == result.page_parts[4] == ["Application 2"]
+    assert result.page_parts[5] == ["Application 3"]
+
+
+def test_application_body_without_folio_is_not_a_confirmed_boundary_override() -> None:
+    from extraction_review.structure_split import _confirmed_application_continuation
+
+    current = {1: ["Application 2"], 2: ["Application 1"]}
+    texts = {
+        1: "APPLICATION FOR EXEMPTION\n2. That translation is required.",
+        2: "3. That the translation could not be arranged.\nPRAYER",
+    }
+
+    assert not _confirmed_application_continuation(
+        2, ("Application 1",), ("Application 2",), current, texts
+    )
+
+
+def test_scanned_old_case_petition_stays_in_stamped_annexure_until_outer_start() -> None:
+    """Sparse scanned exhibit folios are not a new Main Petition island."""
+    texts = {
+        1: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nPRAYER\n214",
+        2: "ANNEXURE P/12\nTrue Copy of W.P. (C) No. 28199 of 2012\n215",
+        3: (
+            "IN THE HIGH COURT OF KERALA AT ERNAKULAM\n"
+            "W.P. (C) NO. 28199 OF 2012\nPETITION\n216"
+        ),
+        4: "217",
+        5: "218",
+        6: "219",
+        7: "IN THE SUPREME COURT OF INDIA\nFILING MEMO\n233",
+    }
+    result = structure_aware_split(
+        _blank_pdf(7),
+        page_units=[PageUnit(pdf_page=page, text=text) for page, text in texts.items()],
+        llama_page_parts={
+            1: ["Main Petition"],
+            2: ["Annexure P-12"],
+            3: ["Main Petition"],
+            4: ["Main Petition"],
+            5: ["Main Petition"],
+            6: ["Main Petition"],
+            7: ["Filing Memo"],
+        },
+        run_hybrid_repair=True,
+        authoritative_boundary_pages=[2, 3, 7],
+    )
+
+    assert result.page_parts[1] == ["Main Petition"]
+    assert all(result.page_parts[page] == ["Annexure P-12"] for page in range(2, 7))
+    assert result.page_parts[7] == ["Filing Memo"]
+
+
+def test_appendix_heading_inside_annexure_remains_nested() -> None:
+    texts = {
+        1: "ANNEXURE P-1\nTrue copy of the High Court petition\n26",
+        2: "APPENDIX\nDocuments accompanying the High Court writ petition\n27",
+        3: "Appendix schedule continued\n28",
+        4: "ANNEXURE P-2\nTrue copy of the High Court order\n29",
+    }
+    result = structure_aware_split(
+        _blank_pdf(4),
+        page_units=[PageUnit(pdf_page=page, text=text) for page, text in texts.items()],
+        llama_page_parts={
+            1: ["Annexure P-1"],
+            2: ["Appendix"],
+            3: ["Appendix"],
+            4: ["Annexure P-2"],
+        },
+        run_hybrid_repair=True,
+        authoritative_boundary_pages=[2, 4],
+    )
+
+    assert all(result.page_parts[page] == ["Annexure P-1"] for page in (1, 2, 3))
+    assert result.page_parts[4] == ["Annexure P-2"]
+
+
 def test_llama_only_preserves_remote_page_assignments_without_python_gate() -> None:
     """The compatibility mode remains a true Llama-only ownership path."""
     texts = {
