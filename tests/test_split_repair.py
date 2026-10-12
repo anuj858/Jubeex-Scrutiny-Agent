@@ -3427,6 +3427,119 @@ def test_sci_court_fee_index_after_annexures_is_filing_memo() -> None:
     assert repaired[4] == ["Vakalatnama"]
 
 
+def test_bracketed_filing_inventory_ends_annexure_and_restores_party_memo() -> None:
+    """A reproduced old petition must not absorb the following filing list."""
+    from extraction_review.split_repair import _annexure_run_bounds, _outer_anchor_label
+
+    texts = {
+        1: "215\nANNEXURE P/12\nBEFORE THE HIGH COURT OF KERALA",
+        **{
+            page: f"{214 + page}\nWA 644/2024 Copy of WPC\nPetition body"
+            for page in range(2, 19)
+        },
+        19: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "[INDEX OF FILING]\nS.NO. PARTICULARS COPIES COURT FEES\n"
+            "1. OFFICE REPORT OF LIMITATION\n"
+            "11. VAKALATNAMA WITH MEMO OF APPEARANCE\n233"
+        ),
+        20: (
+            "IN THE HIGH COURT OF KERALA\nWA NO. 644 OF 2024\n"
+            "MEMO OF PARTIES\n1. A ... PETITIONER\n2. B ... RESPONDENT\n236"
+        ),
+        21: "237\n5. C ... RESPONDENT\n6. D ... RESPONDENT",
+    }
+    incorrect = {
+        **{page: ["Main Petition"] for page in range(1, 19)},
+        19: ["Annexure P-10"],
+        20: ["Annexure P-10"],
+        21: ["Annexure P-10"],
+    }
+
+    assert _outer_anchor_label(texts[19]) == "Filing Memo"
+    assert _annexure_run_bounds(texts, 21) == [(1, 18, "Annexure P-12")]
+    repaired, _ = repair_compiled_split(incorrect, texts, page_count=21)
+
+    assert all(repaired[page] == ["Annexure P-12"] for page in range(1, 19))
+    assert repaired[19] == ["Filing Memo"]
+    assert repaired[20] == ["Memo of Parties"]
+    assert repaired[21] == ["Memo of Parties"]
+    # An item listed in the filing inventory is not evidence its pages exist.
+    assert not any("Vakalatnama" in names for names in repaired.values())
+
+
+def test_slash_folio_listing_title_separates_from_office_report() -> None:
+    from extraction_review.split_repair import _outer_anchor_label
+
+    texts = {
+        1: "IN THE SUPREME COURT OF INDIA\nOFFICE REPORT ON LIMITATION\nA",
+        2: (
+            "A/1\nPROFORMA FOR FIRST LISTING\nSection:\n"
+            "The case pertains to the High Court order listed below."
+        ),
+        3: "A/2\n5. Not to be listed before: NA\n6. Similar pending matter: No",
+    }
+    incorrect = {
+        1: ["Office Report on Limitation"],
+        2: ["Office Report on Limitation"],
+        3: ["Listing Proforma"],
+    }
+
+    assert _outer_anchor_label(texts[2]) == "Listing Proforma"
+    repaired, _ = repair_compiled_split(incorrect, texts, page_count=3)
+    assert repaired[1] == ["Office Report on Limitation"]
+    assert repaired[2] == ["Listing Proforma"]
+
+
+def test_matching_court_citation_extends_impugned_order_past_wrong_main_label() -> None:
+    from extraction_review.split_repair import _restore_front_impugned_judgment
+
+    texts = {
+        1: "SYNOPSIS\nThe challenged order is set out below.",
+        2: (
+            "2026:KER:24461\nIN THE HIGH COURT OF KERALA AT ERNAKULAM\n"
+            "WA NO. 644 OF 2024\nParties and coram\n1"
+        ),
+        3: "2026:KER:24461\nWA 644/24\nParties continued\n2",
+        4: "2026:KER:24461\nWA 644/24\nJUDGMENT\nDecision text\n3",
+        5: "2026:KER:24461\nWA 644/24\nJudgment continued\n4",
+        6: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. OF 2026\n"
+            "POSITION OF THE PARTIES\n5"
+        ),
+    }
+    incorrect = {
+        1: ["Synopsis"],
+        2: ["Impugned Order"],
+        3: ["Main Petition"],
+        4: ["Main Petition"],
+        5: ["Main Petition"],
+        6: ["Main Petition"],
+    }
+
+    repaired = _restore_front_impugned_judgment(incorrect, texts, 6)
+    assert all(repaired[page] == ["Impugned Order"] for page in range(2, 6))
+    assert repaired[6] == ["Main Petition"]
+
+
+def test_stamped_annexure_run_stops_at_new_supreme_court_petition() -> None:
+    from extraction_review.split_repair import _annexure_run_bounds
+
+    texts = {
+        1: "ANNEXURE P/1\nBEFORE THE HIGH COURT OF KERALA",
+        2: "Lower court record continues with its findings and order.",
+        3: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "SPECIAL LEAVE PETITION (CIVIL) NO. OF 2026\n"
+            "POSITION OF THE PARTIES\nPetitioner versus Respondent"
+        ),
+        4: "The petitioner respectfully states the following facts.",
+    }
+
+    assert _annexure_run_bounds(texts, 4) == [(1, 2, "Annexure P-1")]
+
+
 def test_curly_quoted_annexure_stamps_are_detected_at_top_and_footer() -> None:
     from extraction_review.document_parts import annexure_label_from_text
 

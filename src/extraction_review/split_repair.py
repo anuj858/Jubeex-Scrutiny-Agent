@@ -140,7 +140,7 @@ _SCI_COURT_ROP_RE = re.compile(
     re.I,
 )
 _FILING_MEMO_RE = re.compile(
-    r"(?m)^\s*(?:filing memo|index of filing|filing index|index of documents)\b",
+    r"(?m)^\s*[\[(]?\s*(?:filing memo|index of filing|filing index|index of documents)\b",
     re.I,
 )
 _CUSTODY_CERTIFICATE_RE = re.compile(
@@ -557,7 +557,10 @@ def _has_top_listing_heading(text: str) -> bool:
         return False
     prior = [line.strip() for line in heading[: match.start()].splitlines() if line.strip()]
     return all(
-        re.fullmatch(r"(?:[A-Z]{1,2}(?:-?\d+)?|[IVX]{1,4}|[nN]|[^A-Za-z0-9]+)", line)
+        re.fullmatch(
+            r"(?:[A-Z]{1,2}(?:[-/]?\d+)?|[IVX]{1,4}|[nN]|[^A-Za-z0-9]+)",
+            line,
+        )
         for line in prior
     )
 
@@ -825,8 +828,14 @@ def _restore_front_impugned_judgment(
         for page in range(start + 1, min(page_count, start + 40) + 1):
             current_text = page_text.get(page, "")
             current_names = parts_on_page(updated.get(page))
-            if MAIN_PETITION_PART in current_names or _looks_like_sci_main_petition(
-                current_text
+            if _looks_like_sci_main_petition(current_text):
+                break
+            # A mistaken model label on a continuation sheet cannot end a
+            # court-issued judgment when its citation and folio still match.
+            # Without that independent evidence, retain the Main boundary.
+            if MAIN_PETITION_PART in current_names and not (
+                neutral_citation
+                and _court_record_neutral_citation(current_text) == neutral_citation
             ):
                 break
             folio = court_folio(current_text)
@@ -1330,7 +1339,7 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Cover Page"
     # The current filing's own FILING INDEX is the Filing Memo. Evaluate it
     # before the generic Index-table rule, which otherwise absorbs this page
-    # into the preceding paper-book Index.
+    # into the preceding paper-book Index. Printed headings may be bracketed.
     if (
         _FILING_MEMO_RE.search(text[:1800])
         and _is_sci_caption(text)
@@ -1563,6 +1572,9 @@ def _annexure_run_bounds(
                 if _looks_like_volume_cover(text):
                     end = page - 1
                     break
+                if _looks_like_sci_main_petition(text):
+                    end = page - 1
+                    break
                 # Applications reproduced in a High Court record (e.g.
                 # Order XXXIX / Section 151 CPC applications) are part of the
                 # enclosing annexure. Only a current Supreme Court application
@@ -1595,6 +1607,8 @@ def _annexure_run_bounds(
             for page in range(start + 1, page_count + 1):
                 text = page_text.get(page, "")
                 if _looks_like_volume_cover(text):
+                    break
+                if _looks_like_sci_main_petition(text):
                     break
                 if page_starts_application(text) and _is_sci_caption(text):
                     break
@@ -1680,13 +1694,14 @@ def _force_annexure_nesting(
             ):
                 continue
             names = parts_on_page(updated.get(page))
-            # Keep SCI petition / certificate / affidavit body pages unless this
-            # sheet itself prints an Annexure stamp.
+            # Keep other outer-document body pages unless this sheet itself
+            # prints an Annexure stamp. A model-assigned Main Petition is not
+            # protected inside a stamped Annexure run: reproduced old-case
+            # petitions commonly have the same pleading structure.
             if names and not annexure_ref_in_heading(text):
                 if any(
                     name
                     in {
-                        MAIN_PETITION_PART,
                         "AOR's Declaration",
                         "AOR's Certificate",
                         "Affidavit",
