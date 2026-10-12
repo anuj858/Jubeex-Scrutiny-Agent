@@ -40,11 +40,14 @@ from .split_repair import (
     _apply_cited_annexure_ranges,
     _apply_indexed_annexure_ranges,
     _apply_indexed_outer_document_ranges,
+    _apply_outer_anchors,
+    _force_annexure_nesting,
     _heading_window,
     _is_lower_court_caption,
     _is_near_blank_page,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
+    _restore_front_impugned_judgment,
     _restore_index_bridge_pages,
     _restore_master_volume_sections,
     repair_compiled_split,
@@ -1039,15 +1042,21 @@ def _stabilize_document_continuity(
     active_labels: tuple[str, ...] = ()
     active_has_opening = False
     previous_page: int | None = None
+    first_page = min(updated, default=0)
+    last_page = max(updated, default=0)
 
-    for page in sorted(updated):
+    # Walk the physical page sequence, not only pages which Llama assigned.
+    # Otherwise one omitted continuation page resets the state and the next
+    # weak page-level guess can open a false document.  Unassigned pages after
+    # a verified opening inherit that owner until a verified next heading.
+    for page in range(first_page, last_page + 1):
         labels = tuple(parts_on_page(updated.get(page)))
         if not labels:
+            if active_has_opening and active_labels:
+                updated[page] = list(active_labels)
+            previous_page = page
             continue
 
-        # Do not carry ownership across a gap that has not yet been resolved.
-        # The normal gap/Index repair stages decide those pages with their
-        # richer evidence instead of this transition guard guessing them.
         if previous_page is None or page != previous_page + 1:
             active_labels = labels
             active_has_opening = _classification_opens_labels(by_page.get(page), labels)
@@ -1790,6 +1799,17 @@ def structure_aware_split(
                 item.status == "left_for_review" for item in reconciliation_operations
             ),
         }
+        # Reconciliation is intentionally conservative and may reject a
+        # multi-page correction when several Llama page labels disagree at
+        # once. Reapply only the hard structural invariants afterwards:
+        # explicit outer headings, the challenged order's bounded position,
+        # and stamp-to-next-stamp annexure ownership. These are deterministic
+        # document boundaries, not another model guess.
+        page_parts = _apply_outer_anchors(page_parts, texts, len(units))
+        page_parts = _restore_front_impugned_judgment(page_parts, texts, len(units))
+        page_parts = _force_annexure_nesting(
+            page_parts, texts, len(units), strict_continuity=True
+        )
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the
     # compatibility path, not a way to bypass mandatory parsing.

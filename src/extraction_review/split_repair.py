@@ -180,6 +180,8 @@ def _looks_like_filing_inventory_index(text: str) -> bool:
         )
     )
     return cues >= 4
+
+
 _EFILE_COURT_FEE_RE = re.compile(
     r"supreme\s+court\s+of\s+india.{0,120}acknowledgement|"
     r"supreme\s+court\s+of\s+india.{0,160}cash\s*&?\s*accounts|"
@@ -449,7 +451,7 @@ def _is_lower_court_caption(text: str) -> bool:
         head,
     )
     if body:
-        head = head[:body.start()]
+        head = head[: body.start()]
     matches = [
         match
         for pattern in (_HC_CAPTION_RE, _TRIBUNAL_CAPTION_RE)
@@ -461,7 +463,23 @@ def _is_lower_court_caption(text: str) -> bool:
     # A Supreme Court cause title can reproduce the prior court's name in its
     # party-position table. Conversely, a body reference to the Supreme Court
     # below a real High Court caption does not change that page's source court.
-    return not _is_sci_caption(head[:first.start()])
+    return not _is_sci_caption(head[: first.start()])
+
+
+def _has_leading_lower_court_caption(text: str) -> bool:
+    """Whether a source-court caption appears in the page's opening block.
+
+    This is deliberately narrower than :func:`_is_lower_court_caption`, which
+    is also useful for finding captions below scan headers.  Document
+    continuity must not end merely because narrative text later mentions the
+    High Court whose order is challenged.
+    """
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    opening = "\n".join(lines[:6])[:600]
+    return bool(
+        (_HC_CAPTION_RE.search(opening) or _TRIBUNAL_CAPTION_RE.search(opening))
+        and not _is_sci_caption(opening)
+    )
 
 
 def _looks_like_rop_index_form(text: str) -> bool:
@@ -528,6 +546,19 @@ def _looks_like_listing_proforma(text: str) -> bool:
     return (
         sum(bool(re.search(pattern, folded, re.I)) for pattern in _LISTING_FIELD_CUES)
         >= 3
+    )
+
+
+def _has_top_listing_heading(text: str) -> bool:
+    """Listing title preceded only by scan/folio noise, never an Index row."""
+    heading = _heading_window(text, lines=10)
+    match = _LISTING_RE.search(heading)
+    if match is None:
+        return False
+    prior = [line.strip() for line in heading[: match.start()].splitlines() if line.strip()]
+    return all(
+        re.fullmatch(r"(?:[A-Z]{1,2}(?:-?\d+)?|[IVX]{1,4}|[nN]|[^A-Za-z0-9]+)", line)
+        for line in prior
     )
 
 
@@ -664,9 +695,7 @@ def _court_record_neutral_citation(text: str) -> str | None:
     """Recognize a court record header, not a year in chronology prose."""
     head = _heading_window(text, lines=12)
     match = _NEUTRAL_CITATION_LINE_RE.search(head)
-    if match and (
-        _is_lower_court_caption(text) or _RUNNING_COURT_CASE_RE.search(head)
-    ):
+    if match and (_is_lower_court_caption(text) or _RUNNING_COURT_CASE_RE.search(head)):
         return re.sub(r"\s+", "", match.group(1))
     return None
 
@@ -679,9 +708,24 @@ def _restore_front_impugned_judgment(
     """Restore a challenged judgment placed directly after Synopsis/LOD."""
     updated = {page: list(names) for page, names in page_parts.items()}
     front_labels = {"Synopsis", "List of Dates & Events"}
+
+    def court_folio(value: str) -> tuple[str, int, str] | None:
+        folio = _printed_folio(value)
+        if folio is not None:
+            return folio
+        # Poor court scans often expose the pagination only as a standalone
+        # first OCR line rather than in a footer/layout box.
+        opening = [line.strip() for line in (value or "").splitlines() if line.strip()][
+            :3
+        ]
+        for line in opening:
+            if re.fullmatch(r"\d{1,3}", line):
+                return "number", int(line), ""
+        return None
+
     for start in range(1, page_count + 1):
         text = page_text.get(start, "")
-        if _printed_folio(text) != ("number", 1, ""):
+        if court_folio(text) != ("number", 1, ""):
             continue
         if not _is_lower_court_caption(text):
             continue
@@ -693,7 +737,7 @@ def _restore_front_impugned_judgment(
         # the first sheet (Defect File_004, physical pages 39-40).
         following_text = page_text.get(start + 1, "") if start < page_count else ""
         following_heading = _heading_window(following_text, lines=40)
-        following_folio = _printed_folio(following_text)
+        following_folio = court_folio(following_text)
         two_page_judgment_start = bool(
             following_folio == ("number", 2, "")
             and _JUDGMENT_TITLE_RE.search(following_heading)
@@ -715,14 +759,13 @@ def _restore_front_impugned_judgment(
                     _heading_window(page_text.get(start + distance, ""), lines=40)
                 )
                 and all(
-                    _printed_folio(page_text.get(start + offset, ""))
+                    court_folio(page_text.get(start + offset, ""))
                     == ("number", offset + 1, "")
                     and _court_record_neutral_citation(
                         page_text.get(start + offset, "")
-                    ) == neutral_citation
-                    and not annexure_mark_in_heading(
-                        page_text.get(start + offset, "")
                     )
+                    == neutral_citation
+                    and not annexure_mark_in_heading(page_text.get(start + offset, ""))
                     for offset in range(1, distance + 1)
                 )
                 for distance in (1, 2)
@@ -738,9 +781,28 @@ def _restore_front_impugned_judgment(
             and _HC_APPEAL_CASE_RE.search(heading)
             and re.search(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", heading)
         )
+        # A challenged order can be a poor scan whose title/CORAM is not
+        # recoverable.  Its structural position is still strong evidence when
+        # it starts at court folio 1 after Synopsis/LOD and before the current
+        # Supreme Court petition.  This is deliberately bounded to that outer
+        # interval and excludes stamped annexures.
+        outer_positioned_order = bool(
+            not annexure_mark_in_heading(text)
+            and any(
+                front_labels.intersection(parts_on_page(updated.get(page)))
+                for page in range(max(1, start - 40), start)
+            )
+            and any(
+                _looks_like_sci_main_petition(page_text.get(page, ""))
+                for page in range(start + 1, min(page_count, start + 40) + 1)
+            )
+        )
         if not (
-            titled_judgment or dated_appeal_order_sheet or two_page_judgment_start
+            titled_judgment
+            or dated_appeal_order_sheet
+            or two_page_judgment_start
             or source_consistent_delayed_title
+            or outer_positioned_order
         ):
             continue
         if not any(
@@ -759,7 +821,7 @@ def _restore_front_impugned_judgment(
                 current_text
             ):
                 break
-            folio = _printed_folio(current_text)
+            folio = court_folio(current_text)
             expected_number = last_number + len(pending) + 1
             page_of_total = re.search(
                 r"\bpage\s+(\d{1,3})\s+of\s+\d{1,3}\b",
@@ -1227,6 +1289,19 @@ def _outer_anchor_label(text: str) -> str | None:
     """Return a strong outer-document label from page text, or None."""
     if not (text or "").strip():
         return None
+    # Evaluate explicit filing-section headings before looking for a source
+    # court caption.  OCR frequently wraps a body reference such as
+    # ``Hon'ble High Court`` onto the start of a later line; that is not a
+    # lower-court caption and must not suppress a real top-of-page SYNOPSIS or
+    # LISTING PROFORMA heading.  Established annexure ranges are reconciled
+    # later and continue to enclose reproduced records containing these words.
+    heading = _heading_window(text, lines=10)
+    if _has_top_listing_heading(text):
+        return "Listing Proforma"
+    if _SYNOPSIS_RE.search(heading):
+        return "Synopsis"
+    if _LOD_RE.search(heading):
+        return "List of Dates & Events"
     # A reproduced source court's Index, affidavit, application or order is
     # not a new document in this Supreme Court filing. The separately supplied
     # impugned judgment and lower-court party memo remain explicit exceptions;
@@ -1259,9 +1334,7 @@ def _outer_anchor_label(text: str) -> str | None:
     # Some filing lists are headed only ``INDEX``.  The SCI caption plus the
     # COPY / COURT FEE columns identifies the filing-stage index and separates
     # it from the paper-book Index, whose table maps documents to page ranges.
-    if _SCI_FILING_INDEX_RE.search(text[:3000]) and not _is_lower_court_caption(
-        text
-    ):
+    if _SCI_FILING_INDEX_RE.search(text[:3000]) and not _is_lower_court_caption(text):
         return "Filing Memo"
     # SCI e-filing acknowledgement/payment receipt is court-fee evidence,
     # not the filing list described by the Filing Memo category.
@@ -1563,6 +1636,8 @@ def _force_annexure_nesting(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
     page_count: int,
+    *,
+    strict_continuity: bool = False,
 ) -> PagePartMap:
     """Pages inside Annexure X-n keep that label even if they look like Main Petition.
 
@@ -1631,7 +1706,7 @@ def _force_annexure_nesting(
                 and all(name in _CARRY_BLOCKING_PARTS for name in names)
                 and "Index" not in names
             ):
-                if not annexure_ref_in_heading(text):
+                if not strict_continuity or _outer_anchor_label(text) is not None:
                     continue
             if not names or any(
                 name in _NESTED_STEAL_PARTS or name == "Appendix" for name in names
@@ -1649,6 +1724,9 @@ def _force_annexure_nesting(
             if any(family_split_name(name) == APPLICATION_FAMILY for name in names):
                 if not _is_sci_caption(text):
                     updated[page] = [label]
+                continue
+            if strict_continuity and _outer_anchor_label(text) is None:
+                updated[page] = [label]
                 continue
             if _is_lower_court_caption(text) or annexure_ref_in_heading(text):
                 updated[page] = [label]
@@ -1803,14 +1881,17 @@ def _apply_outer_anchors(
         is_continuation = (
             active_front_matter == "List of Dates & Events" and chronology_continuation
         )
-        lower_court_reference = _is_lower_court_caption(text)
+        lower_court_reference = bool(
+            _has_leading_lower_court_caption(text)
+            and _printed_folio(text) == ("number", 1, "")
+        )
         # A dated chronology row often names the High Court and the orders in
         # the procedural history. That reference is not a fresh court caption.
         # Resolve continuation evidence before allowing the broad lower-court
         # detector to end the active List of Dates section.
         if (
             active_front_matter
-            and is_continuation
+            and (is_continuation or active_front_matter == "Synopsis")
             and not _looks_like_impugned_order_start(text)
             and (
                 not lower_court_reference
@@ -3742,9 +3823,8 @@ def _restore_unique_forward_annexure_stamps(
         stamp_counts[stamp_label] = stamp_counts.get(stamp_label, 0) + 1
 
     indexed_labels = {
-        label for label, _particulars in collect_index_annexure_entries(
-            page_parts, page_text
-        )
+        label
+        for label, _particulars in collect_index_annexure_entries(page_parts, page_text)
     }
     run_index = {start: index for index, (start, _end, _label) in enumerate(runs)}
 
@@ -3781,9 +3861,7 @@ def _restore_unique_forward_annexure_stamps(
             continue
         for page in range(start, end + 1):
             names = parts_on_page(updated.get(page))
-            if not any(
-                family_split_name(name) == ANNEXURE_FAMILY for name in names
-            ):
+            if not any(family_split_name(name) == ANNEXURE_FAMILY for name in names):
                 break
             updated[page] = [stamp_label]
     return updated
@@ -4337,7 +4415,8 @@ def _apply_cited_annexure_ranges(
             _is_lower_court_caption(citation_text)
             or _looks_like_lower_court_exhibit_list(citation_text)
             or any(
-                _is_lower_court_caption(line) for line in citation_text.splitlines()[:16]
+                _is_lower_court_caption(line)
+                for line in citation_text.splitlines()[:16]
             )
             or re.search(
                 r"(?mi)^\s*(?:\d{1,4}\s+)?(?:i\.?\s*a\.?\s*\d+/\d{4}\s+in\s+)?"
@@ -4377,7 +4456,9 @@ def _apply_cited_annexure_ranges(
             for match in case_pattern.findall(text)
         }
 
-    def running_cases(text: str, *, connected: bool = False) -> set[tuple[str, str, str]]:
+    def running_cases(
+        text: str, *, connected: bool = False
+    ) -> set[tuple[str, str, str]]:
         """Source headers, never an incidental case citation in the body."""
         found: set[tuple[str, str, str]] = set()
         lines = [line.strip() for line in text.splitlines() if line.strip()][:4]
@@ -4449,11 +4530,8 @@ def _apply_cited_annexure_ranges(
             # repeated lead-case running header establish the same record;
             # the connected-case captions inside it are not fresh documents.
             common_cases: set[tuple[str, str, str]] = set()
-            if (
-                annexure_label_from_text(opening) == label
-                and re.search(
-                    r"common\s+judg(?:e)?ment", inventory[label], re.IGNORECASE
-                )
+            if annexure_label_from_text(opening) == label and re.search(
+                r"common\s+judg(?:e)?ment", inventory[label], re.IGNORECASE
             ):
                 for following in range(first + 1, min(last, first + 3) + 1):
                     common_cases.update(
@@ -4483,7 +4561,8 @@ def _apply_cited_annexure_ranges(
                     valid = False
                     break
                 protected = [
-                    name for name in parts_on_page(page_parts.get(page))
+                    name
+                    for name in parts_on_page(page_parts.get(page))
                     if family_split_name(name) != ANNEXURE_FAMILY
                     and name not in {"Undefined", "Unidentified", "other"}
                 ]
@@ -4749,9 +4828,7 @@ def repair_compiled_split(
     repaired = _renest_lower_court_indexes(repaired, page_text, page_count)
     # Index OCR/range reconciliation must not erase a later, unique outer
     # Annexure boundary (P-3 followed by an explicit P-5 in the source).
-    repaired = _restore_unique_forward_annexure_stamps(
-        repaired, page_text, page_count
-    )
+    repaired = _restore_unique_forward_annexure_stamps(repaired, page_text, page_count)
     repaired = _keep_vakalatnama_with_following_appearance(
         repaired, page_text, page_count
     )
@@ -4875,14 +4952,15 @@ def _physical_pages_for_index_row(
             if (folio := folios.get(page)) and not folio[2]
         ]
         dominant_offset = (
-            max(set(local_offsets), key=lambda value: (local_offsets.count(value), -value))
+            max(
+                set(local_offsets),
+                key=lambda value: (local_offsets.count(value), -value),
+            )
             if local_offsets
             else None
         )
         dominant_support = (
-            local_offsets.count(dominant_offset)
-            if dominant_offset is not None
-            else 0
+            local_offsets.count(dominant_offset) if dominant_offset is not None else 0
         )
         exact_start = next(
             (
@@ -5043,7 +5121,9 @@ def _master_volume_offsets(
     hints: list[tuple[int, int, int, int, int]] = []
     for index, (cover, printed_start, printed_end) in enumerate(covers):
         physical_start = cover + 1
-        physical_end = covers[index + 1][0] - 1 if index + 1 < len(covers) else page_count
+        physical_end = (
+            covers[index + 1][0] - 1 if index + 1 < len(covers) else page_count
+        )
         offsets = [
             page - folio[1]
             for page in range(physical_start, physical_end + 1)
@@ -5064,14 +5144,10 @@ def _master_volume_offsets(
         if cover_offset >= 0 and offsets.count(cover_offset) >= 3:
             offset = cover_offset
         else:
-            offset = max(
-                set(offsets), key=lambda value: (offsets.count(value), -value)
-            )
+            offset = max(set(offsets), key=lambda value: (offsets.count(value), -value))
             if offsets.count(offset) < 3:
                 continue
-        hints.append(
-            (printed_start, printed_end, physical_start, physical_end, offset)
-        )
+        hints.append((printed_start, printed_end, physical_start, physical_end, offset))
     return hints
 
 
@@ -5519,10 +5595,7 @@ def _apply_indexed_outer_document_ranges(
             return True
         return bool(
             target != "Index"
-            and (
-                _looks_like_index_table(text)
-                or _looks_like_index_continuation(text)
-            )
+            and (_looks_like_index_table(text) or _looks_like_index_continuation(text))
         )
 
     def physical_pages(row: IndexPrintedRow) -> list[int]:
@@ -5766,12 +5839,10 @@ def _apply_indexed_outer_document_ranges(
                 or anchor == MAIN_PETITION_PART
                 or (
                     anchor == "Record of Proceedings"
-                    and not _RECORD_RE.search(_heading_window(
-                        page_text.get(page, ""), lines=10
-                    ))
-                    and not _looks_like_sci_court_rop_extract(
-                        page_text.get(page, "")
+                    and not _RECORD_RE.search(
+                        _heading_window(page_text.get(page, ""), lines=10)
                     )
+                    and not _looks_like_sci_court_rop_extract(page_text.get(page, ""))
                     and not _looks_like_rop_index_form(page_text.get(page, ""))
                 )
             ):
@@ -6046,11 +6117,7 @@ def _merge_spurious_application_splits(
     for page in sorted(updated):
         names = parts_on_page(updated.get(page))
         app = next(
-            (
-                name
-                for name in names
-                if family_split_name(name) == APPLICATION_FAMILY
-            ),
+            (name for name in names if family_split_name(name) == APPLICATION_FAMILY),
             None,
         )
         if not app:
@@ -6095,11 +6162,7 @@ def _reclaim_annexure_continuations_mislabeled_as_applications(
     for page in sorted(updated):
         names = parts_on_page(updated.get(page))
         application = next(
-            (
-                name
-                for name in names
-                if re.fullmatch(r"(?i)application\s+\d+", name)
-            ),
+            (name for name in names if re.fullmatch(r"(?i)application\s+\d+", name)),
             None,
         )
         if application is None:
@@ -6145,7 +6208,9 @@ def _reclaim_annexure_continuations_mislabeled_as_applications(
             )
         )
         if continuation:
-            updated[page] = [previous if name == application else name for name in names]
+            updated[page] = [
+                previous if name == application else name for name in names
+            ]
     return updated
 
 

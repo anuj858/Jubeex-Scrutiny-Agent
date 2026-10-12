@@ -504,6 +504,66 @@ def test_structure_split_continuity_gate_applies_to_non_annexure_documents() -> 
     assert result.page_parts[3] == ["List of Dates & Events"]
 
 
+def test_folio_prefixed_synopsis_opens_after_listing_proforma() -> None:
+    """A body High-Court reference cannot hide a real top-page SYNOPSIS."""
+    texts = {
+        1: "A-1\nPROFORMA FOR FIRST LISTING\nSECTION IV-A",
+        2: "A-2\nPolice Station: Bihariganj\nSentence awarded: under trial",
+        3: (
+            "B\nSYNOPSIS OF THE CASE\nThe petition challenges the order passed "
+            "by the Hon'ble High Court of Judicature at Patna."
+        ),
+        4: "The petitioner therefore seeks special leave to appeal.",
+        5: "MAIN PETITION\nIN THE SUPREME COURT OF INDIA\nPOSITION OF PARTIES",
+    }
+    llama = {
+        1: ["Listing Proforma"],
+        2: ["Listing Proforma"],
+        3: ["Listing Proforma"],
+        4: ["Listing Proforma"],
+        5: ["Main Petition"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(5),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert result.page_parts[1] == ["Listing Proforma"]
+    assert result.page_parts[2] == ["Listing Proforma"]
+    assert result.page_parts[3] == ["Synopsis"]
+    assert result.page_parts[4] == ["Synopsis"]
+
+
+def test_unassigned_annexure_continuation_does_not_reset_owner() -> None:
+    """A missing Llama assignment remains inside the opened document."""
+    texts = {
+        1: "ANNEXURE P-1\nTrue copy of the registered lease deed",
+        2: "Terms and conditions continued",
+        3: "Signature of lessor\nTRUE COPY",
+        4: "ANNEXURE P-2\nTrue copy of the subsequent agreement",
+    }
+    llama = {
+        1: ["Annexure P-1"],
+        3: ["Listing Proforma"],
+        4: ["Annexure P-2"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(4),
+        llama_page_parts=llama,
+        page_texts=texts,
+        run_hybrid_repair=True,
+    )
+
+    assert result.page_parts[1] == ["Annexure P-1"]
+    assert result.page_parts[2] == ["Annexure P-1"]
+    assert result.page_parts[3] == ["Annexure P-1"]
+    assert result.page_parts[4] == ["Annexure P-2"]
+
+
 def test_structure_split_accepts_verified_heading_as_real_boundary() -> None:
     """Continuity must not swallow a genuinely headed next document."""
     texts = {
