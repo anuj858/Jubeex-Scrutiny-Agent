@@ -8,7 +8,7 @@ Supreme Court Main Petition / Vakalatnama slots.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -716,7 +716,7 @@ def _restore_front_impugned_judgment(
         # Poor court scans often expose the pagination only as a standalone
         # first OCR line rather than in a footer/layout box.
         opening = [line.strip() for line in (value or "").splitlines() if line.strip()][
-            :3
+            :1
         ]
         for line in opening:
             if re.fullmatch(r"\d{1,3}", line):
@@ -772,6 +772,13 @@ def _restore_front_impugned_judgment(
                 if start + distance <= page_count
             )
         )
+        delayed_title_present = any(
+            _JUDGMENT_TITLE_RE.search(
+                _heading_window(page_text.get(start + distance, ""), lines=40)
+            )
+            for distance in (1, 2)
+            if start + distance <= page_count
+        )
         # High Court bail/suspension orders are often exported as an ``Order
         # Sheet`` rather than titled ``Order``.  In the outer paper-book
         # position (after LOD, before Form 28), a dated CRA/Cr.A order sheet
@@ -788,6 +795,7 @@ def _restore_front_impugned_judgment(
         # interval and excludes stamped annexures.
         outer_positioned_order = bool(
             not annexure_mark_in_heading(text)
+            and not delayed_title_present
             and any(
                 front_labels.intersection(parts_on_page(updated.get(page)))
                 for page in range(max(1, start - 40), start)
@@ -1638,6 +1646,7 @@ def _force_annexure_nesting(
     page_count: int,
     *,
     strict_continuity: bool = False,
+    preserve_pages: Sequence[int] = (),
 ) -> PagePartMap:
     """Pages inside Annexure X-n keep that label even if they look like Main Petition.
 
@@ -1645,6 +1654,7 @@ def _force_annexure_nesting(
     Blank sheets between earlier stamps (P-3 body) are not treated as P-7.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
+    preserved = {int(page) for page in preserve_pages}
     runs = _annexure_run_bounds(page_text, page_count)
     last_stamp_page = max((start for start, _end, _label in runs), default=0)
     for start, end, label in runs:
@@ -1689,6 +1699,8 @@ def _force_annexure_nesting(
                 (name for name in names if family_split_name(name) == ANNEXURE_FAMILY),
                 None,
             )
+            if page in preserved and existing_annex:
+                continue
             if existing_annex:
                 existing_number = _annexure_number_from_label(existing_annex)
                 if (
@@ -1737,9 +1749,12 @@ def _apply_outer_anchors(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
     page_count: int,
+    *,
+    authoritative_boundary_pages: Sequence[int] = (),
 ) -> PagePartMap:
     """Stamp strong outer headings onto pages outside annexure runs."""
     updated = {page: list(names) for page, names in page_parts.items()}
+    authoritative_starts = {int(page) for page in authoritative_boundary_pages}
     annexure_pages: set[int] = set()
     for start, end, _label in _annexure_run_bounds(page_text, page_count):
         annexure_pages.update(range(start, end + 1))
@@ -1780,6 +1795,21 @@ def _apply_outer_anchors(
         if label == "Advocate's Checklist" and _STATE_CHECKLIST_RE.search(text[:1200]):
             continue
         names = parts_on_page(updated.get(page))
+        if label == "Vakalatnama" and {
+            "Vakalatnama",
+            "Memo of Appearance",
+        }.issubset(names):
+            # Both forms can intentionally share one physical sheet. Keep the
+            # audited combined ownership instead of reducing it to the first
+            # heading found on the page.
+            continue
+        if label == "Application 1" and any(
+            re.fullmatch(r"Application (?:[2-9]|\d{2,})", name) for name in names
+        ):
+            # Local heading detection uses Application 1 as a family
+            # placeholder. Never erase the numbered identity established by
+            # sequence/range reconciliation.
+            continue
         if not names or any(
             name in _NESTED_STEAL_PARTS
             or family_split_name(name) == ANNEXURE_FAMILY
@@ -1830,6 +1860,10 @@ def _apply_outer_anchors(
     active_checklist = False
     active_filing_memo = False
     for page in range(1, page_count + 1):
+        if page in authoritative_starts:
+            active_front_matter = None
+            active_checklist = False
+            active_filing_memo = False
         if page in annexure_pages:
             active_front_matter = None
             active_checklist = False

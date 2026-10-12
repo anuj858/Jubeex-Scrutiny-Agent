@@ -1023,6 +1023,8 @@ def _classification_opens_labels(
 def _stabilize_document_continuity(
     page_parts: PagePartMap,
     classifications: Sequence[PageClassification],
+    *,
+    authoritative_boundary_pages: Sequence[int] = (),
 ) -> PagePartMap:
     """Reject unsupported page-by-page label changes inside an open document.
 
@@ -1039,6 +1041,7 @@ def _stabilize_document_continuity(
     """
     updated = _copy_page_parts(page_parts)
     by_page = {item.page: item for item in classifications}
+    authoritative_starts = {int(page) for page in authoritative_boundary_pages}
     active_labels: tuple[str, ...] = ()
     active_has_opening = False
     previous_page: int | None = None
@@ -1059,7 +1062,9 @@ def _stabilize_document_continuity(
 
         if previous_page is None or page != previous_page + 1:
             active_labels = labels
-            active_has_opening = _classification_opens_labels(by_page.get(page), labels)
+            active_has_opening = _classification_opens_labels(
+                by_page.get(page), labels
+            )
             previous_page = page
             continue
 
@@ -1070,13 +1075,40 @@ def _stabilize_document_continuity(
             previous_page = page
             continue
 
-        candidate_has_opening = _classification_opens_labels(by_page.get(page), labels)
-        if candidate_has_opening or not active_has_opening:
+        if page in authoritative_starts:
+            # The dedicated boundary pass has already established a new
+            # physical document here. Classification may name that complete
+            # range, but page-level semantic cues must not erase the boundary.
+            active_labels = labels
+            active_has_opening = _classification_opens_labels(by_page.get(page), labels)
+            previous_page = page
+            continue
+
+        classification = by_page.get(page)
+        candidate_has_opening = _classification_opens_labels(classification, labels)
+        structurally_distinct_opening = bool(
+            classification
+            and classification.confidence >= 0.85
+            and (
+                set(classification.signals) & {"application_start", "annexure_stamp"}
+                or (
+                    "outer_anchor" in classification.signals
+                    and family_split_name(classification.document_type) == "Application"
+                )
+            )
+        )
+        if (
+            candidate_has_opening
+            or structurally_distinct_opening
+            or not active_has_opening
+        ):
             # A verified heading starts the next document.  When neither side
             # has a verified heading, retain Llama's proposal and leave it for
             # audit/review rather than inventing continuity.
             active_labels = labels
-            active_has_opening = candidate_has_opening
+            active_has_opening = (
+                candidate_has_opening or structurally_distinct_opening
+            )
         else:
             # The current document has a verified opening, while the proposed
             # new label has only page-body similarity.  Keep the page with the
@@ -1224,6 +1256,7 @@ def reconcile_compiled_split(
     max_model_calls: int = 0,
     proposal_generator: Callable[[PagePartMap, int], PagePartMap] | None = None,
     page_units: Sequence[PageUnit] = (),
+    authoritative_boundary_pages: Sequence[int] = (),
 ) -> tuple[PagePartMap, list[ReconciliationChange]]:
     """Apply repair proposals only to missing or strongly evidenced ranges.
 
@@ -1281,6 +1314,7 @@ def reconcile_compiled_split(
         and set(item.signals) & _STRONG_RECONCILIATION_SIGNALS
     }
     units_by_page = {unit.pdf_page: unit for unit in page_units}
+    authoritative_starts = {int(page) for page in authoritative_boundary_pages}
 
     def classification_supports_labels(
         item: PageClassification, labels: Sequence[str]
@@ -1422,6 +1456,37 @@ def reconcile_compiled_split(
             proposed_segment_range = _contiguous_segment_range(
                 page, candidate, new, page_count=page_count
             )
+            protected_boundary = bool(
+                original_segment_range
+                and original_segment_range[0] in authoritative_starts
+            )
+            if protected_boundary and not {
+                "master_index_and_folio",
+                "explicit_outer_boundary",
+            }.intersection(evidence):
+                operations.append(
+                    ReconciliationOperation(
+                        operation_id=op_id,
+                        operation_type=op_type,
+                        original_pages=(page,),
+                        proposed_pages=(page,),
+                        original_labels=old,
+                        proposed_labels=new,
+                        original_segment_range=original_segment_range,
+                        proposed_segment_range=proposed_segment_range,
+                        evidence=tuple(evidence),
+                        classification_before=direct.document_type if direct else None,
+                        classification_after=direct.document_type if direct else None,
+                        validation={"structural": before_validation},
+                        status="left_for_review",
+                        reason=(
+                            "Proposal would erase a dedicated boundary without "
+                            "independent boundary evidence"
+                        ),
+                        pass_index=pass_number,
+                    )
+                )
+                continue
             direct_type = direct.document_type if direct else None
             if not evidence:
                 operations.append(
@@ -1666,6 +1731,7 @@ def structure_aware_split(
     source_pdf: str = "bundle.pdf",
     run_hybrid_repair: bool = True,
     reconciliation_mode: str = "targeted",
+    authoritative_boundary_pages: Sequence[int] = (),
 ) -> StructureSplitResult:
     """Full structure-aware split. Physical slicing stays outside this function.
 
@@ -1728,7 +1794,11 @@ def structure_aware_split(
     # opening.  Keep llama_only byte-for-byte compatible by applying this gate
     # only when semantic reconciliation is enabled.
     if run_hybrid_repair:
-        page_parts = _stabilize_document_continuity(page_parts, classifications)
+        page_parts = _stabilize_document_continuity(
+            page_parts,
+            classifications,
+            authoritative_boundary_pages=authoritative_boundary_pages,
+        )
 
     duplicates: list[Any] = []
     reconciliation_changes: list[ReconciliationChange] = []
@@ -1768,6 +1838,7 @@ def structure_aware_split(
             operation_log=reconciliation_operations,
             proposal_generator=reassess_current_map,
             page_units=units,
+            authoritative_boundary_pages=authoritative_boundary_pages,
         )
         stop_operation = next(
             (
@@ -1805,10 +1876,24 @@ def structure_aware_split(
         # explicit outer headings, the challenged order's bounded position,
         # and stamp-to-next-stamp annexure ownership. These are deterministic
         # document boundaries, not another model guess.
-        page_parts = _apply_outer_anchors(page_parts, texts, len(units))
+        page_parts = _apply_outer_anchors(
+            page_parts,
+            texts,
+            len(units),
+            authoritative_boundary_pages=authoritative_boundary_pages,
+        )
         page_parts = _restore_front_impugned_judgment(page_parts, texts, len(units))
+        index_supported_pages = [
+            change.page
+            for change in reconciliation_changes
+            if "master_index_and_folio" in change.evidence
+        ]
         page_parts = _force_annexure_nesting(
-            page_parts, texts, len(units), strict_continuity=True
+            page_parts,
+            texts,
+            len(units),
+            strict_continuity=True,
+            preserve_pages=index_supported_pages,
         )
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the

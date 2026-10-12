@@ -55,6 +55,7 @@ from .document_parts import (
     format_page_span,
     normalize_part_name,
     page_parts_from_split,
+    page_ranges,
     parts_on_page,
 )
 from .job_timing import (
@@ -1635,6 +1636,161 @@ def _segment_classification_report(
     }
 
 
+def _document_first_page_ownership(
+    boundary_proposals: Sequence[Mapping[str, Any]],
+    classification_report: Mapping[str, Any],
+    *,
+    page_count: int,
+) -> tuple[dict[int, list[str]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Make detected document boundaries authoritative over type classification.
+
+    The first Split pass owns page segmentation.  The second pass may name a
+    complete candidate segment, but its returned page lists cannot split,
+    reorder, omit, or steal pages from that candidate.  When the classifier
+    fragments a candidate, the category covering its opening page wins and the
+    conflict is retained as review evidence.  Pages not covered by any valid
+    boundary are explicitly routed to ``Undefined`` instead of being guessed.
+
+    The returned segment dictionaries deliberately retain the existing
+    ``category``/``pages`` contract used by the slicer while adding boundary,
+    classification, confidence, and review evidence for the audit artifact.
+    """
+    classified = [
+        item
+        for item in classification_report.get("segments", ())
+        if isinstance(item, Mapping)
+        and item.get("category")
+        and isinstance(item.get("source_pages"), list)
+    ]
+    page_parts: dict[int, list[str]] = {}
+    segments: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    covered: set[int] = set()
+
+    for index, proposal in enumerate(boundary_proposals, start=1):
+        raw_pages = proposal.get("pages") if isinstance(proposal, Mapping) else None
+        if (
+            not isinstance(raw_pages, list)
+            or not raw_pages
+            or any(
+                type(page) is not int or not 1 <= page <= page_count
+                for page in raw_pages
+            )
+            or raw_pages != sorted(set(raw_pages))
+            or raw_pages != list(range(raw_pages[0], raw_pages[-1] + 1))
+        ):
+            issues.append(
+                {
+                    "code": "invalid_boundary_ignored",
+                    "boundary_index": index,
+                }
+            )
+            continue
+
+        pages = list(raw_pages)
+        page_set = set(pages)
+        exact = [
+            item for item in classified if item.get("source_pages") == pages
+        ]
+        overlapping = [
+            item
+            for item in classified
+            if page_set.intersection(item.get("source_pages") or ())
+        ]
+        opening = [
+            item for item in overlapping if pages[0] in (item.get("source_pages") or ())
+        ]
+        categories = list(
+            dict.fromkeys(str(item["category"]).strip() for item in overlapping)
+        )
+        review_reasons: list[str] = []
+        type_evidence: list[str] = []
+
+        if len(exact) == 1:
+            category = str(exact[0]["category"]).strip()
+            confidence = 1.0
+            type_evidence.append("exact_complete_segment_classification")
+        elif categories and len(categories) == 1:
+            category = categories[0]
+            confidence = 0.9
+            type_evidence.append("consistent_overlapping_classification")
+            if not exact:
+                review_reasons.append("classifier_range_differs_from_boundary")
+        elif len(opening) == 1:
+            # The boundary pass established one document.  A category on an
+            # internal page is body-text evidence, not a new owner.  Prefer the
+            # opening page's type while making the disagreement reviewable.
+            category = str(opening[0]["category"]).strip()
+            confidence = 0.65
+            type_evidence.append("opening_page_classification")
+            review_reasons.append("conflicting_categories_inside_boundary")
+        else:
+            category = "Undefined"
+            confidence = 0.0
+            type_evidence.append("classification_unresolved")
+            review_reasons.append("no_unambiguous_segment_classification")
+
+        for page in pages:
+            labels = page_parts.setdefault(page, [])
+            if category not in labels:
+                labels.append(category)
+            covered.add(page)
+        segment = {
+            "segment_id": str(proposal.get("segment_id") or f"boundary-{index}"),
+            "category": category,
+            "pages": pages,
+            "start_page": pages[0],
+            "end_page": pages[-1],
+            "boundary_evidence": [
+                str(proposal.get("source") or "boundary_detection"),
+                "contiguous_physical_source_pages",
+            ],
+            "type_evidence": type_evidence,
+            "confidence": confidence,
+            "review_reasons": review_reasons,
+            "reported_categories": categories,
+        }
+        segments.append(segment)
+        if review_reasons:
+            issues.append(
+                {
+                    "code": "boundary_classification_conflict",
+                    "segment_id": segment["segment_id"],
+                    "pages": pages,
+                    "selected_category": category,
+                    "reported_categories": categories,
+                    "reasons": review_reasons,
+                }
+            )
+
+    # A missing boundary is uncertainty, not permission for the classifier to
+    # claim the page.  Keep physical ownership complete and visibly reviewable.
+    missing = sorted(set(range(1, page_count + 1)) - covered)
+    for run_index, span in enumerate(page_ranges(missing), start=1):
+        pages = list(range(span["start"], span["end"] + 1))
+        for page in pages:
+            page_parts[page] = ["Undefined"]
+        segments.append(
+            {
+                "segment_id": f"unresolved-{run_index}",
+                "category": "Undefined",
+                "pages": pages,
+                "start_page": pages[0],
+                "end_page": pages[-1],
+                "boundary_evidence": ["boundary_gap"],
+                "type_evidence": ["classification_not_authoritative_for_ownership"],
+                "confidence": 0.0,
+                "review_reasons": ["no_valid_boundary_assignment"],
+                "reported_categories": [],
+            }
+        )
+    if missing:
+        issues.append({"code": "unresolved_boundary_pages", "pages": missing})
+
+    segments.sort(key=lambda item: (item["start_page"], item["end_page"]))
+    return page_parts, segments, issues
+
+
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
     """Build page_number -> markdown map from a ParsingGetResponse."""
     pages: dict[int, str] = {}
@@ -2603,7 +2759,44 @@ class ProcessFileWorkflow(Workflow):
             api_configuration=classification_config
         )
         page_parts, split_job_id, llama_split = split_result
-        llama_page_parts = page_parts
+        raw_classification_page_parts = page_parts
+        classification_report = _segment_classification_report(
+            llama_split, page_count=pdf_page_count
+        )
+        raw_classified_ranges = {
+            tuple(item["source_pages"])
+            for item in classification_report["segments"]
+        }
+        proposed_ranges = {tuple(item["pages"]) for item in boundary_proposals}
+        if proposed_ranges != raw_classified_ranges:
+            classification_report["issues"].append(
+                "classification_ranges_differ_from_boundary_proposals"
+            )
+            classification_report["status"] = "needs_review"
+        (
+            llama_page_parts,
+            authoritative_boundary_segments,
+            ownership_reconciliation_issues,
+        ) = _document_first_page_ownership(
+            boundary_proposals,
+            classification_report,
+            page_count=pdf_page_count,
+        )
+        # From this point onward, page ownership comes only from the boundary
+        # pass. The classification response supplies document types, never new
+        # page ranges. Keep the raw map in the audit for diagnosis.
+        page_parts = llama_page_parts
+        classification_report["boundary_segments"] = authoritative_boundary_segments
+        classification_report["ownership_reconciliation"] = {
+            "policy": "boundary_ranges_authoritative",
+            "issues": ownership_reconciliation_issues,
+            "raw_classification_page_parts": raw_classification_page_parts,
+        }
+        if ownership_reconciliation_issues:
+            classification_report["status"] = "needs_review"
+            classification_report["issues"].extend(
+                f"ownership:{item['code']}" for item in ownership_reconciliation_issues
+            )
         classification_seconds = elapsed_seconds(classification_started) or 0.0
         logger.info(
             "[SplitTiming] mode=%s boundary=%.1fs classification=%.1fs "
@@ -2672,6 +2865,9 @@ class ProcessFileWorkflow(Workflow):
             source_pdf=state.filename,
             run_hybrid_repair=use_python_rules,
             reconciliation_mode=split_mode,
+            authoritative_boundary_pages=[
+                item["start_page"] for item in authoritative_boundary_segments[1:]
+            ],
         )
         page_parts = structured.page_parts
         reconciliation_changes = getattr(structured, "reconciliation_changes", [])
@@ -2708,22 +2904,6 @@ class ProcessFileWorkflow(Workflow):
             "evidence_complete": "additional page cues omitted"
             not in boundary_config["splitting_strategy"]["custom_instructions"],
         }
-        classification_report = _segment_classification_report(
-            llama_split, page_count=pdf_page_count
-        )
-        proposed_ranges = {
-            tuple(item["pages"])
-            for item in boundary_proposals
-        }
-        classified_ranges = {
-            tuple(item["source_pages"])
-            for item in classification_report["segments"]
-        }
-        if proposed_ranges != classified_ranges:
-            classification_report["issues"].append(
-                "classification_ranges_differ_from_boundary_proposals"
-            )
-            classification_report["status"] = "needs_review"
         split_audit["llama_segment_classification"] = {
             "job_id": split_job_id,
             "boundary_guidance_status": boundary_guidance_status,

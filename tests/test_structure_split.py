@@ -583,6 +583,35 @@ def test_structure_split_accepts_verified_heading_as_real_boundary() -> None:
     assert result.page_parts[2] == ["Listing Proforma"]
 
 
+def test_dedicated_boundary_pass_survives_weak_page_text() -> None:
+    """Classification cannot erase a boundary established in the first pass."""
+    texts = {
+        1: "SYNOPSIS\nThe present petition challenges the impugned judgment.",
+        2: "Synopsis narrative continues.",
+        3: "01.01.2024 Notice was issued without a repeated chronology title.",
+        4: "02.01.2024 The respondent replied.",
+    }
+    labels = {
+        1: ["Synopsis"],
+        2: ["Synopsis"],
+        3: ["List of Dates & Events"],
+        4: ["List of Dates & Events"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(4),
+        llama_page_parts=labels,
+        page_texts=texts,
+        run_hybrid_repair=True,
+        authoritative_boundary_pages=[3],
+    )
+
+    assert result.page_parts[1] == ["Synopsis"]
+    assert result.page_parts[2] == ["Synopsis"]
+    assert result.page_parts[3] == ["List of Dates & Events"]
+    assert result.page_parts[4] == ["List of Dates & Events"]
+
+
 def test_llama_only_preserves_remote_page_assignments_without_python_gate() -> None:
     """The compatibility mode remains a true Llama-only ownership path."""
     texts = {
