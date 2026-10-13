@@ -42,12 +42,16 @@ from .split_repair import (
     _apply_indexed_annexure_ranges,
     _apply_indexed_outer_document_ranges,
     _apply_outer_anchors,
+    _apply_strong_index_content_spans,
     _force_annexure_nesting,
+    _has_leading_high_court_caption,
     _heading_window,
     _is_lower_court_caption,
     _is_near_blank_page,
+    _is_sci_caption,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
+    _restore_early_record_of_proceedings,
     _restore_front_impugned_judgment,
     _restore_index_bridge_pages,
     _restore_master_volume_sections,
@@ -311,6 +315,8 @@ class StructureSplitResult:
         default_factory=list
     )
     reconciliation_summary: dict[str, Any] = field(default_factory=dict)
+    # Compact, text-free provenance; persisted only inside the additive audit.
+    assignment_events: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
 
     def report(self) -> dict[str, Any]:
         return {
@@ -336,6 +342,62 @@ class StructureSplitResult:
                 1 for b in self.boundaries if b.action == "verify"
             ),
         }
+
+
+def _assignment_run_ranges(
+    page_parts: Mapping[int, Sequence[str] | str | None], page_count: int
+) -> dict[int, dict[str, int]]:
+    """Contiguous same-owner ranges used to explain merges and splits."""
+    ranges: dict[int, dict[str, int]] = {}
+    start = 1
+    while start <= page_count:
+        labels = tuple(parts_on_page(page_parts.get(start)))
+        end = start
+        while (
+            end < page_count
+            and tuple(parts_on_page(page_parts.get(end + 1))) == labels
+        ):
+            end += 1
+        for page in range(start, end + 1):
+            ranges[page] = {"start_page": start, "end_page": end}
+        start = end + 1
+    return ranges
+
+
+def _trace_assignment_stage(
+    events: dict[int, list[dict[str, Any]]],
+    stage: str,
+    before: Mapping[int, Sequence[str] | str | None],
+    after: Mapping[int, Sequence[str] | str | None],
+    page_count: int,
+    *,
+    reason: str,
+    evidence: Sequence[str] = (),
+    status: str = "committed",
+    evidence_by_page: Mapping[int, Sequence[str]] | None = None,
+) -> None:
+    """Record changed labels *and* neighboring range changes without page text."""
+    old_ranges = _assignment_run_ranges(before, page_count)
+    new_ranges = _assignment_run_ranges(after, page_count)
+    for page in range(1, page_count + 1):
+        old_labels = parts_on_page(before.get(page))
+        new_labels = parts_on_page(after.get(page))
+        if old_labels == new_labels and old_ranges[page] == new_ranges[page]:
+            continue
+        events.setdefault(page, []).append(
+            {
+                "stage": stage,
+                "status": status,
+                "reason": reason,
+                "evidence": list(
+                    (evidence_by_page or {}).get(page, evidence)
+                ),
+                "from_labels": old_labels,
+                "to_labels": new_labels,
+                "from_range": old_ranges[page],
+                "to_range": new_ranges[page],
+            }
+        )
 
 
 def extract_page_units(
@@ -1531,6 +1593,50 @@ def reconcile_compiled_split(
                 original_segment_range
                 and original_segment_range[0] in authoritative_starts
             )
+            annexure_to_other_document = bool(
+                old
+                and all(family_split_name(label) == ANNEXURE_FAMILY for label in old)
+                and any(family_split_name(label) != ANNEXURE_FAMILY for label in new)
+            )
+            independent_annexure_exit = bool(
+                page in authoritative_starts
+                or "master_index_and_folio" in evidence
+                or (
+                    any(family_split_name(label) == "Application" for label in new)
+                    and _is_sci_caption(page_text.get(page, ""))
+                    and page_starts_application(page_text.get(page, ""))
+                )
+                or (
+                    any(family_split_name(label) == "Application" for label in new)
+                    and page > 1
+                    and tuple(parts_on_page(result.get(page - 1))) == new
+                    and span_policy.get(page)
+                )
+            )
+            if annexure_to_other_document and not independent_annexure_exit:
+                operations.append(
+                    ReconciliationOperation(
+                        operation_id=op_id,
+                        operation_type=op_type,
+                        original_pages=(page,),
+                        proposed_pages=(page,),
+                        original_labels=old,
+                        proposed_labels=new,
+                        original_segment_range=original_segment_range,
+                        proposed_segment_range=proposed_segment_range,
+                        evidence=tuple(evidence),
+                        classification_before=direct.document_type if direct else None,
+                        classification_after=direct.document_type if direct else None,
+                        validation={"structural": before_validation},
+                        status="left_for_review",
+                        reason=(
+                            "A heading inside an established Annexure is not "
+                            "independent evidence of a new document boundary"
+                        ),
+                        pass_index=pass_number,
+                    )
+                )
+                continue
             if protected_boundary and not {
                 "master_index_and_folio",
                 "explicit_outer_boundary",
@@ -1792,6 +1898,79 @@ def reconcile_compiled_split(
     return result, changes
 
 
+def _restore_annexed_lower_court_petitions(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> tuple[PagePartMap, dict[int, tuple[str, ...]]]:
+    """Keep a reproduced High Court petition out of the SCI Main Petition slot.
+
+    A lower-court caption is evidence about the source court, not by itself
+    evidence of which annexure owns the page. Reuse the preceding annexure
+    only when a following annexure boundary or consecutive printed folio
+    corroborates that continuity; otherwise leave the ownership unresolved.
+    """
+    updated = _copy_page_parts(page_parts)
+    evidence_by_page: dict[int, tuple[str, ...]] = {}
+    page = 1
+    while page <= page_count:
+        opening = _heading_window(page_text.get(page, ""), lines=10)
+        if (
+            parts_on_page(updated.get(page)) != [MAIN_PETITION_PART]
+            or not _has_leading_high_court_caption(page_text.get(page, ""))
+            or not re.search(r"\bpetition\b", opening, re.IGNORECASE)
+        ):
+            page += 1
+            continue
+        start = page
+        end = start
+        while (
+            end < page_count
+            and parts_on_page(updated.get(end + 1)) == [MAIN_PETITION_PART]
+            and not _looks_like_sci_main_petition(page_text.get(end + 1, ""))
+            and not annexure_label_from_text(page_text.get(end + 1, ""))
+        ):
+            end += 1
+
+        preceding = parts_on_page(updated.get(start - 1))
+        annexure = next(
+            (label for label in preceding if family_split_name(label) == ANNEXURE_FAMILY),
+            None,
+        )
+        following = parts_on_page(updated.get(end + 1))
+        next_annexure = any(
+            family_split_name(label) == ANNEXURE_FAMILY for label in following
+        )
+        prior_folio = _printed_folio(page_text.get(start - 1, ""))
+        opening_folio = _printed_folio(page_text.get(start, ""))
+        folio_continues = bool(
+            prior_folio
+            and opening_folio
+            and prior_folio[0] == opening_folio[0] == "number"
+            and opening_folio[1] == prior_folio[1] + 1
+        )
+        owner = (
+            annexure
+            if annexure and (next_annexure or folio_continues)
+            else "Undefined"
+        )
+        evidence = ["leading_lower_court_caption", "not_sci_main_petition"]
+        if owner != "Undefined":
+            evidence.append("preceding_annexure_owner")
+            evidence.append(
+                "next_annexure_boundary"
+                if next_annexure
+                else "consecutive_printed_folio"
+            )
+        else:
+            evidence.append("annexure_continuity_unconfirmed")
+        for source_page in range(start, end + 1):
+            updated[source_page] = [owner]
+            evidence_by_page[source_page] = tuple(evidence)
+        page = end + 1
+    return updated, evidence_by_page
+
+
 def structure_aware_split(
     pdf_bytes: bytes,
     *,
@@ -1843,7 +2022,30 @@ def structure_aware_split(
             parts = parts_on_page(names)
             if parts:
                 page_parts[int(page)] = list(parts)
+    assignment_events: dict[int, list[dict[str, Any]]] = {}
 
+    def apply_map(
+        stage: str,
+        candidate: PagePartMap,
+        *,
+        reason: str,
+        evidence: Sequence[str] = (),
+        evidence_by_page: Mapping[int, Sequence[str]] | None = None,
+    ) -> None:
+        nonlocal page_parts
+        _trace_assignment_stage(
+            assignment_events,
+            stage,
+            page_parts,
+            candidate,
+            len(units),
+            reason=reason,
+            evidence=evidence,
+            evidence_by_page=evidence_by_page,
+        )
+        page_parts = candidate
+
+    before_classification_seed = _copy_page_parts(page_parts)
     strong_signals = {
         "annexure_stamp",
         "outer_anchor",
@@ -1859,6 +2061,15 @@ def structure_aware_split(
         if not (set(c.signals) & strong_signals):
             continue
         page_parts[c.page] = [c.document_type]
+    _trace_assignment_stage(
+        assignment_events,
+        "high_confidence_empty_page_seed",
+        before_classification_seed,
+        page_parts,
+        len(units),
+        reason="previously_unassigned_page_has_direct_document_start",
+        evidence_by_page={c.page: c.signals for c in classifications},
+    )
 
     # Llama remains the warm-start, but an isolated page-level label change is
     # not a legal-document boundary.  Once a directly headed document opens,
@@ -1866,10 +2077,15 @@ def structure_aware_split(
     # opening.  Keep llama_only byte-for-byte compatible by applying this gate
     # only when semantic reconciliation is enabled.
     if run_hybrid_repair:
-        page_parts = _stabilize_document_continuity(
-            page_parts,
-            classifications,
-            authoritative_boundary_pages=authoritative_boundary_pages,
+        apply_map(
+            "document_continuity",
+            _stabilize_document_continuity(
+                page_parts,
+                classifications,
+                authoritative_boundary_pages=authoritative_boundary_pages,
+            ),
+            reason="unsupported_page_level_transition_inside_open_document",
+            evidence=("page_classification_signals", "authoritative_boundary_starts"),
         )
 
     duplicates: list[Any] = []
@@ -1888,6 +2104,16 @@ def structure_aware_split(
             texts,
             page_count=len(units),
         )
+        _trace_assignment_stage(
+            assignment_events,
+            "repair_proposal",
+            baseline,
+            proposed,
+            len(units),
+            reason="deterministic_repair_candidate_not_yet_committed",
+            evidence=("local_structure_rules",),
+            status="proposed",
+        )
 
         def reassess_current_map(current: PagePartMap, _pass_index: int) -> PagePartMap:
             # Deterministic global repair is recomputed against the current
@@ -1901,7 +2127,7 @@ def structure_aware_split(
             )
             return fresh
 
-        page_parts, reconciliation_changes = reconcile_compiled_split(
+        reconciled, reconciliation_changes = reconcile_compiled_split(
             baseline,
             proposed,
             classifications,
@@ -1911,6 +2137,15 @@ def structure_aware_split(
             proposal_generator=reassess_current_map,
             page_units=units,
             authoritative_boundary_pages=authoritative_boundary_pages,
+        )
+        apply_map(
+            "segment_reconciliation",
+            reconciled,
+            reason="validated_reconciliation_operation",
+            evidence=("reconciliation_operation_log",),
+            evidence_by_page={
+                change.page: change.evidence for change in reconciliation_changes
+            },
         )
         stop_operation = next(
             (
@@ -1948,24 +2183,68 @@ def structure_aware_split(
         # explicit outer headings, the challenged order's bounded position,
         # and stamp-to-next-stamp annexure ownership. These are deterministic
         # document boundaries, not another model guess.
-        page_parts = _apply_outer_anchors(
-            page_parts,
-            texts,
-            len(units),
-            authoritative_boundary_pages=authoritative_boundary_pages,
+        blocked_outer_decisions: list[dict[str, Any]] = []
+        apply_map(
+            "post_reconciliation_outer_anchors",
+            _apply_outer_anchors(
+                page_parts,
+                texts,
+                len(units),
+                authoritative_boundary_pages=authoritative_boundary_pages,
+                protect_established_annexures=True,
+                decision_log=blocked_outer_decisions,
+            ),
+            reason="explicit_outer_heading_outside_established_annexure_continuation",
+            evidence=("outer_document_heading", "boundary_start_or_non_annexure_context"),
         )
-        page_parts = _restore_front_impugned_judgment(page_parts, texts, len(units))
+        for decision in blocked_outer_decisions:
+            assignment_events.setdefault(decision["source_page"], []).append(decision)
+        apply_map(
+            "front_impugned_judgment",
+            _restore_front_impugned_judgment(page_parts, texts, len(units)),
+            reason="bounded_challenged_judgment_before_petition",
+            evidence=("judgment_opening", "following_petition_boundary"),
+        )
         index_supported_pages = [
             change.page
             for change in reconciliation_changes
             if "master_index_and_folio" in change.evidence
         ]
-        page_parts = _force_annexure_nesting(
-            page_parts,
-            texts,
-            len(units),
-            strict_continuity=True,
-            preserve_pages=index_supported_pages,
+        apply_map(
+            "annexure_nesting",
+            _force_annexure_nesting(
+                page_parts,
+                texts,
+                len(units),
+                strict_continuity=True,
+                preserve_pages=index_supported_pages,
+            ),
+            reason="stamped_annexure_continues_until_independent_boundary",
+            evidence=("annexure_stamp", "next_document_boundary"),
+        )
+        # A scanned Index can identify an exact document span even when the
+        # pages' own folio OCR is unreadable. Apply only unique date/case or
+        # purpose-matched openings with a verified following boundary.
+        apply_map(
+            "strong_index_content_spans",
+            _apply_strong_index_content_spans(page_parts, texts, len(units)),
+            reason="unique_index_row_matches_document_opening_and_next_boundary",
+            evidence=("index_row", "document_opening", "following_boundary"),
+        )
+        apply_map(
+            "early_record_of_proceedings",
+            _restore_early_record_of_proceedings(page_parts, texts, len(units)),
+            reason="record_of_proceedings_continuation_before_next_heading",
+            evidence=("record_of_proceedings_opening", "next_document_heading"),
+        )
+        lower_court_map, lower_court_evidence = _restore_annexed_lower_court_petitions(
+            page_parts, texts, len(units)
+        )
+        apply_map(
+            "lower_court_petition_ownership",
+            lower_court_map,
+            reason="lower_court_petition_cannot_be_sci_main_petition",
+            evidence_by_page=lower_court_evidence,
         )
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the
@@ -1993,4 +2272,5 @@ def structure_aware_split(
         segment_classifications=segment_classifications,
         reconciliation_operations=reconciliation_operations,
         reconciliation_summary=reconciliation_summary,
+        assignment_events=assignment_events,
     )

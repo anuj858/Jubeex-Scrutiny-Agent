@@ -1746,6 +1746,10 @@ def audit_compiled_split(
     page_units: Sequence[Any] = (),
     segment_classifications: Sequence[Any] = (),
     llama_boundary_proposals: Sequence[Any] = (),
+    initial_segments: Sequence[Mapping[str, Any]] = (),
+    raw_classification_segments: Sequence[Mapping[str, Any]] = (),
+    assignment_events: Mapping[int, Sequence[Mapping[str, Any]]] | None = None,
+    reconciliation_operations: Sequence[Any] = (),
     source_document_id: str | None = None,
     source_pdf_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -2000,6 +2004,15 @@ def audit_compiled_split(
         segment_ids[page] = f"segment_{segment_number:04d}"
         previous_labels = labels
 
+    def segments_containing(
+        page: int, segments: Sequence[Mapping[str, Any]]
+    ) -> list[Mapping[str, Any]]:
+        return [
+            segment
+            for segment in segments
+            if page in (segment.get("pages") or segment.get("source_pages") or ())
+        ]
+
     manifest_pages: list[dict[str, Any]] = []
     for item in page_evidence:
         page = int(item["source_page"])
@@ -2010,6 +2023,12 @@ def audit_compiled_split(
         reasons: list[str] = []
         if not labels:
             reasons.append("unassigned_source_page")
+        if any(
+            event.get("stage") == "lower_court_petition_ownership"
+            and event.get("to_labels") == ["Undefined"]
+            for event in (assignment_events or {}).get(page, ())
+        ):
+            reasons.append("lower_court_petition_owner_unconfirmed")
         if len(labels) > 1:
             reasons.append("multiple_document_labels")
         if boundary and getattr(boundary, "action", "") == "verify":
@@ -2037,6 +2056,104 @@ def audit_compiled_split(
         ):
             reasons.append("segment_classification_conflict")
         row = dict(item)
+        initial = segments_containing(page, initial_segments)
+        raw_classifications = segments_containing(page, raw_classification_segments)
+        trace: list[dict[str, Any]] = [
+            {
+                "stage": "llama_boundary_ownership",
+                "status": "initial",
+                "segment_id": segment.get("segment_id"),
+                "proposed_type": segment.get("category"),
+                "pages": {
+                    "start_page": segment.get("start_page"),
+                    "end_page": segment.get("end_page"),
+                },
+                "reason": "validated_boundary_pass_range",
+                "evidence": list(segment.get("boundary_evidence") or ()),
+            }
+            for segment in initial
+        ]
+        if not trace:
+            trace.append(
+                {
+                    "stage": "llama_boundary_ownership",
+                    "status": "unresolved",
+                    "segment_id": None,
+                    "proposed_type": None,
+                    "reason": "no_valid_boundary_segment_for_source_page",
+                    "evidence": [],
+                }
+            )
+        trace.extend(
+            {
+                "stage": "llama_segment_classification",
+                "status": "evidence_only",
+                "segment_id": segment.get("segment_id"),
+                "proposed_type": segment.get("category"),
+                "reason": "classification_does_not_change_boundary_ownership",
+                "evidence": ["llama_classification_response"],
+            }
+            for segment in raw_classifications
+        )
+        if classification:
+            trace.append(
+                {
+                    "stage": "local_page_classification",
+                    "status": "evidence_only",
+                    "proposed_type": getattr(classification, "document_type", None),
+                    "confidence": getattr(classification, "confidence", None),
+                    "reason": "page_cues_are_not_independent_ownership",
+                    "evidence": list(getattr(classification, "signals", ()) or ()),
+                }
+            )
+        operation_events = [
+            {
+                "stage": "reconciliation_operation",
+                "status": getattr(operation, "status", None),
+                "operation_id": getattr(operation, "operation_id", None),
+                "operation_type": getattr(operation, "operation_type", None),
+                "from_labels": list(getattr(operation, "original_labels", ())),
+                "to_labels": list(getattr(operation, "proposed_labels", ())),
+                "from_range": getattr(operation, "original_segment_range", None),
+                "to_range": getattr(operation, "proposed_segment_range", None),
+                "reason": getattr(operation, "reason", None),
+                "evidence": list(getattr(operation, "evidence", ())),
+            }
+            for operation in reconciliation_operations
+            if page in getattr(operation, "proposed_pages", ())
+            and getattr(operation, "operation_type", None)
+            not in {"reconciliation_pass", "reconciliation_stop"}
+        ]
+        operations_inserted = False
+        for event in (assignment_events or {}).get(page, ()):
+            stage = event.get("stage")
+            if not operations_inserted and stage in {
+                "segment_reconciliation",
+                "post_reconciliation_outer_anchors",
+                "front_impugned_judgment",
+                "annexure_nesting",
+                "strong_index_content_spans",
+                "early_record_of_proceedings",
+            }:
+                trace.extend(operation_events)
+                operations_inserted = True
+            trace.append(dict(event))
+            if not operations_inserted and stage == "repair_proposal":
+                trace.extend(operation_events)
+                operations_inserted = True
+        if not operations_inserted:
+            trace.extend(operation_events)
+        trace.append(
+            {
+                "stage": "final_page_assignment",
+                "status": "committed",
+                "segment_id": segment_ids[page],
+                "canonical_type": labels[0] if len(labels) == 1 else None,
+                "labels": labels,
+                "reason": "post_reconciliation_owner_before_output_slot_mapping",
+                "evidence": ["final_page_map"],
+            }
+        )
         row.update(
             {
                 "source_document_id": source_document_id,
@@ -2098,6 +2215,7 @@ def audit_compiled_split(
                 ),
                 "review_status": "needs_review" if reasons else "clear",
                 "review_reasons": reasons,
+                "assignment_trace": trace,
             }
         )
         manifest_pages.append(row)

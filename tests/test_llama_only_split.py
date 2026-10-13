@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pymupdf
 import pytest
@@ -311,6 +311,10 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
         llama_page_parts={page: ["Annexures"] for page in range(1, 7)},
         classifications=(),
         reconciliation_changes=[],
+        reconciliation_operations=(),
+        initial_segments=ANY,
+        raw_classification_segments=ANY,
+        assignment_events={},
         boundaries=(),
         page_units=units,
         segment_classifications=(),

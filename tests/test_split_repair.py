@@ -4259,3 +4259,118 @@ def test_index_does_not_invent_an_omitted_annexure_from_neighbour_offsets() -> N
     )
     assert repaired[84] == ["Annexure P-1"]
     assert repaired[101] == ["Annexure P-3"]
+
+
+def test_index_content_restores_distinct_judgment_annexure_and_application() -> None:
+    from extraction_review.split_repair import (
+        _apply_strong_index_content_spans,
+        _restore_early_record_of_proceedings,
+    )
+
+    texts = {
+        1: "INDEX OF RECORD OF PROCEEDINGS\nDate of Record of Proceedings Pages",
+        2: "ITEM NO.42 COURT NO.1\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS",
+        3: "Applications for substitution are allowed. Cause title be amended.",
+        4: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "10.\tAgainst the impugned judgment and final Order dated "
+            "01.05.2025 in RFA No. 665 of 2014\t1-2\n"
+            "11.\tSpecial Leave Petition with affidavit\t3-4\n"
+            "12.\tAnnexure P-1: copy of order dated 04.03.2014 in Land "
+            "Acquisition Case No 1209 of 2010\t5-6\n"
+            "13.\tApplication for condonation of delay in Refiling "
+            "the petition\t7-9"
+        ),
+        5: (
+            "IN THE HIGH COURT OF PUNJAB AND HARYANA AT CHANDIGARH\n"
+            "RFA-665-2018\nDate of Decision: 01.05.2025\n"
+            "CORAM: HON'BLE MR. JUSTICE A\nORDER"
+        ),
+        6: (
+            "RFA No.8145 of 2014 and connected cases\n"
+            "Ex.P3\nEx.P4\nJudgment continued"
+        ),
+        7: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (Civil) NO. OF 2025\n"
+            "WITH PRAYER FOR INTERIM RELIEF\n"
+            "BEFORE HIGH COURT BEFORE SUPREME COURT\n"
+            "1. Vinod, s/o Kawara\nRespondent No. Petitioner\nVersus\n"
+            "1. State of Haryana\nPetitioner No. Respondent No."
+        ),
+        8: "PRAYER in the special leave petition",
+        9: "AFFIDAVIT\nDEPONENT",
+        10: "Certificate supporting the petition",
+        11: (
+            "IN THE COURT OF ADDITIONAL DISTRICT JUDGE, ROHTAK\n"
+            "Land Acquisition Case No. 1209/2010\n"
+            "Date of Order: 04.03.2014\nJUDGMENT"
+        ),
+        12: "The district-court judgment continues and concludes. True copy.",
+        13: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "APPLICATION FOR CONDONATION OF DELAY IN REFILING SLP\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+        14: "3. That the delay was not deliberate.\nPRAYER\nCondone the delay.",
+        15: "AFFIDAVIT\nI verify the accompanying application.\nDEPONENT",
+    }
+    labels = {
+        1: ["Record of Proceedings"], 2: ["Record of Proceedings"],
+        3: ["Impugned Order"], 4: ["Index"],
+        5: ["Impugned Order"], 6: ["Annexure P-4"],
+        7: ["Main Petition"], 8: ["Main Petition"],
+        9: ["Affidavit"], 10: ["AOR's Certificate"],
+        11: ["Impugned Order"], 12: ["Main Petition"],
+        13: ["Application 5"], 14: ["Application 6"],
+        15: ["Application 6"],
+    }
+
+    repaired = _apply_strong_index_content_spans(labels, texts, 15)
+    repaired = _restore_early_record_of_proceedings(repaired, texts, 15)
+
+    assert repaired[3] == ["Record of Proceedings"]
+    assert repaired[5] == repaired[6] == ["Impugned Order"]
+    assert repaired[11] == repaired[12] == ["Annexure P-1"]
+    assert repaired[13] == repaired[14] == repaired[15] == ["Application 5"]
+
+
+def test_index_content_does_not_guess_wrong_case_or_merge_new_application() -> None:
+    from extraction_review.split_repair import _apply_strong_index_content_spans
+
+    index = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1.\tSpecial Leave Petition with affidavit\t1-2\n"
+        "2.\tAnnexure P-1: order dated 04.03.2014 in "
+        "Land Acquisition Case No 1209 of 2010\t3-4\n"
+        "3.\tApplication for condonation of delay in refiling\t5-6"
+    )
+    main = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (Civil) NO. OF 2025\n"
+        "WITH PRAYER FOR INTERIM RELIEF\n"
+        "1. Petitioner, s/o Father\nRespondent No. Petitioner\nVersus\n"
+        "1. Respondent\nPetitioner No. Respondent No."
+    )
+    texts = {
+        1: index, 2: main, 3: "Grounds in the petition",
+        4: (
+            "IN THE COURT OF ADDITIONAL DISTRICT JUDGE\n"
+            "Land Acquisition Case No. 9999/2010\n"
+            "Date of Order: 04.03.2014\nJUDGMENT"
+        ),
+        5: "Judgment continuation",
+        6: (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "APPLICATION FOR CONDONATION OF DELAY IN REFILING"
+        ),
+        7: "IN THE SUPREME COURT OF INDIA\nAPPLICATION FOR EXEMPTION",
+    }
+    labels = {1: ["Index"], 2: ["Main Petition"], 3: ["Main Petition"],
+              4: ["Impugned Order"], 5: ["Impugned Order"],
+              6: ["Application 1"], 7: ["Application 2"]}
+
+    repaired = _apply_strong_index_content_spans(labels, texts, 7)
+
+    assert repaired[4] == repaired[5] == ["Impugned Order"]
+    assert repaired[7] == ["Application 2"]

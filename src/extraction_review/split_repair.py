@@ -59,8 +59,8 @@ _SCI_CAPTION_OCR_RE = re.compile(
 )
 _HC_CAPTION_RE = re.compile(
     r"^[ \t]*(?:\d{1,4}[ \t]+)?"
-    r"(?:(?:in|before)\s+the\s+"
-    r"(?:(?:hon['’‘]?ble|honou?rable)\s+)?)?"
+    r"(?:(?:in|before)\s+(?:the\s+)?|the\s+)?"
+    r"(?:(?:hon['’‘]?ble|honou?rable)\s+)?"
     r"(?:high\s+court\b|district\s+(?:and\s+sessions\s+)?court\b|"
     r"court\s+of\s+(?:the\s+)?[^\n]{0,80}?"
     r"(?:district|sessions|civil)\s+judge\b|"
@@ -77,6 +77,13 @@ _TRIBUNAL_CAPTION_RE = re.compile(
     r"(?:minister|tribunal|authority|registrar)\b|"
     r"revisional\s+authority\b|divisional\s+joint\s+registrar\b)",
     re.IGNORECASE | re.MULTILINE,
+)
+_COURT_BODY_START_RE = re.compile(
+    r"(?mi)^[ \t]*(?:\d{1,3}[.)][ \t]+)?"
+    r"(?:that\b|it\s+is\s+(?:submitted|stated)\b|"
+    r"(?:this|the)\s+(?:petition|application|appeal)\s+"
+    r"(?:is|seeks|challenges|relates)\b|most\s+respectfully\s+showeth\b|"
+    r"questions\s+of\s+law\b|grounds\s*[:.-]?$)"
 )
 _OFFICE_REPORT_RE = re.compile(
     r"office report on limita(?:t)?ion|o/?r on limita(?:t)?ion", re.I
@@ -433,6 +440,33 @@ def _is_sci_caption(text: str) -> bool:
     return bool(re.search(r"inthesupr[a-z0-9]{0,10}courtofindia", letters))
 
 
+def _normalized_court_heading(text: str) -> str:
+    """Normalize OCR punctuation in court headings without changing page text."""
+    heading = (text or "").replace("\u00a0", " ").replace("’", "'").replace("‘", "'")
+    heading = re.sub(r"(?i)\bhon\s*['.]?\s*ble\b", "honble", heading)
+    heading = re.sub(r"(?i)\bhon\.(?=\s+(?:high|district|court))", "honble", heading)
+    heading = re.sub(r"(?i)\bhigh[ \t\-–—]+court\b", "high court", heading)
+    return re.sub(r"[ \t]+", " ", heading)
+
+
+def _opening_court_caption(text: str, *, lines: int) -> re.Match[str] | None:
+    opening = _normalized_court_heading(
+        "\n".join(line for line in (text or "").splitlines() if line.strip())[:1600]
+    )
+    opening = "\n".join(opening.splitlines()[:lines])
+    if body := _COURT_BODY_START_RE.search(opening):
+        opening = opening[: body.start()]
+    matches = [
+        match
+        for pattern in (_HC_CAPTION_RE, _TRIBUNAL_CAPTION_RE)
+        if (match := pattern.search(opening))
+    ]
+    if not matches:
+        return None
+    first = min(matches, key=lambda match: match.start())
+    return first if not _is_sci_caption(opening[: first.start()]) else None
+
+
 def _is_lower_court_caption(text: str) -> bool:
     """Recognize an actual source-court heading, including below scan headers.
 
@@ -442,16 +476,10 @@ def _is_lower_court_caption(text: str) -> bool:
     """
     lines = [line for line in (text or "").splitlines() if line.strip()]
     head = "\n".join(lines[:24])[:1600]
-    body = re.search(
-        r"(?mi)^[ \t]*(?:\d{1,3}[.)][ \t]+)?"
-        r"(?:that\b|it\s+is\s+(?:submitted|stated)\b|"
-        r"(?:this|the)\s+(?:petition|application|appeal)\s+"
-        r"(?:is|seeks|challenges|relates)\b|most\s+respectfully\s+showeth\b|"
-        r"questions\s+of\s+law\b|grounds\s*[:.-]?$)",
-        head,
-    )
+    body = _COURT_BODY_START_RE.search(head)
     if body:
         head = head[: body.start()]
+    head = _normalized_court_heading(head)
     matches = [
         match
         for pattern in (_HC_CAPTION_RE, _TRIBUNAL_CAPTION_RE)
@@ -474,12 +502,13 @@ def _has_leading_lower_court_caption(text: str) -> bool:
     continuity must not end merely because narrative text later mentions the
     High Court whose order is challenged.
     """
-    lines = [line for line in (text or "").splitlines() if line.strip()]
-    opening = "\n".join(lines[:6])[:600]
-    return bool(
-        (_HC_CAPTION_RE.search(opening) or _TRIBUNAL_CAPTION_RE.search(opening))
-        and not _is_sci_caption(opening)
-    )
+    return _opening_court_caption(text, lines=6) is not None
+
+
+def _has_leading_high_court_caption(text: str) -> bool:
+    """A High Court source heading, not a later reference to that court."""
+    match = _opening_court_caption(text, lines=6)
+    return bool(match and "high court" in match.group(0).casefold())
 
 
 def _looks_like_rop_index_form(text: str) -> bool:
@@ -1790,8 +1819,10 @@ def _apply_outer_anchors(
     page_count: int,
     *,
     authoritative_boundary_pages: Sequence[int] = (),
+    protect_established_annexures: bool = False,
+    decision_log: list[dict[str, Any]] | None = None,
 ) -> PagePartMap:
-    """Stamp strong outer headings onto pages outside annexure runs."""
+    """Stamp outer starts, optionally preserving unstamped annexure continuity."""
     updated = {page: list(names) for page, names in page_parts.items()}
     authoritative_starts = {int(page) for page in authoritative_boundary_pages}
     annexure_pages: set[int] = set()
@@ -1834,6 +1865,30 @@ def _apply_outer_anchors(
         if label == "Advocate's Checklist" and _STATE_CHECKLIST_RE.search(text[:1200]):
             continue
         names = parts_on_page(updated.get(page))
+        # A heading printed inside an already reconciled Annexure is not, by
+        # itself, evidence that its physical document ended. The boundary pass
+        # can still open a real new document here; otherwise leave ownership
+        # with the established Annexure for review instead of creating a
+        # one-page Cover/Petition/Order island from reproduced source material.
+        if (
+            protect_established_annexures
+            and any(family_split_name(name) == ANNEXURE_FAMILY for name in names)
+            and label not in names
+        ):
+            if decision_log is not None:
+                decision_log.append(
+                    {
+                        "source_page": page,
+                        "stage": "post_reconciliation_outer_anchors",
+                        "status": "rejected",
+                        "candidate_type": label,
+                        "from_labels": names,
+                        "to_labels": names,
+                        "reason": "heading_conflicts_with_reconciled_annexure_owner",
+                        "evidence": ["page_heading", "reconciled_annexure_owner"],
+                    }
+                )
+            continue
         if label == "Vakalatnama" and {
             "Vakalatnama",
             "Memo of Appearance",
@@ -2521,7 +2576,7 @@ def _restore_early_record_of_proceedings(
         # repair is deliberately late in the pipeline, so carrying RoP past a
         # heading would overwrite stronger labels already established for a
         # following Application, Index, Office Report, Vakalatnama, etc.
-        if _looks_like_index_table(text) or (
+        if _is_lower_court_caption(text) or _looks_like_index_table(text) or (
             anchor is not None and anchor != "Record of Proceedings"
         ):
             active = False
@@ -5933,6 +5988,200 @@ def _apply_indexed_outer_document_ranges(
                 )
             ):
                 updated[page] = [MAIN_PETITION_PART]
+    return updated
+
+
+_INDEX_PURPOSE_STOPWORDS = frozenset(
+    {
+        "application", "petition", "special", "leave", "court", "supreme",
+        "india", "file", "filed", "present", "petitioner", "petitioners",
+        "legal", "heirs", "deceased", "honble", "order", "copy",
+    }
+)
+
+
+def _index_purpose_words(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z]{4,}", _fold(text))
+        if word not in _INDEX_PURPOSE_STOPWORDS
+    }
+
+
+def _index_case_numbers(text: str) -> set[tuple[int, int]]:
+    """Case-number/year pairs, accepting `No 1209 of 2010` and `1209/2010`."""
+    return {
+        (int(number), int(year))
+        for number, year in re.findall(
+            r"\b(?:case\s+)?no\.?\s*(\d{1,7})\s*(?:/|of\s+)(\d{4})\b",
+            text or "",
+            re.IGNORECASE,
+        )
+    }
+
+
+def _apply_strong_index_content_spans(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> PagePartMap:
+    """Recover only Index spans with a unique matching physical opening.
+
+    Scanned paper-books often preserve the Index table but lose every body
+    folio. In that case folio-only reconciliation cannot prove a span. An
+    opening matching the Index's date/case or application purpose, the exact
+    indexed length, and a separately headed next document can prove it. Leave
+    ambiguous or missing documents untouched for user review.
+    """
+    updated = _restore_index_bridge_pages(page_parts, page_text)
+    rows = aligned_index_printed_rows(updated, page_text)
+    index_end = max(
+        (page for page, names in updated.items() if "Index" in parts_on_page(names)),
+        default=0,
+    )
+    main_starts = [
+        page for page in range(index_end + 1, page_count + 1)
+        if _looks_like_sci_main_petition(page_text.get(page, ""))
+    ]
+    if not rows or not main_starts:
+        return updated
+    main_start = main_starts[0]
+
+    def next_boundary(page: int) -> bool:
+        if page > page_count:
+            return True
+        text = page_text.get(page, "")
+        return bool(
+            page_starts_application(text)
+            or annexure_ref_in_heading(text)
+            or _looks_like_sci_main_petition(text)
+            or _outer_anchor_label(text) is not None
+        )
+
+    # The challenged judgment ends immediately before an explicitly headed
+    # petition only when the master Index puts those two numeric rows adjacent.
+    # Its first pages may be a separately classified lower-court party memo;
+    # begin at the actual, date-and-case-matched judgment opening instead.
+    impugned = [r for r in rows if r.mapped_part == "Impugned Order" and r.kind == "number"]
+    main = [r for r in rows if r.mapped_part == MAIN_PETITION_PART and r.kind == "number"]
+    if len(impugned) == len(main) == 1 and impugned[0].end + 1 == main[0].start:
+        row = impugned[0]
+        indexed_dates = _extract_date_keys(row.particulars)
+        indexed_numbers = {
+            int(number) for number in re.findall(
+                r"\b(?:r\.?f\.?a\.?|appeal)\s*(?:no\.?)?\s*[-–—]?\s*(\d{1,7})\b",
+                row.particulars,
+                re.IGNORECASE,
+            )
+        }
+        candidates = [
+            page for page in range(index_end + 1, main_start)
+            if _is_lower_court_caption(page_text.get(page, ""))
+            and indexed_dates & _extract_date_keys(page_text.get(page, "")[:1800])
+            and indexed_numbers
+            and any(
+                re.search(rf"\b{number}\b", page_text.get(page, "")[:700])
+                for number in indexed_numbers
+            )
+        ]
+        if len(candidates) == 1:
+            start = candidates[0]
+            first_indexed_page = main_start - (row.end - row.start + 1)
+            if (
+                first_indexed_page <= start < main_start
+                and main_start - first_indexed_page == row.end - row.start + 1
+                and not any(
+                    re.search(
+                        r"(?im)^\s*annexure\s*[-–—:.]*\s*[a-z]?\s*[-–—:.]*\s*\d+\b",
+                        _heading_window(page_text.get(page, ""), lines=12),
+                    )
+                    or page_starts_application(page_text.get(page, ""))
+                    for page in range(start + 1, main_start)
+                )
+            ):
+                for page in range(start, main_start):
+                    updated[page] = ["Impugned Order"]
+
+    for row in rows:
+        label = row.mapped_part
+        if not label or row.kind != "number" or row.end < row.start:
+            continue
+        length = row.end - row.start + 1
+        if not 1 <= length <= 200:
+            continue
+        if family_split_name(label) == ANNEXURE_FAMILY:
+            indexed_dates = _extract_date_keys(row.particulars)
+            indexed_cases = _index_case_numbers(row.particulars)
+            if not indexed_dates or not indexed_cases:
+                continue
+            candidates = [
+                page for page in range(main_start + 1, page_count - length + 2)
+                if _is_lower_court_caption(page_text.get(page, ""))
+                and indexed_dates & _extract_date_keys(page_text.get(page, "")[:2000])
+                and indexed_cases & _index_case_numbers(page_text.get(page, "")[:2000])
+            ]
+            if len(candidates) != 1:
+                continue
+            start = candidates[0]
+            end = start + length - 1
+            if not next_boundary(end + 1):
+                continue
+            if any(
+                annexure_label_from_text(page_text.get(page, "")) not in {None, label}
+                or page_starts_application(page_text.get(page, ""))
+                or _looks_like_sci_main_petition(page_text.get(page, ""))
+                for page in range(start + 1, end + 1)
+            ):
+                continue
+            for page in range(start, end + 1):
+                updated[page] = [label]
+            continue
+
+        if family_split_name(label) != APPLICATION_FAMILY or length < 2:
+            continue
+        purpose = _index_purpose_words(row.particulars)
+        if len(purpose) < 2:
+            continue
+        matches: list[tuple[int, int]] = []
+        for page in range(main_start + 1, page_count - length + 2):
+            text = page_text.get(page, "")
+            if not (_is_sci_caption(text) and page_starts_application(text)):
+                continue
+            heading = _heading_window(text, lines=18)
+            heading_purpose = _index_purpose_words(heading)
+            overlap = purpose & heading_purpose
+            distinctive = purpose & {
+                "refiling", "substitution", "abatement", "exemption",
+                "translation", "certified", "permission", "condonation",
+            }
+            if len(overlap) >= 2 and distinctive <= heading_purpose:
+                matches.append((len(overlap), page))
+        matches.sort(reverse=True)
+        if not matches or (len(matches) > 1 and matches[0][0] == matches[1][0]):
+            continue
+        start = matches[0][1]
+        original = next(
+            (name for name in parts_on_page(updated.get(start))
+             if family_split_name(name) == APPLICATION_FAMILY),
+            None,
+        )
+        if original is None:
+            continue
+        end = start + length - 1
+        if not next_boundary(end + 1):
+            continue
+        if any(
+            page_starts_application(page_text.get(page, ""))
+            or annexure_ref_in_heading(page_text.get(page, ""))
+            or _is_lower_court_caption(page_text.get(page, ""))
+            or (
+                _outer_anchor_label(page_text.get(page, "")) not in {None, "Affidavit"}
+            )
+            for page in range(start + 1, end + 1)
+        ):
+            continue
+        for page in range(start, end + 1):
+            updated[page] = [original]
     return updated
 
 

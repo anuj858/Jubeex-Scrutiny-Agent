@@ -139,6 +139,37 @@ def test_targeted_reconciliation_preserves_supported_llama_segment() -> None:
     assert changes == []
 
 
+def test_reconciliation_rejects_internal_cover_heading_in_annexure() -> None:
+    baseline = {page: ["Annexure P-1"] for page in (1, 2, 3)}
+    proposed = {**baseline, 2: ["Cover Page"]}
+    classification = PageClassification(
+        page=2,
+        document_type="Cover Page",
+        confidence=0.95,
+        signals=("outer_anchor",),
+        llama_hint="Annexure P-1",
+    )
+    operations = []
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        [classification],
+        {2: "IN THE SUPREME COURT OF INDIA\nPAPERBOOK"},
+        page_count=3,
+        operation_log=operations,
+    )
+
+    assert result == baseline
+    assert changes == []
+    assert any(
+        operation.original_pages == (2,)
+        and operation.status == "left_for_review"
+        and "not independent evidence" in operation.reason
+        for operation in operations
+    )
+
+
 def test_targeted_reconciliation_uses_index_range_over_main_span(monkeypatch) -> None:
     import extraction_review.structure_split as structure_split_module
 
@@ -644,6 +675,83 @@ def test_dedicated_boundary_pass_survives_weak_page_text() -> None:
     assert result.page_parts[2] == ["Synopsis"]
     assert result.page_parts[3] == ["List of Dates & Events"]
     assert result.page_parts[4] == ["List of Dates & Events"]
+
+
+def test_scanned_index_evidence_survives_targeted_reconciliation() -> None:
+    """A verified Index span should not be lost when several page labels disagree."""
+    texts = {
+        1: "INDEX OF RECORD OF PROCEEDINGS",
+        2: "ITEM NO.42 COURT NO.1\nSUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS",
+        3: "Applications for substitution are allowed. Cause title be amended.",
+        4: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "10.\tAgainst the impugned judgment dated 01.05.2025 in "
+            "RFA No. 665 of 2014\t1-2\n"
+            "11.\tSpecial Leave Petition with affidavit\t3-4\n"
+            "12.\tAnnexure P-1: order dated 04.03.2014 in "
+            "Land Acquisition Case No 1209 of 2010\t5-6\n"
+            "13.\tApplication for condonation of delay in Refiling "
+            "the petition\t7-9"
+        ),
+        5: (
+            "IN THE HIGH COURT OF PUNJAB AND HARYANA AT CHANDIGARH\n"
+            "RFA-665-2018\nDate of Decision: 01.05.2025\n"
+            "CORAM: HON'BLE MR. JUSTICE A\nORDER"
+        ),
+        6: "RFA No.8145 of 2014\nEx.P3\nJudgment continued",
+        7: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "SPECIAL LEAVE PETITION (Civil) NO. OF 2025\n"
+            "WITH PRAYER FOR INTERIM RELIEF\n"
+            "BEFORE HIGH COURT BEFORE SUPREME COURT\n"
+            "1. Vinod, s/o Kawara\nRespondent No. Petitioner\nVersus\n"
+            "1. State of Haryana\nPetitioner No. Respondent No."
+        ),
+        8: "PRAYER in the special leave petition",
+        9: "AFFIDAVIT\nDEPONENT",
+        10: "Certificate supporting the petition",
+        11: (
+            "IN THE COURT OF ADDITIONAL DISTRICT JUDGE, ROHTAK\n"
+            "Land Acquisition Case No. 1209/2010\n"
+            "Date of Order: 04.03.2014\nJUDGMENT"
+        ),
+        12: "District-court judgment continues and concludes.",
+        13: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "APPLICATION FOR CONDONATION OF DELAY IN REFILING SLP\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+        14: "3. That the delay was not deliberate.\nPRAYER\nCondone the delay.",
+        15: "AFFIDAVIT\nI verify the accompanying application.\nDEPONENT",
+    }
+    labels = {
+        1: ["Record of Proceedings"], 2: ["Record of Proceedings"],
+        3: ["Impugned Order"], 4: ["Index"],
+        5: ["Impugned Order"], 6: ["Annexure P-3"],
+        7: ["Main Petition"], 8: ["Main Petition"],
+        9: ["Affidavit"], 10: ["AOR's Certificate"],
+        11: ["Impugned Order"], 12: ["Main Petition"],
+        13: ["Application 5"], 14: ["Application 6"],
+        15: ["Application 6"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(15),
+        page_units=[PageUnit(pdf_page=page, text=text) for page, text in texts.items()],
+        llama_page_parts=labels,
+        run_hybrid_repair=True,
+        authoritative_boundary_pages=[14],
+    )
+
+    assert result.page_parts[3] == ["Record of Proceedings"]
+    assert result.page_parts[5] == result.page_parts[6] == ["Impugned Order"]
+    assert result.page_parts[11] == result.page_parts[12] == ["Annexure P-1"]
+    assert result.page_parts[13] == result.page_parts[14] == result.page_parts[15] == ["Application 5"]
+    assert any(
+        event["stage"] == "strong_index_content_spans"
+        and event["to_labels"] == ["Annexure P-1"]
+        for event in result.assignment_events[11]
+    )
 
 
 def test_application_prayer_continuation_does_not_become_new_application() -> None:

@@ -221,6 +221,51 @@ def filter_split_outputs(
     return selected, report
 
 
+def attach_split_output_trace(
+    page_manifest: list[dict[str, Any]], slices: Sequence[Any]
+) -> None:
+    """Finish each page's audit with the actual generated PDF destination."""
+    destinations: dict[int, list[dict[str, str]]] = {}
+    for sliced in slices:
+        for page in sliced.pages:
+            destinations.setdefault(int(page), []).append(
+                {"slot_id": str(sliced.slot_id), "filename": str(sliced.filename)}
+            )
+    for row in page_manifest:
+        outputs = destinations.get(int(row["source_page"]), [])
+        row["output_pdfs"] = outputs
+        trace = row.setdefault("assignment_trace", [])
+        if not any(event.get("stage") == "final_page_assignment" for event in trace):
+            trace.append(
+                {
+                    "stage": "final_page_assignment",
+                    "status": "committed",
+                    "segment_id": row.get("segment_id"),
+                    "canonical_type": row.get("effective_owner"),
+                    "labels": list(row.get("assigned_labels") or ()),
+                    "reason": "final_page_map_with_unavailable_stage_history",
+                    "evidence": ["final_page_map"],
+                }
+            )
+        trace.append(
+            {
+                "stage": "pdf_slice",
+                "status": row.get(
+                    "output_disposition", "included" if outputs else "unassigned"
+                ),
+                "segment_id": row.get("segment_id"),
+                "canonical_type": row.get("effective_owner"),
+                "output_pdfs": outputs,
+                "reason": (
+                    "slice_uses_final_page_ownership"
+                    if outputs
+                    else "no_output_slot_for_final_page_assignment"
+                ),
+                "evidence": ["final_page_map", "catalog_slot_mapping"],
+            }
+        )
+
+
 def remember_file_bytes(file_id: str | None, data: bytes | None) -> None:
     key = (file_id or "").strip()
     if not key or not data:
@@ -2890,6 +2935,10 @@ class ProcessFileWorkflow(Workflow):
             segment_classifications=getattr(structured, "segment_classifications", ()),
             llama_boundary_proposals=getattr(structured, "llama_boundary_proposals", ()),
             reconciliation_changes=reconciliation_changes,
+            reconciliation_operations=getattr(structured, "reconciliation_operations", ()),
+            initial_segments=authoritative_boundary_segments,
+            raw_classification_segments=classification_report["segments"],
+            assignment_events=getattr(structured, "assignment_events", {}),
             boundaries=getattr(structured, "boundaries", ()),
             page_units=structured.page_units,
             source_document_id=state.file_id,
@@ -3146,6 +3195,16 @@ class ProcessFileWorkflow(Workflow):
                             else []
                         ),
                     ],
+                    "assignment_trace": [
+                        {
+                            "stage": "llama_boundary_ownership",
+                            "status": "unavailable",
+                            "segment_id": None,
+                            "proposed_type": None,
+                            "reason": "page_manifest_fallback_used",
+                            "evidence": [],
+                        }
+                    ],
                 }
                 for page in range(1, pdf_page_count + 1)
             ]
@@ -3194,6 +3253,7 @@ class ProcessFileWorkflow(Workflow):
                     ),
                     None,
                 )
+        attach_split_output_trace(page_manifest, slices)
         manifest_consistency = validate_page_manifest_output(
             page_manifest,
             slices,
