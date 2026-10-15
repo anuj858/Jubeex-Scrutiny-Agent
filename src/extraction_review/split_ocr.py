@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from itertools import pairwise
@@ -270,10 +271,27 @@ def pages_with_large_images(
     return pages
 
 
+def _find_tesseract_executable() -> str | None:
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    candidates = (
+        Path(sys.prefix) / "bin" / "tesseract",
+        Path.home() / ".local" / "share" / "tesseract-env" / "bin" / "tesseract",
+        Path.home() / ".local" / "bin" / "tesseract",
+        Path("/opt/homebrew/bin/tesseract"),
+        Path("/usr/local/bin/tesseract"),
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def ocr_sparse_pages(pdf_bytes: bytes, pages: list[int]) -> dict[int, str]:
     if not pages:
         return {}
-    executable = shutil.which("tesseract")
+    executable = _find_tesseract_executable()
     if not executable:
         logger.warning(
             "Split OCR unavailable: install tesseract; %d pages unreadable", len(pages)

@@ -3170,3 +3170,127 @@ def test_custody_certificate_maps_to_its_own_dynamic_slot() -> None:
     pages = map_slot_pages(catalog, {118: ["Custody Certificate"]})
 
     assert pages == {"custody_certificate": [118]}
+
+
+def test_slice_bundle_pdf_chronological_and_duplicate_split() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    # Simulate bundle with 677 pages as in user request:
+    # Advocate's Checklist: 1-2, Cover Page: 3, Unassigned: 4,
+    # Index: 5-11, 202, 677, Office Report: 12-13, Listing Proforma: 14-16,
+    # Synopsis: 17-20, List of Dates & Events: 21-28
+    page_parts = {
+        1: ["Advocate's Checklist"],
+        2: ["Advocate's Checklist"],
+        3: ["Cover Page"],
+        # Page 4 left unassigned -> Undefined
+        5: ["Index"],
+        6: ["Index"],
+        7: ["Index"],
+        8: ["Index"],
+        9: ["Index"],
+        10: ["Index"],
+        11: ["Index"],
+        12: ["Office Report on Limitation"],
+        13: ["Office Report on Limitation"],
+        14: ["Listing Proforma"],
+        15: ["Listing Proforma"],
+        16: ["Listing Proforma"],
+        17: ["Synopsis"],
+        18: ["Synopsis"],
+        19: ["Synopsis"],
+        20: ["Synopsis"],
+        21: ["List of Dates & Events"],
+        22: ["List of Dates & Events"],
+        23: ["List of Dates & Events"],
+        24: ["List of Dates & Events"],
+        25: ["List of Dates & Events"],
+        26: ["List of Dates & Events"],
+        27: ["List of Dates & Events"],
+        28: ["List of Dates & Events"],
+        202: ["Index"],
+        677: ["Index"],
+    }
+    pdf_bytes = _blank_pdf(677)
+    slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
+
+    # 1. Slices must be strictly chronological by start_page
+    start_pages = [s.start_page for s in slices]
+    assert start_pages == sorted(start_pages)
+
+    # 2. Check each slice in order
+    labels = [s.label for s in slices]
+    assert labels == [
+        "Advocate's Checklist",
+        "Cover Page",
+        "Undefined",
+        "Index",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Synopsis + List of Dates & Events",
+        "Undefined",
+        "Index",
+        "Undefined",
+        "Index",
+    ]
+
+    # 3. Advocate's Checklist (1-2) -> single span, duplicate=False
+    s_advocate = slices[0]
+    assert s_advocate.slot_id == "advocates_checklist"
+    assert s_advocate.pages == (1, 2)
+    assert s_advocate.start_page == 1
+    assert s_advocate.end_page == 2
+    assert s_advocate.duplicate is False
+
+    # 4. Cover Page (3) -> single span, duplicate=False
+    s_cover = slices[1]
+    assert s_cover.slot_id == "cover_page"
+    assert s_cover.pages == (3,)
+    assert s_cover.start_page == 3
+    assert s_cover.end_page == 3
+    assert s_cover.duplicate is False
+
+    # 5. Undefined spans (4, 29-201, 203-676) -> each duplicate=False
+    undef_slices = [s for s in slices if s.label == "Undefined"]
+    assert len(undef_slices) == 3
+    assert [s.start_page for s in undef_slices] == [4, 29, 203]
+    assert [s.end_page for s in undef_slices] == [4, 201, 676]
+    assert all(s.duplicate is False for s in undef_slices)
+
+    # 6. Index occurrences: 3 separate objects, all duplicate=True
+    index_slices = [s for s in slices if s.label == "Index"]
+    assert len(index_slices) == 3
+    assert [s.slot_id for s in index_slices] == ["index_1", "index_2", "index_3"]
+    assert [s.pages for s in index_slices] == [
+        (5, 6, 7, 8, 9, 10, 11),
+        (202,),
+        (677,),
+    ]
+    assert [s.start_page for s in index_slices] == [5, 202, 677]
+    assert [s.end_page for s in index_slices] == [11, 202, 677]
+    assert all(s.duplicate is True for s in index_slices)
+
+    # 7. Slices that appear only once must have duplicate=False
+    non_index_slices = [s for s in slices if s.label not in ("Index", "Undefined")]
+    assert all(s.duplicate is False for s in non_index_slices)
+
+
+def test_slice_bundle_pdf_numbered_annexures_no_duplicates() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    page_parts = {
+        1: ["Main Petition"],
+        2: ["Main Petition"],
+        3: ["Annexure P-1"],
+        4: ["Annexure P-1"],
+        5: ["Annexure P-2"],
+        6: ["Annexure P-2"],
+    }
+    pdf_bytes = _blank_pdf(6)
+    slices = slice_bundle_pdf(pdf_bytes, catalog, page_parts)
+
+    assert len(slices) == 3
+    assert [s.slot_id for s in slices] == ["petition", "annexure_p1", "annexure_p2"]
+    assert [s.label for s in slices] == ["Main Petition", "Annexure P-1", "Annexure P-2"]
+    assert all(s.duplicate is False for s in slices)
+    assert [s.start_page for s in slices] == [1, 3, 5]
+    assert [s.end_page for s in slices] == [2, 4, 6]
+

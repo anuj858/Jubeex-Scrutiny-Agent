@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -84,6 +85,9 @@ class SlotSlice:
     pdf_bytes: bytes
     filename: str
     file_hash: str
+    start_page: int = 0
+    end_page: int = 0
+    duplicate: bool = False
 
 
 def _labels_match_slot(labels: Sequence[str], slot: UploadSlot) -> bool:
@@ -598,7 +602,7 @@ def slice_bundle_pdf(
         leftover = leftover_pages(len(reader.pages), pages_by_slot)
         if leftover:
             pages_by_slot[UNDEFINED_SLOT_ID] = leftover
-    slices: list[SlotSlice] = []
+    raw_slices: list[SlotSlice] = []
     for slot_id in _slice_slot_order(catalog, pages_by_slot):
         pages = pages_by_slot.get(slot_id) or []
         if not pages:
@@ -606,21 +610,74 @@ def slice_bundle_pdf(
         slot = resolve_upload_slot(catalog, slot_id)
         if slot is None:
             continue
-        chunk = extract_pdf_pages(pdf_bytes, pages, reader=reader)
-        if not chunk:
-            continue
-        filename = f"{slot.label}.pdf"
-        slices.append(
-            SlotSlice(
-                slot_id=slot.id,
-                label=slot.label,
-                pages=tuple(pages),
-                page_span=tuple(page_ranges(pages)),
-                pdf_bytes=chunk,
-                filename=filename,
-                file_hash=hashlib.sha256(chunk).hexdigest(),
-            )
+        is_numbered = _is_numbered_annexure_slot(slot.id) or (
+            slot.id.startswith("application_") and slot.id != "applications"
         )
+        if is_numbered:
+            chunk = extract_pdf_pages(pdf_bytes, pages, reader=reader)
+            if not chunk:
+                continue
+            raw_slices.append(
+                SlotSlice(
+                    slot_id=slot.id,
+                    label=slot.label,
+                    pages=tuple(pages),
+                    page_span=tuple(page_ranges(pages)),
+                    pdf_bytes=chunk,
+                    filename=f"{slot.label}.pdf",
+                    file_hash=hashlib.sha256(chunk).hexdigest(),
+                    start_page=pages[0],
+                    end_page=pages[-1],
+                )
+            )
+            continue
+
+        ranges = page_ranges(pages)
+        if not ranges:
+            continue
+        is_multiple = len(ranges) > 1
+        for idx, r in enumerate(ranges, 1):
+            span_pages = tuple(range(r["start"], r["end"] + 1))
+            chunk = extract_pdf_pages(pdf_bytes, list(span_pages), reader=reader)
+            if not chunk:
+                continue
+            if is_multiple:
+                sub_slot_id = f"{slot.id}_{idx}"
+                filename = f"{slot.label}_{idx}.pdf"
+            else:
+                sub_slot_id = slot.id
+                filename = f"{slot.label}.pdf"
+            raw_slices.append(
+                SlotSlice(
+                    slot_id=sub_slot_id,
+                    label=slot.label,
+                    pages=span_pages,
+                    page_span=(r,),
+                    pdf_bytes=chunk,
+                    filename=filename,
+                    file_hash=hashlib.sha256(chunk).hexdigest(),
+                    start_page=r["start"],
+                    end_page=r["end"],
+                )
+            )
+
+    label_counts = Counter(s.label for s in raw_slices if s.label != "Undefined")
+    slices: list[SlotSlice] = [
+        SlotSlice(
+            slot_id=s.slot_id,
+            label=s.label,
+            pages=s.pages,
+            page_span=s.page_span,
+            pdf_bytes=s.pdf_bytes,
+            filename=s.filename,
+            file_hash=s.file_hash,
+            start_page=s.start_page,
+            end_page=s.end_page,
+            duplicate=(s.label != "Undefined" and label_counts[s.label] > 1),
+        )
+        for s in raw_slices
+    ]
+    slices.sort(key=lambda s: (s.start_page, s.end_page))
     return slices
 
 

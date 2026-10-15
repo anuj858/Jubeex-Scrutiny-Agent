@@ -665,3 +665,40 @@ def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch)
     assert response.status_code == 202
     assert getattr(captured["event"], "edited") is False
     assert getattr(captured["event"], "job_type") == "index_parsed"
+
+
+def test_job_record_out_has_duplicates() -> None:
+    from extraction_review.api import JobState
+
+    state_with_dups = JobState(job_id="job-1", kind="process_file")
+    state_with_dups.status = "completed"
+    state_with_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": True,
+        "parts": [
+            {"slot_id": "index_1", "duplicate": True, "start_page": 5, "end_page": 11},
+            {"slot_id": "index_2", "duplicate": True, "start_page": 202, "end_page": 202},
+        ],
+    }
+    out_with_dups = state_with_dups.as_out()
+    assert out_with_dups.has_duplicates is True
+    assert out_with_dups.model_dump()["has_duplicates"] is True
+
+    state_no_dups = JobState(job_id="job-2", kind="process_file")
+    state_no_dups.status = "completed"
+    state_no_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": False,
+        "parts": [
+            {"slot_id": "petition", "duplicate": False, "start_page": 1, "end_page": 10},
+        ],
+    }
+    out_no_dups = state_no_dups.as_out()
+    assert out_no_dups.has_duplicates is False
+    assert out_no_dups.model_dump()["has_duplicates"] is False
+
+    state_other = JobState(job_id="job-3", kind="process_file")
+    state_other.status = "completed"
+    state_other.result = {"match": True}
+    assert state_other.as_out().has_duplicates is None
+

@@ -12,7 +12,12 @@ from extraction_review.config import (
 )
 from extraction_review.metadata_workflow import DISCRIMINATOR_FIELD, MetadataResponse
 from extraction_review.metadata_workflow import workflow as metadata_workflow
-from extraction_review.process_file import BundlePrepared, FileEvent, Status
+from extraction_review.process_file import (
+    BundlePrepared,
+    FileEvent,
+    Status,
+    upload_sliced_slot_pdfs,
+)
 from extraction_review.process_file import workflow as process_file_workflow
 
 FILING_TYPES = set(JUBEEX_FILING_TYPES)
@@ -146,7 +151,7 @@ async def test_metadata_workflow() -> None:
     assert result.config["classify"]["config_version"] == "1.0.0"
     assert result.config["extract"]["config_version"] == "1.0.1"
     assert result.config["split"]["config_version"] == "1.0.35"
-    assert result.upload_sliced_slot_pdfs is False
+    assert result.upload_sliced_slot_pdfs is upload_sliced_slot_pdfs()
 
 
 @pytest.mark.asyncio

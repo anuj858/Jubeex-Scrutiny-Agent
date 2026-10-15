@@ -142,7 +142,21 @@ def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot 
     # id, but normalize it to the unambiguous Certificate slot.
     if key == "aors_declaration":
         key = "aor_s_certificate"
-    return catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    found = catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    if found:
+        return found
+    match = re.fullmatch(r"([a-z0-9_]+)_(\d+)", key)
+    if match:
+        base_key = match.group(1)
+        base_slot = catalog.slot_by_id().get(base_key) or dynamic_upload_slot(base_key)
+        if base_slot:
+            return UploadSlot(
+                id=key,
+                label=base_slot.label,
+                parts=base_slot.parts,
+                required=False,
+            )
+    return None
 
 
 def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:

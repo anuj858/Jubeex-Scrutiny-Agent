@@ -398,6 +398,10 @@ class JobRecordOut(BaseModel):
     )
     stage: str | None = None
     stage_message: str | None = None
+    has_duplicates: bool | None = Field(
+        default=None,
+        description="True if any document part in the split has duplicate=True",
+    )
     result: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -445,6 +449,9 @@ class JobState:
         self.callback_kind: JobKind = kind
 
     def as_out(self) -> JobRecordOut:
+        has_duplicates = None
+        if isinstance(self.result, dict) and "has_duplicates" in self.result:
+            has_duplicates = bool(self.result["has_duplicates"])
         return JobRecordOut(
             job_id=self.job_id,
             kind=self.kind,
@@ -456,6 +463,7 @@ class JobState:
             progress=self.progress,
             stage=self.stage,
             stage_message=self.stage_message,
+            has_duplicates=has_duplicates,
             result=self.result,
             error=self.error,
             created_at=self.created_at,
