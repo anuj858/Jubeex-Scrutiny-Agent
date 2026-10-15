@@ -951,6 +951,7 @@ class PreparedPart(BaseModel):
     name: str | None = None
     label: str | None = None
     page_span: list[dict[str, int]] | None = None
+    duplicate: bool = False
     reason: str | None = None
 
 
@@ -971,6 +972,7 @@ class VerifiedDocument(BaseModel):
 class BundlePrepared(StopEvent):
     filing_type: str
     parts: list[PreparedPart] = Field(default_factory=list)
+    has_duplicates: bool = False
     documents: list[SourceDocument] = Field(default_factory=list)
     slot_pages: dict[str, list[dict[str, int]]] = Field(default_factory=dict)
     agent_data_id: str | None = None
@@ -3314,7 +3316,7 @@ class ProcessFileWorkflow(Workflow):
                 else item.filename
             )
             unidentified_reason = None
-            if item.slot_id == "undefined":
+            if item.slot_id == "undefined" or item.slot_id.startswith("undefined_"):
                 reasons = split_audit.get("unidentified_reasons") or []
                 item_pages = set(item.pages)
                 matching = [
@@ -3342,6 +3344,7 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     label=item.label,
                     page_span=list(item.page_span),
+                    duplicate=item.duplicate,
                     reason=unidentified_reason,
                 )
             )
@@ -3355,6 +3358,7 @@ class ProcessFileWorkflow(Workflow):
                 )
             )
 
+        has_duplicates = any(part.duplicate for part in prepared)
         classify_split_seconds = elapsed_seconds(state.started_at)
         file_name = uploaded_filename(state.filename)
         timing = timing_payload(
@@ -3373,12 +3377,14 @@ class ProcessFileWorkflow(Workflow):
                         "organization_id": state.organization_id,
                         "workspace_id": state.workspace_id,
                         "usage": {"llamacloud": usage_summary},
+                        "has_duplicates": has_duplicates,
                         "parts": [
                             {
                                 "slot_id": part.slot_id,
                                 "label": part.label,
                                 "filename": part.filename,
                                 "page_span": part.page_span,
+                                "duplicate": part.duplicate,
                                 "reason": part.reason,
                                 "file_hash": part.file_hash,
                                 "file_id": part.file_id,
@@ -3431,6 +3437,7 @@ class ProcessFileWorkflow(Workflow):
         return BundlePrepared(
             filing_type=catalog.filing_type,
             parts=prepared,
+            has_duplicates=has_duplicates,
             documents=list(state.source_documents),
             slot_pages=slot_pages,
             agent_data_id=None,

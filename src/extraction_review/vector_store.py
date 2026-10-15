@@ -543,6 +543,29 @@ def upsert_filing_record(
     return record_id
 
 
+def delete_workspace_records(workspace_id: str) -> None:
+    """Delete every Pinecone record stored for one workspace."""
+    workspace_id = (workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    if not pinecone_enabled():
+        logger.info("[Pinecone] Skipped workspace delete; Pinecone is disabled")
+        return
+
+    logger.info(
+        "[Pinecone] Deleting records for workspace_id=%s index=%s namespace=%s",
+        workspace_id,
+        pinecone_index_name,
+        pinecone_namespace,
+    )
+    index = ensure_index()
+    index.delete(
+        filter={"workspace_id": {"$eq": workspace_id}},
+        namespace=pinecone_namespace,
+    )
+    logger.info("[Pinecone] Deleted records for workspace_id=%s", workspace_id)
+
+
 def _raw_hits(result: Any) -> list[Any]:
     hits = getattr(result, "result", result)
     matches = getattr(hits, "hits", None)
