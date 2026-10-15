@@ -667,6 +667,66 @@ def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch)
     assert getattr(captured["event"], "job_type") == "index_parsed"
 
 
+def test_reindex_clears_workspace_then_queues_index(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-reindex-1")
+    captured: dict[str, object] = {}
+    deleted: list[str] = []
+    notified: dict[str, object] = {}
+
+    def fake_delete(workspace_id: str) -> None:
+        deleted.append(workspace_id)
+
+    async def fake_notify(**kwargs):
+        notified.update(kwargs)
+
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        fake_delete,
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+
+    missing = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert missing.status_code == 422
+    assert deleted == []
+
+    response = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert deleted == ["ws-reindex-1"]
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    assert polled.json()["status"] == "completed"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "index_parsed"
+    assert getattr(event, "agent_data_id") == "agd-reindex-1"
+    assert getattr(event, "workspace_id") == "ws-reindex-1"
+    assert notified.get("kind") == "scrutiny"
+
+
 def test_job_record_out_has_duplicates() -> None:
     from extraction_review.api import JobState
 

@@ -51,6 +51,7 @@ from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
+from .vector_store import delete_workspace_records
 
 load_dotenv()
 
@@ -1026,6 +1027,29 @@ def _accept_scrutiny(
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
+def _index_event(agent_data_id: str, body: IndexFilingRequest) -> FileEvent:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "index_parsed"
+    payload["agent_data_id"] = agent_data_id
+    payload["edited"] = parse_edited_flag(body.edited)
+    return _file_event_http(payload)
+
+
+def _accept_index_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue ``index_parsed``. Webhook kind is ``scrutiny``."""
+    return _accept_process_file(
+        _index_event(agent_data_id, body),
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+        callback_kind="scrutiny",
+    )
+
+
 @app.post(
     "/v1/filings/{agent_data_id}/index",
     response_model=JobAccepted,
@@ -1044,12 +1068,40 @@ async def index_filing(
     Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
     ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
     """
-    payload = body.model_dump(exclude_none=True)
-    payload.pop("callback_url", None)
-    payload["job_type"] = "index_parsed"
-    payload["agent_data_id"] = agent_data_id
-    payload["edited"] = parse_edited_flag(body.edited)
-    event = _file_event_http(payload)
+    return _accept_index_filing(agent_data_id, body, background_tasks)
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/reindex",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Clear workspace vectors, then index and run scrutiny",
+    dependencies=[Depends(require_api_key)],
+)
+async def reindex_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same as ``/index`` after deleting this workspace's Pinecone records."""
+    if not body.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="workspace_id is required",
+        )
+    event = _index_event(agent_data_id, body)
+    try:
+        delete_workspace_records(body.workspace_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to delete Pinecone records for workspace %s",
+            body.workspace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to clear previous vectors for this workspace.",
+        ) from exc
     return _accept_process_file(
         event,
         callback_url=body.callback_url,
