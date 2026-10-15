@@ -461,6 +461,7 @@ def test_catalog_lists_new_job_types(client: TestClient) -> None:
         "split_petition",
         "verify_document",
         "extract_only",
+        "extract_front",
         "index_parsed",
     ):
         assert job_type in body["job_types"]
@@ -587,6 +588,57 @@ def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatc
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "job_type") == "extract_only"
+
+
+def test_extract_front_accepts_like_extract(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-front-1",
+        parsed_slots=["petition"],
+        result="agd-front-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "special_category": "Tax Matters",
+            "documents": [_doc("compiled.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"]
+    assert body["poll_url"] == f"/v1/jobs/{body['job_id']}"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "extract_front"
+    assert getattr(event, "special_category") is None
+    assert len(getattr(event, "documents")) == 1
+
+
+def test_extract_front_rejects_split_documents(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("01_Petition.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_index_runs_index_parsed_with_scrutiny_webhook_kind(

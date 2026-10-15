@@ -863,6 +863,30 @@ async def extract_only(
     )
 
 
+@app.post(
+    "/v1/filings/extract-front",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_front(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same body as extract, with one compiled PDF. Parses an opening slice and the last 5 pages."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload.pop("special_category", None)
+    payload["job_type"] = "extract_front"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
 @app.get(
     "/v1/jobs/{job_id}",
     response_model=JobRecordOut,

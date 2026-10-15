@@ -461,6 +461,65 @@
           ]
         },
         {
+          "name": "3b Extract front (first 30 pages and last 5, no split)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"compiled.pdf\",\n      \"download_url\": \"https://storage.example/filings/compiled.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/extract-front",
+            "description": "Same request body as `POST /v1/filings/extract`: `filing_type`, `organization_id`, `workspace_id`, `user_id`, and `documents[]`. `documents[]` has one item, the whole compiled PDF, not the split files. No `slot_id` is required. A book of 200 pages or fewer parses the first 30 pages. A longer book parses a larger opening, starting near 20 percent and shrinking so a 1000-page book stays near 90 pages and never sends more than 120. The last 5 pages are always included and are the Vakalatnama, used for `advocates_on_record`. Skips split, classify, and Pinecone.\n\n**Completed poll does not include cause_title / petitioners / respondents.** It returns the S3 location:\n- `result.extract.url` — presigned GET of the uploaded extract JSON\n- `result.extract.key` — `extractedfiles/.../agent-extract-....json`\n- `result.extract.filing_key` — stable `filings/{agent_data_id}/extract.json`\n- `result.artifacts.extract` — same extract upload (when S3 job artifacts are recorded)\n\nDownload that JSON for the same keys as extract, plus `special_category` next to `petition_type`. `special_category` is null when the opening does not print a subtype. `relief_sort` and `petition_date` stay null. `documents` stays empty.\n\n**Also persist in your DB:**\n- top-level `agent_data_id`\n- `result.parsed_slots`\n- `result.filing_type`\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/extract-front"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/dddddddd-4444-4444-8444-444444444444\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            }
+          ]
+        },
+        {
           "name": "4 Index after extract",
           "event": [
             {

@@ -21,6 +21,7 @@ from .clients import agent_name, get_llama_cloud_client, project_id
 from .config import (
     EXTRACTED_DATA_COLLECTION,
     ExtractConfig,
+    FrontExtractRecord,
     LegalExtractRecord,
     ParseConfig,
     config_identity,
@@ -30,6 +31,7 @@ from .document_parts import overlay_split_documents
 from .extract_record import (
     apply_extract_envelope,
     field_confidence_from_job,
+    finalize_front_extract,
     overall_confidence_from_job,
     stamp_review_status,
     stamp_source_pages,
@@ -87,12 +89,14 @@ from .split_upload import (
     SplitPartInput,
     SplitUploadError,
     build_extract_pack_markdown,
+    build_front_extract_pack_markdown,
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
     display_filename,
     dump_parse_artifact,
     extract_configuration,
+    front_extract_configuration,
     extract_source_parts,
     find_part,
     parse_action_for_slot,
@@ -188,6 +192,8 @@ class SplitFilesEvent(StartEvent):
     skip_index: bool = False
     skip_extract: bool = False
     stitch_in_request_order: bool = False
+    front_extract: bool = False
+    front_opening_pages: int = 30
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
@@ -241,6 +247,8 @@ class SplitFilesState(BaseModel):
     skip_index: bool = False
     skip_extract: bool = False
     stitch_in_request_order: bool = False
+    front_extract: bool = False
+    front_opening_pages: int = 30
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
@@ -416,6 +424,8 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.skip_index = event.skip_index
             state.skip_extract = event.skip_extract
             state.stitch_in_request_order = event.stitch_in_request_order
+            state.front_extract = event.front_extract
+            state.front_opening_pages = event.front_opening_pages
             state.edited = event.edited
             state.parsed_slots = parsed_slots
             state.agent_data_id = event.agent_data_id
@@ -515,13 +525,20 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
-        pack_text = build_extract_pack_markdown(
-            page_markdown,
-            page_parts,
-            extract_source_parts(catalog),
-            catalog=catalog,
-            page_layout=coerce_page_layout(state.page_layout),
-        )
+        if state.front_extract:
+            pack_text = build_front_extract_pack_markdown(
+                page_markdown,
+                page_layout=coerce_page_layout(state.page_layout),
+                opening_pages=state.front_opening_pages,
+            )
+        else:
+            pack_text = build_extract_pack_markdown(
+                page_markdown,
+                page_parts,
+                extract_source_parts(catalog),
+                catalog=catalog,
+                page_layout=coerce_page_layout(state.page_layout),
+            )
         extract_file_id = state.petition_file_id
         pack_file_id: str | None = None
         if pack_text:
@@ -559,19 +576,27 @@ class ProcessSplitFilesWorkflow(Workflow):
                 )
             )
 
-        configuration = extract_configuration(extract_config, catalog)
-        if extract_config.configuration_id:
-            extract_job = await llama_cloud_client.extract.create(
-                file_input=extract_file_id,
-                configuration_id=extract_config.configuration_id,
-                project_id=project_id,
-            )
-        else:
+        if state.front_extract:
+            configuration = front_extract_configuration(extract_config)
             extract_job = await llama_cloud_client.extract.create(
                 file_input=extract_file_id,
                 configuration=cast(Any, configuration),
                 project_id=project_id,
             )
+        else:
+            configuration = extract_configuration(extract_config, catalog)
+            if extract_config.configuration_id:
+                extract_job = await llama_cloud_client.extract.create(
+                    file_input=extract_file_id,
+                    configuration_id=extract_config.configuration_id,
+                    project_id=project_id,
+                )
+            else:
+                extract_job = await llama_cloud_client.extract.create(
+                    file_input=extract_file_id,
+                    configuration=cast(Any, configuration),
+                    project_id=project_id,
+                )
 
         async with ctx.store.edit_state() as state:
             state.extract_pack_file_id = pack_file_id
@@ -646,7 +671,9 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
             data = ExtractedData.from_extract_job(
                 job=job,
-                schema=LegalExtractRecord,
+                schema=(
+                    FrontExtractRecord if state.front_extract else LegalExtractRecord
+                ),
                 file_name=state.filename,
                 file_id=record_file_id,
                 file_hash=state.file_hash,
@@ -797,8 +824,10 @@ class ProcessSplitFilesWorkflow(Workflow):
             overall_confidence=confidence,
             field_confidence=(meta.get("extract_confidence") or {}).get("fields"),
         )
+        if state.front_extract:
+            inner = finalize_front_extract(inner, page_markdown=page_markdown)
         data_dict["data"] = inner
-        if page_parts:
+        if page_parts and not state.front_extract:
             overlay_split_documents(data_dict, page_parts)
         org_id = state.organization_id or state.org_id
         if isinstance(data_dict, dict):

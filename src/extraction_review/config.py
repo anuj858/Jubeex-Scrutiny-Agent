@@ -504,6 +504,72 @@ class LegalExtractRecord(BaseModel):
         return value
 
 
+class FrontExtractRecord(LegalExtractRecord):
+    """Extract schema for the opening pages plus the last 5. Not used by /v1/filings/extract."""
+
+    court: str | None = Field(
+        default=None,
+        description=(
+            "Court where the petition is filed, as printed in the opening of "
+            "this 30-page slice. Leave null when it is not printed there."
+        ),
+    )
+    petition_type: str | None = Field(
+        default=None,
+        description=(
+            "Petition type as printed at the opening of the Main Petition, "
+            "for example Special Leave Petition (Civil) or Writ Petition (Criminal). "
+            "Leave null when it is not printed there."
+        ),
+    )
+    special_category: str | None = Field(
+        default=None,
+        description=(
+            "Matter subtype printed at the opening of the Main Petition, "
+            "such as Tax Matters. Leave null when it is not printed. "
+            "Do not infer it."
+        ),
+    )
+    cause_title: CauseTitle | None = Field(
+        default=None,
+        description=(
+            "Cause title from the opening of the Main Petition in this "
+            "30-page slice. Leave null when it is not printed there."
+        ),
+    )
+    advocates_on_record: list[AdvocateOnRecord] = Field(
+        default_factory=list,
+        description=(
+            "Advocate on record from the Vakalatnama on the last 5 pages of the "
+            "compiled PDF. Those pages are labelled Vakalatnama in this pack. "
+            "Copy the printed footer only. Leave a field null if it is not printed. "
+            "If the Vakalatnama prints no AOR, use the footer at the end of the "
+            "List of Dates in the opening pages."
+        ),
+    )
+    impugned_orders: list[ImpugnedOrder] = Field(
+        default_factory=list,
+        description=(
+            "Impugned order from the particulars printed on these opening pages. "
+            "Leave the list empty when those particulars are not printed."
+        ),
+    )
+    relief_sort: str | None = Field(
+        default=None,
+        description=(
+            "Leave null. The prayer is on the last pages of the Main Petition, "
+            "which are not in this 30-page slice."
+        ),
+    )
+    petition_date: str | None = Field(
+        default=None,
+        description=(
+            "Leave null. The petition date is on the last pages of the Main "
+            "Petition, which are not in this 30-page slice."
+        ),
+    )
+
+
 class CoreFilingRecord(LegalExtractRecord):
     """Stored compiled-petition JSON. Envelope keys are filled by the pipeline."""
     schema_version: str | None = Field(default=None, description="Leave null. Filled by the pipeline.")

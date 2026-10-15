@@ -1567,6 +1567,233 @@ def apply_extract_envelope(
     return payload
 
 
+def _printed_special_category(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"n/a", "na", "null", "none", "-"}:
+        return None
+    return text
+
+
+_NOT_A_PARTY_NAME = re.compile(
+    r"("
+    r"\b(yes|n/?a)\b"
+    r"|whether\b"
+    r"|disposed of"
+    r"|learned counsel"
+    r"|submits that"
+    r"|per contra"
+    r"|heard the"
+    r"|perused"
+    r"|petition is barred"
+    r"|condonation"
+    r"|main category"
+    r"|not to be listed"
+    r"|criminal matters"
+    r"|tax matters"
+    r"|special category"
+    r"|vehicle number"
+    r"|land acquisition"
+    r"|pending applications"
+    r"|order be communicated"
+    r"|it is made clear"
+    r"|application is accordingly"
+    r"|\?"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_party_name(name: str | None) -> bool:
+    text = strip_party_role_label(name)
+    if not text:
+        return False
+    words = text.split()
+    if len(words) > 12 or len(text) > 120:
+        return False
+    if _NOT_A_PARTY_NAME.search(text):
+        return False
+    if re.match(
+        r"^(the petition|there is|there was|learned|heard|per contra|be that|"
+        r"as already|pending|copy of the|order be|application is|it is made|"
+        r"not to be listed|\(?\s*a\s*\)|similar disposed)",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return True
+
+
+def _party_record(
+    name: str,
+    *,
+    serial: int,
+    page: int | None = None,
+    relation: str | None = None,
+    guardian: str | None = None,
+    address: str | None = None,
+) -> dict[str, Any]:
+    cleaned = strip_anr_ors_suffix(name) or strip_party_role_label(name)
+    kind = "ORGANIZATION" if re.match(r"^state\b", cleaned, re.IGNORECASE) else None
+    return {
+        "serial": serial,
+        "kind": normalize_party_kind(cleaned, kind),
+        "name": cleaned,
+        "relation": relation,
+        "guardian": guardian,
+        "address": address,
+        "source_part": "Memo of Parties",
+        "source_pages": [page] if page else [],
+    }
+
+
+def _parse_memo_of_parties(text: str, page: int | None) -> dict[str, list[dict[str, Any]]]:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    petitioners: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        if not re.match(r"^[SDW]/o\b", line, re.IGNORECASE) or index == 0:
+            continue
+        name = lines[index - 1]
+        if not _looks_like_party_name(name) or "advocate" in name.lower():
+            continue
+        relation = line.split()[0]
+        guardian = re.sub(r"^[SDW]/o\s+", "", line, count=1, flags=re.IGNORECASE).strip()
+        address_lines: list[str] = []
+        cursor = index + 1
+        while cursor < len(lines) and re.match(r"^R/o\b", lines[cursor], re.IGNORECASE):
+            address_lines.append(lines[cursor])
+            cursor += 1
+            if cursor < len(lines) and not re.match(r"^\d+\.\s+", lines[cursor]):
+                if not re.match(r"^(R/o|[SDW]/o|\d+\.)", lines[cursor], re.IGNORECASE):
+                    address_lines.append(lines[cursor])
+                    cursor += 1
+            break
+        petitioners.append(
+            _party_record(
+                name,
+                serial=1,
+                page=page,
+                relation=relation,
+                guardian=guardian or None,
+                address=" ".join(address_lines) or None,
+            )
+        )
+        break
+
+    respondents: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        matched = re.match(r"^(\d+)\.\s+(.+)$", lines[index])
+        if not matched or not _looks_like_party_name(matched.group(2)):
+            index += 1
+            continue
+        extra: list[str] = []
+        cursor = index + 1
+        while cursor < len(lines) and not re.match(r"^\d+\.\s+", lines[cursor]):
+            row = lines[cursor]
+            if re.match(r"^(Through|R/o)\b", row, re.IGNORECASE) or extra:
+                extra.append(row)
+                cursor += 1
+                continue
+            break
+        respondents.append(
+            _party_record(
+                matched.group(2),
+                serial=len(respondents) + 1,
+                page=page,
+                address=" ".join(extra) or None,
+            )
+        )
+        index = cursor
+    return {"petitioners": petitioners, "respondents": respondents}
+
+
+def _parties_from_memo(
+    page_markdown: Mapping[int, str] | None,
+) -> dict[str, list[dict[str, Any]]] | None:
+    if not page_markdown:
+        return None
+    for page in sorted(page_markdown):
+        text = page_markdown.get(page) or ""
+        if "memo of parties" not in text.lower():
+            continue
+        parsed = _parse_memo_of_parties(text, page)
+        if parsed["petitioners"] or parsed["respondents"]:
+            return parsed
+    return None
+
+
+def _drop_non_party_names(parties: Any) -> list[dict[str, Any]]:
+    if not isinstance(parties, list):
+        return []
+    kept: list[dict[str, Any]] = []
+    for party in parties:
+        if not isinstance(party, dict):
+            continue
+        name = _party_name(party)
+        if not _looks_like_party_name(name):
+            continue
+        party = dict(party)
+        party["name"] = strip_anr_ors_suffix(name) or strip_party_role_label(name)
+        kept.append(party)
+    return kept
+
+
+def repair_front_parties(
+    payload: dict[str, Any],
+    page_markdown: Mapping[int, str] | None = None,
+) -> None:
+    """Keep real party names. Checklist lines and order paragraphs are not parties."""
+    memo = _parties_from_memo(page_markdown)
+    if memo and memo["petitioners"]:
+        payload["petitioners"] = memo["petitioners"]
+    else:
+        payload["petitioners"] = _drop_non_party_names(payload.get("petitioners"))
+    if memo and memo["respondents"]:
+        payload["respondents"] = memo["respondents"]
+    else:
+        payload["respondents"] = _drop_non_party_names(payload.get("respondents"))
+
+    cause = payload.get("cause_title")
+    if not isinstance(cause, dict):
+        cause = {}
+        payload["cause_title"] = cause
+    petitioners = payload.get("petitioners") or []
+    respondents = payload.get("respondents") or []
+    if petitioners:
+        cause["main_petitioner"] = _party_name(petitioners[0])
+    if respondents:
+        cause["main_respondent"] = _party_name(respondents[0])
+    _normalize_parties(payload)
+
+
+def finalize_front_extract(
+    payload: dict[str, Any],
+    page_markdown: Mapping[int, str] | None = None,
+) -> dict[str, Any]:
+    """Keep the extract keys, put special_category beside petition_type, and clear later-page fields."""
+    repair_front_parties(payload, page_markdown)
+    category = _printed_special_category(payload.get("special_category"))
+    ordered: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "special_category":
+            continue
+        ordered[key] = value
+        if key == "petition_type":
+            ordered["special_category"] = category
+    if "special_category" not in ordered:
+        ordered["special_category"] = category
+    ordered["relief_sort"] = None
+    ordered["petition_date"] = None
+    ordered["documents"] = []
+    counts = ordered.get("document_counts")
+    if isinstance(counts, dict):
+        ordered["document_counts"] = {"processed": 0, "failed": 0}
+    return ordered
+
+
 def stamp_review_status(extracted: dict[str, Any]) -> dict[str, Any]:
     """Keep LlamaExtract job status off the Agent Data review-status field."""
     payload = dict(extracted)
