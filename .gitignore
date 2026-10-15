@@ -32,3 +32,5 @@ google-wif-credentials.json
 /tmp/
 
 google-wif-credentials*.json
+
+output_samples/
