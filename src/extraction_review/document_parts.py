@@ -295,6 +295,7 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
     {
         MAIN_PETITION_PART,
         "Cover Page",
+        "Record of Proceedings",
         "Advocate's Checklist",
         "Office Report on Limitation",
         "Listing Proforma",

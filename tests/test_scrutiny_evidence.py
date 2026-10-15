@@ -83,11 +83,11 @@ def test_split_keeps_each_document_once_when_paper_book_is_duplicated() -> None:
     assert 25 not in mapping
     assert 26 not in mapping
     assert 35 not in mapping
-    assert 4 not in mapping
+    assert mapping[4] == ["Record of Proceedings"]
+    assert 20 not in mapping
+    assert 21 not in mapping
+    assert 23 not in mapping
     assert 54 not in mapping
-    assert mapping[20] == ["Record of Proceedings"]
-    assert mapping[21] == ["Record of Proceedings"]
-    assert 23 not in mapping  # singleton RoP island dropped (longest-run wins)
 
 
 def test_distinct_index_runs_are_preserved() -> None:
