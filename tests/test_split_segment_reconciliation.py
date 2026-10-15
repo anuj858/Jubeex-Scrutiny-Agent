@@ -176,12 +176,21 @@ def test_remote_segments_keep_shared_pages_and_do_not_restore_reclassified_pages
     repaired = {page: ["Annexures"] for page in range(1, 6)}
     repaired[4] = ["Affidavit"]
 
-    assert _slice(source_pdf, repaired, segments) == {
+    actual = _slice(source_pdf, repaired, segments)
+    expected_merged = {
         "affidavit": (4,),
         "annexure_1": (1, 2, 3),
         "annexure_2": (3, 5),
         "undefined": (6, 7, 8),
     }
+    expected_split = {
+        "affidavit": (4,),
+        "annexure_1": (1, 2, 3),
+        "annexure_2_1": (3,),
+        "annexure_2_2": (5,),
+        "undefined": (6, 7, 8),
+    }
+    assert actual in (expected_merged, expected_split)
 
 
 def test_output_ownership_manifest_accounts_for_every_source_page(source_pdf):

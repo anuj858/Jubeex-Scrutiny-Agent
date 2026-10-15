@@ -610,27 +610,6 @@ def slice_bundle_pdf(
         slot = resolve_upload_slot(catalog, slot_id)
         if slot is None:
             continue
-        is_numbered = _is_numbered_annexure_slot(slot.id) or (
-            slot.id.startswith("application_") and slot.id != "applications"
-        )
-        if is_numbered:
-            chunk = extract_pdf_pages(pdf_bytes, pages, reader=reader)
-            if not chunk:
-                continue
-            raw_slices.append(
-                SlotSlice(
-                    slot_id=slot.id,
-                    label=slot.label,
-                    pages=tuple(pages),
-                    page_span=tuple(page_ranges(pages)),
-                    pdf_bytes=chunk,
-                    filename=f"{slot.label}.pdf",
-                    file_hash=hashlib.sha256(chunk).hexdigest(),
-                    start_page=pages[0],
-                    end_page=pages[-1],
-                )
-            )
-            continue
 
         ranges = page_ranges(pages)
         if not ranges:
