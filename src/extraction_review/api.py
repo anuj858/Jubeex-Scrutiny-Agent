@@ -519,19 +519,19 @@ def _apply_event_progress(job: JobState, event: Any) -> None:
         # while checks or snapshot writes are still active makes the UI look
         # stalled, so checks occupy 20% → 88% and the report stage owns 92%.
         percent = 20 + int(68 * ratio)
+        msg = f"Checked {completed}/{total} defects"
+        logger.info("[job %s] [%d%% checking] %s", job.job_id[:8], percent, msg)
         job.bump_progress(
             percent,
             stage="checking",
-            message=f"Checked {completed}/{total} defects",
+            message=msg,
         )
         return
     message = getattr(event, "message", None)
     if not isinstance(message, str) or not message.strip():
         return
     percent, stage = progress_for_status(message, kind=job.callback_kind or job.kind)
-    # Persist stage transitions immediately. The normal S3 write throttle can
-    # otherwise retain a short-lived message such as "skipping classify" for
-    # the entire LlamaSplit wait, even though the job has moved to splitting.
+    logger.info("[job %s] [%d%% %s] %s", job.job_id[:8], percent, stage, message)
     job.bump_progress(
         percent,
         stage=stage,
@@ -595,6 +595,7 @@ def _scrutiny_after_index_error(exc: BaseException) -> ScrutinyAfterIndexError |
 
 async def _run_workflow(job: JobState, handler: Any) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    logger.info("[job %s] Started workflow (%s)", job.job_id[:8], job.kind)
     job.bump_progress(5, stage="starting", message="Workflow started", force=True)
     try:
         stream = getattr(handler, "stream_events", None)
@@ -612,6 +613,7 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.progress = 100
         job.stage = "completed"
         job.stage_message = "Job completed"
+        logger.info("[job %s] Completed workflow successfully", job.job_id[:8])
     except Exception as exc:
         nested = _scrutiny_after_index_error(exc)
         if nested is not None:
@@ -1199,11 +1201,18 @@ async def create_annexure_index(
 def main() -> None:
     import uvicorn
 
+    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level_name, logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    reload = os.getenv("JUBEEX_API_RELOAD", "false").lower() in ("1", "true", "yes")
     uvicorn.run(
         "extraction_review.api:app",
         host=os.getenv("JUBEEX_API_HOST", "0.0.0.0"),
         port=int(os.getenv("JUBEEX_API_PORT", "8000")),
-        reload=False,
+        reload=reload,
+        log_level=log_level_name.lower(),
     )
 
 
