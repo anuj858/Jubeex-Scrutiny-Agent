@@ -4374,3 +4374,63 @@ def test_index_content_does_not_guess_wrong_case_or_merge_new_application() -> N
 
     assert repaired[4] == repaired[5] == ["Impugned Order"]
     assert repaired[7] == ["Application 2"]
+
+
+def test_unstamped_annexure_with_inner_lower_court_index_claims_expected_annexure() -> None:
+    """An unstamped exhibit whose first page has an inner lower-court INDEX heading
+
+    must not be absorbed into the prior stamped annexure, nor left as outer Index.
+    """
+    page_parts = {
+        1: ["Index"],
+        2: ["Main Petition"],
+        3: ["Affidavit"],
+        4: ["Annexure P-4"],
+        5: ["Annexure P-4"],
+        6: ["Index"],
+        7: ["Index"],
+        8: ["Main Petition"],
+        9: ["Filing Memo"],
+    }
+    texts = {
+        1: (
+            "INDEX\n"
+            "1. Special Leave Petition with affidavit 1-3\n"
+            "2. ANNEXURE P-4: Civil Revision No. 67 of 2022 4-5\n"
+            "3. ANNEXURE P-5: Review Application No. 08 of 2026 6-8\n"
+            "4. Filing Memo 9\n"
+        ),
+        2: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION",
+        3: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nI, the deponent",
+        4: (
+            "ANNEXURE P-4\n"
+            "IN THE HIGH COURT OF UTTARAKHAND AT NAINITAL\n"
+            "CIVIL REVISION NO. 67 OF 2022"
+        ),
+        5: "Counsel for the Revisionist\n41",
+        6: (
+            "IN THE HIGH COURT OF UTTARAKHAND AT NAINITAL\n"
+            "INDEX\n"
+            "IN Review Application No. 08 of 2026\n"
+            "In Civil Revision No. 67 of 2022\n"
+            "ANNEXURE-P\n42"
+        ),
+        7: (
+            "Sl. Description of paper Page Nos.\n"
+            "1. Review Application 44\n"
+            "Counsel for the Revisionist\n43"
+        ),
+        8: (
+            "IN THE HIGH COURT OF UTTARAKHAND AT NAINITAL\n"
+            "Review Application No. 08 of 2026\n"
+            "PRAYER\n44"
+        ),
+        9: "FILING MEMO\nIN THE SUPREME COURT OF INDIA",
+    }
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=9)
+    assert repaired[4] == ["Annexure P-4"]
+    assert repaired[5] == ["Annexure P-4"]
+    assert repaired[6] == ["Annexure P-5"]
+    assert repaired[7] == ["Annexure P-5"]
+    assert repaired[8] == ["Annexure P-5"]
+    assert repaired[9] == ["Filing Memo"]

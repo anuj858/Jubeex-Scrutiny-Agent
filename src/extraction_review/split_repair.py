@@ -1671,6 +1671,10 @@ def _annexure_run_bounds(
                     break
                 if annexure_label_from_text(text):
                     break
+                if _looks_like_index_table(text) or (
+                    _is_lower_court_caption(text) and re.search(r"(?im)^\s*index\b", text)
+                ):
+                    break
                 stripped = (text or "").strip()
                 if len(stripped) < 40:
                     # A scanned exhibit can expose only its printed folios for
@@ -2538,7 +2542,7 @@ def _demote_annexed_sci_rop(
             if remaining:
                 updated[page] = remaining
             else:
-                updated.pop(page, None)
+                updated[page] = ["Annexures"]
             continue
         # Fresh SCI court RoP heading after the petition: do not stamp outer ROP.
         if is_court_extract and not names:
@@ -2604,8 +2608,11 @@ def _fill_gaps(
             continue
         if any(name in _CARRY_BLOCKING_PARTS for name in last_label):
             continue
-        # Never invent labels across pages with no OCR text.
+        # Never invent labels across pages with no OCR text, except inside an
+        # ongoing annexure exhibit where scanned pages are common.
         if not (text or "").strip():
+            if any(family_split_name(name) == ANNEXURE_FAMILY for name in last_label):
+                updated[page] = list(last_label)
             continue
         # Do not extend Synopsis/LOD across OCR-blank sheets (Impugned Order scans).
         if _is_near_blank_page(text) and any(
@@ -3438,6 +3445,7 @@ def _score_island_for_index_annexure(
     is_rop = _looks_like_sci_court_rop_extract(island_text)
     is_review = bool(
         "review petition" in folded_island
+        or "review application" in folded_island
         or re.search(r"\br\.?\s*p\.?\s*\(?\s*c", folded_island)
     )
     is_letter = bool(
@@ -3470,12 +3478,17 @@ def _score_island_for_index_annexure(
         score += 12
     # A case number in an Index row must match the record's opening caption,
     # not an incidental citation several pages into another order.
-    for number, year in re.findall(r"\b(\d{1,6})\s*/\s*(\d{4})\b", folded_part):
+    for number, year in re.findall(
+        r"\b(\d{1,6})\s*(?:/|\bof\b)\s*(\d{4})\b", folded_part
+    ):
         if re.search(
-            rf"\b{number}\s*/\s*(?:{year}|{year[-2:]})\b", folded_island[:900]
+            rf"\b{number}\s*(?:/|\bof\b)\s*(?:{year}|{year[-2:]})\b",
+            folded_island[:900],
         ):
             score += 12
             break
+    if "annexure-p" in folded_island or "annexure p" in folded_island:
+        score += 5
 
     part_dates = _extract_date_keys(particulars or "")
     pronounced = _extract_pronounced_date_keys(island_text)
@@ -3579,7 +3592,16 @@ def _score_island_for_index_annexure(
 
 
 def _annexure_island_may_continue(start_text: str, next_text: str) -> bool:
-    """True when next island is a same-matter RoP twin of a Review/SLP order."""
+    """True when next island is part of the same exhibit (e.g. same case number/prayer/twin)."""
+    start_fold = _fold(start_text[:1800])
+    next_fold = _fold(next_text[:1800])
+    # Shared case number and year (e.g. Review Application 08 of 2026)
+    start_cases = re.findall(r"\b(\d{1,6})\s*(?:/|\bof\b)\s*(\d{4})\b", start_fold)
+    if start_cases and any(
+        re.search(rf"\b{num}\s*(?:/|\bof\b)\s*{yr}\b", next_fold)
+        for num, yr in start_cases
+    ):
+        return True
     if not _looks_like_sci_court_rop_extract(next_text):
         return False
     start_fold = _fold(start_text[:1800])
@@ -3686,7 +3708,6 @@ def _place_index_expected_annexures(
                 "Memo of Appearance",
                 "Filing Memo",
                 "Cover Page",
-                "Index",
             }
             for name in names
         ):
@@ -3772,7 +3793,11 @@ def _place_index_expected_annexures(
                 }
                 for name in names
             ):
-                break
+                if not (
+                    any(name in {MAIN_PETITION_PART, "Affidavit"} for name in names)
+                    and _is_lower_court_caption(text)
+                ):
+                    break
             if names and any(
                 family_split_name(name) == ANNEXURE_FAMILY and name != label
                 for name in names

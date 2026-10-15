@@ -288,8 +288,9 @@ def _format_page_span(pages: list[int]) -> str:
 
 
 # Outer SCI paper-book parts keep the *first* contiguous run. A later High Court
-# writ mislabeled as Main Petition must not replace the real Form 28 body. Index
-# is the exception: master and volume indexes can be separate legitimate runs.
+# writ mislabeled as Main Petition must not replace the real Form 28 body.
+# Index must only appear once in the outer shell (master index); later islands
+# (volume index or filing index) are not outer Index runs.
 _FIRST_RUN_OUTER_PARTS = frozenset(
     {
         MAIN_PETITION_PART,
@@ -310,7 +311,6 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
         "Filing Memo",
         "Court Fees",
         "PoA/BR",
-        # Record of Proceedings uses longest-run: a stray early page is common noise.
     }
 )
 
@@ -318,13 +318,10 @@ _FIRST_RUN_OUTER_PARTS = frozenset(
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
     """Keep one contiguous run of each Split part.
 
-    All Index runs are kept because master and volume indexes are distinct valid
-    sections. Main Petition at 15–23 is
-    kept; a later Main Petition island (often a High Court writ) is dropped —
-    first run wins for outer paper-book parts. Record of Proceedings keeps the
-    longest run (stray early pages are common noise). Annexure P-2 at 29–30 is
-    kept; later P-2 islands at 100–102 and 104 are dropped. Generic unnumbered
-    Annexures stay until they are labelled P-n.
+    Main Petition at 15–23 is kept; a later Main Petition island (often a High Court writ)
+    is dropped — first run wins for outer paper-book parts. Record of Proceedings keeps the
+    first outer run. Annexure P-2 at 29–30 is kept; later P-2 islands at 100–102
+    and 104 are dropped. Generic unnumbered Annexures stay until they are labelled P-n.
     """
     pages_by_part: dict[str, list[int]] = {}
     for page, names in page_parts.items():

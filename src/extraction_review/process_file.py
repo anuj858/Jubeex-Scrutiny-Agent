@@ -51,6 +51,7 @@ from .config import (
 )
 from .document_parts import (
     ANNEXURE_FAMILY,
+    MAIN_PETITION_PART,
     family_split_name,
     format_page_span,
     normalize_part_name,
@@ -1681,6 +1682,66 @@ def _segment_classification_report(
     }
 
 
+def _can_subdivide_proposal(
+    pages: list[int],
+    overlapping: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    if len(pages) < 2:
+        return None
+    opening = [
+        item for item in overlapping if pages[0] in (item.get("source_pages") or ())
+    ]
+    if not opening:
+        return None
+    # An annexure proposal encapsulates reproduced exhibits; do not subdivide.
+    if family_split_name(str(opening[0].get("category", "")).strip()) == ANNEXURE_FAMILY:
+        return None
+
+    sub = [
+        item
+        for item in overlapping
+        if set(item.get("source_pages") or ()).issubset(set(pages))
+        and item.get("source_pages")
+    ]
+    sub.sort(key=lambda s: s["source_pages"][0])
+    if len(sub) < 2:
+        return None
+
+    # Must strictly partition pages without gaps or overlaps
+    if sub[0]["source_pages"][0] != pages[0] or sub[-1]["source_pages"][-1] != pages[-1]:
+        return None
+    for i in range(len(sub) - 1):
+        cur_pages = list(sub[i]["source_pages"])
+        next_pages = list(sub[i + 1]["source_pages"])
+        if cur_pages != list(range(cur_pages[0], cur_pages[-1] + 1)):
+            return None
+        if cur_pages[-1] + 1 != next_pages[0]:
+            return None
+    last_pages = list(sub[-1]["source_pages"])
+    if last_pages != list(range(last_pages[0], last_pages[-1] + 1)):
+        return None
+
+    cats = [str(s.get("category", "")).strip() for s in sub]
+    if any(not c or c in {"Undefined", "other"} for c in cats):
+        return None
+    if len(set(cats)) < 2:
+        return None
+
+    # Categories must not be non-contiguously repeated (prevents fragmentation like A, B, A)
+    compressed = [cats[0]] + [c for c, prev in zip(cats[1:], cats[:-1]) if c != prev]
+    if len(compressed) != len(set(compressed)):
+        return None
+
+    # In Supreme Court filings, Main Petition never follows Affidavit / AOR Certificate
+    if any(
+        prev in {"Affidavit", "AOR's Certificate"} and nxt == MAIN_PETITION_PART
+        for prev, nxt in zip(cats[:-1], cats[1:])
+    ):
+        return None
+
+    return sub
+
+
 def _document_first_page_ownership(
     boundary_proposals: Sequence[Mapping[str, Any]],
     classification_report: Mapping[str, Any],
@@ -1750,6 +1811,35 @@ def _document_first_page_ownership(
         )
         review_reasons: list[str] = []
         type_evidence: list[str] = []
+
+        sub_segments = _can_subdivide_proposal(pages, overlapping)
+        if sub_segments:
+            for sub_idx, sub_item in enumerate(sub_segments, start=1):
+                sub_pages = list(sub_item["source_pages"])
+                cat = str(sub_item["category"]).strip()
+                for page in sub_pages:
+                    labels = page_parts.setdefault(page, [])
+                    if cat not in labels:
+                        labels.append(cat)
+                    covered.add(page)
+                segment = {
+                    "segment_id": f"{proposal.get('segment_id', f'boundary-{index}')}.{sub_idx}",
+                    "category": cat,
+                    "pages": sub_pages,
+                    "start_page": sub_pages[0],
+                    "end_page": sub_pages[-1],
+                    "boundary_evidence": [
+                        str(proposal.get("source") or "boundary_detection"),
+                        "contiguous_physical_source_pages",
+                        "subdivided_by_classification",
+                    ],
+                    "type_evidence": ["exact_complete_segment_classification"],
+                    "confidence": float(sub_item.get("confidence") or 0.95),
+                    "review_reasons": [],
+                    "reported_categories": [cat],
+                }
+                segments.append(segment)
+            continue
 
         if len(exact) == 1:
             category = str(exact[0]["category"]).strip()

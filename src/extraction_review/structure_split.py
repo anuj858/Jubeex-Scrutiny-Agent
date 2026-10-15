@@ -25,9 +25,11 @@ from pypdf import PdfReader
 
 from .document_parts import (
     ANNEXURE_FAMILY,
+    APPLICATION_FAMILY,
     MAIN_PETITION_PART,
     PagePartMap,
     annexure_label_from_text,
+    annexure_ref_in_heading,
     family_split_name,
     normalize_part_name,
     page_ranges,
@@ -1971,6 +1973,192 @@ def _restore_annexed_lower_court_petitions(
     return updated, evidence_by_page
 
 
+def _stabilize_annexure_zone_and_single_continuation(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> tuple[PagePartMap, dict[int, tuple[str, ...]]]:
+    """Ensure outer documents have a single contiguous run, and annexures remain continuous.
+
+    1. Outer petition documents (Checklist, Cover, Index, Office Report, Listing,
+       Synopsis, LOD, Impugned Order, Main Petition, Certificate, Affidavit, Appendix,
+       and front Record of Proceedings) keep strictly their first contiguous run.
+    2. Any later occurrence of these outer doc types inside the Annexure Zone
+       (between petition closing and back matter) is an enclosed exhibit/lower court
+       filing and is demoted to ANNEXURE_FAMILY.
+    3. Trailing Index (immediately preceding Vakalatnama in back matter) is renamed
+       to Filing Memo.
+    4. Scanned/unassigned/uncategorized pages inside the Annexure Zone inherit the
+       active Annexure label instead of dropping into Undefined.
+    5. Genuine outer Applications (e.g. Supreme Court I.A.s) between whole annexures
+       or in back matter are preserved.
+    """
+    updated = _copy_page_parts(page_parts)
+    evidence_by_page: dict[int, tuple[str, ...]] = {}
+
+    main_pages = sorted(
+        page
+        for page, names in updated.items()
+        if MAIN_PETITION_PART in parts_on_page(names)
+    )
+    if not main_pages:
+        return updated, evidence_by_page
+
+    has_any_annexure = any(
+        family_split_name(name) == ANNEXURE_FAMILY
+        for names in updated.values()
+        for name in parts_on_page(names)
+    )
+    if not has_any_annexure:
+        return updated, evidence_by_page
+
+    outer_main_start = main_pages[0]
+    shell_parts = {
+        MAIN_PETITION_PART,
+        "AOR's Certificate",
+        "AOR's Declaration",
+        "Affidavit",
+        "Appendix",
+    }
+    outer_shell_end = outer_main_start
+    for p in range(outer_main_start, page_count + 1):
+        names = parts_on_page(updated.get(p))
+        if any(name in shell_parts for name in names):
+            outer_shell_end = p
+        elif names:
+            break
+
+    annexure_zone_start = outer_shell_end + 1
+    if annexure_zone_start > page_count:
+        return updated, evidence_by_page
+
+    outer_parts = {
+        "Advocate's Checklist",
+        "Cover Page",
+        "Index",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Synopsis",
+        "List of Dates & Events",
+        "Impugned Order",
+        MAIN_PETITION_PART,
+        "AOR's Certificate",
+        "AOR's Declaration",
+        "Affidavit",
+        "Appendix",
+        "Record of Proceedings",
+    }
+
+    tail_closing_markers = {
+        "Vakalatnama",
+        "Filing Memo",
+        "Memo of Appearance",
+        "PoA/BR",
+        "Memo of Parties",
+    }
+    last_page_names = parts_on_page(updated.get(page_count))
+    if "Affidavit" in last_page_names:
+        tail_closing_markers.add("Affidavit")
+
+    back_matter_start = page_count + 1
+    for p in range(annexure_zone_start, page_count + 1):
+        names = parts_on_page(updated.get(p))
+        if any(name in tail_closing_markers for name in names):
+            back_matter_start = p
+            break
+
+    # If 1-2 pages immediately before back_matter_start is Index or Proof of Service, include in back matter
+    if back_matter_start <= page_count:
+        if back_matter_start > annexure_zone_start:
+            prev_names = parts_on_page(updated.get(back_matter_start - 1))
+            if "Index" in prev_names:
+                back_matter_start -= 1
+                updated[back_matter_start] = ["Filing Memo"]
+                evidence_by_page[back_matter_start] = ("trailing_index_is_filing_memo",)
+            elif "Proof of Service" in prev_names:
+                back_matter_start -= 1
+
+    active_annexure = "Annexures"
+    for p in range(annexure_zone_start, min(annexure_zone_start + 10, page_count + 1)):
+        for name in parts_on_page(updated.get(p)):
+            if family_split_name(name) == ANNEXURE_FAMILY:
+                active_annexure = name
+                break
+
+    # Determine qualified outer applications in post-petition zone:
+    # A genuine outer Application must be >= 2 pages and not followed by a large block of annexures (> 15 pages)
+    app_pages = sorted(
+        p for p in range(annexure_zone_start, back_matter_start)
+        if any(family_split_name(n) == APPLICATION_FAMILY for n in parts_on_page(updated.get(p)))
+    )
+    keep_apps: set[int] = set()
+    if app_pages:
+        from .document_parts import _contiguous_groups
+        for st, en in _contiguous_groups(app_pages):
+            count = en - st + 1
+            annex_after = sum(
+                1 for p in range(en + 1, back_matter_start)
+                if any(family_split_name(n) == ANNEXURE_FAMILY for n in parts_on_page(updated.get(p)))
+                or not parts_on_page(updated.get(p))
+                or parts_on_page(updated.get(p)) in (["uncategorized"], ["Undefined"], ["Unidentified"])
+            )
+            if count >= 2 and annex_after <= 15:
+                keep_apps.update(range(st, en + 1))
+
+    for p in range(annexure_zone_start, back_matter_start):
+        names = parts_on_page(updated.get(p))
+        text = page_text.get(p, "")
+
+        is_outer_app = (
+            p in keep_apps
+            or (
+                page_starts_application(text)
+                and _is_sci_caption(text)
+                and not _is_lower_court_caption(text)
+            )
+        )
+        if is_outer_app:
+            continue
+
+        stamp = annexure_ref_in_heading(text)
+        if stamp:
+            active_annexure = stamp.label
+            updated[p] = [active_annexure]
+            evidence_by_page[p] = ("stamped_annexure_opening",)
+            continue
+
+        has_outer = any(n in outer_parts or n == "Proof of Service" for n in names)
+        if has_outer:
+            updated[p] = [active_annexure]
+            evidence_by_page[p] = ("demoted_outer_document_in_annexure_zone",)
+            continue
+
+        existing_annex = [n for n in names if family_split_name(n) == ANNEXURE_FAMILY]
+        if existing_annex:
+            active_annexure = existing_annex[0]
+            continue
+
+        updated[p] = [active_annexure]
+        evidence_by_page[p] = ("annexure_zone_continuation",)
+
+    # In back matter:
+    for p in range(back_matter_start, page_count + 1):
+        names = parts_on_page(updated.get(p))
+        if "Index" in names:
+            updated[p] = ["Filing Memo"]
+            evidence_by_page[p] = ("trailing_index_is_filing_memo",)
+        elif not names or names == ["uncategorized"] or names == ["Undefined"] or names == ["Unidentified"]:
+            prev = parts_on_page(updated.get(p - 1))
+            if prev and (
+                family_split_name(prev[0]) in {ANNEXURE_FAMILY, APPLICATION_FAMILY}
+                or prev[0] in {"Proof of Service", "Filing Memo", "Vakalatnama", "Memo of Appearance"}
+            ):
+                updated[p] = prev
+                evidence_by_page[p] = ("back_matter_continuation",)
+
+    return updated, evidence_by_page
+
+
 def structure_aware_split(
     pdf_bytes: bytes,
     *,
@@ -2245,6 +2433,15 @@ def structure_aware_split(
             lower_court_map,
             reason="lower_court_petition_cannot_be_sci_main_petition",
             evidence_by_page=lower_court_evidence,
+        )
+        stabilized_map, stabilized_evidence = _stabilize_annexure_zone_and_single_continuation(
+            page_parts, texts, len(units)
+        )
+        apply_map(
+            "annexure_zone_and_single_continuation",
+            stabilized_map,
+            reason="single_continuation_outer_docs_and_annexure_continuity",
+            evidence_by_page=stabilized_evidence,
         )
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the
