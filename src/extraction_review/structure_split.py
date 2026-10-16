@@ -1022,7 +1022,7 @@ _STRONG_RECONCILIATION_SIGNALS = frozenset(
         "application_start",
     }
 )
-_UNIDENTIFIED_LABELS = frozenset({"Undefined", "Unidentified", "other"})
+_UNIDENTIFIED_LABELS = frozenset({"Undefined", "Unidentified", "uncategorized", "other"})
 
 
 def _copy_page_parts(
@@ -1424,7 +1424,6 @@ def reconcile_compiled_split(
             )
         )
         return original, []
-    indexed = _index_supported_map(original, page_text, page_count)
     result = _copy_page_parts(original)
     changes: list[ReconciliationChange] = []
 
@@ -1472,6 +1471,11 @@ def reconcile_compiled_split(
     for pass_number in range(1, iteration_limit + 1):
         iteration = pass_number
         pass_input = _copy_page_parts(result)
+        # The master Index itself can be mislabeled by Llama (often as a Cover
+        # Page). Once the first pass restores its ownership, later passes must
+        # see its folio evidence. A map frozen from the initial Llama labels
+        # would keep all of those annexure corrections "left_for_review".
+        indexed = _index_supported_map(pass_input, page_text, page_count)
         pass_start = len(changes)
         changed_in_iteration = False
         candidate_validation = validate_reconciliation_page_map(
@@ -1705,13 +1709,33 @@ def reconcile_compiled_split(
                 if segment.confidence >= 0.85
                 and not _segment_classification_supports_labels(segment, new)
             ]
+            # The page classifier intentionally calls every application
+            # opening "Application 1"; that is a type placeholder, not its
+            # ordinal in this filing.  A verified Index range and the page's
+            # own SCI application opening may correct a stale Llama ordinal.
+            index_proves_application_identity = bool(
+                "master_index_and_folio" in evidence
+                and len(new) == 1
+                and family_split_name(new[0]) == "Application"
+                and _is_sci_caption(page_text.get(page, ""))
+                and page_starts_application(page_text.get(page, ""))
+                and (folio := _printed_folio(page_text.get(page, "")))
+                and folio[0] == "number"
+            )
             semantic_ok = (
                 not (
                     direct
                     and direct.confidence >= 0.85
                     and not classification_supports_labels(direct, new)
+                    and not index_proves_application_identity
                 )
-                and not semantic_conflicts
+                # A confirmed Index+physical-folio span can contain a court
+                # heading or exhibit title inside the reproduced record. The
+                # complete-segment classifier reads that body as a fresh
+                # document; it must not veto the proven outer page owner.
+                # A contradictory strong opening on this very page still
+                # blocks the change via the direct-classification check above.
+                and (not semantic_conflicts or "master_index_and_folio" in evidence)
             )
             validation = {
                 "structural": structural,

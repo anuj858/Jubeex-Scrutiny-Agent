@@ -4261,6 +4261,82 @@ def test_index_does_not_invent_an_omitted_annexure_from_neighbour_offsets() -> N
     assert repaired[101] == ["Annexure P-3"]
 
 
+def test_bracketed_index_offset_recovers_unreadable_annexure_stamps() -> None:
+    from extraction_review.split_repair import _apply_indexed_annexure_ranges
+
+    texts = {
+        1: (
+            "INDEX OF PAPERS\nParticulars of Documents Page No.\n"
+            "11.\tAppendix\t43-44\n"
+            "12.\tAnnexure A-1 FIR\t45-50\n"
+            "26.\tAnnexure A-15 Deposition\t115-117\n"
+            "27.\tAnnexure A-16 Deposition\t118-120\n"
+            "31.\tAnnexure A-20 Deposition\t142-144\n"
+            "Annexure A-21:\nTrue translated copy of Judgment\n145-200\n"
+            "33.\tAnnexure A-22 Appeal\t201-210\n"
+            "34.\tApplication for exemption\t211-213\n"
+        ),
+        51: "APPENDIX\nSections of the Penal Code",
+        147: "Deposition continuation\n139",
+        219: "IN THE SUPREME COURT OF INDIA\nI.A. NO. OF 2023\n"
+        "APPLICATION FOR EXEMPTION FROM CERTIFIED COPY",
+    }
+    parts = {1: ["Index"], 51: ["Appendix"], 123: ["Annexure A-15"],
+             126: ["Annexure A-15"], 153: ["Annexure A-15"],
+             176: ["Annexure P-68"], 209: ["Annexure P-68"],
+             219: ["Application 1"]}
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, 228)
+
+    assert repaired[123] == ["Annexure A-15"]
+    assert repaired[126] == ["Annexure A-16"]
+    assert repaired[153] == ["Annexure A-21"]
+    assert repaired[176] == ["Annexure A-21"]
+    assert repaired[209] == ["Annexure A-22"]
+    assert repaired[218] == ["Annexure A-22"]
+    assert repaired[219] == ["Application 1"]
+
+    import pymupdf
+
+    from extraction_review.bundle_slicer import slice_bundle_pdf
+    from extraction_review.split_upload import type_catalog
+    from extraction_review.structure_split import PageUnit, structure_aware_split
+
+    with pymupdf.open() as source:
+        for _ in range(228):
+            source.new_page()
+        pdf_bytes = source.tobytes()
+    result = structure_aware_split(
+        pdf_bytes,
+        page_units=[
+            PageUnit(pdf_page=page, text=texts.get(page, ""))
+            for page in range(1, 229)
+        ],
+        llama_page_parts=parts,
+    )
+    assert result.page_parts[126] == ["Annexure A-16"]
+    assert result.page_parts[176] == ["Annexure A-21"]
+    assert result.page_parts[209] == ["Annexure A-22"]
+    outputs = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts
+        )
+    }
+    assert outputs["annexure_a15"].pages == (123, 124, 125)
+    assert outputs["annexure_a16"].pages == (126, 127, 128)
+    assert outputs["annexure_a21"].pages == tuple(range(153, 209))
+    assert outputs["annexure_a22"].pages == tuple(range(209, 219))
+
+    # An Index and two outer headings alone do not prove that every annexure
+    # was physically included. Without the internal folio, preserve the
+    # uncertain original assignments for review.
+    no_folio = {page: text for page, text in texts.items() if page != 147}
+    uncertain = _apply_indexed_annexure_ranges(parts, no_folio, 228)
+    assert uncertain[126] == ["Annexure A-15"]
+    assert uncertain[176] == ["Annexure P-68"]
+
+
 def test_index_content_restores_distinct_judgment_annexure_and_application() -> None:
     from extraction_review.split_repair import (
         _apply_strong_index_content_spans,

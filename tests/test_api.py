@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from extraction_review.api import JOBS, app
@@ -37,6 +38,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(
         "extraction_review.api.prepare_extracted_filing_for_scrutiny",
         _skip_prepare,
+    )
+
+    async def _existing_filing(_agent_data_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        _existing_filing,
     )
     return TestClient(app)
 
@@ -236,9 +245,7 @@ def test_api_key_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
 
 
-def test_approve_filing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_approve_filing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     stored = {
         "status": "pending_review",
         "file_name": "Cover Page.pdf",
@@ -475,7 +482,9 @@ def test_split_petition_requires_filing_type(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_split_petition_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_split_petition_accepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     prepared = BundlePrepared(filing_type="SLP_CIVIL", parsed_slots=[])
     monkeypatch.setattr(
         "extraction_review.api.process_file_workflow.run",
@@ -588,7 +597,9 @@ def test_verify_document_accepts_multiple_files(
     assert {"type", "match", "documents"} <= set(result.keys())
 
 
-def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_extract_only_accepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     prepared = BundlePrepared(
         filing_type="SLP_CIVIL",
         agent_data_id="agd-extract-1",
@@ -609,6 +620,7 @@ def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatc
         "/v1/filings/extract",
         json={
             "filing_type": "SLP_CIVIL",
+            "agent_data_id": "agd-existing",
             "documents": [
                 _doc("01_Petition.pdf"),
                 _doc("cover_page.pdf"),
@@ -617,6 +629,7 @@ def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatc
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "job_type") == "extract_only"
+    assert getattr(captured["event"], "agent_data_id") == "agd-existing"
 
 
 def test_extract_front_accepts_like_extract(
@@ -726,13 +739,16 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     assert notified.get("kind") == "scrutiny"
 
 
-def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_index_edited_false(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-index-2")
     captured: dict[str, object] = {}
     monkeypatch.setattr(
         "extraction_review.api.process_file_workflow.run",
-        lambda start_event: captured.update(event=start_event)
-        or ImmediateHandler(prepared),
+        lambda start_event: (
+            captured.update(event=start_event) or ImmediateHandler(prepared)
+        ),
     )
     response = client.post(
         "/v1/filings/agd-index-2/index",

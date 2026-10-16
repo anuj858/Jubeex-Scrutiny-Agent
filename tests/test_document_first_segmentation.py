@@ -7,6 +7,7 @@ from extraction_review.bundle_slicer import (
     slice_bundle_pdf,
     validate_sliced_page_ownership,
 )
+from extraction_review.document_parts import annexure_ref_in_heading
 from extraction_review.process_file import (
     _document_first_page_ownership,
     attach_split_output_trace,
@@ -54,6 +55,165 @@ def test_internal_cover_page_heading_does_not_split_annexure() -> None:
     assert segments[0]["pages"] == [1, 2, 3]
     assert segments[0]["review_reasons"] == ["conflicting_categories_inside_boundary"]
     assert issues[0]["code"] == "boundary_classification_conflict"
+
+
+def test_bare_p22_folio_in_testimony_does_not_create_annexure_pdf() -> None:
+    """A scanned continuation folio must not override reconciled boundaries."""
+    texts = {
+        1: "ANNEXURE A-20\nDeposition of witness",
+        2: "P22\n_ are any criminal cases against the deceased I do not remember",
+        3: "The witness testimony continues on this page",
+        4: "ANNEXURE A-21\nJudgment of the Sessions Court",
+        5: "Judgment continues",
+    }
+    assert annexure_ref_in_heading(texts[2]) is None
+    assert annexure_ref_in_heading("P22\nTRUE COPY OF THE ORDER").label == "Annexure P-22"
+    with pymupdf.open() as source:
+        for page in range(1, 6):
+            source.new_page().insert_text((72, 72), f"SOURCE PAGE {page}")
+        pdf_bytes = source.tobytes()
+    result = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts={
+            1: ["Annexure A-20"],
+            2: ["Annexure P-22"],
+            3: ["Annexure P-22"],
+            4: ["Annexure A-21"],
+            5: ["Annexure A-21"],
+        },
+        page_units=[PageUnit(pdf_page=page, text=texts[page]) for page in range(1, 6)],
+        authoritative_boundary_pages=[1, 4],
+    )
+    assert {page: result.page_parts[page] for page in range(1, 6)} == {
+        1: ["Annexure A-20"],
+        2: ["Annexure A-20"],
+        3: ["Annexure A-20"],
+        4: ["Annexure A-21"],
+        5: ["Annexure A-21"],
+    }
+    slices = slice_bundle_pdf(pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts)
+    outputs = {item.slot_id: item for item in slices}
+    assert outputs["annexure_a20"].pages == (1, 2, 3)
+    assert outputs["annexure_a21"].pages == (4, 5)
+    assert "annexure_p22" not in outputs
+
+
+def test_cover_declaration_rop_form_and_master_index_split_into_distinct_pdfs() -> None:
+    """A missed Llama boundary must not make all front matter one Cover/Index."""
+    from extraction_review.split_repair import _looks_like_rop_index_form
+
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nCRIMINAL APPELLATE JURISDICTION\n"
+            "CRIMINAL APPEAL NO. 133 OF 2023\nPAPER BOOK\n"
+            "FOR THE INDEX PLEASE SEE INSIDE"
+        ),
+        2: (
+            "DY. NO. 3125/2023\nDECLARATION\n"
+            "Whetever has been added/deleted /modified\n"
+            "in the petition is the result of curing of defects and nothing else. "
+            "Except curing\n.\nthe defects, nothing has been done. "
+            "Paperbooks are complete in all respects\n"
+            "Signature (S.R.SETIA) 714\nAdvocate on Record for the petitioner"
+        ),
+        3: "INDEX —\nRECORD OF PROCEEDINGS\nS.NO.  PARTICULARS  PAGES\n1.\n2.",
+        4: (
+            "INDEX OF PAPERS\nSl. No.\tParticulars of Documents\tPage No.\n"
+            "1.\tOffice Report on Limitation\tA\n"
+            "2.\tListing Proforma\tA1-A3\n"
+            "3.\tIndex of Record of Proceedings\tA5"
+        ),
+        5: "OFFICE REPORT ON LIMITATION\nFiling details",
+    }
+    assert _looks_like_rop_index_form(texts[3])
+    assert not _looks_like_rop_index_form(texts[4])
+    with pymupdf.open() as source:
+        for page in range(1, 6):
+            source.new_page().insert_text((72, 72), f"SOURCE PAGE {page}")
+        pdf_bytes = source.tobytes()
+    result = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts={
+            **{page: ["Cover Page"] for page in range(1, 5)},
+            5: ["Office Report on Limitation"],
+        },
+        page_units=[PageUnit(pdf_page=page, text=texts[page]) for page in range(1, 6)],
+        authoritative_boundary_pages=[5],
+    )
+    assert [result.page_parts[page] for page in range(1, 6)] == [
+        ["Cover Page"],
+        ["AOR's Declaration"],
+        ["Record of Proceedings"],
+        ["Index"],
+        ["Office Report on Limitation"],
+    ]
+    outputs = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts
+        )
+    }
+    assert outputs["cover_page"].pages == (1,)
+    assert outputs["aor_s_declaration"].pages == (2,)
+    assert outputs["record_of_proceedings"].pages == (3,)
+    assert outputs["index"].pages == (4,)
+
+
+def test_restored_index_rechecks_folio_ranges_after_first_reconciliation_pass() -> None:
+    """A Cover-mislabeled Index must still correct later annexure ownership."""
+    texts = {
+        4: (
+            "INDEX OF PAPERS\n"
+            "11.\tAppendix\t43-44\n"
+            "12.\tAnnexure A-1 FIR\t45-50\n"
+            "29.\tAnnexure A-18 Deposition\t125-134\n"
+            "32.\tAnnexure A-21 Judgment\t145-200\n"
+            "33.\tAnnexure A-22 Appeal\t201-210\n"
+            "34.\tApplication for exemption\t211-213"
+        ),
+        51: "APPENDIX\nSections of the Penal Code",
+        137: "Witness testimony",
+        140: "P22\n_ are any criminal cases against the deceased I do not remember",
+        147: "Deposition continuation\n139",
+        219: (
+            "IN THE SUPREME COURT OF INDIA\nI.A. NO. OF 2023\n"
+            "APPLICATION FOR EXEMPTION"
+        ),
+    }
+    llama = {
+        4: ["Cover Page"],
+        51: ["Appendix"],
+        133: ["Annexures"],
+        **{page: ["Record of Proceedings"] for page in range(137, 143)},
+        153: ["Annexures"],
+        209: ["Main Petition"],
+        219: ["Application 1"],
+    }
+    with pymupdf.open() as source:
+        for _ in range(228):
+            source.new_page()
+        pdf_bytes = source.tobytes()
+    result = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts=llama,
+        page_units=[
+            PageUnit(pdf_page=page, text=texts.get(page, ""))
+            for page in range(1, 229)
+        ],
+        authoritative_boundary_pages=[4, 51, 53, 133, 137, 153, 209, 219],
+    )
+    assert result.page_parts[4] == ["Index"]
+    assert all(result.page_parts[page] == ["Annexure A-18"] for page in range(133, 143))
+    assert result.page_parts[153] == ["Annexure A-21"]
+    assert result.page_parts[209] == ["Annexure A-22"]
+    outputs = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts
+        )
+    }
+    assert outputs["annexure_a18"].pages == tuple(range(133, 143))
+    assert "annexure_p22" not in outputs
 
 
 def test_petition_word_in_annexure_body_does_not_change_owner() -> None:

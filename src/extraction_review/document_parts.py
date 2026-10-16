@@ -784,6 +784,14 @@ def _annexure_mark_from_title_or_stamp(
             r"(?i)^is\s+a\s+copy\b", remainder
         ):
             continue
+        if match.groupdict().get("bare_num") and len(lines) > 1:
+            # A bare folio at the top of a scanned continuation is not an
+            # annexure stamp. In particular, OCR reads the printed folio
+            # "P22" above continuing witness testimony as Annexure P-22.
+            # Keep bare stamps whose next line actually opens a document.
+            next_line = lines[1].lstrip("_ .;:–—-\t")
+            if next_line and next_line[0].islower():
+                continue
         return mark
 
     def _mark_from_title_line(
@@ -829,6 +837,10 @@ def _annexure_mark_from_title_or_stamp(
         # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
         remainder = line[match.end() :].strip(" .;:-~_|")
         bare = bool(match.groupdict().get("bare_num"))
+        if bare and line == lines[0] and len(lines) > 1:
+            next_line = lines[1].lstrip("_ .;:–—-\t")
+            if next_line and next_line[0].islower():
+                return None
         # OCR body noise such as "e 2 ." must not open Annexure E-2. Real
         # bare paper-book stamps use an uppercase series letter.
         if bare and line.lstrip()[:1] not in {"P", "R", "E"}:

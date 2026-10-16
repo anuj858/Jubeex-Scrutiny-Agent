@@ -1,7 +1,9 @@
 from importlib.metadata import version
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from llama_cloud import NotFoundError
 from llama_cloud_fake import FakeLlamaCloudServer
 from workflows.events import StartEvent
 
@@ -17,6 +19,19 @@ from extraction_review.process_file import workflow as process_file_workflow
 
 FILING_TYPES = set(JUBEEX_FILING_TYPES)
 FAKE_HAS_CLASSIFY_V2 = version("llama-cloud-fake") >= "0.1.1"
+
+
+def _agent_data_not_found(item_id: str) -> NotFoundError:
+    return NotFoundError(
+        f"Agent Data {item_id} not found",
+        response=httpx.Response(
+            404,
+            request=httpx.Request(
+                "GET", f"https://api.cloud.llamaindex.ai/agent-data/{item_id}"
+            ),
+        ),
+        body={"detail": "Agent data not found"},
+    )
 
 
 @pytest.mark.asyncio
@@ -225,6 +240,58 @@ async def test_extract_only_skips_index_and_limits_parse_scope(
     assert "petition" in captured["parsed_slots"]
     assert "annexure_p1" not in captured["parsed_slots"]
     assert result.report is None
+
+
+@pytest.mark.asyncio
+async def test_extract_only_recovers_when_existing_agent_data_was_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-replacement"
+
+    class MissingAgentData:
+        async def get(self, item_id: str):
+            raise _agent_data_not_found(item_id)
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=MissingAgentData())
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="extract_only",
+        filing_type="SLP_CIVIL",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        agent_data_id="agd-deleted",
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition",
+                "name": "01_Petition.pdf",
+            }
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _event: None)
+    result = await _run_split_from_file_event(  # type: ignore[arg-type]
+        event,
+        ctx,
+        FakeClient(),
+    )
+
+    assert result.agent_data_id == "agd-replacement"
+    assert captured["agent_data_id"] == "agd-deleted"
 
 
 @pytest.mark.asyncio
