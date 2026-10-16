@@ -669,6 +669,35 @@ def test_extract_front_accepts_like_extract(
     assert len(getattr(event, "documents")) == 1
 
 
+def test_extract_front_classifies_when_filing_type_is_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        parsed_slots=["petition"],
+        result={"filing_type": "SLP_CIVIL"},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={"documents": [_doc("compiled.pdf")]},
+    )
+
+    assert response.status_code == 202
+    event = captured["event"]
+    assert event.job_type == "extract_front"
+    assert event.filing_type is None
+
+
 def test_extract_front_rejects_split_documents(client: TestClient) -> None:
     response = client.post(
         "/v1/filings/extract-front",

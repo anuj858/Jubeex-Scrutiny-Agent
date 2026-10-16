@@ -14,7 +14,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
@@ -187,6 +187,7 @@ class FilingDocumentsRequest(BaseModel):
     """Shared body for split-petition / verify / extract / index."""
 
     model_config = ConfigDict(extra="ignore")
+    allow_missing_filing_type: ClassVar[bool] = False
 
     filing_type: str | None = Field(
         default=None,
@@ -223,7 +224,7 @@ class FilingDocumentsRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_filing_type_and_documents(self) -> FilingDocumentsRequest:
-        if not self.filing_type:
+        if not self.filing_type and not self.allow_missing_filing_type:
             raise ValueError(
                 "filing_type is required. Use a real type such as SLP_CIVIL."
             )
@@ -235,6 +236,25 @@ class FilingDocumentsRequest(BaseModel):
             )
         if not self.documents:
             raise ValueError("documents[] is required")
+        return self
+
+
+class ExtractFrontRequest(FilingDocumentsRequest):
+    """Compiled-PDF intake, where the filing type may be classified by the agent."""
+
+    allow_missing_filing_type: ClassVar[bool] = True
+
+    @model_validator(mode="after")
+    def _require_filing_type_and_documents(self) -> ExtractFrontRequest:
+        if not self.documents:
+            raise ValueError("documents[] is required")
+        if self.filing_type:
+            catalog_types = set(ui_catalog())
+            if catalog_types and self.filing_type not in catalog_types:
+                allowed = ", ".join(sorted(catalog_types))
+                raise ValueError(
+                    f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+                )
         return self
 
 
@@ -897,7 +917,7 @@ async def extract_only(
     dependencies=[Depends(require_api_key)],
 )
 async def extract_front(
-    body: FilingDocumentsRequest,
+    body: ExtractFrontRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
     """Same body as extract, with one compiled PDF. Parses an opening slice and the last 5 pages."""
