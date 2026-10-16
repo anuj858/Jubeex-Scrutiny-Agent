@@ -618,7 +618,8 @@ def refresh_catalogue() -> Catalogue:
         logger.exception("[Scrutiny] Database catalogue unavailable")
         raise RuntimeError(
             "Defect catalogue could not be loaded from the database. "
-            "Set CATALOGUE_DATABASE_URL to the hub database."
+            "Check CATALOGUE_DATABASE_URL connectivity and the catalogue reader's "
+            "database permissions; see the preceding error for the exact cause."
         ) from exc
 
     _catalogue_cache.value = catalogue

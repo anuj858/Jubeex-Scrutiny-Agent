@@ -7,9 +7,12 @@ Parse never writes these tables. Defect checks always read ``v_parse_*`` with
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date, datetime
 from typing import Any
+
+from psycopg import errors
 
 from .rules import (
     Catalogue,
@@ -19,6 +22,8 @@ from .rules import (
     normalize_filing_type,
     rewrite_location_source,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def catalogue_database_url() -> str:
@@ -114,11 +119,21 @@ def _attach_remediation_config(cur: Any, defect_rows: list[dict[str, Any]]) -> N
     ]
     if not codes:
         return
-    cur.execute(
-        "SELECT code, remediation_config FROM hub_defects WHERE code = ANY(%s)",
-        (codes,),
-    )
-    by_code = {str(code): config for code, config in cur.fetchall()}
+    try:
+        # A nested transaction creates a savepoint, so a denied optional lookup
+        # cannot poison the transaction used for the remaining catalogue views.
+        with cur.connection.transaction():
+            cur.execute(
+                "SELECT code, remediation_config FROM hub_defects WHERE code = ANY(%s)",
+                (codes,),
+            )
+            by_code = {str(code): config for code, config in cur.fetchall()}
+    except errors.InsufficientPrivilege:
+        logger.warning(
+            "[Scrutiny] Catalogue reader lacks remediation_config access; "
+            "continuing without remediation actions until migration 0085 is applied"
+        )
+        return
     for row in defect_rows:
         code = str(row.get("check_id") or "").strip()
         if code in by_code:

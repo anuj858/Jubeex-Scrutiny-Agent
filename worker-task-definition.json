@@ -7,6 +7,9 @@
       "portMappings": [],
       "essential": true,
       "entryPoint": [
+        "/app/scripts/start.sh"
+      ],
+      "command": [
         "uv",
         "run",
         "jubeex-sqs-worker"
