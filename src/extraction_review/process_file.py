@@ -1247,7 +1247,7 @@ def _boundary_detection_configuration(
     page_units: Sequence[PageUnit], *, page_count: int
 ) -> dict[str, Any]:
     """Build a compact, boundary-only Split request from parsed page evidence."""
-    evidence: list[str] = []
+    evidence: list[tuple[int, int, str]] = []
     selected = list(page_units)
     for unit in selected:
         headings = getattr(unit, "headings", ())
@@ -1274,7 +1274,18 @@ def _boundary_detection_configuration(
             excerpt = re.sub(r"\s+", " ", getattr(unit, "text", "")).strip()[:100]
             if excerpt:
                 cues.append("text=" + excerpt)
-        evidence.append(f"PDF page {unit.pdf_page}: " + "; ".join(cues))
+        # Strong starts must compete on evidence, not on their position in the
+        # file. Long bundles used to lose every cue after the first ~50 pages.
+        priority = (
+            10 * bool(annexure_labels)
+            + 8 * bool(headings)
+            + 3 * bool(closing_section)
+            + 2 * bool(paragraph_starts)
+            + bool(getattr(unit, "signature_detected", False))
+        )
+        evidence.append(
+            (unit.pdf_page, priority, f"PDF page {unit.pdf_page}: " + "; ".join(cues))
+        )
     prefix = (
         "BOUNDARY DETECTION ONLY. Do not classify legal document types. "
         f"Analyze all {page_count} physical PDF pages and propose document starts, "
@@ -1284,12 +1295,45 @@ def _boundary_detection_configuration(
         "a continuation page lacks a repeated heading. Mark ambiguous transitions for review.\n"
         "Parsed page cues (physical page order):\n"
     )
-    cue_lines = list(evidence)
-    omission = "[additional page cues omitted because of request-size limit; review]"
+    # Select across the entire file, with high-evidence pages first. Reserve
+    # space for the first/last page and distribute the rest by physical-page
+    # bucket so late annexures are not silently excluded by prompt truncation.
+    omission = (
+        "[Page cues are sampled across the PDF; inspect uncued pages in the PDF itself.]"
+    )
+    budget = _SPLIT_CUSTOM_INSTRUCTIONS_MAX - len(prefix) - len(omission) - 2
+    bucket_width = max(1, (page_count + 15) // 16)
+    buckets: dict[int, list[tuple[int, int, str]]] = {}
+    chosen: list[tuple[int, int, str]] = []
+    used = 0
+    endpoints = {1, page_count}
+    for item in evidence:
+        if item[0] in endpoints and used + len(item[2]) + 1 <= budget:
+            chosen.append(item)
+            used += len(item[2]) + 1
+            continue
+        buckets.setdefault((item[0] - 1) // bucket_width, []).append(item)
+    for bucket in buckets.values():
+        bucket.sort(key=lambda item: (-item[1], item[0]))
+    while any(buckets.values()):
+        progressed = False
+        for bucket in buckets.values():
+            if not bucket:
+                continue
+            item = bucket.pop(0)
+            line = item[2]
+            if used + len(line) + 1 > budget:
+                continue
+            chosen.append(item)
+            used += len(line) + 1
+            progressed = True
+        if not progressed:
+            break
+    chosen.sort(key=lambda item: item[0])
+    cue_lines = [item[2] for item in chosen]
     instruction = prefix + "\n".join(cue_lines)
-    while len(instruction) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX and cue_lines:
-        cue_lines.pop()
-        instruction = prefix + "\n".join(cue_lines + [omission])
+    if len(chosen) < len(evidence):
+        instruction += "\n" + omission
     if len(instruction) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
         raise ValueError("Boundary-only instructions exceed the Split API character limit")
     return {
@@ -2950,7 +2994,7 @@ class ProcessFileWorkflow(Workflow):
             "validation": boundary_validation,
             "seconds": round(boundary_seconds, 3),
             "evidence_page_count": len(page_units),
-            "evidence_complete": "additional page cues omitted"
+            "evidence_complete": "Page cues are sampled"
             not in boundary_config["splitting_strategy"]["custom_instructions"],
         }
         split_audit["llama_segment_classification"] = {

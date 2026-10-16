@@ -47,6 +47,29 @@ def test_boundary_request_is_separate_from_canonical_classification_rules() -> N
     assert len(instructions) <= 5000
 
 
+def test_boundary_request_samples_late_annexures_in_long_bundle() -> None:
+    units = [
+        PageUnit(
+            pdf_page=page,
+            text=f"ordinary continuation text on page {page}",
+            headings=(f"ANNEXURE A-{page // 3}",) if page in {123, 153, 209} else (),
+            annexure_labels=(f"Annexure A-{page // 3}",) if page in {123, 153, 209} else (),
+        )
+        for page in range(1, 229)
+    ]
+
+    instructions = _boundary_detection_configuration(
+        units, page_count=228
+    )["splitting_strategy"]["custom_instructions"]
+
+    assert len(instructions) <= 5000
+    assert "PDF page 123:" in instructions
+    assert "PDF page 153:" in instructions
+    assert "PDF page 209:" in instructions
+    assert "PDF page 228:" in instructions
+    assert "Page cues are sampled" in instructions
+
+
 def test_boundary_response_proposes_exact_physical_spans_and_gaps_for_review() -> None:
     exchange = {
         "returned": {

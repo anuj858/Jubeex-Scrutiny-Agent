@@ -50,6 +50,38 @@ def test_index_recovers_two_missing_ranges_only_from_unique_openings() -> None:
     )
 
 
+def test_index_recovers_unnumbered_annexure_only_with_explicit_range() -> None:
+    text = (
+        "INDEX OF PAPERS\nParticulars of Documents Page No.\n"
+        "31.\tAnnexure A-20 Deposition\t142-144\n"
+        "Annexure A-21:\nTrue translated copy of Judgment\n145-200\n"
+        "33.\tAnnexure A-22 Appeal\t201-210\n"
+    )
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: text})
+    assert ("Annexure A-21", 145, 200) in {
+        (row.mapped_part, row.start, row.end) for row in rows
+    }
+
+    without_range = text.replace("145-200", "page column unreadable")
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: without_range})
+    assert not any(row.mapped_part == "Annexure A-21" for row in rows)
+
+
+def test_index_recovers_appendix_with_ocr_damaged_serial() -> None:
+    rows = aligned_index_printed_rows(
+        {1: ["Index"]},
+        {1: (
+            "INDEX OF PAPERS\nParticulars of Documents Page No.\n"
+            "10. | Criminal Appeal with affidavit 18-42\n"
+            "“Ii. | Appendix — U/S 147,148,120 B, 43-44\n"
+            "12. | Annexure A-1: 45-50\n"
+        )},
+    )
+    assert ("Appendix", 43, 44) in {
+        (row.mapped_part, row.start, row.end) for row in rows
+    }
+
+
 def test_map_index_particulars_to_common_parts() -> None:
     assert map_index_particulars_to_part("Office Report on Limitation") == (
         "Office Report on Limitation"

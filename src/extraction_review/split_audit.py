@@ -822,6 +822,26 @@ def aligned_index_printed_rows(
         (row.mapped_part, row.kind, row.start, row.end, row.end_suffix): row
         for row in rows
     }
+    # OCR can turn the serial for an Appendix row into "Ii." while keeping
+    # its title and page column on one line. Preserve that explicit range:
+    # it is also an independent anchor before the annexure sequence.
+    if not any(row.mapped_part == "Appendix" for row in unique.values()):
+        appendix_lines = re.findall(
+            r"(?im)^[^\n]{0,25}\bAPPENDIX\b[^\n]{0,100}?\b(\d{1,4})\s*[-–—]\s*(\d{1,4})(?!\d)",
+            index_text,
+        )
+        spans = {(int(start), int(end)) for start, end in appendix_lines}
+        if len(spans) == 1:
+            start, end = next(iter(spans))
+            if 0 < start <= end:
+                recovered = IndexPrintedRow(
+                    mapped_part="Appendix",
+                    particulars="Appendix",
+                    kind="number",
+                    start=start,
+                    end=end,
+                )
+                unique[("Appendix", "number", start, end, "")] = recovered
     annexure_rows = sorted(
         (row for row in unique.values() if annexure_key(row)),
         key=lambda row: (annexure_key(row) or ("", 0), row.start, row.end),
@@ -846,7 +866,21 @@ def aligned_index_printed_rows(
         )
         if not explicit:
             continue
-        if not single_unresolved_inventory_row(previous, following, missing_label):
+        # A scanned Index can retain an explicit Annexure title and its page
+        # column while losing only the serial number. In that case the normal
+        # inventory parser has no row to match. Recover the exact printed
+        # range only when it is visible after that title and before the next
+        # Annexure title; the neighbouring rows must also leave that precise
+        # range. This does not infer an omitted document from numbering alone.
+        next_label = re.search(r"\bANNEXURE\s+[A-Z]\s*[-/]\s*\d+\b", index_text[explicit.end():], re.IGNORECASE)
+        title_region = index_text[explicit.end(): explicit.end() + (next_label.start() if next_label else 250)]
+        exact_printed_range = bool(
+            re.search(rf"(?<!\d){start}\s*[-–—]\s*{end}(?!\d)", title_region[:250])
+        )
+        if not (
+            single_unresolved_inventory_row(previous, following, missing_label)
+            or exact_printed_range
+        ):
             continue
         recovered = IndexPrintedRow(
             mapped_part=missing_label,
@@ -949,8 +983,26 @@ def aligned_index_printed_rows(
         if upper <= previous.end + 1:
             continue
         label = f"Annexure {series}-{number}"
-        if following is None or not single_unresolved_inventory_row(
-            previous, following, label
+        # OCR may put the serial and Annexure title on separate lines at the
+        # foot of one Index sheet, then put the particulars and page column
+        # on the next sheet.  ``parse_index_rows`` cannot represent that row,
+        # but the independently printed serial/title still identifies it.
+        # Require that exact standalone shape as well as the bounded gap below;
+        # a mere mention of an Annexure in another Index row is insufficient.
+        standalone_title = re.search(
+            rf"(?im)^\s*annexure\s*{re.escape(series)}\s*[-/]\s*{number}\s*[:;.]?\s*$",
+            index_text,
+        )
+        standalone_serial = bool(
+            standalone_title
+            and re.search(
+                r"(?m)^\s*\d{1,3}[.)]\s*$",
+                index_text[max(0, standalone_title.start() - 45):standalone_title.start()],
+            )
+        )
+        if following is None or not (
+            single_unresolved_inventory_row(previous, following, label)
+            or standalone_serial
         ):
             continue
         covered = sorted(
