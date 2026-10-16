@@ -510,38 +510,36 @@ class FrontExtractRecord(LegalExtractRecord):
     court: str | None = Field(
         default=None,
         description=(
-            "Court where the petition is filed, as printed in the opening of "
-            "this 30-page slice. Leave null when it is not printed there."
+            "Court where the petition is filed (e.g. Supreme Court of India, High Court of Delhi), "
+            "as printed on the cover page, petition heading, or memo of parties."
         ),
     )
     petition_type: str | None = Field(
         default=None,
         description=(
-            "Petition type as printed at the opening of the Main Petition, "
-            "for example Special Leave Petition (Civil) or Writ Petition (Criminal). "
-            "Leave null when it is not printed there."
+            "Petition type (e.g. Special Leave Petition (Civil), Special Leave Petition (Crl.), "
+            "Writ Petition (Civil), Transfer Petition), as printed on the cover page, cause title, or petition heading."
         ),
     )
     special_category: str | None = Field(
         default=None,
         description=(
-            "Matter subtype printed at the opening of the Main Petition, "
-            "such as Tax Matters. Leave null when it is not printed. "
-            "Do not infer it."
+            "Matter subtype or subject classification printed in the filing, "
+            "such as Tax Matters. Leave null when not explicitly printed."
         ),
     )
     cause_title: CauseTitle | None = Field(
         default=None,
         description=(
-            "Cause title from the opening of the Main Petition in this "
-            "30-page slice. Leave null when it is not printed there."
+            "Cause title from the filing. Formatted title should be '<Petitioner Name(s)> VS <Respondent Name(s)>'. "
+            "Also extract main_petitioner and main_respondent."
         ),
     )
     petitioners: list[Party] = Field(
         default_factory=list,
         description=(
-            "Petitioners. Extract every petitioner from the starting pages of the Main "
-            "Petition (and Memo of Parties / Position of Parties if present). "
+            "List of all petitioners. Extract every petitioner from the Memo of Parties, Position of Parties, "
+            "Cause Title, Parties Schedule, Vakalatnama, or Petition opening (whichever provides the most complete details). "
             "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
             "guardian (father/mother/husband name), age, occupation, full address, "
             "city, state, pin_code, email, mobile, and acting_through."
@@ -550,8 +548,8 @@ class FrontExtractRecord(LegalExtractRecord):
     respondents: list[Party] = Field(
         default_factory=list,
         description=(
-            "Respondents. Extract every respondent from the starting pages of the Main "
-            "Petition (and Memo of Parties / Position of Parties if present), following VERSUS. "
+            "List of all respondents. Extract every respondent from the Memo of Parties, Position of Parties, "
+            "Cause Title, Parties Schedule, or Petition opening following VERSUS. "
             "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
             "guardian (father/mother/husband name), age, occupation, full address, "
             "city, state, pin_code, email, mobile, and acting_through."
@@ -560,18 +558,16 @@ class FrontExtractRecord(LegalExtractRecord):
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocate on record from the Vakalatnama on the last 5 pages of the "
-            "compiled PDF. Those pages are labelled Vakalatnama in this pack. "
-            "Copy the printed footer only. Leave a field null if it is not printed. "
-            "If the Vakalatnama prints no AOR, use the footer at the end of the "
-            "List of Dates in the opening pages."
+            "Advocate on record from the Vakalatnama (on closing pages), Memo of Appearance, "
+            "or footer at the end of the List of Dates / Petition in the pack. "
+            "Extract name, code, firm/address, email, and phone."
         ),
     )
     impugned_orders: list[ImpugnedOrder] = Field(
         default_factory=list,
         description=(
-            "Impugned order from the particulars printed on these opening pages. "
-            "Leave the list empty when those particulars are not printed."
+            "Impugned orders being challenged. Extract court name, order date (DD.MM.YYYY), "
+            "and case number / appeal number from the cause title, synopsis, listing proforma, or petition opening."
         ),
     )
     relief_sort: str | None = Field(

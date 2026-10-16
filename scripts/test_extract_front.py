@@ -418,18 +418,22 @@ async def process_single_pdf(
 
     start_time = time.perf_counter()
 
-    # Step 1: Upload source PDF to LlamaCloud
-    print(f"\n[1/3] Uploading PDF to LlamaCloud for pipeline processing...")
+    # Step 1: Upload source PDF to LlamaCloud or register in cache
+    print(f"\n[1/3] Preparing PDF for pipeline processing...")
     pdf_bytes = pdf_path.read_bytes()
-    raw_file_id = await _upload_slot_pdf(
-        client,
-        filename=filename,
-        pdf_bytes=pdf_bytes,
-    )
+    raw_file_id = f"local-{abs(hash(filename)) % 10000000}"
+    try:
+        raw_file_id = await _upload_slot_pdf(
+            client,
+            filename=filename,
+            pdf_bytes=pdf_bytes,
+        )
+        print(f"      Uploaded raw file_id: {raw_file_id}")
+    except Exception as exc:
+        print(f"      Upfront raw upload skipped ({exc}); using in-memory cached PDF bytes.")
     file_id = raw_file_id if raw_file_id.startswith("dfl-") else f"dfl-{raw_file_id}"
     remember_file_bytes(file_id, pdf_bytes)
     remember_file_bytes(raw_file_id, pdf_bytes)
-    print(f"      Uploaded file_id: {raw_file_id} (pipeline ref: {file_id})")
 
     # Step 2: Post to /v1/filings/extract-front
     print(f"\n[2/3] Calling POST /v1/filings/extract-front...")

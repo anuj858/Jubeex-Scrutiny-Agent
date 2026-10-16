@@ -1319,6 +1319,14 @@ def _normalize_parties(payload: dict[str, Any]) -> None:
                 party["is_primary"] = _names_match(name, main_name)
             elif party.get("is_primary") is None:
                 party["is_primary"] = index == 0
+            addr = party.get("address")
+            if isinstance(addr, str) and key == "respondents":
+                if re.search(
+                    r"\b(?:v\s*a\s*k\s*a\s*l\s*a\s*t\s*n\s*a\s*m\s*a|solemnly\s+affirm|aged\s+about\s+\d+\s+years\s+[SDW]/o)\b",
+                    addr,
+                    re.IGNORECASE,
+                ):
+                    party["address"] = None
 
     if isinstance(cause, dict):
         formatted = build_formatted_title(
@@ -1635,7 +1643,10 @@ def _looks_like_party_name(name: str | None) -> bool:
     if re.match(
         r"^(the petition|there is|there was|learned|heard|per contra|be that|"
         r"as already|pending|copy of the|order be|application is|it is made|"
-        r"not to be listed|\(?\s*a\s*\)|similar disposed)",
+        r"not to be listed|\(?\s*a\s*\)|similar disposed|"
+        r"nature\s+of|a\s+brief|brief\s+background|background|special\s+powers|in\s+view\s+of|"
+        r"the\s+present\s+petition|office\s+report|proforma|listing|question\s+of\s+law|grounds|prayer|declaration|certificate|"
+        r"most\s+respectfully|respectfully\s+showeth|questions?\s+of\s+law|has\s+reversed|brief\s+facts|under\s+section|affidavit|vakalatnama)",
         text,
         re.IGNORECASE,
     ):
@@ -1690,25 +1701,226 @@ def _clean_markdown_to_lines(text: str) -> list[str]:
 
 
 def _is_party_role_or_header(line: str) -> bool:
-    l = line.strip().lower()
+    l = re.sub(r"^[.\s,\-—_`*#~|]+", "", line).strip().lower()
+    if not l:
+        return True
+    if re.match(r"^(?:in\s+the\s+)?(?:supreme|high)\s+court\s+of\s+india\b", l):
+        return True
+    if re.match(r"^(?:civil|criminal)\s+(?:appellate\s+)?jurisdiction\b", l):
+        return True
+    if re.match(r"^(?:under\s+(?:article|order|section|rule)|\(?against\s+the\s+impugned\b)", l):
+        return True
+    if re.match(r"^special\s+leave\s+petition\b", l):
+        return True
     if re.match(
-        r"^(?:trial\s*court|high\s*court|in\s*this\s*court|court|in\s*the\s*matter\s*of|position\s*of\s*parties|memo\s*of\s*parties)$",
+        r"^(?:in\s+the\s+)?(?:trial\s*court|high\s*court|in\s*this\s*court|this\s*hon[\x27\x60’]?ble\s*court|court)\b",
         l,
     ):
         return True
     if re.match(
-        r"^(?:accused|respondent|petitioner|appellant|complainant|applicant|opposite\s*party|def[ae]cto\s*complainant|contesting\s*respondent)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*$",
+        r"^(?:the\s+)?(?:position\s*of\s*(?:the\s*)?parties|memo\s*of\s*(?:the\s*)?parties)\b",
+        l,
+    ):
+        return True
+    if re.match(r"^in\s+the\s+matter\s+of(?:\s*[:-]+)?", l):
+        return True
+    if re.match(r"^(?:to\s*,?\s*)?(?:the\s+)?hon[\x27\x60’]?ble\s+(?:chief\s+justice|court)\b", l):
+        return True
+    if re.match(r"^and\s+his\s+companion\s+judges\b", l):
+        return True
+    if re.match(r"^(?:the\s+)?special\s+leave\s+petition\s+of\b", l):
+        return True
+    if re.match(r"^(?:the\s+)?petitioners?\s+above[- ]named\b", l):
+        return True
+    if re.match(r"^between\b", l):
+        return True
+    if re.match(r"^to\s*,?\s*$", l):
+        return True
+    if re.match(
+        r"^(?:accused|respondents?|petitioners?|appellants?|complainants?|applicants?|opposite\s*parties|opposite\s*party|def[ae]cto\s*complainant|contesting\s*respondents?|contesting)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*$",
         l,
     ):
         return True
     if re.match(
-        r"^\d+\s*(?:st|nd|rd|th)?\s*(?:respondent|petitioner|appellant|accused)$",
+        r"^\d+\s*(?:st|nd|rd|th)?\s*(?:respondents?|petitioners?|appellants?|accused)$",
         l,
     ):
+        return True
+    if re.match(r"^(?:no|number)\.?\s*\d*$", l):
         return True
     if re.match(r"^[.\s,\-—_`*#~|]+$", line) or re.match(r"^\.?\d+$", line.strip()):
         return True
     return False
+
+
+def _parse_party_section(
+    lines: list[str],
+    *,
+    side: str = "petitioner",
+    page: int | None = None,
+    pages: Sequence[int] | None = None,
+) -> list[dict[str, Any]]:
+    parties: list[dict[str, Any]] = []
+    stop_regex = re.compile(
+        r"^(?:most\s+respectfully\s+showeth|1\.\s+that\b|synopsis\b|grounds\b|prayer\b|prayers\b|questions\s+of\s+law\b|verification\b|affidavit\b|index\s+of\b)",
+        re.IGNORECASE,
+    )
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if stop_regex.search(line):
+            break
+        if parties and re.match(r"^to\s*,\s*(?!hon[\x27\x60’]?ble)", line, re.IGNORECASE):
+            break
+        if _is_party_role_or_header(line) or re.match(
+            r"^(?:versus|vs\.?|v/s|versuu)\b", line, re.IGNORECASE
+        ):
+            idx += 1
+            continue
+
+        m_num = re.match(r"^[(\[]?\s*([0-9lI|]+)\s*[.)\]]\s*(.+)$", line)
+        rel_check = re.match(r"^[SDW]/o\b", line, re.IGNORECASE)
+        party_name = None
+        raw_cand = None
+
+        if m_num and not _is_party_role_or_header(m_num.group(2)):
+            raw_cand = m_num.group(2).strip()
+        elif rel_check and idx > 0:
+            for b in range(idx - 1, max(-1, idx - 6), -1):
+                c = lines[b]
+                if not _is_party_role_or_header(c) and _looks_like_party_name(c):
+                    raw_cand = c
+                    idx = b
+                    break
+        elif not _is_party_role_or_header(line) and _looks_like_party_name(line):
+            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+            if (
+                re.match(r"^[SDW]/o\b", next_line, re.IGNORECASE)
+                or re.match(r"^(?:through|represented\s+by|r/o)\b", next_line, re.IGNORECASE)
+                or re.search(r"(?:\.\.\.|\b)(?:petitioners?|respondents?|appellants?|accused)", line, re.IGNORECASE)
+            ):
+                raw_cand = line
+
+        if not raw_cand:
+            idx += 1
+            continue
+
+        raw_cand = re.sub(r"[*_`#]+", "", raw_cand).strip()
+        raw_cand = re.sub(
+            r"(?:\.\.\.|\b)(?:petitioners?|respondents?|appellants?|accused)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*.*$",
+            "",
+            raw_cand,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        party_name = raw_cand
+        relation = None
+        guardian = None
+        acting_through = None
+        addr_parts: list[str] = []
+
+        rel_m = re.search(
+            r"\b([SDW]/o)\s+([A-Za-z\s.\x27\x60’]+?)(?:\s+(South|North|East|West|R/o|Presently|Residing|Address|House|Flat|Plot|Village|VPO|[A-Z][a-z]+.*))?$",
+            raw_cand,
+            re.IGNORECASE,
+        )
+        if rel_m:
+            party_name = raw_cand[: rel_m.start()].strip()
+            relation = rel_m.group(1)
+            guardian = rel_m.group(2).strip()
+            if rel_m.group(3):
+                addr_parts.append(rel_m.group(3).strip())
+        else:
+            addr_m = re.match(
+                r"^(.+?),\s*([A-Za-z0-9\s,.-]+(?:Police station|District|Tamil\s*nadu|State|Court|Road|Nadu).*)$",
+                raw_cand,
+                re.IGNORECASE,
+            )
+            if addr_m:
+                party_name = addr_m.group(1).strip()
+                addr_parts.append(addr_m.group(2).strip())
+
+        rep_m = re.search(
+            r"(?:rep(?:\.|resented)?\s+by|through)\s+([A-Za-z\s.\x27\x60’]+?)(?:,|$)",
+            party_name,
+            re.IGNORECASE,
+        )
+        if rep_m:
+            acting_through = rep_m.group(1).strip()
+
+        cursor = idx + 1
+        while cursor < len(lines):
+            c_line = lines[cursor]
+            if stop_regex.search(c_line) or re.match(
+                r"^(?:versus|vs\.?|v/s|versuu)\b", c_line, re.IGNORECASE
+            ):
+                break
+            if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", c_line):
+                break
+            if _is_party_role_or_header(c_line):
+                cursor += 1
+                continue
+            c_rel = re.match(r"^([SDW]/o)\s+(.+)$", c_line, re.IGNORECASE)
+            if c_rel and not relation:
+                relation = c_rel.group(1)
+                guardian = re.sub(r"[.\s\d]+$", "", c_rel.group(2)).strip()
+                cursor += 1
+                continue
+            c_rep = re.match(
+                r"^(?:through|represented\s+by)\s+(.+)$", c_line, re.IGNORECASE
+            )
+            if c_rep and not acting_through:
+                acting_through = c_rep.group(1).strip()
+                addr_parts.append(c_line)
+                cursor += 1
+                continue
+            addr_parts.append(c_line)
+            cursor += 1
+
+        address = " ".join([p for p in addr_parts if not _is_party_role_or_header(p)]).strip()
+        address = re.sub(r"\s*\bTO\s*[,:]?\s*$", "", address, flags=re.IGNORECASE).strip()
+        address = re.sub(
+            r"(?:\s*(?:contesting\s*)?(?:respondents?|petitioners?|appellants?|accused)?\s*(?:no|number)\.?\s*\d*)+\s*$",
+            "",
+            address,
+            flags=re.IGNORECASE,
+        ).strip()
+        address = re.sub(
+            r"(?:\.\.\.|\b)(?:petitioners?|respondents?|appellants?|accused)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*.*$",
+            "",
+            address,
+            flags=re.IGNORECASE,
+        ).strip()
+        address = re.sub(
+            r"\s*(?:\.\.\.|\b)(?:filed\s*by|advocate\s*for|signature|date\s*:|place\s*:|hon[\x27\x60’]?ble\s+supreme\s+court|supreme\s+court\s+of\s+india|the\s+special\s+leave\s+petition).*",
+            "",
+            address,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        clean_name = re.sub(
+            r"(?:accused|respondents?|appellants?|petitioners?|complainant).*",
+            "",
+            party_name,
+            flags=re.IGNORECASE,
+        ).strip()
+        clean_name = re.sub(r"[.\s\d|,\-—_]+$", "", clean_name).strip()
+
+        if _looks_like_party_name(clean_name or party_name):
+            p_rec = _party_record(
+                clean_name or party_name,
+                serial=len(parties) + 1,
+                page=page,
+                pages=pages,
+                relation=relation,
+                guardian=guardian or None,
+                address=address or None,
+            )
+            if acting_through:
+                p_rec["acting_through"] = acting_through
+            parties.append(p_rec)
+        idx = cursor
+    return parties
 
 
 def _parse_memo_of_parties(
@@ -1722,190 +1934,41 @@ def _parse_memo_of_parties(
         for line in clean_lines
         if not re.search(r"in the matter of.*versus", line, re.IGNORECASE)
     ]
-
     source_pages = list(pages) if pages else ([page] if page else [])
 
-    petitioners: list[dict[str, Any]] = []
-    # 1. Look for petitioners via S/o or numbered party before respondents
-    for index, line in enumerate(clean_lines):
-        if not re.match(r"^[SDW]/o\b", line, re.IGNORECASE) or index == 0:
-            continue
-        party_name = None
-        for b in range(index - 1, max(-1, index - 8), -1):
-            cand = clean_lines[b]
-            cand = re.sub(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*", "", cand)
-            cand = re.sub(
-                r"(?:accused|respondent|appellant|petitioner).*",
-                "",
-                cand,
-                flags=re.IGNORECASE,
-            ).strip()
-            cand = re.sub(r"^[.\s\d|,\-—_]+$", "", cand).strip()
-            if (
-                cand
-                and not _is_party_role_or_header(cand)
-                and _looks_like_party_name(cand)
-            ):
-                party_name = cand
-                break
-        if not party_name or "advocate" in party_name.lower():
-            continue
-
-        relation = line.split()[0]
-        guardian = re.sub(
-            r"^[SDW]/o\s+", "", line, count=1, flags=re.IGNORECASE
-        ).strip()
-        guardian = re.sub(r"[.\s\d]+$", "", guardian).strip()
-
-        address_lines: list[str] = []
-        cursor = index + 1
-        while cursor < len(clean_lines):
-            row = clean_lines[cursor]
-            if re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", row, re.IGNORECASE):
-                break
-            if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", row):
-                break
-            if _is_party_role_or_header(row):
-                cursor += 1
+    divider_idx = None
+    for idx, line in enumerate(clean_lines):
+        if re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", line, re.IGNORECASE):
+            prev_is_role = idx > 0 and _is_party_role_or_header(clean_lines[idx - 1])
+            next_is_role = idx + 1 < len(clean_lines) and _is_party_role_or_header(clean_lines[idx + 1])
+            if prev_is_role and next_is_role and idx < 6:
                 continue
-            address_lines.append(row)
-            cursor += 1
-
-        petitioners.append(
-            _party_record(
-                party_name,
-                serial=len(petitioners) + 1,
-                page=page,
-                pages=source_pages,
-                relation=relation,
-                guardian=guardian or None,
-                address=" ".join(address_lines) or None,
-            )
-        )
-
-    # 2. Look for respondents (numbered 1. ... 2. ...)
-    respondents: list[dict[str, Any]] = []
-    stop_regex = re.compile(
-        r"^(?:to\s*,|the\s+hon[\x27\x60’]?ble\s+chief\s+justice|most\s+respectfully\s+showeth|1\.\s+that\b)",
-        re.IGNORECASE,
-    )
-    index = 0
-    while index < len(clean_lines):
-        line = clean_lines[index]
-        if stop_regex.search(line):
+            divider_idx = idx
             break
-        if _is_party_role_or_header(line):
-            index += 1
-            continue
 
-        m_num = re.match(r"^[(\[]?\s*([0-9lI|]+)\s*[.)\]]\s*(.+)$", line)
-        if m_num and not _is_party_role_or_header(m_num.group(2)):
-            raw_cand = m_num.group(2).strip()
-            # If this is petitioner 1 and we already got it in petitioners, skip
-            if petitioners and _looks_like_party_name(raw_cand):
-                cand_clean = re.sub(
-                    r"(?:accused|respondent|appellant|petitioner).*",
-                    "",
-                    raw_cand,
-                    flags=re.IGNORECASE,
-                ).strip()
-                if cand_clean and any(
-                    cand_clean.lower() in p["name"].lower()
-                    or p["name"].lower() in cand_clean.lower()
-                    for p in petitioners
-                ):
-                    index += 1
-                    continue
+    if divider_idx is None:
+        has_pet_so_far = False
+        for idx, line in enumerate(clean_lines):
+            if re.match(r"^[SDW]/o\b", line, re.IGNORECASE):
+                has_pet_so_far = True
+            elif has_pet_so_far and re.match(r"^[(\[]?\s*1\s*[.)\]]\s*[A-Za-z]", line):
+                divider_idx = idx
+                break
 
-            party_name = raw_cand
-            relation = None
-            guardian = None
-            acting_through = None
-            addr_parts: list[str] = []
+    if divider_idx is not None:
+        pet_lines = clean_lines[:divider_idx]
+        resp_lines = clean_lines[divider_idx:]
+        if resp_lines and re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", resp_lines[0], re.IGNORECASE):
+            resp_lines = resp_lines[1:]
+    else:
+        pet_lines = clean_lines
+        resp_lines = []
 
-            rel_m = re.search(
-                r"\b([SDW]/o)\s+([A-Za-z\s.\x27\x60’]+?)(?:\s+(South|North|East|West|R/o|Presently|Residing|Address|House|Flat|Plot|Village|VPO|[A-Z][a-z]+.*))?$",
-                raw_cand,
-                re.IGNORECASE,
-            )
-            if rel_m:
-                party_name = raw_cand[: rel_m.start()].strip()
-                relation = rel_m.group(1)
-                guardian = rel_m.group(2).strip()
-                if rel_m.group(3):
-                    addr_parts.append(rel_m.group(3).strip())
-            else:
-                addr_m = re.match(
-                    r"^(.+?),\s*([A-Za-z0-9\s,.-]+(?:Police station|District|Tamil\s*nadu|State|Court|Road|Nadu).*)$",
-                    raw_cand,
-                    re.IGNORECASE,
-                )
-                if addr_m:
-                    party_name = addr_m.group(1).strip()
-                    addr_parts.append(addr_m.group(2).strip())
+    petitioners = _parse_party_section(pet_lines, side="petitioner", page=page, pages=source_pages)
+    respondents = _parse_party_section(resp_lines, side="respondent", page=page, pages=source_pages)
 
-            rep_m = re.search(
-                r"(?:rep(?:\.|resented)?\s+by|through)\s+([A-Za-z\s.\x27\x60’]+?)(?:,|$)",
-                party_name,
-                re.IGNORECASE,
-            )
-            if rep_m:
-                acting_through = rep_m.group(1).strip()
-
-            cursor = index + 1
-            while cursor < len(clean_lines):
-                c_line = clean_lines[cursor]
-                if stop_regex.search(c_line):
-                    break
-                if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", c_line):
-                    break
-                if _is_party_role_or_header(c_line):
-                    cursor += 1
-                    continue
-                c_rel = re.match(r"^([SDW]/o)\s+(.+)$", c_line, re.IGNORECASE)
-                if c_rel and not relation:
-                    relation = c_rel.group(1)
-                    guardian = re.sub(r"[.\s\d]+$", "", c_rel.group(2)).strip()
-                    cursor += 1
-                    continue
-                c_rep = re.match(
-                    r"^(?:through|represented\s+by)\s+(.+)$", c_line, re.IGNORECASE
-                )
-                if c_rep and not acting_through:
-                    acting_through = c_rep.group(1).strip()
-                    addr_parts.append(c_line)
-                    cursor += 1
-                    continue
-                addr_parts.append(c_line)
-                cursor += 1
-
-            address = " ".join(
-                [p for p in addr_parts if not _is_party_role_or_header(p)]
-            ).strip()
-            clean_name = re.sub(
-                r"(?:accused|respondent|appellant|petitioner|complainant).*",
-                "",
-                party_name,
-                flags=re.IGNORECASE,
-            ).strip()
-            clean_name = re.sub(r"[.\s\d|,\-—_]+$", "", clean_name).strip()
-
-            if _looks_like_party_name(clean_name or party_name):
-                p_rec = _party_record(
-                    clean_name or party_name,
-                    serial=len(respondents) + 1,
-                    page=page,
-                    pages=source_pages,
-                    relation=relation,
-                    guardian=guardian or None,
-                    address=address or None,
-                )
-                if acting_through:
-                    p_rec["acting_through"] = acting_through
-                respondents.append(p_rec)
-            index = cursor
-            continue
-        index += 1
+    if not respondents and divider_idx is None:
+        respondents = _parse_party_section(clean_lines, side="respondent", page=page, pages=source_pages)
 
     return {"petitioners": petitioners, "respondents": respondents}
 
@@ -1921,15 +1984,16 @@ def _parties_from_memo(
 
     for page in sorted_pages:
         text = page_markdown.get(page) or ""
-        # Skip if page is clearly an index, synopsis, or listing proforma
-        first_lines = "\n".join(text.splitlines()[:10]).lower()
+        # Skip if page is clearly an index, synopsis, proforma, affidavit, or vakalatnama
+        first_lines = "\n".join(text.splitlines()[:15]).lower()
         if re.search(
-            r"\b(?:index\s+of\s+papers|listing\s+proforma|proforma\s+for\s+first\s+listing|synopsis\s+and\s+list\s+of\s+dates)\b",
+            r"\b(?:index\s+of\s+papers|index\s+of\s+filing|listing\s+proforma|proforma\s+for\s+first\s+listing|synopsis\s+and\s+list\s+of\s+dates|synopsis|list\s+of\s+dates|office\s+report\s+on\s+limitation|office\s+report|affidavit|vakalatnama)\b",
             first_lines,
-        ):
+        ) or re.search(r"\[index\s+of\s+filing\]", text, re.IGNORECASE):
             continue
 
         has_heading = False
+        is_explicit_memo_heading = False
         for line in text.splitlines():
             line_clean = re.sub(r"<[^>]+>", " ", line)
             line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
@@ -1939,12 +2003,26 @@ def _parties_from_memo(
             ):
                 continue
             if re.search(
-                r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\b",
+                r"\b(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\b",
                 line_clean,
                 re.IGNORECASE,
             ):
                 has_heading = True
+                is_explicit_memo_heading = True
                 break
+
+        if not has_heading:
+            # Also recognize Main Petition opening with cause title and versus
+            if (
+                re.search(r"\b(?:in\s+the\s+matter\s+of|between)\b", text, re.IGNORECASE)
+                and re.search(r"\b(?:versus|vs\.?|v/s|versuu)\b", text, re.IGNORECASE)
+                and (
+                    re.search(r"\b(?:supreme\s+court|high\s+court|jurisdiction|petition|appeal)\b", text, re.IGNORECASE)
+                    or re.search(r"\b(?:petitioner|appellant|respondent)\b", text, re.IGNORECASE)
+                )
+                and not re.search(r"\b(?:for\s+index\s+(?:please|kindly)\s+see\s+inside|paper\s*book\b)", text, re.IGNORECASE)
+            ):
+                has_heading = True
 
         if not has_heading:
             continue
@@ -1967,8 +2045,10 @@ def _parties_from_memo(
         if not pets and not resps:
             continue
 
-        # Score candidates: genuine memo pages have both parties, relations, addresses, versus
+        # Score candidates: genuine memo pages have explicit heading, both parties, relations, addresses, versus
         score = 0
+        if is_explicit_memo_heading:
+            score += 25
         if pets and resps:
             score += 20
         elif pets or resps:

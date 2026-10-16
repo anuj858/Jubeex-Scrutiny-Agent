@@ -1337,22 +1337,52 @@ def extract_configuration(
 
 
 def build_front_extract_system_prompt() -> str:
-    """Prompt for the opening pages plus the Vakalatnama. The normal extract prompt is unchanged."""
+    """Prompt for the front extract slice. Real filings have infinite variations; extract from wherever printed."""
     return "\n".join(
         [
-            "You are extracting a Supreme Court filing from the opening of one compiled PDF, plus its last 5 pages.",
+            "You are an expert legal document extraction system for Indian court filings (Supreme Court of India, High Courts).",
+            "You are analyzing a compiled legal filing pack consisting of the opening pages of the filing plus its closing pages (Vakalatnama/appearance).",
             "The last 5 pages are the Vakalatnama. Pages labelled Vakalatnama are those last pages.",
-            "This pack has not been split.",
-            "Copy printed text only. Leave a field null when it is not printed in this pack.",
-            "court, petition_type, and cause_title come from ## [Cover Page] or the opening of the Main Petition (## [Main Petition]).",
-            "special_category is the matter subtype printed in that same opening, such as Tax Matters. Leave it null when it is not printed.",
-            "petitioners and respondents come from the starting pages of the Main Petition (## [Main Petition], including Position of Parties / Memo of Parties). Do NOT extract petitioners/respondents from ## [Cover Page] unless ## [Main Petition] has no parties.",
-            "For each petitioner and respondent on ## [Main Petition], extract all printed details: full name, relation prefix (e.g. S/o, D/o, W/o), guardian (related person's name), occupation, complete address, city, state, pin_code, email, mobile, and acting_through. Read every numbered party before VERSUS as a petitioner and every numbered party after VERSUS as a respondent across all consecutive party pages. Do not stop after the first party.",
-            "A numbered checklist answer, a Yes or NA, a listing-proforma question, a synopsis sentence, or a paragraph of the impugned order is not a party.",
-            "advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
-            "impugned_orders comes from the particulars printed on the opening pages.",
-            "relief_sort and petition_date stay null.",
-            "documents stays empty.",
+            "Cases have infinite structural variations: there may or may not be an explicit 'Main Petition' section in the opening pages. You must search across ALL provided pages to extract complete filing details.",
+            "Copy printed text accurately. Do not invent facts.",
+            "",
+            "1. COURT:",
+            "- Extract court (e.g. 'SUPREME COURT OF INDIA', 'HIGH COURT OF DELHI') from the cover page, petition heading, or memo of parties.",
+            "",
+            "2. PETITION TYPE & SPECIAL CATEGORY:",
+            "- Extract petition_type (e.g. 'SPECIAL LEAVE PETITION (CRL.)', 'SPECIAL LEAVE PETITION (CIVIL)', 'WRIT PETITION (CIVIL)', 'TRANSFER PETITION (CIVIL)', etc.) from the cover page, cause title, or petition heading.",
+            "- special_category is the matter subtype printed in the filing, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
+            "",
+            "3. CAUSE TITLE:",
+            "- Extract cause_title with formatted_title in the format '<Petitioner Name(s)> VS <Respondent Name(s)>'. Also extract main_petitioner and main_respondent.",
+            "",
+            "4. PETITIONERS & RESPONDENTS (ALL DETAILS):",
+            "- Extract EVERY petitioner and EVERY respondent from wherever printed across the pack: Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or petition/order pages. Prioritize the source with the most complete particulars.",
+            "- In cause titles and party tables, parties before 'VERSUS' (or 'VS') are Petitioners/Appellants; parties after 'VERSUS' are Respondents/Opposite Parties.",
+            "- For each petitioner and respondent, thoroughly extract all printed details:",
+            "  * name: Full legal name (individuals or companies/organizations/state/union). Clean out trailing role markers like '...Petitioner' or table column names.",
+            "  * kind: 'INDIVIDUAL' or 'ORGANIZATION'.",
+            "  * relation: Relation prefix (S/o, D/o, W/o, C/o) if printed.",
+            "  * guardian: Name of father, mother, husband, or related person.",
+            "  * acting_through: Representation for entities/states/organizations (e.g., 'Through SHO...', 'Through its Secretary...').",
+            "  * address: Full residential or official postal address.",
+            "  * city, state, pin_code: Extract if present or identifiable from the address.",
+            "  * email: Email address if printed.",
+            "  * mobile: Phone / mobile number if printed.",
+            "  * occupation: Occupation or profession if printed.",
+            "  * is_primary: true for the primary petitioner and respondent.",
+            "- Extract all numbered parties across all consecutive party pages. Do not stop after the first party.",
+            "- Form checklist questions, Yes/No/NA answers, table of contents entries, and court fee receipts are NOT parties.",
+            "",
+            "5. ADVOCATES ON RECORD (AOR):",
+            "- advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
+            "",
+            "6. IMPUGNED ORDERS:",
+            "- impugned_orders comes from the particulars printed on the opening pages: extract court name, order date (DD.MM.YYYY), and case number / appeal number being challenged.",
+            "",
+            "7. OTHER FIELDS:",
+            "- relief_sort and petition_date stay null.",
+            "- documents stays empty.",
         ]
     ).strip()
 
@@ -1436,11 +1466,10 @@ def build_front_extract_pack_markdown(
         "Pages labelled Cover Page are the paperbook outer cover.\n"
         "Pages labelled Main Petition are the starting pages of the Main Petition.\n"
         "Pages labelled Vakalatnama are those last 5 pages.\n"
-        "Read petition_type, cause_title, special_category, and court from ## [Cover Page] "
-        "or the opening of the Main Petition (## [Main Petition]).\n"
-        "Read petitioners and respondents from the starting pages of the Main Petition "
-        "(## [Main Petition], including Position of Parties / Memo of Parties). "
-        "Do NOT extract petitioners/respondents from ## [Cover Page] unless ## [Main Petition] has no parties.\n"
+        "Cases have infinite variations: search across all provided pages to extract complete filing details.\n"
+        "Read petition_type, cause_title, special_category, and court from the cover page, petition heading, or memo of parties.\n"
+        "Read petitioners and respondents from the most detailed source available across all pages "
+        "(including Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or Petition opening).\n"
         "Extract every petitioner before VERSUS and every respondent after VERSUS, "
         "including all printed details: name, relation prefix (S/o, D/o, W/o), "
         "guardian/parent/spouse name, occupation, full address, city, state, "
