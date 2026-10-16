@@ -84,6 +84,7 @@ _SEQUENCE_FLEXIBLE_GROUPS: tuple[frozenset[str], ...] = (
 
 _COMBINED_SEQUENCE_ALIASES: dict[str, tuple[str, ...]] = {
     "Synopsis + List of Dates & Events": ("Synopsis", "List of Dates & Events"),
+    "Synopsis & List of Dates & Events": ("Synopsis", "List of Dates & Events"),
     "Memo of Appearance + Vakalatnama": ("Memo of Appearance", "Vakalatnama"),
 }
 
@@ -126,6 +127,7 @@ _ANNEXURE_INVENTORY_PARTS = frozenset(
         "Index",
         "List of Dates & Events",
         "Synopsis + List of Dates & Events",
+        "Synopsis & List of Dates & Events",
         "Main Petition",
     }
 )
@@ -1534,9 +1536,13 @@ def check_index_consistency(
 
         found = by_part.get(part)
         if found is None and part == "Synopsis":
-            found = by_part.get("Synopsis + List of Dates & Events")
+            found = by_part.get("Synopsis & List of Dates & Events") or by_part.get(
+                "Synopsis + List of Dates & Events"
+            )
         if found is None and part == "List of Dates & Events":
-            found = by_part.get("Synopsis + List of Dates & Events")
+            found = by_part.get("Synopsis & List of Dates & Events") or by_part.get(
+                "Synopsis + List of Dates & Events"
+            )
         if found is None and part in {"Vakalatnama", "Memo of Appearance"}:
             found = by_part.get("Memo of Appearance + Vakalatnama")
 
@@ -1641,7 +1647,10 @@ def check_index_consistency(
             continue
         if part in mentioned:
             continue
-        if part == "Synopsis + List of Dates & Events" and (
+        if part in {
+            "Synopsis + List of Dates & Events",
+            "Synopsis & List of Dates & Events",
+        } and (
             "Synopsis" in mentioned or "List of Dates & Events" in mentioned
         ):
             continue

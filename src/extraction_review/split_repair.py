@@ -4582,6 +4582,7 @@ def _apply_cited_annexure_ranges(
         "Synopsis",
         "List of Dates & Events",
         "Synopsis + List of Dates & Events",
+        "Synopsis & List of Dates & Events",
         "Application",
     }
     for page, names in page_parts.items():

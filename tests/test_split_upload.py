@@ -989,7 +989,7 @@ def test_overlay_uses_stitched_document_parts() -> None:
     assert "filing_summary" not in payload
     names = [span["name"] for span in payload["documents"]]
     assert "Main Petition" in names
-    assert "Synopsis + List of Dates & Events" in names
+    assert "Synopsis & List of Dates & Events" in names
     assert "Memo of Appearance + Vakalatnama" in names
     assert "Synopsis" not in names
     assert "List of Dates & Events" not in names
@@ -1011,8 +1011,8 @@ def test_overlay_merges_combined_slots_into_one_document_row() -> None:
         },
     )
     spans = {item["name"]: item for item in payload["documents"]}
-    assert spans["Synopsis + List of Dates & Events"] == {
-        "name": "Synopsis + List of Dates & Events",
+    assert spans["Synopsis & List of Dates & Events"] == {
+        "name": "Synopsis & List of Dates & Events",
         "start_page": 11,
         "end_page": 13,
     }
@@ -1026,7 +1026,7 @@ def test_overlay_merges_combined_slots_into_one_document_row() -> None:
     assert "Memo of Appearance" not in spans
     assert "Vakalatnama" not in spans
     names = [item["name"] for item in payload["documents"]]
-    assert names.index("Synopsis + List of Dates & Events") < names.index(
+    assert names.index("Synopsis & List of Dates & Events") < names.index(
         "Main Petition"
     )
 
@@ -3226,7 +3226,7 @@ def test_slice_bundle_pdf_chronological_and_duplicate_split() -> None:
         "Index",
         "Office Report on Limitation",
         "Listing Proforma",
-        "Synopsis + List of Dates & Events",
+        "Synopsis & List of Dates & Events",
         "Undefined",
         "Index",
         "Undefined",

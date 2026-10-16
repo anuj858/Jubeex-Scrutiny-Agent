@@ -372,7 +372,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
 COMBINED_DOCUMENT_GROUPS: tuple[tuple[frozenset[str], str], ...] = (
     (
         frozenset({"Synopsis", "List of Dates & Events"}),
-        "Synopsis + List of Dates & Events",
+        "Synopsis & List of Dates & Events",
     ),
     (
         frozenset({"Memo of Appearance", "Vakalatnama"}),
