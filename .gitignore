@@ -34,3 +34,13 @@ google-wif-credentials.json
 google-wif-credentials*.json
 
 output_samples/
+
+# Generated/temporary ECS task-definition snapshots. Keep the canonical
+# ecs-*-task.json files and worker-task-definition.json tracked.
+/*.json.backup
+/scrutiny-api-[0-9]*.json
+/task-definition*.json
+/worker-task.json
+/worker-task-current.json
+/worker-task-fixed.json
+/worker-task-v[0-9]*.json

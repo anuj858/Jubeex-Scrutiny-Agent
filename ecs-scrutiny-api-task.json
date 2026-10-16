@@ -70,10 +70,6 @@
           "value": "JubeeX Scrutiny"
         },
         {
-          "name": "CATALOGUE_DATABASE_URL",
-          "value": ""
-        },
-        {
           "name": "SCRUTINY_ENABLED",
           "value": "true"
         },
@@ -119,6 +115,10 @@
         }
       ],
       "secrets": [
+        {
+          "name": "CATALOGUE_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:CATALOGUE_DATABASE_URL::"
+        },
         {
           "name": "LLAMA_CLOUD_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/llamaindex/api-key-jhcG3b:LLAMA_CLOUD_API_KEY::"
