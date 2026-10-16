@@ -26,7 +26,6 @@ from ..document_parts import (
 )
 from ..layout_index import boxes_on_pages, page_entry, part_for_page, quote_in_text
 from .prompts import (
-    display_cure_steps,
     filing_location,
     validated_reasoning,
     validated_summary,
@@ -312,6 +311,26 @@ def official_source_locations(
     return found
 
 
+class HowToCure(BaseModel):
+    """Sentences and buttons copied from the catalogue row for this check."""
+
+    steps: list[str] = Field(default_factory=list)
+    mode: str = "any"
+    actions: list[Any] = Field(default_factory=list)
+
+
+def cure_from_defect(defect: Defect) -> HowToCure:
+    """Copy how_to_cure and remediation_config. Do not rewrite stored buttons."""
+    config = defect.remediation_config if isinstance(defect.remediation_config, dict) else {}
+    mode = config.get("mode")
+    if not isinstance(mode, str) or not mode.strip():
+        mode = "any"
+    actions = config.get("actions")
+    if not isinstance(actions, list):
+        actions = []
+    return HowToCure(steps=list(defect.how_to_cure or []), mode=mode, actions=list(actions))
+
+
 class DefectFinding(BaseModel):
     """Server-assembled finding for one catalogue defect."""
 
@@ -335,7 +354,7 @@ class DefectFinding(BaseModel):
     confidence: float
     reasoning: str
     evidence: list[FindingEvidence] = Field(default_factory=list)
-    how_to_cure: list[str] = Field(default_factory=list)
+    how_to_cure: HowToCure = Field(default_factory=HowToCure)
     applicable_rule: str | None = None
     location: str | None = Field(
         default=None,
@@ -976,7 +995,7 @@ def build_finding(
             evidence_pages=evidence_pages,
         ),
         evidence=evidence,
-        how_to_cure=display_cure_steps(defect.how_to_cure),
+        how_to_cure=cure_from_defect(defect),
         applicable_rule=defect.applicable_rule,
         location=location,
         location_source=official_source_locations(defect, catalogue),
@@ -1019,7 +1038,7 @@ def failed_finding(
         reasoning=f"This check did not run: {error}",
         evidence=[],
         visual_localizations=visual_localizations,
-        how_to_cure=display_cure_steps(defect.how_to_cure),
+        how_to_cure=cure_from_defect(defect),
         applicable_rule=defect.applicable_rule,
         location="Filing page missing — this check did not run.",
         location_source=official_source_locations(defect, catalogue),

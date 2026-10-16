@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from functools import lru_cache
+from typing import Any
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -311,6 +312,7 @@ class Defect(_Strict):
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
     how_to_cure: list[str]
+    remediation_config: dict[str, Any] = Field(default_factory=dict)
     applicable_rule: str | None = None
     location_source: str
     notes: str | None = None

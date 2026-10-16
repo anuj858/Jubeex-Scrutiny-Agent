@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "ec466139-1f53-47d0-b1d9-a1102041530c",
     "name": "JubeeX Parse API",
-    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited: true`, then omit `parsed_slots` and re-parse every PDF), parse the rest, Pinecone, then scrutiny defects. Optional `special_category` (`null` skips tagged specials). Poll `completed` → `result.report`. Findings use `check_id`; there is no `serial_no`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n6. `POST /v1/filings/{{agent_data_id}}/annexure-index` — after defects, describe the annexures named in `annexures`. Poll → `result.annexures` with `source`, `source_location`, `confidence`, and `description`.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.\n\nWhile a job is in process, `GET /v1/jobs/{job_id}` returns HTTP 200 with `status: \"running\"` and `result: null`. Keep polling until `completed` or `failed`.",
+    "description": "HTTP API for the JubeeX Parse microservice (`src/extraction_review/api.py`).\n\nUse this collection from the application layer. All long-running work returns **202** `{ job_id, poll_url }` — poll `GET /v1/jobs/{{job_id}}` until `status` is `completed` or `failed`.\n\n**Recommended frontend flow**\n1. `POST /v1/filings/split-petition` — LlamaSplit Main Petition (no classify). Poll → `parts` / `page_span`.\n2. `POST /v1/filings/verify-document` — check named PDFs vs split categories. Poll → `{ type: DocumentsVerified, match, documents:[{name, match}] }`.\n3. `POST /v1/filings/extract` — parse extract-source slots, LlamaExtract, skip Pinecone. Poll → save **`agent_data_id`** and **`result.parsed_slots`** in your DB.\n4. `POST /v1/filings/{{agent_data_id}}/index` — reuse S3 markdown (unless `edited: true`, then omit `parsed_slots` and re-parse every PDF), parse the rest, Pinecone, then scrutiny defects. Optional `special_category` (`null` skips tagged specials). Poll `completed` → `result.report`. Findings use `check_id`; there is no `serial_no`. If `failed` with `Unable to run scrutiny defects. Try after some time.`, indexing already happened — retry **only** step 5. Do not re-run index. To re-run the whole index and scrutiny without the previous vectors, use `POST /v1/filings/{{agent_data_id}}/reindex` (same body). It deletes every Pinecone record for `workspace_id` first. `workspace_id` is required.\n5. `POST /v1/filings/{{agent_data_id}}/scrutiny` — defects-only retry (old API). Use after a failed index poll, or to re-run defects later.\n6. `POST /v1/filings/{{agent_data_id}}/annexure-index` — after defects, describe the annexures named in `annexures`. Poll → `result.annexures` with `source`, `source_location`, `confidence`, and `description`.\n\n**Auth:** if `JUBEEX_API_KEY` is set, send `X-API-Key` or `Authorization: Bearer <key>`.\nDo not wrap bodies in `start_event`. Do not send `handler_id`.\nReplace example `download_url` values with real HTTPS/S3 URLs.\n\nWhile a job is in process, `GET /v1/jobs/{job_id}` returns HTTP 200 with `status: \"running\"` and `result: null`. Keep polling until `completed` or `failed`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -461,6 +461,65 @@
           ]
         },
         {
+          "name": "3b Extract front (first 30 pages and last 5, no split)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"compiled.pdf\",\n      \"download_url\": \"https://storage.example/filings/compiled.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/extract-front",
+            "description": "Same request body as `POST /v1/filings/extract`: `filing_type`, `organization_id`, `workspace_id`, `user_id`, and `documents[]`. `documents[]` has one item, the whole compiled PDF, not the split files. No `slot_id` is required. A book of 200 pages or fewer parses the first 30 pages. A longer book parses a larger opening, starting near 20 percent and shrinking so a 1000-page book stays near 90 pages and never sends more than 120. The last 5 pages are always included and are the Vakalatnama, used for `advocates_on_record`. Skips split, classify, and Pinecone.\n\n**Completed poll does not include cause_title / petitioners / respondents.** It returns the S3 location:\n- `result.extract.url` — presigned GET of the uploaded extract JSON\n- `result.extract.key` — `extractedfiles/.../agent-extract-....json`\n- `result.extract.filing_key` — stable `filings/{agent_data_id}/extract.json`\n- `result.artifacts.extract` — same extract upload (when S3 job artifacts are recorded)\n\nDownload that JSON for the same keys as extract, plus `special_category` next to `petition_type`. `special_category` is null when the opening does not print a subtype. `relief_sort` and `petition_date` stay null. `documents` stays empty.\n\n**Also persist in your DB:**\n- top-level `agent_data_id`\n- `result.parsed_slots`\n- `result.filing_type`\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/extract-front"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/dddddddd-4444-4444-8444-444444444444\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            }
+          ]
+        },
+        {
           "name": "4 Index after extract",
           "event": [
             {
@@ -596,6 +655,115 @@
               "cookie": [],
               "body": "{\n  \"job_id\": \"dddddddd-4444-4444-8444-444444444444\",\n  \"kind\": \"process_file\",\n  \"status\": \"failed\",\n  \"organization_id\": \"3f2a9c1e-8b44-4d21-9a70-1c8d4e6b2f11\",\n  \"workspace_id\": \"b20c7d91-4e55-48aa-a013-9d6e2f88c104\",\n  \"user_id\": \"7b12e4aa-0d55-4c91-b3e8-2a6f19c8d447\",\n  \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\",\n  \"result\": {\n    \"agent_data_id\": \"agd-8f3c1a2b4d5e4f6a\"\n  },\n  \"error\": \"Unable to run scrutiny defects. Try after some time.\",\n  \"created_at\": \"2026-09-15T10:00:00+00:00\",\n  \"completed_at\": \"2026-09-15T10:00:18+00:00\"\n}",
               "description": "HTTP 200 on the poll; job `status` is `failed`. Pinecone already ran. Do not re-run /index. Later call only POST /v1/filings/{agent_data_id}/scrutiny."
+            }
+          ]
+        },
+        {
+          "name": "4b Re-run index (clear workspace vectors)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"edited\": false,\n  \"special_category\": {{special_category}},\n  \"parsed_slots\": {{parsed_slots}},\n  \"documents\": [\n    {\n      \"name\": \"cover_page.pdf\",\n      \"download_url\": \"https://storage.example/filings/cover_page.pdf\"\n    },\n    {\n      \"name\": \"index.pdf\",\n      \"download_url\": \"https://storage.example/filings/index.pdf\"\n    },\n    {\n      \"name\": \"01_Petition.pdf\",\n      \"download_url\": \"https://storage.example/filings/01_Petition.pdf\"\n    },\n    {\n      \"name\": \"annexure_p1.pdf\",\n      \"download_url\": \"https://storage.example/filings/annexure_p1.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/reindex",
+            "description": "Same body and job as `POST /v1/filings/{{agent_data_id}}/index` (`job_type=index_parsed`, scrutiny webhook). Use this to re-run scrutiny so previous vectors are not reused.\n\nBefore the job starts, every Pinecone record for `workspace_id` is deleted. `workspace_id` is required. Missing or blank returns **422** and does not start the job. If the delete fails, the response is **502** and the job is not started.\n\nPoll `GET /v1/jobs/{{job_id}}` the same way as **4 Index after extract** until `completed` (`result.report`) or `failed`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/reindex"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"eeeeeeee-5555-4555-8555-555555555555\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/eeeeeeee-5555-4555-8555-555555555555\"\n}",
+              "description": "Vectors for this workspace were deleted. Copy `job_id` and poll GET /v1/jobs/{job_id}. Completed and failed poll bodies match 4 Index after extract."
+            },
+            {
+              "name": "422 workspace_id required",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/reindex"
+              },
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"detail\": \"workspace_id is required\"\n}",
+              "description": "No delete and no job. Send workspace_id."
+            },
+            {
+              "name": "502 delete failed",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/filings/{{agent_data_id}}/reindex"
+              },
+              "status": "Bad Gateway",
+              "code": 502,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"detail\": \"Failed to clear previous vectors for this workspace.\"\n}",
+              "description": "Pinecone delete failed. The index job was not started."
             }
           ]
         },

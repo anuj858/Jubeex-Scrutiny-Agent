@@ -461,6 +461,7 @@ def test_catalog_lists_new_job_types(client: TestClient) -> None:
         "split_petition",
         "verify_document",
         "extract_only",
+        "extract_front",
         "index_parsed",
     ):
         assert job_type in body["job_types"]
@@ -589,6 +590,57 @@ def test_extract_only_accepts(client: TestClient, monkeypatch: pytest.MonkeyPatc
     assert getattr(captured["event"], "job_type") == "extract_only"
 
 
+def test_extract_front_accepts_like_extract(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-front-1",
+        parsed_slots=["petition"],
+        result="agd-front-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "special_category": "Tax Matters",
+            "documents": [_doc("compiled.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"]
+    assert body["poll_url"] == f"/v1/jobs/{body['job_id']}"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "extract_front"
+    assert getattr(event, "special_category") is None
+    assert len(getattr(event, "documents")) == 1
+
+
+def test_extract_front_rejects_split_documents(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("01_Petition.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -665,3 +717,99 @@ def test_index_edited_false(client: TestClient, monkeypatch: pytest.MonkeyPatch)
     assert response.status_code == 202
     assert getattr(captured["event"], "edited") is False
     assert getattr(captured["event"], "job_type") == "index_parsed"
+
+
+def test_reindex_clears_workspace_then_queues_index(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-reindex-1")
+    captured: dict[str, object] = {}
+    deleted: list[str] = []
+    notified: dict[str, object] = {}
+
+    def fake_delete(workspace_id: str) -> None:
+        deleted.append(workspace_id)
+
+    async def fake_notify(**kwargs):
+        notified.update(kwargs)
+
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        fake_delete,
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+
+    missing = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert missing.status_code == 422
+    assert deleted == []
+
+    response = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert deleted == ["ws-reindex-1"]
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    assert polled.json()["status"] == "completed"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "index_parsed"
+    assert getattr(event, "agent_data_id") == "agd-reindex-1"
+    assert getattr(event, "workspace_id") == "ws-reindex-1"
+    assert notified.get("kind") == "scrutiny"
+
+
+def test_job_record_out_has_duplicates() -> None:
+    from extraction_review.api import JobState
+
+    state_with_dups = JobState(job_id="job-1", kind="process_file")
+    state_with_dups.status = "completed"
+    state_with_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": True,
+        "parts": [
+            {"slot_id": "index_1", "duplicate": True, "start_page": 5, "end_page": 11},
+            {"slot_id": "index_2", "duplicate": True, "start_page": 202, "end_page": 202},
+        ],
+    }
+    out_with_dups = state_with_dups.as_out()
+    assert out_with_dups.has_duplicates is True
+    assert out_with_dups.model_dump()["has_duplicates"] is True
+
+    state_no_dups = JobState(job_id="job-2", kind="process_file")
+    state_no_dups.status = "completed"
+    state_no_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": False,
+        "parts": [
+            {"slot_id": "petition", "duplicate": False, "start_page": 1, "end_page": 10},
+        ],
+    }
+    out_no_dups = state_no_dups.as_out()
+    assert out_no_dups.has_duplicates is False
+    assert out_no_dups.model_dump()["has_duplicates"] is False
+
+    state_other = JobState(job_id="job-3", kind="process_file")
+    state_other.status = "completed"
+    state_other.result = {"match": True}
+    assert state_other.as_out().has_duplicates is None

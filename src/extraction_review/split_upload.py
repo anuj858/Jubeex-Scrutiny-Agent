@@ -142,7 +142,21 @@ def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot 
     # id, but normalize it to the unambiguous Certificate slot.
     if key == "aors_declaration":
         key = "aor_s_certificate"
-    return catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    found = catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    if found:
+        return found
+    match = re.fullmatch(r"([a-z0-9_]+)_(\d+)", key)
+    if match:
+        base_key = match.group(1)
+        base_slot = catalog.slot_by_id().get(base_key) or dynamic_upload_slot(base_key)
+        if base_slot:
+            return UploadSlot(
+                id=key,
+                label=base_slot.label,
+                parts=base_slot.parts,
+                required=False,
+            )
+    return None
 
 
 def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
@@ -1319,6 +1333,95 @@ def extract_configuration(
         catalog.extract_field_sources,
     )
     dumped["system_prompt"] = build_extract_system_prompt(catalog)
+    return dumped
+
+
+def build_front_extract_system_prompt() -> str:
+    """Prompt for the opening pages plus the Vakalatnama. The normal extract prompt is unchanged."""
+    return "\n".join(
+        [
+            "You are extracting a Supreme Court filing from the opening of one compiled PDF, plus its last 5 pages.",
+            "The last 5 pages are the Vakalatnama. Pages labelled Vakalatnama are those last pages.",
+            "This pack has not been split.",
+            "Copy printed text only. Leave a field null when it is not printed in this pack.",
+            "petition_type and cause_title come from the opening of the Main Petition.",
+            "special_category is the matter subtype printed in that same opening, such as Tax Matters. Leave it null when it is not printed.",
+            "petitioners and respondents come only from the Memo of Parties, or from the cause-title lines marked PETITIONER and RESPONDENT.",
+            "A numbered checklist answer, a Yes or NA, a listing-proforma question, a synopsis sentence, or a paragraph of the impugned order is not a party.",
+            "advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
+            "impugned_orders comes from the particulars printed on the opening pages.",
+            "relief_sort and petition_date stay null.",
+            "documents stays empty.",
+        ]
+    ).strip()
+
+
+def build_front_extract_pack_markdown(
+    page_markdown: Mapping[int, str],
+    page_layout: Mapping[int, Mapping[str, Any]] | None = None,
+    opening_pages: int = 30,
+) -> str:
+    """Opening pages, then the last 5 pages labelled as the Vakalatnama."""
+    page_markdown = _recover_page_markdown(page_markdown, page_layout)
+    sections: list[str] = []
+    for page in sorted(page_markdown):
+        body = (page_markdown.get(page) or "").strip()
+        if not body or body.startswith(_PARSE_STUB_PREFIX):
+            continue
+        label = "Vakalatnama" if page > opening_pages else "Compiled opening"
+        sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
+    packed = "\n\n".join(sections).strip()
+    if not packed:
+        return ""
+    preamble = (
+        "# Extraction rules\n"
+        f"This pack is the first {opening_pages} pages of one compiled filing, "
+        "then its last 5 pages. It has not been split.\n"
+        "Pages labelled Vakalatnama are those last 5 pages.\n"
+        "Read petition_type, cause_title, special_category, and court from the "
+        "opening of the Main Petition.\n"
+        "Read petitioners and respondents only from the Memo of Parties, or from "
+        "the cause-title lines marked PETITIONER and RESPONDENT. "
+        "Do not copy listing-proforma questions, Yes/NA answers, or order paragraphs.\n"
+        "special_category is the printed matter subtype, such as Tax Matters. "
+        "Leave it null when it is not printed.\n"
+        "Read advocates_on_record from the Vakalatnama. If it prints no AOR, "
+        "use the footer at the end of the List of Dates.\n"
+        "Read impugned_orders from the particulars printed on the opening pages.\n"
+        "Leave relief_sort and petition_date null.\n"
+        "Copy printed text only."
+    )
+    return f"{preamble}\n\n{packed}"
+
+
+def _schema_with_special_category_beside_petition_type(
+    schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(dict(schema))
+    props = updated.get("properties")
+    if not isinstance(props, dict) or "special_category" not in props:
+        return updated
+    ordered: dict[str, Any] = {}
+    for key, value in props.items():
+        if key == "special_category":
+            continue
+        ordered[key] = value
+        if key == "petition_type":
+            ordered["special_category"] = props["special_category"]
+    updated["properties"] = ordered
+    return updated
+
+
+def front_extract_configuration(extract_config: Any) -> dict[str, Any]:
+    """Current extract schema plus special_category, for this job only."""
+    from .config import FrontExtractRecord, dump_api_configuration
+
+    dumped = dump_api_configuration(extract_config)
+    dumped.pop("configuration_id", None)
+    dumped["data_schema"] = _schema_with_special_category_beside_petition_type(
+        FrontExtractRecord.model_json_schema()
+    )
+    dumped["system_prompt"] = build_front_extract_system_prompt()
     return dumped
 
 
