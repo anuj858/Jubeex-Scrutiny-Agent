@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 import pymupdf
-from llama_cloud import AsyncLlamaCloud, BadRequestError
+from llama_cloud import AsyncLlamaCloud, BadRequestError, NotFoundError
 from llama_cloud.types.beta.extracted_data import ExtractedData
 from pydantic import (
     AliasChoices,
@@ -87,9 +87,7 @@ logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 _TRUTHY = frozenset({"1", "true", "yes"})
-_SPLIT_RECONCILIATION_MODES = frozenset(
-    {"llama_only", "targeted", "legacy_full"}
-)
+_SPLIT_RECONCILIATION_MODES = frozenset({"llama_only", "targeted", "legacy_full"})
 DEFAULT_SLOT_UPLOAD_CONCURRENCY = 8
 _FILE_BYTES: dict[str, bytes] = {}
 
@@ -116,9 +114,7 @@ def split_reconciliation_mode() -> str:
     boolean remains an explicit compatibility switch, while ``llama_only``
     and ``legacy_full`` remain available for controlled rollback/comparison.
     """
-    configured = (
-        os.getenv("SPLIT_RECONCILIATION_MODE") or ""
-    ).strip().lower()
+    configured = (os.getenv("SPLIT_RECONCILIATION_MODE") or "").strip().lower()
     if configured in _SPLIT_RECONCILIATION_MODES:
         return configured
     legacy_value = os.getenv("SPLIT_PYTHON_RULES_ENABLED")
@@ -146,7 +142,9 @@ def split_output_selection(value: str | None = None) -> dict[str, Any]:
     configured = (raw or "Annexures, Cover Page").strip()
     if not configured:
         configured = "Annexures, Cover Page"
-    requested = [token.strip() for token in re.split(r"[,;|\n]+", configured) if token.strip()]
+    requested = [
+        token.strip() for token in re.split(r"[,;|\n]+", configured) if token.strip()
+    ]
     if not requested:
         requested = ["Annexures", "Cover Page"]
     all_tokens = [token for token in requested if token.casefold() == "all"]
@@ -648,8 +646,7 @@ def split_labels_match_expected_slot(
         return dominant == "annexures" or bool(
             actual_dynamic
             and all(
-                family_split_name(part) == "Annexures"
-                for part in actual_dynamic.parts
+                family_split_name(part) == "Annexures" for part in actual_dynamic.parts
             )
         )
     if expected_dynamic and all(
@@ -1098,7 +1095,9 @@ def _split_strategy_payload(raw: Any) -> dict[str, Any] | None:
     instructions = dumped.get("custom_instructions")
     if instructions is not None:
         if not isinstance(instructions, str):
-            raise ValueError("split.splitting_strategy.custom_instructions must be a string.")
+            raise ValueError(
+                "split.splitting_strategy.custom_instructions must be a string."
+            )
         if len(instructions) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
             raise ValueError(
                 "split.splitting_strategy.custom_instructions has "
@@ -1298,9 +1297,7 @@ def _boundary_detection_configuration(
     # Select across the entire file, with high-evidence pages first. Reserve
     # space for the first/last page and distribute the rest by physical-page
     # bucket so late annexures are not silently excluded by prompt truncation.
-    omission = (
-        "[Page cues are sampled across the PDF; inspect uncued pages in the PDF itself.]"
-    )
+    omission = "[Page cues are sampled across the PDF; inspect uncued pages in the PDF itself.]"
     budget = _SPLIT_CUSTOM_INSTRUCTIONS_MAX - len(prefix) - len(omission) - 2
     bucket_width = max(1, (page_count + 15) // 16)
     buckets: dict[int, list[tuple[int, int, str]]] = {}
@@ -1335,7 +1332,9 @@ def _boundary_detection_configuration(
     if len(chosen) < len(evidence):
         instruction += "\n" + omission
     if len(instruction) > _SPLIT_CUSTOM_INSTRUCTIONS_MAX:
-        raise ValueError("Boundary-only instructions exceed the Split API character limit")
+        raise ValueError(
+            "Boundary-only instructions exceed the Split API character limit"
+        )
     return {
         "product_type": "split_v1",
         "categories": [
@@ -1381,8 +1380,10 @@ def _validated_segment_pages(
             pages=[page for page in pages if page < 1 or page > page_count],
             page_count=page_count,
         )
-    if pages and pages == sorted(set(pages)) and pages != list(
-        range(pages[0], pages[-1] + 1)
+    if (
+        pages
+        and pages == sorted(set(pages))
+        and pages != list(range(pages[0], pages[-1] + 1))
     ):
         add("segment_pages_not_contiguous", pages=pages)
 
@@ -1455,7 +1456,9 @@ def _boundary_proposals_from_exchange(
         issues.append({"code": "boundary_segments_out_of_order"})
 
     page_segments: dict[int, list[int]] = {}
-    for segment_index, pages in zip(accepted_segment_indexes, accepted_pages, strict=True):
+    for segment_index, pages in zip(
+        accepted_segment_indexes, accepted_pages, strict=True
+    ):
         for page in pages:
             page_segments.setdefault(page, []).append(segment_index)
     shared_boundary_pages: list[int] = []
@@ -1505,7 +1508,9 @@ def _classification_configuration(
     if not proposals:
         return None, "no_valid_boundary_guidance"
     blocking_issues = [
-        issue for issue in proposal_issues if issue.get("code") != "shared_boundary_page"
+        issue
+        for issue in proposal_issues
+        if issue.get("code") != "shared_boundary_page"
     ]
     if blocking_issues:
         return None, "boundary_proposals_invalid"
@@ -1532,8 +1537,7 @@ def _classification_configuration(
         "\nCLASSIFICATION PASS: classify each proposed complete segment using the "
         "canonical split_v1 categories and rules. Keep candidate boundaries unless "
         "page evidence clearly shows the proposal is wrong. These are exact physical "
-        "PDF page lists; do not fill gaps between listed pages: "
-        + page_lists
+        "PDF page lists; do not fill gaps between listed pages: " + page_lists
     )
     strategy = dict(configuration.get("splitting_strategy") or {})
     instructions = str(strategy.get("custom_instructions") or "")
@@ -1546,11 +1550,7 @@ def _classification_configuration(
         # boundary-discovery prompt with a compact range-only directive.
         compact_ranges = ";".join(
             f"{item['segment_id']}:{item['start_page']}"
-            + (
-                f"-{item['end_page']}"
-                if item["end_page"] != item["start_page"]
-                else ""
-            )
+            + (f"-{item['end_page']}" if item["end_page"] != item["start_page"] else "")
             for item in proposals
         )
         compact_directive = (
@@ -1590,7 +1590,9 @@ def _classification_call_evidence(
     instructions = str(strategy.get("custom_instructions") or "")
     configuration_id = sent.get("configuration_id")
     return {
-        "kind": "remote_configuration_id" if configuration_id else "inline_configuration",
+        "kind": "remote_configuration_id"
+        if configuration_id
+        else "inline_configuration",
         "configuration_id": configuration_id,
         "boundary_guidance_sent": (
             boundary_guidance_status.startswith("sent")
@@ -1617,8 +1619,13 @@ def _split_page_review_reasons(
 
     add_pages(boundary_validation.get("missing_pages"), "boundary_page_missing")
     add_pages(classification_report.get("missing_pages"), "classification_page_missing")
-    add_pages(classification_report.get("overlapping_pages"), "classification_page_overlap")
-    add_pages(classification_report.get("out_of_range_pages"), "classification_page_out_of_range")
+    add_pages(
+        classification_report.get("overlapping_pages"), "classification_page_overlap"
+    )
+    add_pages(
+        classification_report.get("out_of_range_pages"),
+        "classification_page_out_of_range",
+    )
     for issue in boundary_validation.get("issues", ()):
         if not isinstance(issue, Mapping):
             continue
@@ -1719,8 +1726,7 @@ def _segment_classification_report(
         "out_of_range_pages": out_of_range,
         "issues": issues,
         "boundary_segments": [
-            {"category": item["category"], "pages": item["pages"]}
-            for item in segments
+            {"category": item["category"], "pages": item["pages"]} for item in segments
         ],
     }
 
@@ -1778,9 +1784,7 @@ def _document_first_page_ownership(
 
         pages = list(raw_pages)
         page_set = set(pages)
-        exact = [
-            item for item in classified if item.get("source_pages") == pages
-        ]
+        exact = [item for item in classified if item.get("source_pages") == pages]
         overlapping = [
             item
             for item in classified
@@ -2318,10 +2322,27 @@ async def _run_split_from_file_event(
     if agent_data_id:
         try:
             item = await client.beta.agent_data.get(agent_data_id)
-        except Exception as exc:
-            raise ValueError(f"Filing not found: {agent_data_id}") from exc
-        data = item.data if isinstance(getattr(item, "data", None), dict) else {}
-        if hasattr(item.data, "model_dump") and not isinstance(item.data, dict):
+        except NotFoundError as exc:
+            if job in INDEX_JOB_TYPES:
+                raise ValueError(f"Filing not found: {agent_data_id}") from exc
+            # Re-extraction is the recovery path for a stale Agent Data id.
+            # Keep the requested id on nested state so its upsert can attempt
+            # the update, observe the 404, and return a replacement id.
+            logger.warning(
+                "Agent Data %s is missing; re-extraction will recreate it",
+                agent_data_id,
+            )
+            item = None
+        data = (
+            item.data
+            if item is not None and isinstance(getattr(item, "data", None), dict)
+            else {}
+        )
+        if (
+            item is not None
+            and hasattr(item.data, "model_dump")
+            and not isinstance(item.data, dict)
+        ):
             dumped = item.data.model_dump(mode="json")
             data = dumped if isinstance(dumped, dict) else {}
         meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
@@ -2844,17 +2865,14 @@ class ProcessFileWorkflow(Workflow):
             proposal_issues=boundary_validation["issues"],
         )
         classification_started = start_timer()
-        split_result = await run_llama_split(
-            api_configuration=classification_config
-        )
+        split_result = await run_llama_split(api_configuration=classification_config)
         page_parts, split_job_id, llama_split = split_result
         raw_classification_page_parts = page_parts
         classification_report = _segment_classification_report(
             llama_split, page_count=pdf_page_count
         )
         raw_classified_ranges = {
-            tuple(item["source_pages"])
-            for item in classification_report["segments"]
+            tuple(item["source_pages"]) for item in classification_report["segments"]
         }
         proposed_ranges = {tuple(item["pages"]) for item in boundary_proposals}
         if proposed_ranges != raw_classified_ranges:
@@ -2977,9 +2995,13 @@ class ProcessFileWorkflow(Workflow):
             llama_page_parts=llama_page_parts,
             classifications=getattr(structured, "classifications", ()),
             segment_classifications=getattr(structured, "segment_classifications", ()),
-            llama_boundary_proposals=getattr(structured, "llama_boundary_proposals", ()),
+            llama_boundary_proposals=getattr(
+                structured, "llama_boundary_proposals", ()
+            ),
             reconciliation_changes=reconciliation_changes,
-            reconciliation_operations=getattr(structured, "reconciliation_operations", ()),
+            reconciliation_operations=getattr(
+                structured, "reconciliation_operations", ()
+            ),
             initial_segments=authoritative_boundary_segments,
             raw_classification_segments=classification_report["segments"],
             assignment_events=getattr(structured, "assignment_events", {}),
@@ -3021,7 +3043,11 @@ class ProcessFileWorkflow(Workflow):
                             f"boundary:{issue['code']}"
                             for issue in boundary_validation["issues"]
                         ],
-                        *([] if boundary_guidance_status == "sent" else [boundary_guidance_status]),
+                        *(
+                            []
+                            if boundary_guidance_status == "sent"
+                            else [boundary_guidance_status]
+                        ),
                     ],
                 }
             )
@@ -3043,7 +3069,8 @@ class ProcessFileWorkflow(Workflow):
         unresolved_reconciliation = [
             item
             for item in getattr(structured, "reconciliation_operations", ())
-            if getattr(item, "status", None) in {"left_for_review", "rolled_back", "rejected"}
+            if getattr(item, "status", None)
+            in {"left_for_review", "rolled_back", "rejected"}
             and getattr(item, "operation_type", None) != "reconciliation_stop"
         ]
         if unresolved_reconciliation:
@@ -3094,7 +3121,9 @@ class ProcessFileWorkflow(Workflow):
         audit_total = int((split_audit.get("flag_counts") or {}).get("total") or 0)
         if audit_total:
             ctx.write_event_to_stream(
-                Status(level="info", message=f"Split audit raised {audit_total} flag(s)")
+                Status(
+                    level="info", message=f"Split audit raised {audit_total} flag(s)"
+                )
             )
         index_status = split_audit.get("index_status")
         if index_status in {"missing", "unreadable"}:
@@ -3126,7 +3155,8 @@ class ProcessFileWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
-                    message="Index/split boundary mismatch; verify: " + "; ".join(examples),
+                    message="Index/split boundary mismatch; verify: "
+                    + "; ".join(examples),
                 )
             )
         parts_found = sorted(
@@ -3213,7 +3243,9 @@ class ProcessFileWorkflow(Workflow):
         selected_owners_by_page: dict[int, list[str]] = {}
         for sliced in slices:
             for source_page in sliced.pages:
-                selected_owners_by_page.setdefault(source_page, []).append(sliced.slot_id)
+                selected_owners_by_page.setdefault(source_page, []).append(
+                    sliced.slot_id
+                )
 
         page_manifest = (split_audit.get("page_manifest") or {}).get("pages")
         if not isinstance(page_manifest, list):
@@ -3438,7 +3470,8 @@ class ProcessFileWorkflow(Workflow):
                                 (split_audit.get("flag_counts") or {}).get("error") or 0
                             ),
                             "warning_count": int(
-                                (split_audit.get("flag_counts") or {}).get("warning") or 0
+                                (split_audit.get("flag_counts") or {}).get("warning")
+                                or 0
                             ),
                             "overlap_count": len(ownership["overlapping_ownership"]),
                             "source_page_count": pdf_page_count,

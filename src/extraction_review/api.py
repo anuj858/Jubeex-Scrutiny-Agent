@@ -19,6 +19,7 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from llama_cloud import NotFoundError
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -198,6 +199,7 @@ class FilingDocumentsRequest(BaseModel):
     organization_id: str | None = None
     workspace_id: str | None = None
     user_id: str | None = None
+    agent_data_id: str | None = None
     callback_url: str | None = Field(
         default=None,
         examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
@@ -210,6 +212,7 @@ class FilingDocumentsRequest(BaseModel):
         "organization_id",
         "workspace_id",
         "user_id",
+        "agent_data_id",
         "callback_url",
         mode="before",
     )
@@ -947,12 +950,22 @@ async def _load_filing_item(agent_data_id: str) -> Any:
     client = get_llama_cloud_client()
     try:
         return await client.beta.agent_data.get(agent_data_id)
-    except Exception as exc:
-        logger.exception("Failed to load Agent Data %s", agent_data_id)
+    except NotFoundError as exc:
+        logger.info("Agent Data %s was not found", agent_data_id)
         raise HTTPException(
             status_code=404,
             detail=f"Filing not found: {agent_data_id}",
         ) from exc
+    except Exception as exc:
+        logger.exception("Failed to load Agent Data %s", agent_data_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not verify the filing with LlamaCloud.",
+        ) from exc
+
+
+async def _require_filing_for_index(agent_data_id: str) -> None:
+    await _load_filing_item(agent_data_id)
 
 
 @app.patch(
@@ -1036,6 +1049,10 @@ async def index_filing(
     Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
     ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
     """
+    # Fail synchronously instead of accepting an SQS job that is guaranteed to
+    # fail in the worker. This also prevents clients from repeatedly retrying a
+    # stale Agent Data id as though the 202 meant the filing was valid.
+    await _require_filing_for_index(agent_data_id)
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
     payload["job_type"] = "index_parsed"

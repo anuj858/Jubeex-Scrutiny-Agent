@@ -10,7 +10,7 @@ import os
 from collections.abc import Mapping
 from typing import Annotated, Any, cast
 
-from llama_cloud import AsyncLlamaCloud
+from llama_cloud import AsyncLlamaCloud, NotFoundError
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
 from pydantic import BaseModel, Field, field_validator, model_validator
 from workflows import Context, Workflow, step
@@ -250,6 +250,105 @@ class SplitFilesState(BaseModel):
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
     parse_artifact_url: str | None = None
     parse_artifact_key: str | None = None
+
+
+async def _workspace_agent_data_item(
+    client: AsyncLlamaCloud,
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> Any | None:
+    """Find the filing record owned by one workspace.
+
+    Workspace ids are the durable identity for a JubeeX matter. File hashes are
+    not: the same PDF can legitimately be uploaded to several workspaces.
+    """
+    clean_workspace_id = (workspace_id or "").strip()
+    if not clean_workspace_id:
+        return None
+    filters: dict[str, dict[str, str]] = {
+        "workspace_id": {"eq": clean_workspace_id},
+    }
+    clean_organization_id = (organization_id or "").strip()
+    if clean_organization_id:
+        filters["organization_id"] = {"eq": clean_organization_id}
+    page = await client.beta.agent_data.search(
+        deployment_name=agent_name or "_public",
+        collection=EXTRACTED_DATA_COLLECTION,
+        filter=filters,
+        page_size=2,
+    )
+    items = list(getattr(page, "items", None) or [])
+    if len(items) > 1:
+        logger.warning(
+            "Found %s Agent Data records for workspace %s; reusing %s",
+            len(items),
+            clean_workspace_id,
+            getattr(items[0], "id", "unknown"),
+        )
+    return items[0] if items else None
+
+
+async def _upsert_agent_data(
+    client: AsyncLlamaCloud,
+    *,
+    data: dict[str, Any],
+    agent_data_id: str | None,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> Any:
+    """Update a matter's stable Agent Data record or create it once.
+
+    Older code deleted every record sharing a file hash before creating a new
+    id. That invalidated existing reviews and could delete another workspace's
+    record when users uploaded the same PDF. Prefer the caller's durable id,
+    then a workspace-scoped record, and create only when neither exists.
+    """
+    requested_id = (agent_data_id or "").strip()
+    if requested_id:
+        try:
+            item = await client.beta.agent_data.update(requested_id, data=data)
+            logger.info("Updated Agent Data %s", requested_id)
+            return item
+        except NotFoundError:
+            logger.warning(
+                "Agent Data %s no longer exists; recovering by workspace",
+                requested_id,
+            )
+
+    existing = await _workspace_agent_data_item(
+        client,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    existing_id = str(getattr(existing, "id", "") or "").strip()
+    if existing_id and existing_id != requested_id:
+        try:
+            item = await client.beta.agent_data.update(existing_id, data=data)
+            logger.info(
+                "Updated workspace Agent Data %s instead of creating a replacement",
+                existing_id,
+            )
+            return item
+        except NotFoundError:
+            # A concurrent cleanup may have removed the search result. Creating
+            # a replacement is safe and its id is returned to the backend.
+            logger.warning(
+                "Workspace Agent Data %s disappeared before update; recreating",
+                existing_id,
+            )
+
+    item = await client.beta.agent_data.create(
+        data=data,
+        deployment_name=agent_name or "_public",
+        collection=EXTRACTED_DATA_COLLECTION,
+    )
+    logger.info(
+        "Created Agent Data %s for workspace %s",
+        getattr(item, "id", "unknown"),
+        (workspace_id or "").strip() or "unknown",
+    )
+    return item
 
 
 class ProcessSplitFilesWorkflow(Workflow):
@@ -820,22 +919,12 @@ class ProcessSplitFilesWorkflow(Workflow):
             workspace_id=state.workspace_id,
         )
 
-        if extracted_data.file_hash is not None:
-            delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
-                deployment_name=agent_name or "_public",
-                collection=EXTRACTED_DATA_COLLECTION,
-                filter={"file_hash": {"eq": extracted_data.file_hash}},
-            )
-            if delete_result.deleted_count > 0:
-                logger.info(
-                    "Removed %s existing record(s) for %s",
-                    delete_result.deleted_count,
-                    extracted_data.file_name,
-                )
-        item = await llama_cloud_client.beta.agent_data.create(
+        item = await _upsert_agent_data(
+            llama_cloud_client,
             data=data_dict,
-            deployment_name=agent_name or "_public",
-            collection=EXTRACTED_DATA_COLLECTION,
+            agent_data_id=state.agent_data_id,
+            organization_id=org_id,
+            workspace_id=state.workspace_id,
         )
         ctx.write_event_to_stream(
             Status(
