@@ -1617,6 +1617,16 @@ def _looks_like_party_name(name: str | None) -> bool:
     text = _clean_front_party_name(name)
     if not text:
         return False
+    if not re.search(r"[A-Za-z]{2,}", text):
+        return False
+    if re.fullmatch(r"[\d\s\-_.,/()]+", text):
+        return False
+    if re.match(
+        r"^(?:crl\.?\s*m\.?p\.?|s\.?c\.?|annexure|judgment|order|appeal|fir|deposition|memo\s+of\s+parties)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
     words = text.split()
     if len(words) > 12 or len(text) > 120:
         return False
@@ -1687,12 +1697,12 @@ def _is_party_role_or_header(line: str) -> bool:
     ):
         return True
     if re.match(
-        r"^(?:accused\s*no\.?\s*\d*|respondent\s*no\.?\s*\d*|petitioner\s*no\.?\s*\d*|appellant\s*no\.?\s*\d*)$",
+        r"^(?:accused|respondent|petitioner|appellant|complainant|applicant|opposite\s*party|def[ae]cto\s*complainant|contesting\s*respondent)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*$",
         l,
     ):
         return True
     if re.match(
-        r"^(?:accused|respondent|appellant|petitioner|plaintiff|defendant|opposite\s*party|complainant|def[ae]cto\s*complainant|contesting\s*respondent(?:\s*no\.?\s*\d*)?|\d+\s*(?:st|nd|rd|th)?\s*respondent)$",
+        r"^\d+\s*(?:st|nd|rd|th)?\s*(?:respondent|petitioner|appellant|accused)$",
         l,
     ):
         return True
@@ -1906,24 +1916,37 @@ def _parties_from_memo(
     if not page_markdown:
         return None
     sorted_pages = sorted(page_markdown)
+    best_candidate: dict[str, list[dict[str, Any]]] | None = None
+    best_score = -1
+
     for page in sorted_pages:
         text = page_markdown.get(page) or ""
+        # Skip if page is clearly an index, synopsis, or listing proforma
+        first_lines = "\n".join(text.splitlines()[:10]).lower()
+        if re.search(
+            r"\b(?:index\s+of\s+papers|listing\s+proforma|proforma\s+for\s+first\s+listing|synopsis\s+and\s+list\s+of\s+dates)\b",
+            first_lines,
+        ):
+            continue
+
         has_heading = False
         for line in text.splitlines():
             line_clean = re.sub(r"<[^>]+>", " ", line)
             line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
+            # Ignore lines that look like table-of-contents entries (e.g. "39. Memo of parties 234-224")
+            if re.search(r"^\d+\s*[.)\-]", line_clean) or re.search(
+                r"\d+\s*[-–—]\s*\d+\s*$", line_clean
+            ):
+                continue
             if re.search(
-                r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\s*$",
+                r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\b",
                 line_clean,
                 re.IGNORECASE,
             ):
                 has_heading = True
                 break
 
-        if not has_heading and not re.search(
-            r"(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties",
-            text.lower(),
-        ):
+        if not has_heading:
             continue
 
         pages_to_check = [page]
@@ -1939,9 +1962,36 @@ def _parties_from_memo(
 
         combined_text = "\n".join(page_markdown.get(p, "") for p in pages_to_check)
         parsed = _parse_memo_of_parties(combined_text, page=page, pages=pages_to_check)
-        if parsed["petitioners"] or parsed["respondents"]:
-            return parsed
-    return None
+        pets = parsed.get("petitioners") or []
+        resps = parsed.get("respondents") or []
+        if not pets and not resps:
+            continue
+
+        # Score candidates: genuine memo pages have both parties, relations, addresses, versus
+        score = 0
+        if pets and resps:
+            score += 20
+        elif pets or resps:
+            score += 5
+
+        for p in pets:
+            if p.get("relation"):
+                score += 5
+            if p.get("address"):
+                score += 5
+        for r in resps:
+            if r.get("relation") or r.get("acting_through"):
+                score += 5
+            if r.get("address"):
+                score += 5
+        if re.search(r"\b(?:versus|vs\.?|v/s|versuu)\b", combined_text, re.IGNORECASE):
+            score += 10
+
+        if score > best_score:
+            best_score = score
+            best_candidate = parsed
+
+    return best_candidate
 
 
 def _drop_non_party_names(parties: Any) -> list[dict[str, Any]]:
