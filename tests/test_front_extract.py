@@ -218,6 +218,50 @@ def test_front_parties_come_from_the_memo_not_the_checklist() -> None:
     )
 
 
+def test_front_parties_extracted_from_multipage_position_of_parties_table() -> None:
+    p27 = """
+    <table><tr><th></th><th colspan="3"><u>POSITION OF PARTIES</u></th></tr>
+    <tr><th><u>IN THE MATTER</u><br /><u>OF</u></th><th><u>TRIAL COURT</u></th><th><u>HIGH COURT</u></th><th><u>IN THIS COURT</u></th></tr>
+    <tr><td>1. Sathish<br /><br />S/o Samuthirapndi<br />South Mavadi,<br />Mavadi post<br />Tirunelveli District<br />Tamil Nadu.<br /><br /><strong>Presently residing at::</strong><br />435, Keela Mavadi,<br />Malaiadiputhur<br />Panchayat,<br />Tirunelveli, T.N.</td><td>Accused No. 1</td><td>Respondent No<br /><br />2</td><td>Appellant</td></tr>
+    <tr><td></td><td><u>VERSUS</u></td><td></td><td></td></tr></table>
+    """
+    p28 = """
+    <table><tr><td>1. The state rep by inspector of police, Eruvadi Police station, Tirunelveli District Tamilnadu state Crime No.156/2012</td><td>Complainant</td><td>1<sup>st</sup> respondent</td><td>Contesting respondent No.2</td></tr>
+    <tr><td>2. Chandra W/o Ramar South Mavadi Mavadi Post Tirunelveli District</td><td>Defecto Complainant</td><td>Appellant</td><td>Contesting Respondent No.1</td></tr></table>
+    **TO,**
+    **THE HON'BLE CHIEF JUSTICE OF INDIA**
+    **MOST RESPECTFULLY SHOWETH:**
+    """
+    payload = {
+        "petition_type": "CRIMINAL APPEAL",
+        "cause_title": {"formatted_title": "Sathish VS State rep. by The Inspector of police"},
+        "petitioners": [{"name": "Sathish"}],
+        "respondents": [{"name": "State rep. by The Inspector of police"}],
+    }
+    done = finalize_front_extract(payload, page_markdown={27: p27, 28: p28})
+    assert len(done["petitioners"]) == 1
+    pet = done["petitioners"][0]
+    assert pet["name"] == "Sathish"
+    assert pet["relation"] == "S/o"
+    assert pet["guardian"] == "Samuthirapndi"
+    assert "South Mavadi" in pet["address"]
+    assert "435" in pet["address"]
+
+    assert len(done["respondents"]) == 2
+    r1 = done["respondents"][0]
+    assert "state rep" in r1["name"].lower()
+    assert "inspector of police" in r1["name"].lower()
+    assert "Eruvadi" in r1["address"]
+    assert r1["acting_through"] == "inspector of police"
+
+    r2 = done["respondents"][1]
+    assert r2["name"] == "Chandra"
+    assert r2["relation"] == "W/o"
+    assert r2["guardian"] == "Ramar"
+    assert "South Mavadi" in r2["address"]
+    assert done["cause_title"]["formatted_title"] == "Sathish VS The state rep by inspector of police and Anr."
+
+
 def test_front_party_name_drops_parse_markup_and_the_list_number() -> None:
     done = finalize_front_extract(
         {

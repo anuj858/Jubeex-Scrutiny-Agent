@@ -1638,83 +1638,265 @@ def _party_record(
     *,
     serial: int,
     page: int | None = None,
+    pages: Sequence[int] | None = None,
     relation: str | None = None,
     guardian: str | None = None,
+    acting_through: str | None = None,
     address: str | None = None,
+    source_part: str = "Memo of Parties",
 ) -> dict[str, Any]:
     cleaned = _clean_front_party_name(name)
-    kind = "ORGANIZATION" if re.match(r"^state\b", cleaned, re.IGNORECASE) else None
+    kind = (
+        "ORGANIZATION"
+        if re.search(
+            r"\b(?:state|union of india|govt|government|ltd|limited|corporation|bank|department|police)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+        else None
+    )
+    source_pages = list(pages) if pages else ([page] if page else [])
     return {
         "serial": serial,
         "kind": normalize_party_kind(cleaned, kind),
         "name": cleaned,
         "relation": relation,
         "guardian": guardian,
+        "acting_through": acting_through,
         "address": address,
-        "source_part": "Memo of Parties",
-        "source_pages": [page] if page else [],
+        "source_part": source_part,
+        "source_pages": source_pages,
     }
 
 
-def _parse_memo_of_parties(text: str, page: int | None) -> dict[str, list[dict[str, Any]]]:
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-    lines = [line for line in lines if line]
+def _clean_markdown_to_lines(text: str) -> list[str]:
+    """Convert HTML table and markdown text to clean logical lines."""
+    s = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    s = re.sub(r"(?i)</(?:tr|td|th|p|div|li|h[1-6])>", "\n", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"[*_`#]+", "", s)
+    raw_lines = [re.sub(r"\s+", " ", line).strip() for line in s.splitlines()]
+    return [line for line in raw_lines if line]
+
+
+def _is_party_role_or_header(line: str) -> bool:
+    l = line.strip().lower()
+    if re.match(
+        r"^(?:trial\s*court|high\s*court|in\s*this\s*court|court|in\s*the\s*matter\s*of|position\s*of\s*parties|memo\s*of\s*parties)$",
+        l,
+    ):
+        return True
+    if re.match(
+        r"^(?:accused\s*no\.?\s*\d*|respondent\s*no\.?\s*\d*|petitioner\s*no\.?\s*\d*|appellant\s*no\.?\s*\d*)$",
+        l,
+    ):
+        return True
+    if re.match(
+        r"^(?:accused|respondent|appellant|petitioner|plaintiff|defendant|opposite\s*party|complainant|def[ae]cto\s*complainant|contesting\s*respondent(?:\s*no\.?\s*\d*)?|\d+\s*(?:st|nd|rd|th)?\s*respondent)$",
+        l,
+    ):
+        return True
+    if re.match(r"^[.\s,\-—_`*#~|]+$", line) or re.match(r"^\.?\d+$", line.strip()):
+        return True
+    return False
+
+
+def _parse_memo_of_parties(
+    text: str,
+    page: int | None = None,
+    pages: Sequence[int] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    clean_lines = _clean_markdown_to_lines(text)
+    clean_lines = [
+        line
+        for line in clean_lines
+        if not re.search(r"in the matter of.*versus", line, re.IGNORECASE)
+    ]
+
+    source_pages = list(pages) if pages else ([page] if page else [])
+
     petitioners: list[dict[str, Any]] = []
-    for index, line in enumerate(lines):
+    # 1. Look for petitioners via S/o or numbered party before respondents
+    for index, line in enumerate(clean_lines):
         if not re.match(r"^[SDW]/o\b", line, re.IGNORECASE) or index == 0:
             continue
-        name = lines[index - 1]
-        if not _looks_like_party_name(name) or "advocate" in name.lower():
+        party_name = None
+        for b in range(index - 1, max(-1, index - 8), -1):
+            cand = clean_lines[b]
+            cand = re.sub(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*", "", cand)
+            cand = re.sub(
+                r"(?:accused|respondent|appellant|petitioner).*",
+                "",
+                cand,
+                flags=re.IGNORECASE,
+            ).strip()
+            cand = re.sub(r"^[.\s\d|,\-—_]+$", "", cand).strip()
+            if (
+                cand
+                and not _is_party_role_or_header(cand)
+                and _looks_like_party_name(cand)
+            ):
+                party_name = cand
+                break
+        if not party_name or "advocate" in party_name.lower():
             continue
+
         relation = line.split()[0]
-        guardian = re.sub(r"^[SDW]/o\s+", "", line, count=1, flags=re.IGNORECASE).strip()
+        guardian = re.sub(
+            r"^[SDW]/o\s+", "", line, count=1, flags=re.IGNORECASE
+        ).strip()
+        guardian = re.sub(r"[.\s\d]+$", "", guardian).strip()
+
         address_lines: list[str] = []
         cursor = index + 1
-        while cursor < len(lines) and re.match(r"^R/o\b", lines[cursor], re.IGNORECASE):
-            address_lines.append(lines[cursor])
+        while cursor < len(clean_lines):
+            row = clean_lines[cursor]
+            if re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", row, re.IGNORECASE):
+                break
+            if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", row):
+                break
+            if _is_party_role_or_header(row):
+                cursor += 1
+                continue
+            address_lines.append(row)
             cursor += 1
-            if cursor < len(lines) and not re.match(r"^\d+\.\s+", lines[cursor]):
-                if not re.match(r"^(R/o|[SDW]/o|\d+\.)", lines[cursor], re.IGNORECASE):
-                    address_lines.append(lines[cursor])
-                    cursor += 1
-            break
+
         petitioners.append(
             _party_record(
-                name,
-                serial=1,
+                party_name,
+                serial=len(petitioners) + 1,
                 page=page,
+                pages=source_pages,
                 relation=relation,
                 guardian=guardian or None,
                 address=" ".join(address_lines) or None,
             )
         )
-        break
 
+    # 2. Look for respondents (numbered 1. ... 2. ...)
     respondents: list[dict[str, Any]] = []
+    stop_regex = re.compile(
+        r"^(?:to\s*,|the\s+hon[\x27\x60’]?ble\s+chief\s+justice|most\s+respectfully\s+showeth|1\.\s+that\b)",
+        re.IGNORECASE,
+    )
     index = 0
-    while index < len(lines):
-        matched = re.match(r"^(\d+)\.\s+(.+)$", lines[index])
-        if not matched or not _looks_like_party_name(matched.group(2)):
+    while index < len(clean_lines):
+        line = clean_lines[index]
+        if stop_regex.search(line):
+            break
+        if _is_party_role_or_header(line):
             index += 1
             continue
-        extra: list[str] = []
-        cursor = index + 1
-        while cursor < len(lines) and not re.match(r"^\d+\.\s+", lines[cursor]):
-            row = lines[cursor]
-            if re.match(r"^(Through|R/o)\b", row, re.IGNORECASE) or extra:
-                extra.append(row)
-                cursor += 1
-                continue
-            break
-        respondents.append(
-            _party_record(
-                matched.group(2),
-                serial=len(respondents) + 1,
-                page=page,
-                address=" ".join(extra) or None,
+
+        m_num = re.match(r"^[(\[]?\s*([0-9lI|]+)\s*[.)\]]\s*(.+)$", line)
+        if m_num and not _is_party_role_or_header(m_num.group(2)):
+            raw_cand = m_num.group(2).strip()
+            # If this is petitioner 1 and we already got it in petitioners, skip
+            if petitioners and _looks_like_party_name(raw_cand):
+                cand_clean = re.sub(
+                    r"(?:accused|respondent|appellant|petitioner).*",
+                    "",
+                    raw_cand,
+                    flags=re.IGNORECASE,
+                ).strip()
+                if cand_clean and any(
+                    cand_clean.lower() in p["name"].lower()
+                    or p["name"].lower() in cand_clean.lower()
+                    for p in petitioners
+                ):
+                    index += 1
+                    continue
+
+            party_name = raw_cand
+            relation = None
+            guardian = None
+            acting_through = None
+            addr_parts: list[str] = []
+
+            rel_m = re.search(
+                r"\b([SDW]/o)\s+([A-Za-z\s.\x27\x60’]+?)(?:\s+(South|North|East|West|R/o|Presently|Residing|Address|House|Flat|Plot|Village|VPO|[A-Z][a-z]+.*))?$",
+                raw_cand,
+                re.IGNORECASE,
             )
-        )
-        index = cursor
+            if rel_m:
+                party_name = raw_cand[: rel_m.start()].strip()
+                relation = rel_m.group(1)
+                guardian = rel_m.group(2).strip()
+                if rel_m.group(3):
+                    addr_parts.append(rel_m.group(3).strip())
+            else:
+                addr_m = re.match(
+                    r"^(.+?),\s*([A-Za-z0-9\s,.-]+(?:Police station|District|Tamil\s*nadu|State|Court|Road|Nadu).*)$",
+                    raw_cand,
+                    re.IGNORECASE,
+                )
+                if addr_m:
+                    party_name = addr_m.group(1).strip()
+                    addr_parts.append(addr_m.group(2).strip())
+
+            rep_m = re.search(
+                r"(?:rep(?:\.|resented)?\s+by|through)\s+([A-Za-z\s.\x27\x60’]+?)(?:,|$)",
+                party_name,
+                re.IGNORECASE,
+            )
+            if rep_m:
+                acting_through = rep_m.group(1).strip()
+
+            cursor = index + 1
+            while cursor < len(clean_lines):
+                c_line = clean_lines[cursor]
+                if stop_regex.search(c_line):
+                    break
+                if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", c_line):
+                    break
+                if _is_party_role_or_header(c_line):
+                    cursor += 1
+                    continue
+                c_rel = re.match(r"^([SDW]/o)\s+(.+)$", c_line, re.IGNORECASE)
+                if c_rel and not relation:
+                    relation = c_rel.group(1)
+                    guardian = re.sub(r"[.\s\d]+$", "", c_rel.group(2)).strip()
+                    cursor += 1
+                    continue
+                c_rep = re.match(
+                    r"^(?:through|represented\s+by)\s+(.+)$", c_line, re.IGNORECASE
+                )
+                if c_rep and not acting_through:
+                    acting_through = c_rep.group(1).strip()
+                    addr_parts.append(c_line)
+                    cursor += 1
+                    continue
+                addr_parts.append(c_line)
+                cursor += 1
+
+            address = " ".join(
+                [p for p in addr_parts if not _is_party_role_or_header(p)]
+            ).strip()
+            clean_name = re.sub(
+                r"(?:accused|respondent|appellant|petitioner|complainant).*",
+                "",
+                party_name,
+                flags=re.IGNORECASE,
+            ).strip()
+            clean_name = re.sub(r"[.\s\d|,\-—_]+$", "", clean_name).strip()
+
+            if _looks_like_party_name(clean_name or party_name):
+                p_rec = _party_record(
+                    clean_name or party_name,
+                    serial=len(respondents) + 1,
+                    page=page,
+                    pages=source_pages,
+                    relation=relation,
+                    guardian=guardian or None,
+                    address=address or None,
+                )
+                if acting_through:
+                    p_rec["acting_through"] = acting_through
+                respondents.append(p_rec)
+            index = cursor
+            continue
+        index += 1
+
     return {"petitioners": petitioners, "respondents": respondents}
 
 
@@ -1723,11 +1905,40 @@ def _parties_from_memo(
 ) -> dict[str, list[dict[str, Any]]] | None:
     if not page_markdown:
         return None
-    for page in sorted(page_markdown):
+    sorted_pages = sorted(page_markdown)
+    for page in sorted_pages:
         text = page_markdown.get(page) or ""
-        if "memo of parties" not in text.lower():
+        has_heading = False
+        for line in text.splitlines():
+            line_clean = re.sub(r"<[^>]+>", " ", line)
+            line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
+            if re.search(
+                r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\s*$",
+                line_clean,
+                re.IGNORECASE,
+            ):
+                has_heading = True
+                break
+
+        if not has_heading and not re.search(
+            r"(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties",
+            text.lower(),
+        ):
             continue
-        parsed = _parse_memo_of_parties(text, page)
+
+        pages_to_check = [page]
+        for next_p in range(page + 1, min(page + 4, max(sorted_pages) + 1)):
+            n_text = page_markdown.get(next_p) or ""
+            pages_to_check.append(next_p)
+            if re.search(
+                r"(?:most\s+respectfully\s+showeth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice|1\.\s+that\s+the)",
+                n_text,
+                re.IGNORECASE,
+            ):
+                break
+
+        combined_text = "\n".join(page_markdown.get(p, "") for p in pages_to_check)
+        parsed = _parse_memo_of_parties(combined_text, page=page, pages=pages_to_check)
         if parsed["petitioners"] or parsed["respondents"]:
             return parsed
     return None
@@ -1749,20 +1960,54 @@ def _drop_non_party_names(parties: Any) -> list[dict[str, Any]]:
     return kept
 
 
+def _merge_memo_parties(
+    existing: list[dict[str, Any]],
+    memo_parties: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge memo parties into existing extract, preserving rich extract fields."""
+    if not existing:
+        return [dict(p) for p in memo_parties]
+    if not memo_parties:
+        return existing
+
+    result: list[dict[str, Any]] = [dict(p) for p in existing]
+    for memo_p in memo_parties:
+        memo_name = _party_name(memo_p)
+        matched = next(
+            (p for p in result if _names_match(_party_name(p), memo_name)),
+            None,
+        )
+        if matched is not None:
+            if memo_p.get("name"):
+                matched["name"] = memo_p["name"]
+            for field in ("address", "relation", "guardian", "acting_through"):
+                if memo_p.get(field):
+                    matched[field] = memo_p[field]
+            if memo_p.get("source_part"):
+                matched["source_part"] = memo_p["source_part"]
+            if memo_p.get("source_pages"):
+                matched["source_pages"] = memo_p["source_pages"]
+        else:
+            new_p = dict(memo_p)
+            new_p["serial"] = len(result) + 1
+            result.append(new_p)
+    return result
+
+
 def repair_front_parties(
     payload: dict[str, Any],
     page_markdown: Mapping[int, str] | None = None,
 ) -> None:
     """Keep real party names. Checklist lines and order paragraphs are not parties."""
+    existing_petitioners = _drop_non_party_names(payload.get("petitioners"))
+    existing_respondents = _drop_non_party_names(payload.get("respondents"))
+
     memo = _parties_from_memo(page_markdown)
-    if memo and memo["petitioners"]:
-        payload["petitioners"] = memo["petitioners"]
-    else:
-        payload["petitioners"] = _drop_non_party_names(payload.get("petitioners"))
-    if memo and memo["respondents"]:
-        payload["respondents"] = memo["respondents"]
-    else:
-        payload["respondents"] = _drop_non_party_names(payload.get("respondents"))
+    memo_petitioners = memo.get("petitioners") or [] if memo else []
+    memo_respondents = memo.get("respondents") or [] if memo else []
+
+    payload["petitioners"] = _merge_memo_parties(existing_petitioners, memo_petitioners)
+    payload["respondents"] = _merge_memo_parties(existing_respondents, memo_respondents)
 
     cause = payload.get("cause_title")
     if not isinstance(cause, dict):

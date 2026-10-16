@@ -537,6 +537,26 @@ class FrontExtractRecord(LegalExtractRecord):
             "30-page slice. Leave null when it is not printed there."
         ),
     )
+    petitioners: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "Petitioners. Extract every petitioner from the starting pages of the Main "
+            "Petition (and Memo of Parties / Position of Parties if present). "
+            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
+            "guardian (father/mother/husband name), age, occupation, full address, "
+            "city, state, pin_code, email, mobile, and acting_through."
+        ),
+    )
+    respondents: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "Respondents. Extract every respondent from the starting pages of the Main "
+            "Petition (and Memo of Parties / Position of Parties if present), following VERSUS. "
+            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
+            "guardian (father/mother/husband name), age, occupation, full address, "
+            "city, state, pin_code, email, mobile, and acting_through."
+        ),
+    )
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(

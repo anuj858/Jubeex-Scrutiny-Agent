@@ -102,8 +102,10 @@ def extract_key_fields(data_dict: dict[str, Any]) -> dict[str, Any]:
     # Petitioners
     petitioners_raw = inner.get("petitioners") or []
     petitioners: list[str] = []
+    petitioners_details: list[dict[str, Any]] = []
     for p in petitioners_raw:
         if isinstance(p, dict):
+            petitioners_details.append(p)
             name = p.get("name") or p.get("raw_text") or ""
             serial = p.get("serial")
             prefix = f"{serial}. " if serial else ""
@@ -111,12 +113,15 @@ def extract_key_fields(data_dict: dict[str, Any]) -> dict[str, Any]:
                 petitioners.append(f"{prefix}{name}")
         elif isinstance(p, str):
             petitioners.append(p)
+            petitioners_details.append({"name": p})
 
     # Respondents
     respondents_raw = inner.get("respondents") or []
     respondents: list[str] = []
+    respondents_details: list[dict[str, Any]] = []
     for r in respondents_raw:
         if isinstance(r, dict):
+            respondents_details.append(r)
             name = r.get("name") or r.get("raw_text") or ""
             serial = r.get("serial")
             prefix = f"{serial}. " if serial else ""
@@ -124,6 +129,7 @@ def extract_key_fields(data_dict: dict[str, Any]) -> dict[str, Any]:
                 respondents.append(f"{prefix}{name}")
         elif isinstance(r, str):
             respondents.append(r)
+            respondents_details.append({"name": r})
 
     # Advocates on record
     aor_raw = inner.get("advocates_on_record") or []
@@ -167,7 +173,9 @@ def extract_key_fields(data_dict: dict[str, Any]) -> dict[str, Any]:
         "petitioner_title": cause_title.get("petitioner_title"),
         "respondent_title": cause_title.get("respondent_title"),
         "petitioners": petitioners,
+        "petitioners_details": petitioners_details,
         "respondents": respondents,
+        "respondents_details": respondents_details,
         "advocates": advocates,
         "impugned_orders": impugned_orders,
         "overall_confidence": overall_confidence,
@@ -211,18 +219,50 @@ def write_human_summary_card(
             f.write(f"  * Respondent Title  : {kf.get('respondent_title')}\n")
         f.write("\n")
 
-        f.write(f"PETITIONERS ({len(kf.get('petitioners', []))} found):\n")
-        if kf.get("petitioners"):
-            for p in kf["petitioners"]:
-                f.write(f"  - {p}\n")
+        pets = kf.get("petitioners_details") or []
+        f.write(f"PETITIONERS ({len(pets)} found):\n")
+        if pets:
+            for idx, p in enumerate(pets, 1):
+                s = p.get("serial") or idx
+                f.write(f"  [{s}] {p.get('name') or 'Unnamed'}\n")
+                if p.get("relation") or p.get("guardian"):
+                    f.write(f"      Relation  : {p.get('relation') or ''} {p.get('guardian') or ''}\n".strip() + "\n")
+                if p.get("address"):
+                    f.write(f"      Address   : {p.get('address')}\n")
+                if p.get("city") or p.get("state") or p.get("pin_code"):
+                    loc = ", ".join(filter(None, [p.get("city"), p.get("state"), p.get("pin_code")]))
+                    f.write(f"      Location  : {loc}\n")
+                if p.get("occupation"):
+                    f.write(f"      Occupation: {p.get('occupation')}\n")
+                if p.get("email") or p.get("mobile"):
+                    contacts = ", ".join(filter(None, [p.get("email"), p.get("mobile")]))
+                    f.write(f"      Contact   : {contacts}\n")
+                if p.get("acting_through"):
+                    f.write(f"      Through   : {p.get('acting_through')}\n")
         else:
             f.write("  (None extracted)\n")
         f.write("\n")
 
-        f.write(f"RESPONDENTS ({len(kf.get('respondents', []))} found):\n")
-        if kf.get("respondents"):
-            for r in kf["respondents"]:
-                f.write(f"  - {r}\n")
+        resps = kf.get("respondents_details") or []
+        f.write(f"RESPONDENTS ({len(resps)} found):\n")
+        if resps:
+            for idx, r in enumerate(resps, 1):
+                s = r.get("serial") or idx
+                f.write(f"  [{s}] {r.get('name') or 'Unnamed'}\n")
+                if r.get("relation") or r.get("guardian"):
+                    f.write(f"      Relation  : {r.get('relation') or ''} {r.get('guardian') or ''}\n".strip() + "\n")
+                if r.get("address"):
+                    f.write(f"      Address   : {r.get('address')}\n")
+                if r.get("city") or r.get("state") or r.get("pin_code"):
+                    loc = ", ".join(filter(None, [r.get("city"), r.get("state"), r.get("pin_code")]))
+                    f.write(f"      Location  : {loc}\n")
+                if r.get("occupation"):
+                    f.write(f"      Occupation: {r.get('occupation')}\n")
+                if r.get("email") or r.get("mobile"):
+                    contacts = ", ".join(filter(None, [r.get("email"), r.get("mobile")]))
+                    f.write(f"      Contact   : {contacts}\n")
+                if r.get("acting_through"):
+                    f.write(f"      Through   : {r.get('acting_through')}\n")
         else:
             f.write("  (None extracted)\n")
         f.write("\n")

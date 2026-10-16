@@ -1344,9 +1344,10 @@ def build_front_extract_system_prompt() -> str:
             "The last 5 pages are the Vakalatnama. Pages labelled Vakalatnama are those last pages.",
             "This pack has not been split.",
             "Copy printed text only. Leave a field null when it is not printed in this pack.",
-            "petition_type and cause_title come from the opening of the Main Petition.",
+            "court, petition_type, and cause_title come from ## [Cover Page] or the opening of the Main Petition (## [Main Petition]).",
             "special_category is the matter subtype printed in that same opening, such as Tax Matters. Leave it null when it is not printed.",
-            "petitioners and respondents come only from the Memo of Parties, or from the cause-title lines marked PETITIONER and RESPONDENT.",
+            "petitioners and respondents come from the starting pages of the Main Petition (## [Main Petition], including Position of Parties / Memo of Parties). Do NOT extract petitioners/respondents from ## [Cover Page] unless ## [Main Petition] has no parties.",
+            "For each petitioner and respondent on ## [Main Petition], extract all printed details: full name, relation prefix (e.g. S/o, D/o, W/o), guardian (related person's name), occupation, complete address, city, state, pin_code, email, mobile, and acting_through. Read every numbered party before VERSUS as a petitioner and every numbered party after VERSUS as a respondent across all consecutive party pages. Do not stop after the first party.",
             "A numbered checklist answer, a Yes or NA, a listing-proforma question, a synopsis sentence, or a paragraph of the impugned order is not a party.",
             "advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
             "impugned_orders comes from the particulars printed on the opening pages.",
@@ -1364,11 +1365,66 @@ def build_front_extract_pack_markdown(
     """Opening pages, then the last 5 pages labelled as the Vakalatnama."""
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
+    main_petition_started = False
     for page in sorted(page_markdown):
         body = (page_markdown.get(page) or "").strip()
         if not body or body.startswith(_PARSE_STUB_PREFIX):
             continue
-        label = "Vakalatnama" if page > opening_pages else "Compiled opening"
+        if page > opening_pages:
+            label = "Vakalatnama"
+        else:
+            is_cover = (
+                page <= 3
+                and bool(
+                    re.search(
+                        r"\b(?:paperbook|cover\s*page|for\s+index\s+kindly\s+see\s+inside|d[ai]{1,2}ry\s+no)\b",
+                        body,
+                        re.IGNORECASE,
+                    )
+                )
+            )
+            if is_cover and not main_petition_started:
+                label = "Cover Page"
+            else:
+                has_party_heading = False
+                for line in body.splitlines():
+                    line_clean = re.sub(r"<[^>]+>", " ", line)
+                    line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
+                    if re.search(
+                        r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\s*$",
+                        line_clean,
+                        re.IGNORECASE,
+                    ):
+                        has_party_heading = True
+                        break
+
+                if not main_petition_started:
+                    if has_party_heading or re.search(
+                        r"\b(?:most\s+respectfully\s+showeth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice)\b",
+                        body,
+                        re.IGNORECASE,
+                    ):
+                        main_petition_started = True
+                    elif (
+                        re.search(
+                            r"in the (?:hon[\x27\x60’]?ble )?supreme court of india",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and re.search(
+                            r"(?:appellate jurisdiction|original jurisdiction|special leave petition|writ petition|criminal appeal|civil appeal)",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and not re.search(
+                            r"(?:listing proforma|proforma for first listing|index of papers|office report on limitation|synopsis and list of dates|synopsis|paperbook)",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and page > 3
+                    ):
+                        main_petition_started = True
+                label = "Main Petition" if main_petition_started else "Compiled opening"
         sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
     packed = "\n\n".join(sections).strip()
     if not packed:
@@ -1377,15 +1433,24 @@ def build_front_extract_pack_markdown(
         "# Extraction rules\n"
         f"This pack is the first {opening_pages} pages of one compiled filing, "
         "then its last 5 pages. It has not been split.\n"
+        "Pages labelled Cover Page are the paperbook outer cover.\n"
+        "Pages labelled Main Petition are the starting pages of the Main Petition.\n"
         "Pages labelled Vakalatnama are those last 5 pages.\n"
-        "Read petition_type, cause_title, special_category, and court from the "
-        "opening of the Main Petition.\n"
-        "Read petitioners and respondents only from the Memo of Parties, or from "
-        "the cause-title lines marked PETITIONER and RESPONDENT. "
+        "Read petition_type, cause_title, special_category, and court from ## [Cover Page] "
+        "or the opening of the Main Petition (## [Main Petition]).\n"
+        "Read petitioners and respondents from the starting pages of the Main Petition "
+        "(## [Main Petition], including Position of Parties / Memo of Parties). "
+        "Do NOT extract petitioners/respondents from ## [Cover Page] unless ## [Main Petition] has no parties.\n"
+        "Extract every petitioner before VERSUS and every respondent after VERSUS, "
+        "including all printed details: name, relation prefix (S/o, D/o, W/o), "
+        "guardian/parent/spouse name, occupation, full address, city, state, "
+        "pin_code, email, mobile, and acting_through. "
+        "Read all numbered parties across all consecutive party pages. "
+        "Do not stop after the first party.\n"
         "Do not copy listing-proforma questions, Yes/NA answers, or order paragraphs.\n"
         "special_category is the printed matter subtype, such as Tax Matters. "
         "Leave it null when it is not printed.\n"
-        "Read advocates_on_record from the Vakalatnama. If it prints no AOR, "
+        "Read advocates_on_record from the Vakalatnama (## [Vakalatnama]). If it prints no AOR, "
         "use the footer at the end of the List of Dates.\n"
         "Read impugned_orders from the particulars printed on the opening pages.\n"
         "Leave relief_sort and petition_date null.\n"
