@@ -502,6 +502,35 @@ def test_split_petition_accepts(client: TestClient, monkeypatch: pytest.MonkeyPa
     assert getattr(captured["event"], "job_type") == "split_petition"
 
 
+def test_split_petition_v2_accepts_like_split(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", parsed_slots=[])
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v2/filings/split-petition",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("Main_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"]
+    assert body["poll_url"] == f"/v1/jobs/{body['job_id']}"
+    assert getattr(captured["event"], "job_type") == "split_petition"
+    assert getattr(captured["event"], "filing_type") == "SLP_CIVIL"
+
+
 def test_split_petition_post_is_not_shadowed_by_filing_id(client: TestClient) -> None:
     response = client.post("/v1/filings/split-petition", json={})
     assert response.status_code != 405

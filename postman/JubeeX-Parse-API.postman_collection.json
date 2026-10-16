@@ -223,6 +223,65 @@
           ]
         },
         {
+          "name": "1b Split Main Petition v2 (no classify)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.job_id) pm.collectionVariables.set('job_id', json.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filing_type\": \"{{filing_type}}\",\n  \"organization_id\": \"{{organization_id}}\",\n  \"workspace_id\": \"{{workspace_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"documents\": [\n    {\n      \"name\": \"Main_Petition.pdf\",\n      \"document_id\": \"11aa22bb-33cc-44dd-85ee-66ff77889900\",\n      \"download_url\": \"https://storage.example/filings/Main_Petition.pdf\"\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/v2/filings/split-petition",
+            "description": "Same request, poll, and split as `POST /v1/filings/split-petition`. `job_type=split_petition`. `filing_type` is the catalog key, such as `SLP_CIVIL`. That value skips LlamaClassify. LlamaSplit and slice still run.\n\nPoll result: `BundlePrepared` with `parts[]` (`slot_id`, `label`, `page_span`, sliced `file_id`) plus leftover `undefined` pages.\nDoes not parse, extract, or index.\n\nWhile the job is still working, poll returns HTTP 200 with `status: \"running\"`, `result: null`, `agent_data_id: null`. Keep polling until `completed` or `failed`."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/v2/filings/split-petition"
+              },
+              "status": "Accepted",
+              "code": 202,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"job_id\": \"aaaaaaaa-1111-4111-8111-111111111111\",\n  \"status\": \"accepted\",\n  \"poll_url\": \"/v1/jobs/aaaaaaaa-1111-4111-8111-111111111111\"\n}",
+              "description": "Immediate response. Copy `job_id` and poll GET /v1/jobs/{job_id}."
+            }
+          ]
+        },
+        {
           "name": "2 Verify named documents",
           "event": [
             {

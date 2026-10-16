@@ -820,6 +820,29 @@ async def split_petition(
 
 
 @app.post(
+    "/v2/filings/split-petition",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def split_petition_v2(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same split as /v1/filings/split-petition. filing_type skips LlamaClassify."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "split_petition"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
     "/v1/filings/verify-document",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
