@@ -218,6 +218,34 @@ def test_front_parties_come_from_the_memo_not_the_checklist() -> None:
     )
 
 
+def test_front_party_name_drops_parse_markup_and_the_list_number() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CIVIL)",
+            "cause_title": {
+                "formatted_title": (
+                    "**2. JITENDER KUMAR PURI** VS SUNDER LAL GUPTA and Ors."
+                )
+            },
+            "petitioners": [{"name": "**2. JITENDER KUMAR PURI**"}],
+            "respondents": [
+                {"name": "SUNDER LAL GUPTA"},
+                {"name": "**3. ANOTHER PERSON**"},
+                {"name": "4. THIRD PERSON"},
+            ],
+        }
+    )
+    assert done["petitioners"][0]["name"] == "JITENDER KUMAR PURI"
+    assert [party["name"] for party in done["respondents"]] == [
+        "SUNDER LAL GUPTA",
+        "ANOTHER PERSON",
+        "THIRD PERSON",
+    ]
+    assert done["cause_title"]["formatted_title"] == (
+        "JITENDER KUMAR PURI VS SUNDER LAL GUPTA and Ors."
+    )
+
+
 def test_printed_special_category_is_kept() -> None:
     done = finalize_front_extract(
         {

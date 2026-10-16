@@ -1605,8 +1605,16 @@ _NOT_A_PARTY_NAME = re.compile(
 )
 
 
+def _clean_front_party_name(name: str | None) -> str:
+    """Drop LlamaParse markdown and a leading list number from a party name."""
+    text = re.sub(r"\*+", "", name or "")
+    text = _LIST_SERIAL.sub("", text)
+    text = strip_anr_ors_suffix(text) or strip_party_role_label(text)
+    return re.sub(r"\s+", " ", text).strip(" ,.;")
+
+
 def _looks_like_party_name(name: str | None) -> bool:
-    text = strip_party_role_label(name)
+    text = _clean_front_party_name(name)
     if not text:
         return False
     words = text.split()
@@ -1634,7 +1642,7 @@ def _party_record(
     guardian: str | None = None,
     address: str | None = None,
 ) -> dict[str, Any]:
-    cleaned = strip_anr_ors_suffix(name) or strip_party_role_label(name)
+    cleaned = _clean_front_party_name(name)
     kind = "ORGANIZATION" if re.match(r"^state\b", cleaned, re.IGNORECASE) else None
     return {
         "serial": serial,
@@ -1736,7 +1744,7 @@ def _drop_non_party_names(parties: Any) -> list[dict[str, Any]]:
         if not _looks_like_party_name(name):
             continue
         party = dict(party)
-        party["name"] = strip_anr_ors_suffix(name) or strip_party_role_label(name)
+        party["name"] = _clean_front_party_name(name)
         kept.append(party)
     return kept
 
