@@ -85,11 +85,15 @@
         },
         {
           "name": "SCRUTINY_MODEL",
-          "value": "google/gemini-4-argon"
+          "value": "google/gemini-3.8-flash"
         },
         {
           "name": "OPENROUTER_BASE_URL",
           "value": "https://openrouter.ai/api/v1"
+        },
+        {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
         },
         {
           "name": "PARSE_CONCURRENCY",

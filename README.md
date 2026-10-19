@@ -84,8 +84,8 @@ not yet been benchmarked.
 enable/disable switch.
 
 Registry defect checks use the dedicated `SCRUTINY_MODEL` setting, which
-defaults to Gemini 4 Argon (`gemini-4-argon` on Vertex AI and
-`google/gemini-4-argon` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+defaults to Gemini 3.8 Flash (`gemini-3.8-flash` on Vertex AI and
+`google/gemini-3.8-flash` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
 `OPENROUTER_VISION_MODEL` remain independent, so changing the scrutiny model
 does not silently change extraction or visual-mark detection.
 

@@ -112,14 +112,14 @@ def test_llm_provider_openrouter_keeps_prefixed_model(
     assert openrouter_model() == "google/gemini-3.8-flash"
 
 
-def test_scrutiny_model_defaults_to_gemini_4_for_vertex(
+def test_scrutiny_model_defaults_to_gemini_3_8_for_vertex(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from extraction_review.llm import scrutiny_model
 
     monkeypatch.setenv("LLM_PROVIDER", "vertex")
     monkeypatch.delenv("SCRUTINY_MODEL", raising=False)
-    assert scrutiny_model() == "gemini-4-argon"
+    assert scrutiny_model() == "gemini-3.8-flash"
 
 
 def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
@@ -127,11 +127,11 @@ def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
 ) -> None:
     from extraction_review.llm import scrutiny_model
 
-    monkeypatch.setenv("SCRUTINY_MODEL", "google/gemini-4-argon")
+    monkeypatch.setenv("SCRUTINY_MODEL", "google/gemini-3.8-flash")
     monkeypatch.setenv("LLM_PROVIDER", "vertex")
-    assert scrutiny_model() == "gemini-4-argon"
+    assert scrutiny_model() == "gemini-3.8-flash"
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
-    assert scrutiny_model() == "google/gemini-4-argon"
+    assert scrutiny_model() == "google/gemini-3.8-flash"
 
 
 @pytest.mark.asyncio

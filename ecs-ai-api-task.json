@@ -60,6 +60,10 @@
           "value": "180"
         },
         {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
+        },
+        {
           "name": "OPENROUTER_APP_TITLE",
           "value": "JubeeX Scrutiny"
         },

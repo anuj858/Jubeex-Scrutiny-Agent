@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_CONCURRENCY = 4
 DEFAULT_VISION_MAX_TOKENS = 2800
+DEFAULT_VISION_REQUEST_TIMEOUT_S = 120.0
 ADVOCATE_LABELS = re.compile(
     r"\b(advocate(?:-on-record)?|aor|counsel|drawn\s*&\s*filed|filed\s+by)\b",
     re.IGNORECASE,
@@ -92,6 +93,19 @@ def _int_env(name: str, default: int) -> int:
         return int(raw) if raw else default
     except ValueError:
         return default
+
+
+def vision_request_timeout_s() -> float:
+    """Maximum wall time for all model attempts for one rendered page."""
+    raw = (
+        os.getenv("VISION_REQUEST_TIMEOUT_S")
+        or os.getenv("OPENROUTER_TIMEOUT_S")
+        or str(DEFAULT_VISION_REQUEST_TIMEOUT_S)
+    )
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_VISION_REQUEST_TIMEOUT_S
 
 
 def safe_normalized_bbox(value: Any) -> dict[str, float] | None:
@@ -597,9 +611,7 @@ async def analyze_page_image(
                 "[VISION] OpenRouter 402 body=%s",
                 body_text,
             )
-            raise LLMFatalError(
-                f"OpenRouter 402 (billing): {body_text[:300]}"
-            )
+            raise LLMFatalError(f"OpenRouter 402 (billing): {body_text[:300]}")
 
     if response.status_code in (401, 403):
         logger.error(
@@ -607,9 +619,7 @@ async def analyze_page_image(
             response.status_code,
             response.text[:2000],
         )
-        raise LLMFatalError(
-            f"OpenRouter {response.status_code}: {response.text[:300]}"
-        )
+        raise LLMFatalError(f"OpenRouter {response.status_code}: {response.text[:300]}")
     response.raise_for_status()
     body = response.json()
     if not isinstance(body, dict):
@@ -825,6 +835,7 @@ async def detect_visual_marks(
     dpi = preview_dpi(os.getenv("VISION_PREVIEW_DPI"))
     concurrency = max(1, _int_env("VISION_CONCURRENCY", DEFAULT_VISION_CONCURRENCY))
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    vision_timeout = vision_request_timeout_s()
     references = load_reference_assets()
     pdf_by_slot: dict[str, bytes] = {}
     pdf_errors: dict[str, tuple[str, str]] = {}
@@ -903,12 +914,31 @@ async def detect_visual_marks(
                     detail=str(exc)[:300],
                 )
             async with semaphore:
-                found, vision_error, usage = await _analyze_with_fallback(
-                    page_image=image,
-                    target=target,
-                    references=references,
-                    http=http,
-                )
+                try:
+                    found, vision_error, usage = await asyncio.wait_for(
+                        _analyze_with_fallback(
+                            page_image=image,
+                            target=target,
+                            references=references,
+                            http=http,
+                        ),
+                        timeout=vision_timeout,
+                    )
+                except TimeoutError:
+                    detail = (
+                        f"Vision request exceeded {vision_timeout:g}s; "
+                        "continuing without marks for this page"
+                    )
+                    logger.warning(
+                        "Vision timeout page=%s timeout=%ss",
+                        target.page,
+                        vision_timeout,
+                    )
+                    return _PageVisionResult(
+                        marks=[],
+                        reason="vision_timeout",
+                        detail=detail,
+                    )
             if vision_error is not None:
                 return _PageVisionResult(
                     marks=[],

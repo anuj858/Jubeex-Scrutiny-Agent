@@ -64,7 +64,7 @@
         },
         {
           "name": "SCRUTINY_MODEL",
-          "value": "google/gemini-4-argon"
+          "value": "google/gemini-3.8-flash"
         },
         {
           "name": "OPENROUTER_BASE_URL",
@@ -73,6 +73,10 @@
         {
           "name": "OPENROUTER_TIMEOUT_S",
           "value": "180"
+        },
+        {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
         },
         {
           "name": "OPENROUTER_REQUESTS_PER_MINUTE",

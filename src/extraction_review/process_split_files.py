@@ -96,9 +96,9 @@ from .split_upload import (
     display_filename,
     dump_parse_artifact,
     extract_configuration,
-    front_extract_configuration,
     extract_source_parts,
     find_part,
+    front_extract_configuration,
     parse_action_for_slot,
     slot_needs_precise_parse,
     stitch_parsed_parts,
@@ -656,7 +656,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message="Extracting from labeled document parts (no LlamaSplit)",
+                    message="Extracting information from the identified document parts",
                 )
             )
         else:
