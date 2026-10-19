@@ -72,6 +72,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .logging_utils import safe_url_for_log
 from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import (
     UNDEFINED_SLOT_ID,
@@ -2077,7 +2078,7 @@ async def ingest_remote_file(
         remember_file_bytes(file_id, data)
     logger.info(
         "[process-file] Ingested remote file url=%s → file_id=%s name=%s bytes=%s",
-        url[:120],
+        safe_url_for_log(url),
         file_id,
         name,
         len(data),
@@ -2804,7 +2805,9 @@ class ProcessFileWorkflow(Workflow):
                     cache_bytes=True,
                 )
             except Exception as exc:
-                logger.exception("Failed to ingest file_url %s", file_url)
+                logger.exception(
+                    "Failed to ingest file_url %s", safe_url_for_log(file_url)
+                )
                 ctx.write_event_to_stream(
                     Status(
                         level="error",

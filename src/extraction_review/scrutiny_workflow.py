@@ -57,6 +57,7 @@ from .llm import (
     openrouter_enabled,
     scrutiny_model,
 )
+from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
@@ -918,7 +919,9 @@ class ScrutinyWorkflow(Workflow):
             logger.warning(
                 "Layout index empty pages=0; defect findings will have no "
                 "highlight coordinates url=%s key=%s",
-                layout_url if isinstance(layout_url, str) else None,
+                safe_url_for_log(layout_url)
+                if isinstance(layout_url, str)
+                else None,
                 layout_key if isinstance(layout_key, str) else None,
             )
             ctx.write_event_to_stream(

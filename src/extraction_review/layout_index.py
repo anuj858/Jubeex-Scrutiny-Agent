@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from .document_parts import parts_on_page
+from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S
 from .split_upload import SplitPartInput, UploadTypeCatalog, ordered_parts
 
@@ -692,7 +693,7 @@ async def load_layout_index(
     if not isinstance(payload, Mapping):
         logger.warning(
             "Layout index empty pages=0 url=%s key=%s",
-            cleaned_url or None,
+            safe_url_for_log(cleaned_url) if cleaned_url else None,
             cleaned_key or None,
         )
         return {}
@@ -700,7 +701,7 @@ async def load_layout_index(
     if not pages:
         logger.warning(
             "Layout index empty pages=0 url=%s key=%s",
-            cleaned_url or None,
+            safe_url_for_log(cleaned_url) if cleaned_url else None,
             cleaned_key or None,
         )
     return pages

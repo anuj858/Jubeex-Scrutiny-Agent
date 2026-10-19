@@ -16,6 +16,7 @@ from .annexure_index import AnnexureIndexEvent
 from .annexure_index import workflow as annexure_index_workflow
 from .api import JOBS, JobState, _run_workflow
 from .job_progress import load_job_status
+from .logging_utils import silence_http_client_request_logs
 from .process_file import FileEvent
 from .process_file import workflow as process_file_workflow
 from .queue import (
@@ -188,6 +189,7 @@ async def run_worker(*, once: bool = False) -> None:
 
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    silence_http_client_request_logs()
     asyncio.run(run_worker())
 
 

@@ -38,6 +38,7 @@ from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
 from .extract_record import stamp_review_status
 from .job_progress import load_job_status, progress_for_status, save_job_status
+from .logging_utils import silence_http_client_request_logs
 from .process_file import (
     CATALOG_JOB_TYPES,
     FileEvent,
@@ -57,6 +58,7 @@ from .vector_store import delete_workspace_records
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+silence_http_client_request_logs()
 
 JobKind = Literal["process_file", "scrutiny", "annexure_index"]
 JobStatus = Literal["running", "completed", "failed"]
