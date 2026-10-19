@@ -55,7 +55,7 @@ from .llm import (
     llm_requests_per_minute,
     mask_openrouter_api_key,
     openrouter_enabled,
-    openrouter_model,
+    scrutiny_model,
 )
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
@@ -271,6 +271,7 @@ async def _run_defect(
             visual_index=visual_index,
         ),
         response_model=DefectResponse,
+        model=scrutiny_model(),
     )
     response = _sanitize_response(defect, raw, chunks)
 
@@ -829,7 +830,7 @@ class ScrutinyWorkflow(Workflow):
             "LLM provider=%s key=%s model=%s rpm=%s",
             llm_provider(),
             mask_openrouter_api_key(),
-            openrouter_model(),
+            scrutiny_model(),
             llm_requests_per_minute() or "unlimited",
         )
 
@@ -1027,11 +1028,11 @@ class ScrutinyWorkflow(Workflow):
                 agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
                 petition_type=filing_type,
-                model=openrouter_model(),
+                model=scrutiny_model(),
                 disclaimer=catalogue.disclaimer,
                 findings=snapshot,
                 summary=summarize(snapshot),
-                usage=summarize_usage(snapshot, model=openrouter_model()),
+                usage=summarize_usage(snapshot, model=scrutiny_model()),
                 planned_checks=planned,
                 stopped_early=stopped_early,
             )
