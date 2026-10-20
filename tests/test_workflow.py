@@ -458,7 +458,7 @@ async def test_index_edited_reingests_download_urls(
         ingest_calls.append(str(url))
         return (
             f"dfl-new-{len(ingest_calls)}",
-            "hash",
+            "a" * 64,
             str(kwargs.get("filename") or ""),
         )
 
@@ -528,12 +528,15 @@ async def test_index_edited_reuses_only_documents_with_matching_hashes(
 ) -> None:
     ingest_calls: list[str] = []
     captured: dict[str, object] = {}
+    petition_hash = "a" * 64
+    old_index_hash = "b" * 64
+    new_index_hash = "c" * 64
 
     async def fake_ingest(
         _client: object, url: str, **kwargs: object
     ) -> tuple[str, str, str]:
         ingest_calls.append(url)
-        return "dfl-new-index", "new-index-hash", str(kwargs.get("filename") or "")
+        return "dfl-new-index", new_index_hash, str(kwargs.get("filename") or "")
 
     async def fake_extract(_ctx: object, **kwargs: object) -> str:
         captured.update(kwargs)
@@ -572,8 +575,8 @@ async def test_index_edited_reuses_only_documents_with_matching_hashes(
                             "index": "dfl-old-index",
                         },
                         "document_hashes": {
-                            "petition": "petition-hash",
-                            "index": "old-index-hash",
+                            "petition": petition_hash,
+                            "index": old_index_hash,
                         },
                         "parse_artifact_key": "org/x/parsefiles/a.json",
                     }
@@ -595,13 +598,13 @@ async def test_index_edited_reuses_only_documents_with_matching_hashes(
                 "slot_id": "petition",
                 "name": "Petition.pdf",
                 "download_url": "https://example.com/petition.pdf",
-                "file_hash": "petition-hash",
+                "file_hash": petition_hash,
             },
             {
                 "slot_id": "index",
                 "name": "Index.pdf",
                 "download_url": "https://example.com/index.pdf",
-                "file_hash": "new-index-hash",
+                "file_hash": new_index_hash,
             },
         ],
     )
