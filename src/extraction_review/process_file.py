@@ -1404,10 +1404,11 @@ def _boundary_detection_configuration(
         "continuations, ends, and uncertain transitions. Use the page evidence below "
         "and neighboring-page context. Preserve page order; do not omit pages. Return "
         "one segment per plausible complete document, and do not merge merely because "
-        "a continuation page lacks a repeated heading. A document name appearing in an "
-        "Index row or List-of-Dates event is a reference, not a new document start; an "
-        "unheaded continuation of the same Index table remains in that Index. Mark "
-        "ambiguous transitions for review.\n"
+        "a continuation page lacks a repeated heading. An Annexure name appearing in "
+        "an Index row, chronology event, petition paragraph, affidavit, application, "
+        "or any other ongoing document is a reference, not a new document start. An "
+        "unheaded continuation remains in its open document. Mark ambiguous transitions "
+        "for review.\n"
         "Parsed page cues (physical page order):\n"
     )
     # Select across the entire file, with high-evidence pages first. Reserve
@@ -1867,6 +1868,7 @@ def _document_first_page_ownership(
     ``category``/``pages`` contract used by the slicer while adding boundary,
     classification, confidence, and review evidence for the audit artifact.
     """
+    from .document_parts import annexure_ref_in_heading
     from .split_repair import _outer_anchor_label
 
     classified = [
@@ -1880,6 +1882,46 @@ def _document_first_page_ownership(
     segments: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     covered: set[int] = set()
+
+    def embedded_annexure_on_continuation(text: str) -> bool:
+        """An in-body Annexure label cannot split a continuing legal paragraph."""
+        lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+        annexure_at = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if re.search(
+                    r"(?i)^\s*annexure\s*[-–—:/\s]*[a-z]\s*[-–—./\s]*\d+\b",
+                    line,
+                )
+            ),
+            None,
+        )
+        if annexure_at is None or annexure_at == 0:
+            return False
+        footer_stamp = bool(
+            (
+                annexure_at == len(lines) - 1
+                and re.fullmatch(r"\d{1,5}", lines[annexure_at - 1])
+            )
+            or (
+                annexure_at >= max(0, len(lines) - 6)
+                and 1 <= len(lines[annexure_at + 1 :]) <= 3
+                and all(
+                    re.fullmatch(r"\d{1,5}", value)
+                    for value in lines[annexure_at + 1 :]
+                )
+            )
+        )
+        if footer_stamp:
+            return False
+        return bool(
+            re.match(
+                r"(?i)^\s*(?:\(?\d{1,3}[.)]\s+(?:that\b|because\b|the\b|it\b)|"
+                r"(?:and|or|but|because|that|whereas|therefore|however)\b|[a-z])",
+                lines[0],
+            )
+        )
 
     for index, proposal in enumerate(boundary_proposals, start=1):
         raw_pages = proposal.get("pages") if isinstance(proposal, Mapping) else None
@@ -1962,17 +2004,29 @@ def _document_first_page_ownership(
             correction_evidence = "index_table_continuation"
         elif (
             family_split_name(category) == ANNEXURE_FAMILY
-            and opening_anchor == "List of Dates & Events"
+            and opening_anchor
+            and follows_previous
+            and family_split_name(previous_category) != ANNEXURE_FAMILY
+            and annexure_ref_in_heading((page_texts or {}).get(pages[0], "")) is None
+        ):
+            corrected_category = opening_anchor
+            correction_evidence = (
+                "explicit_"
+                + opening_anchor.casefold().replace(" ", "_").replace("&", "and")
+                + "_heading"
+            )
+        elif (
+            family_split_name(category) == ANNEXURE_FAMILY
+            and not opening_anchor
             and follows_previous
             and previous_category
-            in {
-                "Synopsis",
-                "List of Dates & Events",
-                "Synopsis & List of Dates & Events",
-            }
+            and family_split_name(previous_category) != ANNEXURE_FAMILY
+            and embedded_annexure_on_continuation(
+                (page_texts or {}).get(pages[0], "")
+            )
         ):
-            corrected_category = "List of Dates & Events"
-            correction_evidence = "explicit_list_of_dates_heading"
+            corrected_category = previous_category
+            correction_evidence = "continuous_parent_document_body"
         if corrected_category:
             reported_category = category
             category = corrected_category

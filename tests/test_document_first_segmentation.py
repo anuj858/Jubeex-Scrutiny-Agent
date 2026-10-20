@@ -149,6 +149,74 @@ def test_lod_annexure_citation_is_not_a_stamp_but_leading_outer_stamp_is() -> No
     assert annexure_ref_in_heading(enclosed_lod).label == "Annexure P-1"
 
 
+@pytest.mark.parametrize(
+    ("document_text", "expected_type"),
+    [
+        (
+            "SPECIAL LEAVE PETITION\nMOST RESPECTFULLY SHOWETH\n"
+            "1. The petitioner relies on the document below.\nANNEXURE-P/1",
+            "Main Petition",
+        ),
+        (
+            "APPLICATION\nThe applicant seeks exemption from filing.\n"
+            "The supporting document is referred to as\nANNEXURE-P/2",
+            "Application 1",
+        ),
+        (
+            "AFFIDAVIT\nI solemnly affirm and state as follows.\n"
+            "The document relied upon is marked\nANNEXURE-P/3",
+            "Affidavit",
+        ),
+        (
+            "RECORD OF PROCEEDINGS\nThe matter was called for hearing.\n"
+            "A copy was identified as\nANNEXURE-P/4",
+            "Record of Proceedings",
+        ),
+    ],
+)
+def test_annexure_reference_inside_any_open_document_is_not_a_boundary(
+    document_text: str,
+    expected_type: str,
+) -> None:
+    assert annexure_ref_in_heading(document_text) is None
+    classification = classify_page(PageUnit(pdf_page=2, text=document_text))
+    assert classification.document_type == expected_type
+
+
+@pytest.mark.parametrize(
+    "enclosed_heading",
+    ["AFFIDAVIT", "APPLICATION", "SPECIAL LEAVE PETITION", "RECORD OF PROCEEDINGS"],
+)
+def test_outer_annexure_stamp_before_enclosed_document_remains_boundary(
+    enclosed_heading: str,
+) -> None:
+    text = f"ANNEXURE-P/7\n{enclosed_heading}\nEnclosed document body"
+    assert annexure_ref_in_heading(text).label == "Annexure P-7"
+
+
+def test_annexure_heading_inside_captionless_petition_continuation_keeps_parent() -> None:
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
+        2: (
+            "12. That the petitioner relies upon the correspondence described below.\n"
+            "ANNEXURE-P/1\n"
+            "13. That the petition raises the following substantial questions of law."
+        ),
+    }
+    page_parts, segments, _ = _document_first_page_ownership(
+        [_proposal(1, 1, 1), _proposal(2, 2, 2)],
+        _report(("Main Petition", [1]), ("Annexure P-1", [2])),
+        page_count=2,
+        page_texts=texts,
+    )
+
+    assert page_parts == {1: ["Main Petition"], 2: ["Main Petition"]}
+    assert segments[1]["type_evidence"][-1] == "continuous_parent_document_body"
+
+
 def test_bare_p22_folio_in_testimony_does_not_create_annexure_pdf() -> None:
     """A scanned continuation folio must not override reconciled boundaries."""
     texts = {

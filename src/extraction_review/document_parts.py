@@ -911,21 +911,30 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         explicit
         and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
     )
-    # An Annexure name printed *inside* an Index, Synopsis, or List of Dates is
-    # an inventory/citation, not the physical start of that Annexure.  OCR can
+    # An Annexure name printed *inside* an already opened document is an
+    # inventory/citation, not the physical start of that Annexure. OCR can
     # split ``ANNEXURE-P/1 (Page 24-54)`` into a standalone-looking line and
     # hide the narrative words which normally make _mark_from_title_line reject
-    # it. Preserve a genuine outer stamp when it occurs before the enclosed
-    # section heading (``ANNEXURE P-1`` followed by a reproduced LIST OF DATES).
+    # it. Apply this to every explicit filing-document heading, not only Index
+    # and LOD. Preserve a genuine outer stamp when it occurs before the enclosed
+    # heading (``ANNEXURE P-1`` followed by a reproduced AFFIDAVIT, for example).
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     protected_heading_at = next(
         (
             index
             for index, line in enumerate(lines[:24])
             if re.match(
-                r"(?i)^(?:index(?:\s+of\s+(?:papers|documents))?|"
+                r"(?i)^(?:cover\s+page|"
+                r"index(?:\s+of\s+(?:papers|documents))?|"
                 r"synopsis(?:\s+(?:and|&)\s+list\s+of\s+dates)?|"
-                r"list\s+of\s+(?:dates(?:\s+(?:and|&)\s+events)?|events))\b",
+                r"list\s+of\s+(?:dates(?:\s+(?:and|&)\s+events)?|events)|"
+                r"(?:special\s+leave|transfer|writ|review|curative)\s+petition|"
+                r"petition\s+for\s+special\s+leave|application(?:\s+no\.?)?|"
+                r"affidavit|vakalatnama|memo\s+of\s+(?:appearance|parties)|"
+                r"aor(?:'s)?\s+(?:certificate|declaration)|certificate|"
+                r"record\s+of\s+proceedings|office\s+report(?:\s+on\s+limitation)?|"
+                r"listing\s+(?:proforma|performa)|filing\s+memo|"
+                r"advocate(?:'s)?\s+checklist|appendix)\b",
                 line,
             )
         ),
@@ -935,18 +944,40 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         (
             index
             for index, line in enumerate(lines[:24])
-            if _ANNEXURE_HEADING_RE.search(line)
+            if (line_match := _ANNEXURE_HEADING_RE.search(line))
+            and (line_mark := _annexure_mark_from_match(line_match)) is not None
+            and explicit is not None
+            and line_mark == explicit
         ),
         None,
     )
-    annexure_is_section_reference = bool(
+    annexure_has_outer_footer_shape = bool(
+        annexure_line_at is not None
+        and (
+            (
+                annexure_line_at == len(lines) - 1
+                and annexure_line_at > 0
+                and re.fullmatch(r"\d{1,5}", lines[annexure_line_at - 1])
+            )
+            or (
+                annexure_line_at >= max(0, len(lines) - 6)
+                and 1 <= len(lines[annexure_line_at + 1 :]) <= 3
+                and all(
+                    re.fullmatch(r"\d{1,5}", value)
+                    for value in lines[annexure_line_at + 1 :]
+                )
+            )
+        )
+    )
+    annexure_is_embedded_reference = bool(
         protected_heading_at is not None
         and annexure_line_at is not None
         and protected_heading_at < annexure_line_at
+        and not annexure_has_outer_footer_shape
     )
     if (
         explicit_is_rebuilt_index_row
-        or annexure_is_section_reference
+        or annexure_is_embedded_reference
         or (explicit is None and _looks_like_index_table(text))
         or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
         or (
