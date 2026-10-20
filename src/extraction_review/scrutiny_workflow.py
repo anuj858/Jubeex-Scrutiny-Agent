@@ -81,11 +81,15 @@ from .scrutiny.schema import (
     DefectResponse,
     ScrutinyReport,
     apply_evidence_pages,
+    apply_grounded_defect_policy,
+    apply_manifest_absence_policy,
     apply_retrieval_policy,
     apply_status_policy,
     apply_undetermined_policy,
+    apply_visual_conflict_policy,
     build_finding,
     failed_finding,
+    manifest_absence_proven,
     summarize,
     summarize_usage,
 )
@@ -228,6 +232,8 @@ def _sanitize_response(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    visual_index: dict[str, Any] | None = None,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
@@ -238,9 +244,13 @@ def _sanitize_response(
         )
     response.check_id = defect.check_id
     response = apply_evidence_pages(response, chunks, defect)
+    if manifest_absence_proven(defect, layout):
+        return apply_manifest_absence_policy(defect, response, layout)
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
+    response = apply_grounded_defect_policy(response)
+    response = apply_visual_conflict_policy(defect, response, visual_index)
     return response
 
 
@@ -255,11 +265,13 @@ async def _run_defect(
     visual_index: dict[str, Any] | None = None,
 ) -> DefectFinding:
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
+    complete_manifest_proves_absence = manifest_absence_proven(defect, layout)
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=bool(record) and not missing_required_parts(defect, chunks),
+        evidence_complete=complete_manifest_proves_absence
+        or (bool(record) and not missing_required_parts(defect, chunks)),
     )
 
     raw, usage = await call_structured(
@@ -274,7 +286,7 @@ async def _run_defect(
         response_model=DefectResponse,
         model=scrutiny_model(),
     )
-    response = _sanitize_response(defect, raw, chunks)
+    response = _sanitize_response(defect, raw, chunks, visual_index, layout)
 
     return build_finding(
         defect,
@@ -295,6 +307,9 @@ async def _chunks_for_defect(
     file_hash: str | None,
     max_chunks: int,
     use_pinecone: bool,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
     layout: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
@@ -320,6 +335,9 @@ async def _chunks_for_defect(
             file_hash=file_hash,
             max_chunks=gather_cap,
             document_parts=targets,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            index_generation=index_generation,
         )
     except Exception as e:
         logger.warning(
@@ -717,7 +735,9 @@ def _defects_for_special_categories(
     court: str | None,
 ) -> list[Defect]:
     """Union base checks with every applicable filing overlay."""
-    categories: list[str | None] = special_categories or [None]
+    categories: list[str | None] = (
+        [*special_categories] if special_categories else [None]
+    )
     found: list[Defect] = []
     seen: set[str] = set()
     for category in categories:
@@ -882,6 +902,40 @@ class ScrutinyWorkflow(Workflow):
                 state.file_hash = file_hash
         record = payload.get("data") or {}
         metadata = payload.get("metadata") or {}
+        vector_meta = (
+            metadata.get("vector_index") if isinstance(metadata, dict) else None
+        )
+        if not isinstance(vector_meta, dict):
+            vector_meta = {}
+        index_generation = str(vector_meta.get("generation") or "").strip() or None
+        vector_organization_id = (
+            str(
+                vector_meta.get("organization_id")
+                or (metadata.get("organization_id") if isinstance(metadata, dict) else "")
+                or event.organization_id
+                or ""
+            ).strip()
+            or None
+        )
+        vector_workspace_id = (
+            str(
+                vector_meta.get("workspace_id")
+                or (metadata.get("workspace_id") if isinstance(metadata, dict) else "")
+                or event.workspace_id
+                or ""
+            ).strip()
+            or None
+        )
+        vector_file_hash = str(vector_meta.get("file_hash") or "").strip()
+        if index_generation and vector_file_hash and vector_file_hash != str(file_hash or ""):
+            raise ValueError(
+                "Active Pinecone generation belongs to a different filing hash; reindex "
+                "this workspace before running scrutiny"
+            )
+        if event.organization_id and vector_organization_id != event.organization_id:
+            raise ValueError("Active Pinecone generation belongs to another organization")
+        if event.workspace_id and vector_workspace_id != event.workspace_id:
+            raise ValueError("Active Pinecone generation belongs to another workspace")
         filing_type = (
             event.filing_type
             or metadata.get("classification")
@@ -919,9 +973,7 @@ class ScrutinyWorkflow(Workflow):
             logger.warning(
                 "Layout index empty pages=0; defect findings will have no "
                 "highlight coordinates url=%s key=%s",
-                safe_url_for_log(layout_url)
-                if isinstance(layout_url, str)
-                else None,
+                safe_url_for_log(layout_url) if isinstance(layout_url, str) else None,
                 layout_key if isinstance(layout_key, str) else None,
             )
             ctx.write_event_to_stream(
@@ -1086,6 +1138,9 @@ class ScrutinyWorkflow(Workflow):
                     file_hash=file_hash,
                     max_chunks=max_chunks,
                     use_pinecone=use_pinecone,
+                    organization_id=vector_organization_id,
+                    workspace_id=vector_workspace_id,
+                    index_generation=index_generation,
                     layout=layout,
                 )
                 retrieval_seconds = time.perf_counter() - retrieval_started

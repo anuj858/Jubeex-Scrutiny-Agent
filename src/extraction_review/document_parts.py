@@ -2119,7 +2119,9 @@ def select_chunks_for_defect(
     preferred = preferred_parts_for_defect(defect)
     terms = match_terms_for_defect(defect)
     summary = [c for c in pool if c.get("chunk_kind") == "summary"]
-    pages = [c for c in pool if c.get("chunk_kind") != "summary"]
+    # Page-manifest records preserve empty/image-only pages for coverage and
+    # auditing, but their synthetic marker is never evidence sent to the LLM.
+    pages = [c for c in pool if c.get("chunk_kind") == "page"]
     excluded = {p.lower() for p in excluded_parts_for_defect(defect)}
     if excluded:
         pages = [

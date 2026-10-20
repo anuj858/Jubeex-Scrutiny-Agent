@@ -55,10 +55,9 @@ are not the Registry and you do not decide legal validity.
 {filing_block}
 Decide exactly one defect. Return one status:
 
-- defect_found: the excerpts for the document part you were told to search \
-show the required material is missing or incomplete. For textual content, \
-stamps, seals, signatures, and numbering, absence from readable excerpts of \
-the correct part may establish the defect. Physical layout properties such \
+- defect_found: grounded filing evidence positively shows a missing, blank, \
+incorrect, inconsistent, or incomplete value. OCR silence or a failed semantic \
+search is not proof of absence. Physical layout properties such \
 as paper size, margins, duplex printing, font size, and spacing require \
 actual layout or visual evidence; do not infer them from OCR silence
 - compliant: the excerpts show the required material is present and complete
@@ -72,8 +71,10 @@ parts this task is inspecting appear in the excerpts
 
 Rules:
 
-1. Quote the filing. If you cannot quote required textual material from the \
-correct parts you were given, it has not been found in those excerpts. For \
+1. Quote the filing. A defect requires a grounded observation such as a blank \
+field, an incorrect value, an inconsistent date, or text that omits a required \
+element inside an otherwise present clause. Merely failing to retrieve the \
+required words does not prove that they are absent from the filing. For \
 paper size, margins, duplex printing, font size, spacing, or other visual \
 layout, return needs_review unless the excerpts include affirmative visual or \
 layout evidence of compliance or noncompliance.
@@ -82,15 +83,16 @@ layout evidence of compliance or noncompliance.
 Missing excerpts are a retrieval gap, not proof the filing lacks that \
 document. Names used only as landmarks (for example “before the Cover \
 Page”) are not extra parts you must have.
-3. If those parts ARE in the excerpts and the required content is still \
-missing, return defect_found.
+3. If those parts are in the excerpts but the evidence does not positively \
+show the failure, return needs_review. Return defect_found only when the cited \
+filing observation and your reasoning identify the exact failed element.
 4. Search the extracted text for required marks. OCR often records stamps \
 and seals as words such as STAMP, SEAL, NOTARY, WELFARE FUND, COURT FEE, \
 Sd/-, or digitally signed. Do not treat absence of the word A4, a margin \
 measurement, or a font name in OCR as proof of a physical-layout defect.
 5. Do not add requirements that are not in this task.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
-would mark defect_found or compliant but confidence is below 0.6, return \
+would mark defect_found or compliant but confidence is below 0.8, return \
 needs_review instead.
 7. evidence is a list of exactly one item, {{"chunk_id", "quote"}}. \
 chunk_id is the excerpt label copied exactly, such as c1 from \
@@ -130,6 +132,11 @@ missing or satisfied element (for example endorsement wording versus the \
 Advocate-on-Record's accepting signature). Do not claim a visible phrase, \
 signature, date, paragraph, or document is missing when the quoted excerpt \
 shows it; explain what remains deficient instead.
+14. Treat visible stamps, handwritten dates, signatures, seals, and equivalent \
+wording as evidence. If OCR and stored visual observations conflict, return \
+needs_review rather than defect_found.
+15. Do not require an exact phrase when the requirement can be satisfied by \
+equivalent wording, unless the Standard explicitly says the exact wording is mandatory.
 
 Respond with JSON matching the required schema. No prose outside the JSON."""
 
@@ -745,22 +752,37 @@ def fallback_reasoning(
     *,
     pages: list[int] | None = None,
     evidence_pages: list[int] | None = None,
+    evidence_quote: str | None = None,
+    document_parts: list[str] | None = None,
 ) -> str:
     """Plain-language reason tied to this catalogue row when the model copy is unusable."""
     requirement = _polish_registry_text(defect.requirement)
     page_bit = _filing_page_phrase(pages, evidence_pages)
+    part = ", ".join(document_parts or []) or "the inspected document part"
+    quote = " ".join((evidence_quote or "").split())
+    if len(quote) > 240:
+        quote = quote[:237].rstrip() + "…"
+    observed = (
+        f'Observed in {part}: "{quote}"'
+        if quote
+        else f"Observed in {part}: no conclusive filing-page value was grounded"
+    )
     if status == "defect_found":
         return (
-            f"This filing does not meet the check: {requirement} "
-            f"The required material was not found in the inspected document part."
+            f"{observed}. Required: {requirement}. "
+            f"Conclusion: the observed filing content does not meet that requirement."
             f"{page_bit}"
         )
     if status == "compliant":
-        return f"This filing meets the check: {requirement}{page_bit}"
+        return (
+            f"{observed}. Required: {requirement}. "
+            f"Conclusion: the observed filing content meets that requirement.{page_bit}"
+        )
     if status == "needs_review":
         return (
-            f"This check could not be decided from the excerpts. "
-            f"The test is: {requirement}{page_bit}"
+            f"{observed}. Required: {requirement}. Conclusion: the available "
+            f"evidence does not safely prove compliance or a defect, so human review "
+            f"is required.{page_bit}"
         )
     if status == "not_applicable":
         return (
@@ -823,11 +845,18 @@ def validated_reasoning(
     *,
     pages: list[int] | None = None,
     evidence_pages: list[int] | None = None,
+    evidence_quote: str | None = None,
+    document_parts: list[str] | None = None,
 ) -> str:
     cleaned = _strip_rulebook_noise(text)
     if _copy_is_weak(cleaned, defect):
         return fallback_reasoning(
-            defect, status, pages=pages, evidence_pages=evidence_pages
+            defect,
+            status,
+            pages=pages,
+            evidence_pages=evidence_pages,
+            evidence_quote=evidence_quote,
+            document_parts=document_parts,
         )
     if not re.search(r"\bpages?\s+\d+", cleaned, flags=re.IGNORECASE):
         cleaned = cleaned.rstrip(".") + "." + _filing_page_phrase(pages, evidence_pages)
@@ -889,13 +918,16 @@ def build_defect_prompt(
         (
             "If the excerpts do not include the document type this task is "
             "inspecting, return needs_review — not defect_found. If those "
-            "parts are in the excerpts and the required content is still "
-            "missing, return defect_found. If you suspect a defect but "
-            "confidence is below 0.6, return needs_review."
+            "parts are present but the evidence does not positively show the "
+            "exact failure, return needs_review. Return defect_found only for "
+            "a grounded blank, incorrect value, inconsistency, or incomplete "
+            "clause. If you suspect a defect but "
+            "confidence is below 0.8, return needs_review."
         ),
     ]
-    if getattr(defect, "ai_note", None):
-        sections.extend(["", "## Note for AI", defect.ai_note.strip()])
+    ai_note = getattr(defect, "ai_note", None)
+    if ai_note:
+        sections.extend(["", "## Note for AI", ai_note.strip()])
     trigger_note = _trigger_cues(defect.trigger_words)
     if trigger_note:
         sections.extend(["", "## Recognition cues", trigger_note])
@@ -915,11 +947,16 @@ def build_defect_prompt(
             (
                 f'Return JSON with check_id "{defect.check_id}", status, '
                 "confidence, summary, reasoning, and evidence. "
-                "summary is one plain sentence about this "
-                "filing and this defect only — do not copy the Standard "
+                "summary is one plain sentence naming the exact failed or satisfied "
+                "element in this filing and this defect only — do not copy the Standard "
                 "paragraph. reasoning is 2–4 plain sentences: name the "
                 "filing document part and the excerpt, and explain "
-                "whether this defect’s requirement is met. Do not mention "
+                "whether this defect’s requirement is met. For defect_found, use "
+                "this order: (1) Observed — state the value or blank field and "
+                "document page; (2) Required — state the precise requirement; "
+                "(3) Conclusion — explain the mismatch in plain language. Do not "
+                "claim that something is absent merely because search did not find it. "
+                "Do not mention "
                 "location_source, SCI_CHECKLIST, handbook PDF pages, or "
                 "check_id. evidence is a list with exactly one item, "
                 "{chunk_id, quote}. chunk_id MUST be copied exactly from "

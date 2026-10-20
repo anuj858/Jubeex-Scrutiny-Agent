@@ -12,8 +12,8 @@ import logging
 import os
 import re
 from functools import lru_cache
-from typing import Any
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -311,6 +311,7 @@ class Defect(_Strict):
     inspect_parts: list[str] = Field(default_factory=list)
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
+    manifest_absence_proves_defect: bool = False
     how_to_cure: list[str]
     remediation_config: dict[str, Any] = Field(default_factory=dict)
     applicable_rule: str | None = None
@@ -852,7 +853,9 @@ def order_parent_then_children(defects: list[Defect]) -> list[Defect]:
 def _allowed_check_ids(catalogue: Catalogue) -> set[str]:
     """Database catalogues use is_enabled, narrowed by SCRUTINY_DEFECTS when it is a list."""
     if catalogue.schema_version == "db":
-        enabled = {defect.check_id.upper() for defect in catalogue.defects if defect.is_enabled}
+        enabled = {
+            defect.check_id.upper() for defect in catalogue.defects if defect.is_enabled
+        }
         raw = (os.getenv("SCRUTINY_DEFECTS") or "").strip()
         if not raw or raw.lower() == "all":
             return enabled
@@ -890,7 +893,8 @@ def _database_layer_matches(
     if defect.special_category:
         requested = normalize_special_category(special_category)
         return bool(
-            requested and requested == normalize_special_category(defect.special_category)
+            requested
+            and requested == normalize_special_category(defect.special_category)
         )
     if defect.is_global:
         return True

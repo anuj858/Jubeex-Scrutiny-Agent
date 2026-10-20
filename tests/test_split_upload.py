@@ -40,13 +40,13 @@ from extraction_review.extract_record import (
     build_formatted_title,
     clean_petition_date,
     clean_relief_sort,
-    petition_date_from_closing,
     confidence_percent_string,
     format_side_title,
     is_extra_party_caption_mismatch,
     is_organization_name,
     is_party_role_label_mismatch,
     names_are_spelling_variants,
+    petition_date_from_closing,
     stamp_review_status,
     stamp_source_pages,
     strip_party_role_label,
@@ -1889,6 +1889,9 @@ def test_bundle_hash_is_stable() -> None:
         SplitPartInput(slot_id="a", file_id="1", file_hash="h1"),
     ]
     assert bundle_file_hash(parts) == bundle_file_hash(list(reversed(parts)))
+    assert bundle_file_hash(parts, preserve_order=True) != bundle_file_hash(
+        list(reversed(parts)), preserve_order=True
+    )
 
 
 def test_display_filename_prefers_uploaded_bundle_name() -> None:
@@ -2968,7 +2971,7 @@ async def test_ingest_labeled_parts_runs_in_parallel(
         peak = max(peak, in_flight)
         await asyncio.sleep(0.05)
         in_flight -= 1
-        return f"file-{filename}", "hash", filename
+        return f"file-{filename}", "a" * 64, filename
 
     monkeypatch.setattr(
         "extraction_review.process_split_files.ingest_remote_file",

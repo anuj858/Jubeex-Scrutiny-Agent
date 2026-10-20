@@ -1907,6 +1907,7 @@
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "This is a composite check. Evaluate the affidavit date, petition paragraph range, and petition page range separately. A visible notary or oath-commissioner date counts as the affidavit date. Report defect_found only when at least one required element is positively shown blank, missing from the complete affidavit, or inconsistent; otherwise use needs_review.",
       "parent_check_id": null
     },
     {
@@ -2046,6 +2047,7 @@
       "inspect_parts": [
         "Advocate's Checklist"
       ],
+      "manifest_absence_proves_defect": true,
       "how_to_cure": [
         "1. Option for Jubeex to auto-generate the Advocate's Check List in the prescribed format.",
         "2. Option for the User to upload the Advocate's Check List with Jubeex.",
@@ -2112,6 +2114,7 @@
       "notes": "Ivan's comment: Depends on the I.A for instance I.A for impleadment includes full address so does I.A for intervention and for bringing LRs on record, Substituion, for other I.As it is not necessarry",
       "ivan_comment": "If you are filing I.A in already pending matter- Fresh Memo of parties is not required. \nBut for every fresh matter be it petition or I.A a fresh memo of parties will be filed",
       "notes_2": null,
+      "ai_note": "Judge address completeness by party type. A State or public authority may be addressed through the named office, police station, district, state and PIN; do not require a residential street address for it. Identify the exact party and exact missing address element before returning defect_found.",
       "parent_check_id": null
     },
     {
@@ -2282,6 +2285,7 @@
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "This is a conditional composite check. First positively identify vernacular content, then determine whether an official translation exists. Only if it does not, inspect the complete exemption application package for the application, supporting affidavit and court-fee proof. State exactly which prerequisite and which package component failed; otherwise return needs_review.",
       "parent_check_id": null
     },
     {
@@ -2388,6 +2392,7 @@
       "notes": "For Petitoner -in-person, you can look for endorsement in Memo of parties \n\nIvan's Additional Comment:- \n1. If all details of parties are given in the impugned order, there is no need for separate Memo of parties",
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "Evaluate each required endorsement separately: court appealed from, full title, Supreme Court case number, AOR or petitioner-in-person name, registered address and email. Quote the exact blank, omitted or inconsistent field and name the document where it occurs. Do not report a generic composite defect when the evidence proves only one component.",
       "parent_check_id": null
     },
     {
@@ -2469,6 +2474,7 @@
       "notes": "Ivan’s Comment: The endorsement is required only on the Vakalatnama. The Vakalatnama must contain the following endorsement:\n\n“Satisfied, certified, identified and accepted.”\n\nThis constitutes the requisite endorsement.",
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "Read the complete endorsement and signature block. Accepted, identified and certified wording signed by the AOR is affirmative certification evidence. If the only issue is omission of the word 'satisfied' while equivalent certification is present, return needs_review rather than defect_found unless the controlling rule requires that exact word.",
       "parent_check_id": null
     },
     {
@@ -2665,6 +2671,7 @@
       "notes": null,
       "ivan_comment": "Additional comment Ivan:- Applications are marked as A1,A2. etc.",
       "notes_2": null,
+      "ai_note": "Identify who filed each annexure before judging its prefix. For petitioner or appellant annexures, quote the actual first-page label and the expected P-<number> label. A generic label such as 'ANNEXURE 1' is a defect only when that page is positively identified as a petitioner/appellant annexure. Applications may use A1, A2 and must not be treated as annexures.",
       "parent_check_id": null
     },
     {
@@ -2689,6 +2696,7 @@
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "Distinguish a separately labelled drafting date from a filed-on date. If the Main Petition contains only a filed-on date and the rule source does not establish that it is insufficient, return needs_review rather than defect_found. Quote the exact date label observed.",
       "parent_check_id": null
     },
     {
@@ -3643,6 +3651,7 @@
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "A dated notary or oath-commissioner stamp and a handwritten value associated with the blank field are completion evidence. Never call a field blank from OCR alone when visual observations show a value; return needs_review if their relationship is uncertain.",
       "parent_check_id": null
     },
     {
@@ -3844,6 +3853,7 @@
       "notes": "AOR or parties to verify that entries are true copy",
       "ivan_comment": null,
       "notes_2": null,
+      "ai_note": "Consider both individual annexure endorsements and a blanket true-copy affirmation in the Main Petition or supporting Affidavit. If a blanket affirmation expressly covers all numbered annexures, do not report defect_found solely because each annexure does not repeat the words 'true copy'.",
       "parent_check_id": null
     },
     {
@@ -6402,6 +6412,7 @@
       "notes": null,
       "ivan_comment": "Ivan to confirm",
       "notes_2": "Ivan's comment:- It is a mandate, and English translation is required & there is no exemption for this",
+      "ai_note": "First extract the distinct provisions actually relied on in the Impugned Order, then compare that set with the Appendix. Do not treat every procedural citation as substantively relevant without explaining why. State the exact missing provision; if relevance is ambiguous, return needs_review.",
       "parent_check_id": null
     },
     {

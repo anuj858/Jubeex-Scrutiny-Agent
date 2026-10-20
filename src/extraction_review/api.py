@@ -44,6 +44,7 @@ from .process_file import (
     FileEvent,
     blank_or_placeholder,
     normalize_job_type,
+    normalize_sha256,
     parse_edited_flag,
 )
 from .process_file import workflow as process_file_workflow
@@ -53,7 +54,6 @@ from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
-from .vector_store import delete_workspace_records
 
 load_dotenv()
 
@@ -78,6 +78,7 @@ class DocumentIn(BaseModel):
     )
     slot_id: str | None = None
     file_id: str | None = None
+    file_hash: str | None = None
     filename: str | None = None
     file_url: str | None = None
 
@@ -87,6 +88,7 @@ class DocumentIn(BaseModel):
         "download_url",
         "slot_id",
         "file_id",
+        "file_hash",
         "filename",
         "file_url",
         mode="before",
@@ -94,6 +96,11 @@ class DocumentIn(BaseModel):
     @classmethod
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
         return blank_or_placeholder(value)
+
+    @field_validator("file_hash")
+    @classmethod
+    def _validate_file_hash(cls, value: str | None) -> str | None:
+        return normalize_sha256(value)
 
 
 class CreateFilingRequest(BaseModel):
@@ -1158,7 +1165,7 @@ async def index_filing(
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["scrutiny"],
-    summary="Clear workspace vectors, then index and run scrutiny",
+    summary="Build and activate a replacement vector generation, then run scrutiny",
     dependencies=[Depends(require_api_key)],
 )
 async def reindex_filing(
@@ -1166,24 +1173,17 @@ async def reindex_filing(
     body: IndexFilingRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
-    """Same as ``/index`` after deleting this workspace's Pinecone records."""
+    """Atomically replace the active vector generation, then run scrutiny.
+
+    Existing vectors remain readable until the replacement has been fully
+    upserted and activated. The worker removes the prior generation afterward.
+    """
     if not body.workspace_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="workspace_id is required",
         )
     event = _index_event(agent_data_id, body)
-    try:
-        delete_workspace_records(body.workspace_id)
-    except Exception as exc:
-        logger.exception(
-            "Failed to delete Pinecone records for workspace %s",
-            body.workspace_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to clear previous vectors for this workspace.",
-        ) from exc
     return _accept_process_file(
         event,
         callback_url=body.callback_url,

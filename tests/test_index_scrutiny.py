@@ -11,6 +11,7 @@ from extraction_review.process_split_files import (
     ProcessSplitFilesWorkflow,
     SplitFilesState,
     SplitPartEvent,
+    _activate_vector_generation,
     _complete_index_only,
 )
 from extraction_review.scrutiny_workflow import (
@@ -56,14 +57,57 @@ def _fake_client(payload: dict[str, object] | None = None) -> SimpleNamespace:
     return SimpleNamespace(beta=SimpleNamespace(agent_data=FakeAgentData()))
 
 
+def _vector_index() -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "generation": "generation-1",
+        "file_hash": "hash-1",
+        "organization_id": "org-1",
+        "workspace_id": "ws-1",
+        "record_count": 2,
+        "status": "active",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vector_generation_is_activated_before_previous_is_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data: dict[str, object] = {
+        "metadata": {"vector_index": {**_vector_index(), "generation": "old"}}
+    }
+    order: list[str] = []
+
+    class AgentData:
+        async def update(self, _item_id: str, *, data: dict[str, object]):
+            metadata = data["metadata"]
+            assert isinstance(metadata, dict)
+            assert metadata["vector_index"] == _vector_index()
+            order.append("activate")
+
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.delete_vector_generation",
+        lambda generation, **_kwargs: order.append(f"delete:{generation}"),
+    )
+    client = SimpleNamespace(beta=SimpleNamespace(agent_data=AgentData()))
+    await _activate_vector_generation(
+        client,
+        item_id="agd-index",
+        data=data,
+        vector_index=_vector_index(),
+    )
+    assert order == ["activate", "delete:old"]
+
+
 @pytest.mark.asyncio
 async def test_complete_index_only_runs_scrutiny_after_pinecone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
 
-    async def fake_index(**_kwargs: object) -> None:
+    async def fake_index(**_kwargs: object) -> dict[str, object]:
         order.append("pinecone")
+        return _vector_index()
 
     async def fake_scrutiny(_ctx: object, *, agent_data_id: str) -> dict[str, str]:
         order.append("scrutiny")
@@ -106,13 +150,59 @@ async def test_complete_index_only_runs_scrutiny_after_pinecone(
 
 
 @pytest.mark.asyncio
+async def test_complete_index_only_does_not_run_scrutiny_after_index_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+
+    async def fake_index(**_kwargs: object) -> dict[str, object]:
+        order.append("pinecone")
+        raise RuntimeError("partial upsert")
+
+    async def fake_scrutiny(_ctx: object, *, agent_data_id: str) -> dict[str, str]:
+        order.append("scrutiny")
+        return {"agent_data_id": agent_data_id}
+
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.pinecone_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._index_split_upload", fake_index
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._run_nested_scrutiny", fake_scrutiny
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_split_files.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    state = _index_state()
+    ctx = SimpleNamespace(store=_Store(state), write_event_to_stream=lambda _ev: None)
+    with pytest.raises(RuntimeError, match="partial upsert"):
+        await _complete_index_only(
+            _fake_client(),
+            ctx=ctx,  # type: ignore[arg-type]
+            catalog=None,
+            parts=[],
+            pages_by_slot={},
+            parse_job_ids={},
+            layouts_by_slot={},
+            page_markdown={1: "hello"},
+            page_parts={},
+            page_layout={},
+        )
+    assert order == ["pinecone"]
+
+
+@pytest.mark.asyncio
 async def test_complete_index_only_raises_fixed_error_after_pinecone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
 
-    async def fake_index(**_kwargs: object) -> None:
+    async def fake_index(**_kwargs: object) -> dict[str, object]:
         order.append("pinecone")
+        return _vector_index()
 
     async def fake_scrutiny(_ctx: object, *, agent_data_id: str) -> dict[str, str]:
         order.append("scrutiny")
@@ -246,8 +336,9 @@ async def test_complete_index_only_writes_visual_marks_before_scrutiny(
         order.append("upload")
         return {"url": "https://s3.example/visual.json", "key": "visualfiles/v.json"}
 
-    async def fake_index(**_kwargs: object) -> None:
+    async def fake_index(**_kwargs: object) -> dict[str, object]:
         order.append("pinecone")
+        return _vector_index()
 
     async def fake_scrutiny(_ctx: object, *, agent_data_id: str) -> dict[str, str]:
         order.append("scrutiny")

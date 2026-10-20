@@ -17,12 +17,13 @@ text is upserted via Pinecone's integrated embedding index; Pinecone embeds serv
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 
 from pinecone import Pinecone
 
@@ -35,6 +36,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEXT_FIELD = "normalized_text"
 MAX_CHUNK_CHARS = 3500
 CHUNK_OVERLAP = 200
+VECTOR_SCHEMA_VERSION = 2
+EMPTY_PAGE_MARKER = "[No extractable text on this page; visual review required.]"
+_PAGE_SEGMENT_RE = re.compile(
+    r"^--- page (?P<page>\d+) \((?P<role>primary|overlap)\) ---\n",
+    re.MULTILINE,
+)
 
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
 pinecone_index_name = os.getenv("PINECONE_INDEX", "legal-document-knowledge")
@@ -91,6 +98,24 @@ def pinecone_enabled() -> bool:
     return vector_backend == "pinecone" and bool(pinecone_api_key)
 
 
+def scoped_record_base_id(
+    *,
+    file_hash: str,
+    organization_id: str,
+    workspace_id: str,
+    index_generation: str,
+) -> str:
+    """Opaque, tenant-scoped prefix for every record in one completed run."""
+    values = [file_hash, organization_id, workspace_id, index_generation]
+    if any(not str(value or "").strip() for value in values):
+        raise ValueError(
+            "file_hash, organization_id, workspace_id, and index_generation are "
+            "required for vector indexing"
+        )
+    material = "\x1f".join(str(value).strip() for value in values)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _pinecone_query_gate() -> threading.Semaphore:
     """Cap concurrent Pinecone HTTP calls across all scrutiny threads."""
     global _query_semaphore
@@ -141,6 +166,47 @@ def resolve_text_field(pc: Pinecone | None = None) -> str:
     return _cached_text_field
 
 
+def _index_embed_config(description: Any) -> tuple[str | None, str | None]:
+    """Return the integrated model and text field from an SDK response."""
+    embed = getattr(description, "embed", None) or (
+        description.get("embed") if isinstance(description, dict) else None
+    )
+    if not embed:
+        return None, None
+    model = getattr(embed, "model", None) or (
+        embed.get("model") if isinstance(embed, dict) else None
+    )
+    field_map = getattr(embed, "field_map", None) or (
+        embed.get("field_map") if isinstance(embed, dict) else None
+    )
+    text_field = field_map.get("text") if isinstance(field_map, dict) else None
+    return (
+        str(model).strip() if model else None,
+        str(text_field).strip() if text_field else None,
+    )
+
+
+def validate_index_contract(description: Any) -> str:
+    """Fail fast when an existing Pinecone index cannot embed our records."""
+    model, text_field = _index_embed_config(description)
+    if not model or not text_field:
+        raise RuntimeError(
+            f"Pinecone index {pinecone_index_name!r} is not an integrated-embedding "
+            "index with a text field_map"
+        )
+    if model != pinecone_embed_model:
+        raise RuntimeError(
+            f"Pinecone index {pinecone_index_name!r} uses embedding model {model!r}; "
+            f"configured model is {pinecone_embed_model!r}"
+        )
+    if pinecone_text_field and text_field != pinecone_text_field:
+        raise RuntimeError(
+            f"Pinecone index {pinecone_index_name!r} embeds field {text_field!r}; "
+            f"configured field is {pinecone_text_field!r}"
+        )
+    return text_field
+
+
 def ensure_index(pc: Pinecone | None = None) -> Any:
     """Create an integrated-embedding index if missing; return a data-plane Index."""
     global _cached_index
@@ -164,14 +230,21 @@ def ensure_index(pc: Pinecone | None = None) -> Any:
                 name=name,
                 cloud=pinecone_cloud,
                 region=pinecone_region,
-                embed={
-                    "model": pinecone_embed_model,
-                    "field_map": {"text": pinecone_text_field},
-                },
+                embed=cast(
+                    Any,
+                    {
+                        "model": pinecone_embed_model,
+                        "field_map": {"text": pinecone_text_field},
+                    },
+                ),
             )
             logger.info("[Pinecone] Index %s created", name)
         else:
             logger.info("[Pinecone] Using existing index %s", name)
+        description = client.describe_index(name)
+        resolved_field = validate_index_contract(description)
+        global _cached_text_field
+        _cached_text_field = resolved_field
         _cached_index = client.Index(name)
         return _cached_index
 
@@ -265,7 +338,11 @@ def split_text_windows(
     max_chars: int = MAX_CHUNK_CHARS,
     overlap: int = CHUNK_OVERLAP,
 ) -> list[str]:
-    """Split long section text into overlapping windows for embedding."""
+    """Split on the strongest nearby text boundary, with bounded overlap."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    if overlap < 0 or overlap >= max_chars:
+        raise ValueError("overlap must be non-negative and smaller than max_chars")
     cleaned = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
     if not cleaned:
         return []
@@ -275,7 +352,15 @@ def split_text_windows(
     windows: list[str] = []
     start = 0
     while start < len(cleaned):
-        end = min(start + max_chars, len(cleaned))
+        hard_end = min(start + max_chars, len(cleaned))
+        end = hard_end
+        if hard_end < len(cleaned):
+            minimum = start + max((max_chars * 3) // 4, 1)
+            for separator in ("\n\n", "\n", ". ", " "):
+                boundary = cleaned.rfind(separator, minimum, hard_end)
+                if boundary >= minimum:
+                    end = boundary + len(separator)
+                    break
         windows.append(cleaned[start:end].strip())
         if end >= len(cleaned):
             break
@@ -299,11 +384,11 @@ def _page_margin(text: str, *, from_end: bool, size: int = CHUNK_OVERLAP) -> str
     return cleaned[:size]
 
 
-def _labelled_page_margin(page_num: int, snippet: str) -> str:
+def _labelled_page_segment(page_num: int, snippet: str, *, role: str) -> str:
     snippet = snippet.strip()
     if not snippet:
         return ""
-    return f"--- from page {page_num} ---\n{snippet}"
+    return f"--- page {page_num} ({role}) ---\n{snippet}"
 
 
 def _neighbor_margin(
@@ -322,9 +407,10 @@ def _neighbor_margin(
         return ""
     if not _same_split_part(parts.get(page_num), parts.get(neighbor)):
         return ""
-    return _labelled_page_margin(
+    return _labelled_page_segment(
         neighbor,
         _page_margin(page_markdown.get(neighbor) or "", from_end=from_end),
+        role="overlap",
     )
 
 
@@ -334,6 +420,7 @@ def build_page_records(
     page_markdown: dict[int, str],
     metadata: dict[str, Any] | None = None,
     page_parts: dict[int, Any] | None = None,
+    page_metadata: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build Pinecone records from parse page markdown.
@@ -342,11 +429,12 @@ def build_page_records(
     `page_parts` is the Split map (page number → Listing Proforma, …).
     The first/last window of a page also takes CHUNK_OVERLAP characters from
     the previous/next page when Split labelled both as the same part. Cover
-    Page is never glued onto Main Petition. Borrowed text is marked so citations
-    still point at this page (`page_start`).
+    Page is never glued onto Main Petition. Every borrowed and primary segment
+    in an overlap record is labelled so a returned quote resolves to its true page.
     """
     base_meta = metadata or {}
     parts = page_parts or {}
+    per_page = page_metadata or {}
     records: list[dict[str, Any]] = []
     empty_pages = 0
 
@@ -354,6 +442,31 @@ def build_page_records(
         page_text = (page_markdown.get(page_num) or "").strip()
         if not page_text:
             empty_pages += 1
+            names = parts_on_page(parts.get(page_num))
+            document_part: Any = names[0] if len(names) == 1 else names
+            meta = {
+                **base_meta,
+                **_flatten_metadata(per_page.get(page_num)),
+                "chunk_kind": "page_manifest",
+                "page_start": page_num,
+                "page_end": page_num,
+                "primary_page": page_num,
+                "source_pages": [str(page_num)],
+                "pages": str(page_num),
+                "chunk_index": 0,
+                "ocr_status": "empty",
+                "requires_visual_review": True,
+                "vector_schema_version": VECTOR_SCHEMA_VERSION,
+            }
+            if document_part:
+                meta["document_part"] = document_part
+            records.append(
+                {
+                    "record_id": f"{base_id}:manifest:{page_num}",
+                    "chunk_text": EMPTY_PAGE_MARKER,
+                    "metadata": meta,
+                }
+            )
             continue
 
         windows = split_text_windows(page_text)
@@ -382,23 +495,40 @@ def build_page_records(
         last_idx = len(windows) - 1
         for chunk_idx, window in enumerate(windows):
             pieces = []
-            page_end = page_num
-            if chunk_idx == 0 and prev_margin:
+            source_pages: list[int] = []
+            include_prev = chunk_idx == 0 and bool(prev_margin)
+            include_next = chunk_idx == last_idx and bool(next_margin)
+            has_cross_page_context = include_prev or include_next
+            if include_prev:
                 pieces.append(prev_margin)
-            pieces.append(window)
-            if chunk_idx == last_idx and next_margin:
+                source_pages.append(page_num - 1)
+            pieces.append(
+                _labelled_page_segment(page_num, window, role="primary")
+                if has_cross_page_context
+                else window
+            )
+            source_pages.append(page_num)
+            if include_next:
                 pieces.append(next_margin)
-                page_end = page_num + 1
+                source_pages.append(page_num + 1)
             record_id = f"{base_id}:page:{page_num}:{chunk_idx}"
             meta = {
                 **base_meta,
+                **_flatten_metadata(per_page.get(page_num)),
                 "chunk_kind": "page",
                 "page_start": page_num,
-                "page_end": page_end,
+                "page_end": max(source_pages),
+                "primary_page": page_num,
+                "source_pages": [str(page) for page in source_pages],
                 "pages": (
-                    str(page_num) if page_end == page_num else f"{page_num}-{page_end}"
+                    str(source_pages[0])
+                    if len(source_pages) == 1
+                    else f"{min(source_pages)}-{max(source_pages)}"
                 ),
                 "chunk_index": chunk_idx,
+                "ocr_status": "text",
+                "requires_visual_review": False,
+                "vector_schema_version": VECTOR_SCHEMA_VERSION,
             }
             if document_part:
                 meta["document_part"] = document_part
@@ -566,6 +696,36 @@ def delete_workspace_records(workspace_id: str) -> None:
     logger.info("[Pinecone] Deleted records for workspace_id=%s", workspace_id)
 
 
+def delete_vector_generation(
+    generation: str,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
+    """Delete one inactive generation without touching another filing."""
+    generation = (generation or "").strip()
+    if not generation:
+        return
+    metadata_filter: dict[str, Any] = {"index_generation": {"$eq": generation}}
+    if organization_id:
+        metadata_filter["organization_id"] = {"$eq": organization_id}
+    if workspace_id:
+        metadata_filter["workspace_id"] = {"$eq": workspace_id}
+    ensure_index().delete(filter=metadata_filter, namespace=pinecone_namespace)
+
+
+def _parse_page_segments(text: str) -> dict[int, str]:
+    """Recover per-page provenance from an embedded overlap record."""
+    matches = list(_PAGE_SEGMENT_RE.finditer(text or ""))
+    segments: dict[int, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.end() : end].strip()
+        if body:
+            segments[int(match.group("page"))] = body
+    return segments
+
+
 def _raw_hits(result: Any) -> list[Any]:
     hits = getattr(result, "result", result)
     matches = getattr(hits, "hits", None)
@@ -621,7 +781,7 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
     if not text:
         return None
 
-    page = fields.get("page_start")
+    page = fields.get("primary_page", fields.get("page_start"))
     page_end = fields.get("page_end")
     try:
         page = int(page) if page is not None else None
@@ -640,6 +800,11 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "page_end": page_end,
         "chunk_kind": fields.get("chunk_kind"),
         "document_part": fields.get("document_part"),
+        "source_pages": fields.get("source_pages") or [],
+        "page_texts": _parse_page_segments(text),
+        "ocr_status": fields.get("ocr_status"),
+        "requires_visual_review": bool(fields.get("requires_visual_review")),
+        "index_generation": fields.get("index_generation"),
     }
 
 
@@ -650,6 +815,9 @@ def search_filing_chunks(
     top_k: int | None = None,
     chunk_kind: str | None = None,
     document_part: str | None = None,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return Pinecone hits for one filing. No LLM packing or score cutoff.
 
@@ -668,6 +836,12 @@ def search_filing_chunks(
     text_field = resolve_text_field(client)
 
     metadata_filter: dict[str, Any] = {"file_hash": {"$eq": file_hash}}
+    if organization_id:
+        metadata_filter["organization_id"] = {"$eq": organization_id}
+    if workspace_id:
+        metadata_filter["workspace_id"] = {"$eq": workspace_id}
+    if index_generation:
+        metadata_filter["index_generation"] = {"$eq": index_generation}
     if chunk_kind:
         metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
     # Do not filter document_part in Pinecone: multi-label pages store an
@@ -687,6 +861,11 @@ def search_filing_chunks(
                 "page_start",
                 "page_end",
                 "document_part",
+                "source_pages",
+                "primary_page",
+                "ocr_status",
+                "requires_visual_review",
+                "index_generation",
             ],
         )
 
@@ -710,6 +889,9 @@ def gather_filing_evidence(
     top_k: int | None = None,
     max_chunks: int | None = None,
     document_parts: list[str] | None = None,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
 ) -> list[dict[str, Any]]:
     """Union the results of several queries into one deduped evidence set.
 
@@ -736,9 +918,16 @@ def gather_filing_evidence(
             seen[record_id] = chunk
 
     jobs: list[tuple[str, dict[str, Any]]] = []
+    scope = {
+        "file_hash": file_hash,
+        "top_k": top_k,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
+        "index_generation": index_generation,
+    }
     for query in queries:
         if query and query.strip():
-            jobs.append((query.strip(), {"file_hash": file_hash, "top_k": top_k}))
+            jobs.append((query.strip(), dict(scope)))
     for part in document_parts or []:
         label = (part or "").strip()
         if label:
@@ -746,8 +935,7 @@ def gather_filing_evidence(
                 (
                     label,
                     {
-                        "file_hash": file_hash,
-                        "top_k": top_k,
+                        **scope,
                         "chunk_kind": "page",
                         "document_part": label,
                     },
@@ -817,6 +1005,9 @@ def gather_filing_evidence_pool(
     file_hash: str,
     top_k: int | None = None,
     max_chunks: int | None = None,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
 ) -> list[dict[str, Any]]:
     """Caption-wide gather for a filing (tests and fallbacks).
 
@@ -830,6 +1021,9 @@ def gather_filing_evidence_pool(
         file_hash=file_hash,
         top_k=top_k,
         max_chunks=cap,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=index_generation,
     )
     logger.info(
         "[Pinecone] Shared evidence pool: %s chunk(s) from %s caption queries "

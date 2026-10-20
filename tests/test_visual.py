@@ -367,6 +367,7 @@ def test_build_finding_does_not_change_status_when_attaching_marks(monkeypatch) 
             }
         ],
     )
+    assert undetermined.status == "needs_review"
     finding2 = build_finding(
         defect,
         undetermined,

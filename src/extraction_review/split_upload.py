@@ -488,10 +488,13 @@ def ordered_parts(
     return ordered
 
 
-def bundle_file_hash(parts: Sequence[SplitPartInput]) -> str:
+def bundle_file_hash(
+    parts: Sequence[SplitPartInput], *, preserve_order: bool = False
+) -> str:
+    ordered = list(parts) if preserve_order else sorted(parts, key=lambda item: item.slot_id)
     payload = [
         [item.slot_id, item.file_hash or item.file_id]
-        for item in sorted(parts, key=lambda item: item.slot_id)
+        for item in ordered
     ]
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

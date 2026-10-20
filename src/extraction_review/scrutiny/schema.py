@@ -23,6 +23,7 @@ from ..document_parts import (
     parts_named_in_where_to_look,
     parts_on_page,
     preferred_parts_for_defect,
+    required_parts_for_defect,
 )
 from ..layout_index import boxes_on_pages, page_entry, part_for_page, quote_in_text
 from .prompts import (
@@ -30,7 +31,13 @@ from .prompts import (
     validated_reasoning,
     validated_summary,
 )
-from .rules import Catalogue, CatalogueSource, Defect, get_catalogue, source_match_tokens
+from .rules import (
+    Catalogue,
+    CatalogueSource,
+    Defect,
+    get_catalogue,
+    source_match_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +272,9 @@ def _source_page_number(text: str) -> int | None:
         return None
 
 
-def _sources_named_in(text: str, sources: list[CatalogueSource]) -> list[CatalogueSource]:
+def _sources_named_in(
+    text: str, sources: list[CatalogueSource]
+) -> list[CatalogueSource]:
     folded = text.casefold()
     cited: list[CatalogueSource] = []
     for source in sources:
@@ -321,14 +330,18 @@ class HowToCure(BaseModel):
 
 def cure_from_defect(defect: Defect) -> HowToCure:
     """Copy how_to_cure and remediation_config. Do not rewrite stored buttons."""
-    config = defect.remediation_config if isinstance(defect.remediation_config, dict) else {}
+    config = (
+        defect.remediation_config if isinstance(defect.remediation_config, dict) else {}
+    )
     mode = config.get("mode")
     if not isinstance(mode, str) or not mode.strip():
         mode = "any"
     actions = config.get("actions")
     if not isinstance(actions, list):
         actions = []
-    return HowToCure(steps=list(defect.how_to_cure or []), mode=mode, actions=list(actions))
+    return HowToCure(
+        steps=list(defect.how_to_cure or []), mode=mode, actions=list(actions)
+    )
 
 
 class DefectFinding(BaseModel):
@@ -373,7 +386,10 @@ class DefectFinding(BaseModel):
     defect_version: int = 1
 
 
-DEFAULT_REVIEW_CONFIDENCE = 0.6
+# A published defect is a high-impact assertion.  Prefer an explicit review
+# over a false positive; individual deployments can still tune this after
+# calibrating against a labelled filing set.
+DEFAULT_REVIEW_CONFIDENCE = 0.8
 
 
 def _safe_page_number(value: Any) -> int | None:
@@ -397,8 +413,14 @@ def review_confidence_threshold() -> float:
 def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
     pages: set[int] = set()
     for chunk in chunks:
-        if chunk.get("chunk_kind") == "summary":
+        if chunk.get("chunk_kind") in {"summary", "page_manifest"}:
             continue
+        page_texts = chunk.get("page_texts")
+        if isinstance(page_texts, dict):
+            for page in page_texts:
+                number = _safe_page_number(page)
+                if number is not None:
+                    pages.add(number)
         start = chunk.get("page")
         if start is None:
             continue
@@ -417,6 +439,13 @@ def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
 
 
 def _chunk_page_for_quote(quote: str, chunk: dict[str, Any]) -> int | None:
+    if chunk.get("chunk_kind") == "page_manifest":
+        return None
+    page_texts = chunk.get("page_texts")
+    if isinstance(page_texts, dict):
+        for raw_page, page_text in page_texts.items():
+            if quote_in_text(quote, str(page_text or "")):
+                return _safe_page_number(raw_page)
     text = chunk.get("text") or ""
     if not quote_in_text(quote, text):
         return None
@@ -448,6 +477,12 @@ def _page_allowed_for_evidence(
     if page is None:
         return False
     for chunk in page_chunks:
+        page_texts = chunk.get("page_texts")
+        if isinstance(page_texts, dict) and any(
+            _safe_page_number(raw_page) == page for raw_page in page_texts
+        ):
+            if allow_index or _chunk_part_rank(chunk, preferred) >= 0:
+                return True
         try:
             chunk_page = int(chunk["page"]) if chunk.get("page") is not None else None
         except (TypeError, ValueError):
@@ -476,7 +511,7 @@ def _evidence_from_chunks(
     preferred = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
         defect
     )
-    page_chunks = [chunk for chunk in chunks if chunk.get("chunk_kind") != "summary"]
+    page_chunks = [chunk for chunk in chunks if chunk.get("chunk_kind") == "page"]
     ranked = sorted(
         page_chunks,
         key=lambda chunk: (
@@ -762,7 +797,7 @@ def apply_evidence_pages(
     """Snap evidence.page to retrieved filing pages; drop rulebook / Index noise."""
     if not response.evidence:
         return response
-    page_chunks = [c for c in chunks if c.get("chunk_kind") != "summary"]
+    page_chunks = [c for c in chunks if c.get("chunk_kind") == "page"]
     preferred: list[str] = []
     allow_index = True
     if defect is not None:
@@ -802,9 +837,7 @@ def apply_evidence_pages(
             # Keep a retrieved page so layout matching can still box the quote
             # when Pinecone OCR differs from the model quote.
             page = ref.page
-        grounded.append(
-            EvidenceRef(page=page, quote=quote, chunk_id=ref.chunk_id)
-        )
+        grounded.append(EvidenceRef(page=page, quote=quote, chunk_id=ref.chunk_id))
     response.evidence = grounded
     return response
 
@@ -815,7 +848,142 @@ def apply_status_policy(response: DefectResponse) -> DefectResponse:
         response.status in ("defect_found", "compliant")
         and response.confidence < review_confidence_threshold()
     ):
-        response.status = "needs_review"
+        return _move_to_review(
+            response,
+            "The model's confidence was below the publication threshold, so the "
+            "available evidence requires human review before a defect or compliant "
+            "decision is shown.",
+        )
+    return response
+
+
+def _move_to_review(response: DefectResponse, reason: str) -> DefectResponse:
+    """Downgrade an unsafe conclusion and keep its explanation consistent."""
+    response.status = "needs_review"
+    review_confidence = max(0.0, review_confidence_threshold() - 0.01)
+    response.confidence = min(response.confidence, review_confidence)
+    response.summary = (
+        "Needs review because the available evidence does not safely prove this defect."
+    )
+    response.reasoning = reason
+    return response
+
+
+def apply_grounded_defect_policy(response: DefectResponse) -> DefectResponse:
+    """Never publish a defect without a grounded filing-page observation.
+
+    A quotation may show an incomplete field or contradictory value.  A model
+    assertion that something is absent, with no grounded page observation, is
+    not proof of absence and must remain a review item.
+    """
+    if response.status != "defect_found":
+        return response
+    grounded = [
+        ref for ref in response.evidence if ref.page is not None and ref.quote.strip()
+    ]
+    if grounded:
+        return response
+    return _move_to_review(
+        response,
+        "The required document part was searched, but no filing-page quotation "
+        "or visible field was grounded as proof of the defect. Absence in semantic "
+        "search results is not enough to publish a defect.",
+    )
+
+
+def apply_visual_conflict_policy(
+    defect: Defect,
+    response: DefectResponse,
+    visual_index: dict[str, Any] | None,
+) -> DefectResponse:
+    """Route text/vision conflicts to review instead of asserting absence."""
+    if response.status != "defect_found" or not isinstance(visual_index, dict):
+        return response
+    wording = f"{defect.defect} {defect.requirement}".casefold()
+    relevant_types: set[str] = set()
+    if any(term in wording for term in ("signature", "signed", "executed")):
+        relevant_types.update(
+            {
+                "signature_like_mark",
+                "advocate_on_record_signature",
+                "executant_signature",
+            }
+        )
+    if any(
+        term in wording
+        for term in ("stamp", "seal", "notary", "sworn", "date", "blank")
+    ):
+        relevant_types.update(
+            {"notary_seal", "stamp", "handwritten_field_value", "date_field_value"}
+        )
+    if not relevant_types:
+        return response
+    targets = {part.casefold() for part in defect.inspect_parts}
+    conflicts: list[str] = []
+    for mark in visual_index.get("marks") or []:
+        if not isinstance(mark, dict):
+            continue
+        marking_type = str(mark.get("marking_type") or "").strip().casefold()
+        if marking_type not in relevant_types:
+            continue
+        document_type = str(mark.get("document_type") or "").strip()
+        if targets and not any(
+            target in document_type.casefold() or document_type.casefold() in target
+            for target in targets
+        ):
+            continue
+        visible = str(mark.get("visible_text") or "").strip()
+        label = str(mark.get("associated_label") or "").strip()
+        detail = visible or label or marking_type.replace("_", " ")
+        conflicts.append(f"{document_type or 'target document'}: {detail}")
+    if not conflicts:
+        return response
+    return _move_to_review(
+        response,
+        "OCR suggested that required material was missing, but visual analysis "
+        f"found potentially conflicting evidence ({'; '.join(conflicts[:3])}). "
+        "A reviewer must reconcile the visible mark with the textual requirement.",
+    )
+
+
+def manifest_absence_proven(
+    defect: Defect,
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    """Whether a complete classified page manifest proves a whole part absent."""
+    if not defect.manifest_absence_proves_defect or not layout:
+        return False
+    labelled_pages = [
+        parts_on_page(page.get("document_part"))
+        for page in layout.values()
+        if isinstance(page, dict)
+    ]
+    if not labelled_pages or any(not names for names in labelled_pages):
+        return False
+    available = {name.casefold() for names in labelled_pages for name in names}
+    required = required_parts_for_defect(defect)
+    return bool(required) and all(part.casefold() not in available for part in required)
+
+
+def apply_manifest_absence_policy(
+    defect: Defect,
+    response: DefectResponse,
+    layout: dict[int, dict[str, Any]] | None,
+) -> DefectResponse:
+    """Publish an explicitly configured missing-document defect from the manifest."""
+    if not manifest_absence_proven(defect, layout):
+        return response
+    missing = required_parts_for_defect(defect)
+    label = ", ".join(missing)
+    response.status = "defect_found"
+    response.confidence = max(response.confidence, 0.95)
+    response.summary = f"Defect: the filing does not contain {label}."
+    response.reasoning = (
+        f"Observed: the complete classified filing manifest contains no {label}. "
+        f"Required: {defect.requirement.rstrip('.')}. "
+        "Conclusion: the required document is absent from the filing."
+    )
+    response.evidence = []
     return response
 
 
@@ -829,7 +997,12 @@ def apply_retrieval_policy(
         return response
     missing = missing_required_parts(defect, chunks)
     if missing:
-        response.status = "needs_review"
+        return _move_to_review(
+            response,
+            "The excerpts did not contain every required document part "
+            f"({', '.join(missing)}). A retrieval gap cannot prove that the filing "
+            "itself is defective.",
+        )
     return response
 
 
@@ -838,20 +1011,19 @@ def apply_undetermined_policy(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
 ) -> DefectResponse:
-    """Stamps, seals, margins and other marks are defects when not found.
-
-    `not_determined` is reserved for checks that never ran. If the model
-    used it because a visual/layout requirement was hard to see, treat
-    absence in the inspected part as a defect. If that part was never
-    retrieved, keep needs_review.
-    """
+    """Uncertain evidence must never be promoted into a published defect."""
     if response.status != "not_determined":
         return response
-    if missing_required_parts(defect, chunks):
-        response.status = "needs_review"
-        return response
-    response.status = "defect_found"
-    return response
+    missing = missing_required_parts(defect, chunks)
+    detail = (
+        f" Required excerpts were missing for: {', '.join(missing)}."
+        if missing
+        else " The available excerpts or visual evidence were inconclusive."
+    )
+    return _move_to_review(
+        response,
+        "This check could not be determined safely." + detail,
+    )
 
 
 class ScrutinySummary(BaseModel):
@@ -993,6 +1165,8 @@ def build_finding(
             response.status,
             pages=pages,
             evidence_pages=evidence_pages,
+            evidence_quote=evidence[0].quote if evidence else None,
+            document_parts=seen_parts,
         ),
         evidence=evidence,
         how_to_cure=cure_from_defect(defect),

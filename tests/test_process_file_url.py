@@ -32,6 +32,7 @@ from extraction_review.process_file import (
     split_output_selection,
     take_file_bytes,
     upload_sliced_slot_pdfs,
+    verified_content_hash,
 )
 
 
@@ -41,6 +42,16 @@ def test_safe_url_for_log_removes_credentials_and_query() -> None:
     )
 
     assert safe == "https://s3.example.com/file.pdf"
+
+
+def test_verified_content_hash_rejects_bad_or_mismatched_claim() -> None:
+    actual = "a" * 64
+    assert verified_content_hash(None, actual) == actual
+    assert verified_content_hash(actual.upper(), actual) == actual
+    with pytest.raises(ValueError, match="64-character"):
+        verified_content_hash("not-a-sha", actual)
+    with pytest.raises(ValueError, match="does not match"):
+        verified_content_hash("b" * 64, actual)
 
 
 def test_file_event_accepts_file_url_without_file_id() -> None:

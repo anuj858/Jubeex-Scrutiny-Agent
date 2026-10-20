@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import uuid
 from collections.abc import Mapping
 from typing import Annotated, Any, cast
 
@@ -73,6 +74,7 @@ from .process_file import (
     ingest_remote_file,
     normalize_org_id,
     positive_int_env,
+    verified_content_hash,
 )
 from .s3_artifacts import (
     STEP_EXTRACT,
@@ -106,9 +108,12 @@ from .split_upload import (
     validate_parts,
 )
 from .vector_store import (
+    VECTOR_SCHEMA_VERSION,
     build_filing_chunk_text,
     build_page_records,
+    delete_vector_generation,
     pinecone_enabled,
+    scoped_record_base_id,
     upsert_records,
 )
 from .visual.detect import detect_visual_marks
@@ -127,6 +132,7 @@ DEFAULT_PARSE_CONCURRENCY = 8
 DEFAULT_INGEST_CONCURRENCY = 8
 DEFAULT_FAST_PARSE_TIER = "fast"
 PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
+VECTOR_INDEX_METADATA_KEY = "vector_index"
 
 
 def parse_concurrency() -> int:
@@ -411,7 +417,9 @@ class ProcessSplitFilesWorkflow(Workflow):
         filename = uploaded_filename(event.filename) or display_filename(
             catalog.filing_type, parts, original=event.filename
         )
-        file_hash = bundle_file_hash(parts)
+        file_hash = bundle_file_hash(
+            parts, preserve_order=bool(event.stitch_in_request_order)
+        )
         petition = find_part(parts, PETITION_SLOT_ID)
         source_parts = extract_source_parts(catalog)
         reuse_pages, reuse_layouts, reuse_jobs = _reuse_parse_maps(event, parts=parts)
@@ -965,14 +973,21 @@ class ProcessSplitFilesWorkflow(Workflow):
         if pinecone_enabled() and not state.skip_index:
             index_started = start_timer()
             try:
-                await _index_split_upload(
+                vector_index = await _index_split_upload(
                     extracted_data=extracted_data,
                     item_id=str(item.id),
                     state=state,
                     filing_type=filing_type,
                     page_markdown=page_markdown,
                     page_parts=page_parts,
+                    page_layout=coerce_page_layout(state.page_layout),
                     ctx=ctx,
+                )
+                await _activate_vector_generation(
+                    llama_cloud_client,
+                    item_id=str(item.id),
+                    data=data_dict,
+                    vector_index=vector_index,
                 )
                 logger.info(
                     "[ExtractionTiming] index=%ss pages=%s",
@@ -985,8 +1000,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                     state.filename,
                 )
                 ctx.write_event_to_stream(
-                    Status(level="warning", message=f"Pinecone indexing failed: {exc}")
+                    Status(level="error", message=f"Pinecone indexing failed: {exc}")
                 )
+                raise
         else:
             logger.info(
                 "[Pinecone] Skipped indexing for %s "
@@ -1015,7 +1031,7 @@ async def _ingest_one_part(
             filename=filename,
             external_file_id=part.document_id or file_hash,
         )
-        file_hash = file_hash or digest
+        file_hash = verified_content_hash(file_hash, digest)
     return part.model_copy(
         update={
             "file_id": file_id,
@@ -1196,28 +1212,37 @@ async def _parse_labeled_files(
 
 async def _index_split_upload(
     *,
-    extracted_data: ExtractedData,
+    extracted_data: Any,
     item_id: str,
     state: SplitFilesState,
     filing_type: str,
     page_markdown: dict[int, str],
     page_parts: dict[int, list[str]],
+    page_layout: dict[int, dict[str, Any]],
     ctx: Context[SplitFilesState],
-) -> None:
-    base_id = extracted_data.file_hash or state.petition_file_id or item_id
+) -> dict[str, Any]:
+    file_hash = str(extracted_data.file_hash or state.file_hash or "").strip()
+    organization_id = str(state.organization_id or state.org_id or "").strip()
+    workspace_id = str(state.workspace_id or "").strip()
+    generation = str(uuid.uuid4())
+    base_id = scoped_record_base_id(
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=generation,
+    )
     shared_meta = {
         "agent_data_id": item_id,
         "file_id": state.petition_file_id,
-        "file_hash": extracted_data.file_hash,
+        "file_hash": file_hash,
         "petition_type": filing_type,
         "split_upload": True,
+        "organization_id": organization_id,
+        "org_id": organization_id,
+        "workspace_id": workspace_id,
+        "index_generation": generation,
+        "vector_schema_version": VECTOR_SCHEMA_VERSION,
     }
-    if state.organization_id or state.org_id:
-        org_id = state.organization_id or state.org_id
-        shared_meta["organization_id"] = org_id
-        shared_meta["org_id"] = org_id
-    if state.workspace_id:
-        shared_meta["workspace_id"] = state.workspace_id
     if state.user_id:
         shared_meta["user_id"] = state.user_id
     ctx.write_event_to_stream(
@@ -1244,14 +1269,52 @@ async def _index_split_upload(
                 "metadata": {**shared_meta, "chunk_kind": "summary"},
             }
         )
+    part_by_slot = {part.slot_id: part for part in state.parts}
+    page_metadata: dict[int, dict[str, Any]] = {}
+    for page, entry in coerce_page_layout(page_layout).items():
+        slot_id = str(entry.get("slot_id") or "").strip()
+        source = part_by_slot.get(slot_id)
+        page_metadata[page] = {
+            "global_page": page,
+            "local_page": entry.get("local_page"),
+            "slot_id": slot_id or None,
+            "document_id": source.document_id if source else None,
+            "source_file_id": source.file_id if source else None,
+            "source_file_hash": source.file_hash if source else None,
+        }
     page_records = build_page_records(
         base_id=base_id,
         page_markdown=page_markdown,
         metadata=shared_meta,
         page_parts=page_parts,
+        page_metadata=page_metadata,
     )
     pinecone_items.extend(page_records)
-    count = upsert_records(pinecone_items)
+    try:
+        count = upsert_records(pinecone_items)
+    except Exception:
+        try:
+            delete_vector_generation(
+                generation,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            logger.warning(
+                "Could not clean failed Pinecone generation %s",
+                generation,
+                exc_info=True,
+            )
+        raise
+    if count != len(pinecone_items):
+        delete_vector_generation(
+            generation,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        raise RuntimeError(
+            f"Pinecone indexed {count} of {len(pinecone_items)} prepared records"
+        )
     ctx.write_event_to_stream(
         Status(
             level="info",
@@ -1261,6 +1324,71 @@ async def _index_split_upload(
             ),
         )
     )
+    return {
+        "schema_version": VECTOR_SCHEMA_VERSION,
+        "generation": generation,
+        "file_hash": file_hash,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
+        "record_count": count,
+        "status": "active",
+    }
+
+
+def _active_vector_generation(metadata: Mapping[str, Any]) -> str | None:
+    value = metadata.get(VECTOR_INDEX_METADATA_KEY)
+    if not isinstance(value, Mapping):
+        return None
+    generation = str(value.get("generation") or "").strip()
+    return generation or None
+
+
+async def _activate_vector_generation(
+    client: AsyncLlamaCloud,
+    *,
+    item_id: str,
+    data: dict[str, Any],
+    vector_index: dict[str, Any],
+) -> None:
+    required = {
+        "generation",
+        "file_hash",
+        "organization_id",
+        "workspace_id",
+        "record_count",
+    }
+    if not isinstance(vector_index, dict) or not required.issubset(vector_index):
+        raise ValueError("Pinecone indexing did not return a complete generation")
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    previous = _active_vector_generation(metadata)
+    metadata[VECTOR_INDEX_METADATA_KEY] = vector_index
+    try:
+        await client.beta.agent_data.update(item_id, data=data)
+    except Exception:
+        # The new generation was never activated. Remove it so retries cannot
+        # accumulate an unreachable partial generation.
+        delete_vector_generation(
+            str(vector_index["generation"]),
+            organization_id=str(vector_index["organization_id"]),
+            workspace_id=str(vector_index["workspace_id"]),
+        )
+        raise
+    if previous and previous != vector_index["generation"]:
+        try:
+            delete_vector_generation(
+                previous,
+                organization_id=str(vector_index["organization_id"]),
+                workspace_id=str(vector_index["workspace_id"]),
+            )
+        except Exception:
+            logger.warning(
+                "Could not delete inactive Pinecone generation %s after activation",
+                previous,
+                exc_info=True,
+            )
 
 
 def extract_input_file_id(state: SplitFilesState) -> str | None:
@@ -1508,20 +1636,28 @@ async def _complete_index_only(
     extracted = _StoredExtract(data_dict)
     if pinecone_enabled() and not state.skip_index:
         try:
-            await _index_split_upload(
+            vector_index = await _index_split_upload(
                 extracted_data=extracted,  # type: ignore[arg-type]
                 item_id=agent_data_id,
                 state=state,
                 filing_type=state.filing_type or "",
                 page_markdown=page_markdown,
                 page_parts=page_parts,
+                page_layout=page_layout,
                 ctx=ctx,
+            )
+            await _activate_vector_generation(
+                client,
+                item_id=agent_data_id,
+                data=data_dict,
+                vector_index=vector_index,
             )
         except Exception as exc:
             logger.exception("[Pinecone] Indexing failed for %s", state.filename)
             ctx.write_event_to_stream(
-                Status(level="warning", message=f"Pinecone indexing failed: {exc}")
+                Status(level="error", message=f"Pinecone indexing failed: {exc}")
             )
+            raise
     else:
         logger.info(
             "[Pinecone] Skipped indexing for %s on index-only path",

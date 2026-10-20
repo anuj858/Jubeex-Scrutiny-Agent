@@ -424,6 +424,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "category_id" not in Defect.model_fields
     assert not finding_title(d061, catalogue).startswith("61")
     assert d061.inspect_parts == ["Advocate's Checklist"]
+    assert d061.manifest_absence_proves_defect
+    assert not catalogue.defect("D-59").manifest_absence_proves_defect
     assert "SCI_CHECKLIST_2025" in d061.location_source
     assert "Defect List.pdf" not in d061.location_source
 

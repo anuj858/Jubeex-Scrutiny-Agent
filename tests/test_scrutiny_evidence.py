@@ -17,7 +17,7 @@ from extraction_review.document_parts import (
     select_chunks_for_defect,
 )
 from extraction_review.process_file import _split_page_parts
-from extraction_review.scrutiny.prompts import filing_location
+from extraction_review.scrutiny.prompts import fallback_reasoning, filing_location
 from extraction_review.scrutiny.schema import (
     BoundingBox,
     DefectResponse,
@@ -25,7 +25,11 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _one_published_evidence,
     apply_evidence_pages,
+    apply_grounded_defect_policy,
+    apply_manifest_absence_policy,
     apply_status_policy,
+    apply_visual_conflict_policy,
+    manifest_absence_proven,
 )
 from extraction_review.scrutiny_workflow import _add_layout_fallback_chunks
 from extraction_review.vector_store import build_page_records
@@ -237,7 +241,7 @@ def test_page_records_borrow_same_part_neighbours_only() -> None:
 
     page3 = by_page[3]["chunk_text"]
     assert page3.startswith(listing_3) or listing_3 in page3
-    assert "--- from page 4 ---" in page3
+    assert "--- page 4 (overlap) ---" in page3
     assert listing_4[:20] in page3
     assert "Cover page" not in page3
     assert "Petition body" not in page3
@@ -246,9 +250,9 @@ def test_page_records_borrow_same_part_neighbours_only() -> None:
     assert by_page[3]["metadata"]["pages"] == "3-4"
 
     page4 = by_page[4]["chunk_text"]
-    assert "--- from page 3 ---" in page4
+    assert "--- page 3 (overlap) ---" in page4
     assert listing_3[-20:] in page4
-    assert "--- from page 5 ---" not in page4
+    assert "--- page 5 (overlap) ---" not in page4
     assert "Petition body" not in page4
     assert by_page[4]["metadata"]["page_end"] == 4
 
@@ -368,7 +372,9 @@ def test_single_annexure_check_keeps_narrow_budget() -> None:
     assert max_chunks_for_defect(defect, ceiling=12) == 3
 
 
-def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it() -> None:
+def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it() -> (
+    None
+):
     defect = SimpleNamespace(
         inspect_parts=["Vakalatnama"],
         context_parts=[],
@@ -389,9 +395,7 @@ def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it()
         }
     }
 
-    chunks = _add_layout_fallback_chunks(
-        defect, [], layout=layout, max_chunks=3
-    )
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
 
     assert len(chunks) == 1
     assert chunks[0]["page"] == 88
@@ -414,9 +418,7 @@ def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
         for page, text in ((12, "CAUSE TITLE"), (13, "BODY"), (28, "DATED PRAYER"))
     }
 
-    chunks = _add_layout_fallback_chunks(
-        defect, [], layout=layout, max_chunks=3
-    )
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
 
     assert [chunk["page"] for chunk in chunks] == [12, 28]
 
@@ -563,15 +565,15 @@ def test_layout_boundaries_replace_incomplete_semantic_excerpt_set() -> None:
         for page, text in ((12, "CAUSE TITLE"), (18, "BODY"), (28, "DATED PRAYER"))
     }
 
-    chunks = _add_layout_fallback_chunks(
-        defect, retrieved, layout=layout, max_chunks=3
-    )
+    chunks = _add_layout_fallback_chunks(defect, retrieved, layout=layout, max_chunks=3)
 
     assert [chunk["page"] for chunk in chunks] == [12, 18, 28]
     assert any(chunk["text"] == "DATED PRAYER" for chunk in chunks)
 
 
-def test_main_petition_check_uses_petition_affidavit_not_application_affidavit() -> None:
+def test_main_petition_check_uses_petition_affidavit_not_application_affidavit() -> (
+    None
+):
     defect = SimpleNamespace(
         defect="The petition affidavit omits required particulars",
         requirement="The affidavit supporting the Main Petition must be complete",
@@ -590,13 +592,9 @@ def test_main_petition_check_uses_petition_affidavit_not_application_affidavit()
         86: {"document_part": "Affidavit", "words": [{"t": "VERIFY", "line": 1}]},
     }
 
-    chunks = _add_layout_fallback_chunks(
-        defect, [], layout=layout, max_chunks=6
-    )
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=6)
     affidavit_pages = [
-        chunk["page"]
-        for chunk in chunks
-        if "Affidavit" in chunk["document_part"]
+        chunk["page"] for chunk in chunks if "Affidavit" in chunk["document_part"]
     ]
 
     assert affidavit_pages == [29, 30]
@@ -667,6 +665,123 @@ def test_confident_defect_stays_defect_found() -> None:
         evidence=[],
     )
     assert apply_status_policy(strong).status == "defect_found"
+
+
+def test_ungrounded_defect_is_not_published() -> None:
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.95,
+        summary="The required endorsement is missing.",
+        reasoning="Search did not find it.",
+        evidence=[],
+    )
+    gated = apply_grounded_defect_policy(response)
+    assert gated.status == "needs_review"
+    assert "not enough to publish" in gated.reasoning
+
+
+def test_grounded_blank_field_can_remain_a_defect() -> None:
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.95,
+        summary="The filing date field is blank.",
+        reasoning="The filing date label is followed by an empty line.",
+        evidence=[EvidenceRef(page=12, quote="Filed on: __________")],
+    )
+    assert apply_grounded_defect_policy(response).status == "defect_found"
+
+
+def test_positive_visual_mark_routes_ocr_absence_to_review() -> None:
+    defect = SimpleNamespace(
+        defect="The affidavit contains a blank date",
+        requirement="The affidavit date must be filled",
+        inspect_parts=["Affidavit"],
+    )
+    response = DefectResponse(
+        check_id="D-119",
+        status="defect_found",
+        confidence=0.95,
+        summary="The date is blank.",
+        reasoning="OCR shows a blank verification date.",
+        evidence=[EvidenceRef(page=20, quote="Verified on this ___ day")],
+    )
+    gated = apply_visual_conflict_policy(
+        defect,
+        response,
+        {
+            "marks": [
+                {
+                    "document_type": "Affidavit",
+                    "marking_type": "handwritten_field_value",
+                    "associated_label": "verification date",
+                    "visible_text": "05 JUN 2026",
+                }
+            ]
+        },
+    )
+    assert gated.status == "needs_review"
+    assert "05 JUN 2026" in gated.reasoning
+
+
+def test_fallback_reasoning_explains_observed_required_and_conclusion() -> None:
+    defect = SimpleNamespace(
+        requirement="The AOR code must be stated in the AOR Certificate"
+    )
+    reasoning = fallback_reasoning(
+        defect,
+        "defect_found",
+        evidence_pages=[18],
+        evidence_quote="Filed by Anurag Soan, Advocate for Petitioner",
+        document_parts=["AOR's Certificate"],
+    )
+    assert "Observed in AOR's Certificate" in reasoning
+    assert "Required:" in reasoning
+    assert "Conclusion:" in reasoning
+    assert "page 18" in reasoning
+
+
+def test_complete_manifest_can_prove_explicit_missing_document_check() -> None:
+    defect = SimpleNamespace(
+        check_id="D-61",
+        manifest_absence_proves_defect=True,
+        inspect_parts=["Advocate's Checklist"],
+        context_parts=[],
+        where_to_look=[],
+        requirement="An Advocate's Checklist must be filed.",
+    )
+    layout = {
+        1: {"document_part": "Cover Page"},
+        2: {"document_part": "Index"},
+        3: {"document_part": "Main Petition"},
+    }
+    assert manifest_absence_proven(defect, layout)
+    response = DefectResponse(
+        check_id="D-61",
+        status="needs_review",
+        confidence=0.4,
+        summary="Checklist was not retrieved.",
+        reasoning="Retrieval was inconclusive.",
+        evidence=[],
+    )
+    decided = apply_manifest_absence_policy(defect, response, layout)
+    assert decided.status == "defect_found"
+    assert decided.confidence == 0.95
+    assert "complete classified filing manifest" in decided.reasoning
+
+
+def test_partial_manifest_does_not_prove_document_absence() -> None:
+    defect = SimpleNamespace(
+        manifest_absence_proves_defect=True,
+        inspect_parts=["Advocate's Checklist"],
+        context_parts=[],
+        where_to_look=[],
+    )
+    assert not manifest_absence_proven(
+        defect,
+        {1: {"document_part": "Cover Page"}, 2: {"document_part": None}},
+    )
 
 
 def test_evidence_pages_snap_to_excerpt_not_rulebook() -> None:

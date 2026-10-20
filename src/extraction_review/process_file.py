@@ -472,6 +472,11 @@ class FilingPartIn(BaseModel):
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
         return blank_or_placeholder(value)
 
+    @field_validator("file_hash")
+    @classmethod
+    def _validate_file_hash(cls, value: str | None) -> str | None:
+        return normalize_sha256(value)
+
     @model_validator(mode="after")
     def _require_file_id_or_url(self) -> FilingPartIn:
         file_id = (self.file_id or "").strip()
@@ -499,6 +504,29 @@ def normalize_id(value: str | None) -> str | None:
 
 def normalize_org_id(value: str | None) -> str | None:
     return normalize_id(value)
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def normalize_sha256(value: str | None) -> str | None:
+    digest = (value or "").strip().lower()
+    if not digest:
+        return None
+    if not _SHA256_RE.fullmatch(digest):
+        raise ValueError("file_hash must be a 64-character hexadecimal SHA-256")
+    return digest
+
+
+def verified_content_hash(supplied: str | None, actual: str) -> str:
+    """Use the downloaded PDF digest and reject a conflicting caller value."""
+    digest = (actual or "").strip().lower()
+    if not _SHA256_RE.fullmatch(digest):
+        raise ValueError("Calculated PDF SHA-256 is invalid")
+    claimed = normalize_sha256(supplied)
+    if claimed and claimed != digest:
+        raise ValueError("file_hash does not match the downloaded PDF content")
+    return digest
 
 
 def normalize_job_type(value: str | None) -> str | None:
@@ -2522,7 +2550,7 @@ async def _run_split_from_file_event(
                 filename=filename,
                 external_file_id=item.document_id or file_hash,
             )
-            file_hash = file_hash or digest
+            file_hash = verified_content_hash(file_hash, digest)
         split_parts.append(
             SplitPartEvent(
                 slot_id=slot,
@@ -2659,7 +2687,7 @@ async def _run_extract_front(
             or file_hash,
             cache_bytes=True,
         )
-        file_hash = file_hash or content_hash
+        file_hash = verified_content_hash(file_hash, content_hash)
     if not file_id:
         raise ValueError(
             "Provide download_url or file_id, or documents[] with the compiled PDF"
@@ -2838,7 +2866,10 @@ class ProcessFileWorkflow(Workflow):
             )
             raise
 
-        file_hash = file_hash_hint or content_hash or file_metadata.external_file_id
+        if content_hash:
+            file_hash = verified_content_hash(file_hash_hint, content_hash)
+        else:
+            file_hash = file_hash_hint or file_metadata.external_file_id
         echo = intake_echo(event)
         source_docs = [
             source_document_from_part(

@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from extraction_review.api import JOBS, app
@@ -785,32 +784,45 @@ def test_index_edited_false(
             "filing_type": "SLP_CIVIL",
             "edited": False,
             "parsed_slots": ["petition"],
-            "documents": [_doc("01_Petition.pdf"), _doc("index.pdf")],
+            "documents": [
+                {**_doc("01_Petition.pdf"), "file_hash": "a" * 64},
+                _doc("index.pdf"),
+            ],
         },
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "edited") is False
     assert getattr(captured["event"], "job_type") == "index_parsed"
+    assert getattr(captured["event"], "documents")[0].file_hash == "a" * 64
 
 
-def test_reindex_clears_workspace_then_queues_index(
+def test_index_rejects_malformed_document_hash(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/agd-index-invalid-hash/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "workspace_id": "workspace-invalid-hash",
+            "organization_id": "organization-invalid-hash",
+            "documents": [
+                {**_doc("01_Petition.pdf"), "file_hash": "caller-controlled-value"}
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "64-character hexadecimal SHA-256" in response.text
+
+
+def test_reindex_requires_workspace_then_queues_atomic_replacement(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-reindex-1")
     captured: dict[str, object] = {}
-    deleted: list[str] = []
     notified: dict[str, object] = {}
-
-    def fake_delete(workspace_id: str) -> None:
-        deleted.append(workspace_id)
 
     async def fake_notify(**kwargs):
         notified.update(kwargs)
 
-    monkeypatch.setattr(
-        "extraction_review.api.delete_workspace_records",
-        fake_delete,
-    )
     monkeypatch.setattr(
         "extraction_review.api.process_file_workflow.run",
         lambda start_event: captured.update(event=start_event)
@@ -826,7 +838,6 @@ def test_reindex_clears_workspace_then_queues_index(
         },
     )
     assert missing.status_code == 422
-    assert deleted == []
 
     response = client.post(
         "/v1/filings/agd-reindex-1/reindex",
@@ -837,7 +848,6 @@ def test_reindex_clears_workspace_then_queues_index(
         },
     )
     assert response.status_code == 202
-    assert deleted == ["ws-reindex-1"]
     job_id = response.json()["job_id"]
     polled = None
     for _ in range(40):

@@ -168,6 +168,10 @@
           "type": ["string", "null"],
           "description": "How this check differs from the parent; injected into the defect prompt"
         },
+        "ai_note": {
+          "type": ["string", "null"],
+          "description": "Evidence interpretation guidance injected into this check's prompt"
+        },
         "defect": {
           "type": "string",
           "minLength": 10,
@@ -214,6 +218,10 @@
             "minLength": 2
           },
           "description": "Split labels that must not be used as evidence (e.g. Index listing lines). Defaults to Index when omitted on non-index checks."
+        },
+        "manifest_absence_proves_defect": {
+          "type": "boolean",
+          "description": "For a whole-document presence check, allow a complete page manifest with no matching document part to prove the defect. Do not use for missing content inside a present document."
         },
         "how_to_cure": {
           "type": "array",
