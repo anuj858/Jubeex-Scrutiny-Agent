@@ -273,11 +273,11 @@ _LISTING_FIELD_CUES = (
     r"special category|vehicle number|litigation on the same point of law",
 )
 _COVER_FOOTER_RE = re.compile(
-    r"for\s+(?:the\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
+    r"for\s+(?:(?:the|detailed)\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
     r"\{\s*cover\s+page\s*\}|"
     r"cover\s+page\s+of\s+paper|"
-    r"\bpaper\s*book\b",
-    re.I,
+    r"\bp\s*a\s*p\s*e\s*r\s*b\s*o\s*o\s*k\b",
+    re.IGNORECASE,
 )
 # Form-28 party schedule (not the one-name-per-side paper-book cover).
 _PARTY_SCHEDULE_RE = re.compile(

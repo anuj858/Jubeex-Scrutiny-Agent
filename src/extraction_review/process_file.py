@@ -1404,7 +1404,10 @@ def _boundary_detection_configuration(
         "continuations, ends, and uncertain transitions. Use the page evidence below "
         "and neighboring-page context. Preserve page order; do not omit pages. Return "
         "one segment per plausible complete document, and do not merge merely because "
-        "a continuation page lacks a repeated heading. Mark ambiguous transitions for review.\n"
+        "a continuation page lacks a repeated heading. A document name appearing in an "
+        "Index row or List-of-Dates event is a reference, not a new document start; an "
+        "unheaded continuation of the same Index table remains in that Index. Mark "
+        "ambiguous transitions for review.\n"
         "Parsed page cues (physical page order):\n"
     )
     # Select across the entire file, with high-evidence pages first. Reserve
@@ -1849,6 +1852,7 @@ def _document_first_page_ownership(
     classification_report: Mapping[str, Any],
     *,
     page_count: int,
+    page_texts: Mapping[int, str] | None = None,
 ) -> tuple[dict[int, list[str]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Make detected document boundaries authoritative over type classification.
 
@@ -1863,6 +1867,8 @@ def _document_first_page_ownership(
     ``category``/``pages`` contract used by the slicer while adding boundary,
     classification, confidence, and review evidence for the audit artifact.
     """
+    from .split_repair import _outer_anchor_label
+
     classified = [
         item
         for item in classification_report.get("segments", ())
@@ -1935,6 +1941,47 @@ def _document_first_page_ownership(
             confidence = 0.0
             type_evidence.append("classification_unresolved")
             review_reasons.append("no_unambiguous_segment_classification")
+
+        # The classifier names a model-proposed range, but it must not defeat
+        # deterministic opening-page evidence in the two common front-matter
+        # failure modes below. Keep this deliberately contextual so an Index or
+        # LOD reproduced inside an established Annexure remains nested.
+        opening_anchor = _outer_anchor_label((page_texts or {}).get(pages[0], ""))
+        previous = segments[-1] if segments else None
+        previous_category = str((previous or {}).get("category") or "")
+        follows_previous = bool(previous and int(previous["end_page"]) + 1 == pages[0])
+        corrected_category: str | None = None
+        correction_evidence: str | None = None
+        if (
+            category == "Cover Page"
+            and opening_anchor == "Index"
+            and follows_previous
+            and previous_category == "Index"
+        ):
+            corrected_category = "Index"
+            correction_evidence = "index_table_continuation"
+        elif (
+            family_split_name(category) == ANNEXURE_FAMILY
+            and opening_anchor == "List of Dates & Events"
+            and follows_previous
+            and previous_category
+            in {
+                "Synopsis",
+                "List of Dates & Events",
+                "Synopsis & List of Dates & Events",
+            }
+        ):
+            corrected_category = "List of Dates & Events"
+            correction_evidence = "explicit_list_of_dates_heading"
+        if corrected_category:
+            reported_category = category
+            category = corrected_category
+            confidence = 0.95
+            type_evidence.append(correction_evidence or "deterministic_opening_anchor")
+            review_reasons.append(
+                f"classifier_{reported_category.casefold().replace(' ', '_')}_"
+                f"overridden_by_{correction_evidence}"
+            )
 
         for page in pages:
             labels = page_parts.setdefault(page, [])
@@ -3123,6 +3170,7 @@ class ProcessFileWorkflow(Workflow):
             boundary_proposals,
             classification_report,
             page_count=pdf_page_count,
+            page_texts={unit.pdf_page: unit.text for unit in page_units},
         )
         # From this point onward, page ownership comes only from the boundary
         # pass. The classification response supplies document types, never new

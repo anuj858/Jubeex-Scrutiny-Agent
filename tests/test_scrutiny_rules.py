@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 
 import jsonschema
 
 import extraction_review.scrutiny.rules as rules_mod
+from extraction_review.document_parts import pinecone_queries_for_defect
 from extraction_review.scrutiny.prompts import (
     _filing_phrase,
     build_defect_prompt,
@@ -98,6 +100,35 @@ def test_defect_prompt_includes_relevant_stored_visual_observations() -> None:
     assert "Vakalatnama, page 1" in prompt
     assert "visible text: 9 June 2024" in prompt
     assert "Annexure P-1" not in prompt
+
+
+def test_trigger_words_are_used_for_retrieval_but_not_sent_to_model() -> None:
+    defect = _defect("D-TEST", "General/Global").model_copy(
+        update={
+            "trigger_words": "PRIVATE RETRIEVAL CUE",
+            "inspect_parts": ["Main Petition"],
+        }
+    )
+
+    prompt = build_defect_prompt(defect, record={}, chunks=[])
+    retrieval_queries = pinecone_queries_for_defect(defect)
+
+    assert "PRIVATE RETRIEVAL CUE" not in prompt
+    assert "Recognition cues" not in prompt
+    assert any("PRIVATE RETRIEVAL CUE" in query for query in retrieval_queries)
+
+
+def test_catalogue_has_complete_gemini_decision_inputs() -> None:
+    catalogue = rules_mod._load_file_catalogue()
+    ids = [defect.check_id for defect in catalogue.defects]
+
+    assert len(ids) == len(set(ids))
+    assert all(re.fullmatch(r"D-\d+[A-Z]?", check_id) for check_id in ids)
+    for defect in catalogue.defects:
+        assert defect.defect.strip(), defect.check_id
+        assert defect.requirement.strip(), defect.check_id
+        assert any(step.strip() for step in defect.where_to_look), defect.check_id
+        assert defect.inspect_parts, defect.check_id
 
 
 def test_writ_pil_with_application_runs_both_special_overlays(monkeypatch) -> None:
@@ -454,9 +485,14 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     ]
     assert catalogue.defect("D-54").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-57").inspect_parts == [
-        "Main Petition",
         "Vakalatnama",
+        "Main Petition",
     ]
+    assert catalogue.defect("D-55").inspect_parts == ["Affidavit", "Main Petition"]
+    assert catalogue.defect("D-56").inspect_parts == ["Affidavit", "Main Petition"]
+    assert "complete Affidavit" in (catalogue.defect("D-56").ai_note or "")
+    assert "FILED ON" in (catalogue.defect("D-83").ai_note or "")
+    assert catalogue.defect("D-102").inspect_parts == ["Application"]
     assert catalogue.defect("D-59").inspect_parts == ["Advocate's Checklist"]
     assert catalogue.defect("D-63").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-63").context_parts == ["Memo of Parties"]

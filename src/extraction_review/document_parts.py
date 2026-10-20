@@ -911,8 +911,42 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         explicit
         and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
     )
+    # An Annexure name printed *inside* an Index, Synopsis, or List of Dates is
+    # an inventory/citation, not the physical start of that Annexure.  OCR can
+    # split ``ANNEXURE-P/1 (Page 24-54)`` into a standalone-looking line and
+    # hide the narrative words which normally make _mark_from_title_line reject
+    # it. Preserve a genuine outer stamp when it occurs before the enclosed
+    # section heading (``ANNEXURE P-1`` followed by a reproduced LIST OF DATES).
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    protected_heading_at = next(
+        (
+            index
+            for index, line in enumerate(lines[:24])
+            if re.match(
+                r"(?i)^(?:index(?:\s+of\s+(?:papers|documents))?|"
+                r"synopsis(?:\s+(?:and|&)\s+list\s+of\s+dates)?|"
+                r"list\s+of\s+(?:dates(?:\s+(?:and|&)\s+events)?|events))\b",
+                line,
+            )
+        ),
+        None,
+    )
+    annexure_line_at = next(
+        (
+            index
+            for index, line in enumerate(lines[:24])
+            if _ANNEXURE_HEADING_RE.search(line)
+        ),
+        None,
+    )
+    annexure_is_section_reference = bool(
+        protected_heading_at is not None
+        and annexure_line_at is not None
+        and protected_heading_at < annexure_line_at
+    )
     if (
         explicit_is_rebuilt_index_row
+        or annexure_is_section_reference
         or (explicit is None and _looks_like_index_table(text))
         or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
         or (
@@ -1026,11 +1060,11 @@ def _is_sci_application_start(text: str) -> bool:
         return False
     # Paper-book covers list pending I.A.s; that is not an application start.
     if re.search(
-        r"for\s+(?:the\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
+        r"for\s+(?:(?:the|detailed)\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
         r"\{\s*cover\s+page\s*\}|"
-        r"\bpaper\s*book\b",
+        r"\bp\s*a\s*p\s*e\s*r\s*b\s*o\s*o\s*k\b",
         text[:2200] or "",
-        re.I,
+        re.IGNORECASE,
     ):
         return False
     return bool(

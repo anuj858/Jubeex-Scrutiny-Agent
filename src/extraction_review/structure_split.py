@@ -531,15 +531,12 @@ def extract_page_units(
             r"(?i)\b(prayer|wherefore|verification|solemnly affirmed|sworn|deponent)\b",
             stripped[-900:],
         )
-        annexure_labels = tuple(
-            dict.fromkeys(
-                f"Annexure {match.group(1).upper()}-{match.group(2)}"
-                for match in re.finditer(
-                    r"(?i)\bannexure\s*[-–—:]?\s*([a-z])\s*[-–—/]\s*(\d+)\b",
-                    stripped,
-                )
-            )
-        )
+        # Boundary evidence must contain only a verified physical Annexure
+        # stamp. Index rows and List-of-Dates prose routinely cite Annexure
+        # names and previously received the highest boundary priority merely
+        # because this scan searched the entire page.
+        annexure_label = annexure_label_from_text(text)
+        annexure_labels = (annexure_label,) if annexure_label else ()
         layout_fingerprint = tuple(
             name
             for name, pattern in (

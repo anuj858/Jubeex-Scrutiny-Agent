@@ -18,7 +18,11 @@ from extraction_review.split_repair import (
     _is_lower_court_caption,
 )
 from extraction_review.split_upload import type_catalog
-from extraction_review.structure_split import PageUnit, structure_aware_split
+from extraction_review.structure_split import (
+    PageUnit,
+    classify_page,
+    structure_aware_split,
+)
 
 
 def _proposal(number: int, start: int, end: int) -> dict:
@@ -55,6 +59,94 @@ def test_internal_cover_page_heading_does_not_split_annexure() -> None:
     assert segments[0]["pages"] == [1, 2, 3]
     assert segments[0]["review_reasons"] == ["conflicting_categories_inside_boundary"]
     assert issues[0]["code"] == "boundary_classification_conflict"
+
+
+def test_front_index_continuation_and_lod_reference_override_wrong_model_types() -> (
+    None
+):
+    """Regression for SCR-2026-000072 pages 3 and 9-13."""
+    texts = {
+        1: "IN THE SUPREME COURT OF INDIA\nPAPER BOOK\nFOR INDEX SEE INSIDE",
+        2: (
+            "INDEX\nS.NO. PARTICULARS OF DOCUMENTS PAGE NO.\n"
+            "1. OFFICE REPORT ON LIMITATION A\n"
+            "2. SYNOPSIS AND LIST OF DATES B-Q"
+        ),
+        3: (
+            "11. APPENDIX\nA. Section 2(16), Maharashtra Cooperative "
+            "Societies Act 23A\n12. ANNEXURE-P/1\nTrue Typed Copy of "
+            "Circular dated 01.01.1993 24-54\n13. ANNEXURE-P/2\n"
+            "True Translated Copy of Order 55-62"
+        ),
+        4: "IN THE HIGH COURT OF BOMBAY\nJUDGMENT\nORDER",
+        5: "OFFICE REPORT ON LIMITATION",
+        6: "SYNOPSIS\nThe dispute concerns a cooperative housing society.",
+        7: "Synopsis narrative continuation.",
+        8: "Synopsis narrative conclusion.",
+        9: (
+            "LIST OF DATES\nS.NO. PARTICULARS\n01.01.2031 Event description\n"
+            "Additional wrapped chronology text\nMore wrapped chronology text\n"
+            "True Copy of the Circular is annexed with the petition\n"
+            "ANNEXURE-P/1\n(Page 24-54)"
+        ),
+        10: "09.06.2019 Registration certificate was granted.",
+        11: "31.01.2030 The appeal was filed.",
+        12: "01.02.2030 The authority passed an order.",
+        13: "03.02.2030 The petitioner received the order.",
+    }
+    proposals = [
+        _proposal(1, 1, 1),
+        _proposal(2, 2, 2),
+        _proposal(3, 3, 3),
+        _proposal(4, 4, 4),
+        _proposal(5, 5, 5),
+        _proposal(6, 6, 8),
+        _proposal(7, 9, 13),
+    ]
+    report = _report(
+        ("Cover Page", [1]),
+        ("Index", [2]),
+        ("Cover Page", [3]),
+        ("Impugned Order", [4]),
+        ("Office Report on Limitation", [5]),
+        ("Synopsis", [6, 7, 8]),
+        ("Annexure P-1", [9, 10, 11, 12, 13]),
+    )
+
+    assert annexure_ref_in_heading(texts[3]) is None
+    assert classify_page(PageUnit(pdf_page=3, text=texts[3])).document_type == "Index"
+
+    page_parts, segments, issues = _document_first_page_ownership(
+        proposals,
+        report,
+        page_count=13,
+        page_texts=texts,
+    )
+
+    assert page_parts[2] == page_parts[3] == ["Index"]
+    assert all(page_parts[page] == ["List of Dates & Events"] for page in range(9, 14))
+    assert [segment["category"] for segment in segments[1:3]] == ["Index", "Index"]
+    assert segments[-1]["category"] == "List of Dates & Events"
+    assert any(
+        item["code"] == "boundary_classification_conflict"
+        and item["segment_id"] == "boundary-3"
+        for item in issues
+    )
+
+
+def test_lod_annexure_citation_is_not_a_stamp_but_leading_outer_stamp_is() -> None:
+    citation = (
+        "LIST OF DATES\nS.NO. PARTICULARS\n01.01.2031 Event description\n"
+        "Wrapped event text\nMore chronology text\nTrue Copy is annexed below\n"
+        "ANNEXURE-P/1\n(Page 24-54)"
+    )
+    assert annexure_ref_in_heading(citation) is None
+    classification = classify_page(PageUnit(pdf_page=9, text=citation))
+    assert classification.document_type == "List of Dates & Events"
+    assert "outer_anchor" in classification.signals
+
+    enclosed_lod = "ANNEXURE-P/1\nLIST OF DATES\n01.01.2020 Earlier event"
+    assert annexure_ref_in_heading(enclosed_lod).label == "Annexure P-1"
 
 
 def test_bare_p22_folio_in_testimony_does_not_create_annexure_pdf() -> None:
@@ -497,6 +589,50 @@ def test_verified_new_boundary_after_annexure_can_open_cover_document() -> None:
     assert result.page_parts[4] == ["Annexure P-2"]
     slices = slice_bundle_pdf(
         pdf_bytes, type_catalog("SLP_CIVIL"), result.page_parts,
+        split_segments=segments,
+    )
+    assert {item.slot_id: item.pages for item in slices}["cover_page"] == (3,)
+
+
+def test_letter_spaced_paperbook_cover_is_not_classified_as_application() -> None:
+    """A pending I.A. reference on the paper-book cover is not an application."""
+    text = (
+        "IN THE SUPREME COURT OF INDIA\n"
+        "CRIMINAL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (CRL.) NO. OF 2026\n"
+        "WITH PRAYER FOR INTERIM RELIEF\n"
+        "IN THE MATTER OF:\nManish ...Petitioner\nVersus\n"
+        "State of Rajasthan ...Respondent\n"
+        "IA no. /2026 Application for exemption from filing official translation\n"
+        "P A P E R B O O K\n"
+        "(FOR DETAILED INDEX KINDLY SEE INSIDE)\n"
+        "ADVOCATE FOR THE PETITIONER"
+    )
+    proposals = [_proposal(1, 3, 3)]
+    initial, segments, _ = _document_first_page_ownership(
+        proposals,
+        _report(("Application 1", [3])),
+        page_count=3,
+    )
+    with pymupdf.open() as source:
+        for page in range(1, 4):
+            source.new_page().insert_text((72, 72), f"SOURCE PAGE {page}")
+        pdf_bytes = source.tobytes()
+    result = structure_aware_split(
+        pdf_bytes,
+        llama_page_parts=initial,
+        page_units=[
+            PageUnit(pdf_page=1, text="AOR declaration"),
+            PageUnit(pdf_page=2, text="AOR declaration continuation"),
+            PageUnit(pdf_page=3, text=text),
+        ],
+        authoritative_boundary_pages=[3],
+    )
+    assert result.page_parts[3] == ["Cover Page"]
+    slices = slice_bundle_pdf(
+        pdf_bytes,
+        type_catalog("SLP_CIVIL"),
+        result.page_parts,
         split_segments=segments,
     )
     assert {item.slot_id: item.pages for item in slices}["cover_page"] == (3,)

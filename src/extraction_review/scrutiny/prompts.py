@@ -403,7 +403,12 @@ def _as_compliance_bar(text: str) -> str:
         t,
         flags=re.IGNORECASE,
     )
-    t = re.sub(r"\bmust be duly filled in\b", "are duly filled in", t, flags=re.I)
+    t = re.sub(
+        r"\bmust be duly filled in\b",
+        "are duly filled in",
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(r"\bof Listing Proforma\b", "of the Listing Proforma", t)
     t = re.sub(r"\s+", " ", t).strip()
     return _lc_first(t)
@@ -416,8 +421,10 @@ def _format_standard(defect: Defect) -> str:
     bar = _as_compliance_bar(requirement)
 
     lines = [
-        "Use the following as the legal test for this one check. Restate the "
-        "outcome in your own words; do not copy this paragraph back as the finding.",
+        (
+            "Use the following as the legal test for this one check. Restate the "
+            "outcome in your own words; do not copy this paragraph back as the finding."
+        ),
         "",
     ]
     if _same_substance(requirement, failure):
@@ -430,8 +437,10 @@ def _format_standard(defect: Defect) -> str:
         lines.extend(
             [
                 f"The filing is compliant only if {bar}.",
-                f"A defect is made out only when the evidence shows that "
-                f"{_lc_first(failure)}.",
+                (
+                    "A defect is made out only when the evidence shows that "
+                    f"{_lc_first(failure)}."
+                ),
                 "Do not add any further requirement.",
             ]
         )
@@ -569,25 +578,13 @@ def display_cure_steps(steps: list[str] | None) -> list[str]:
     return cleaned
 
 
-def _trigger_cues(trigger_words: str | None) -> str | None:
-    if not trigger_words or not trigger_words.strip():
-        return None
-    parts = [p.strip() for p in re.split(r"[;|]", trigger_words) if p.strip()]
-    if not parts:
-        parts = [trigger_words.strip()]
-    quoted = ", ".join(f"“{p}”" for p in parts)
-    return (
-        "These phrases often mark the required material when it is present: "
-        f"{quoted}. Use them to recognise the content. Their absence from the "
-        "excerpts is not, by itself, a defect."
-    )
-
-
 def _format_authority(defect: Defect, catalogue: Catalogue | None) -> str:
     lines: list[str] = [
-        "These locators point at the official circular, form or handbook. "
-        "Their page numbers are NOT pages of this filing. Do not copy them "
-        "into evidence.page."
+        (
+            "These locators point at the official circular, form or handbook. "
+            "Their page numbers are NOT pages of this filing. Do not copy them "
+            "into evidence.page."
+        )
     ]
     if catalogue:
         cited = catalogue.sources_cited_by(defect)
@@ -810,9 +807,11 @@ def _copy_is_weak(text: str, defect: Defect) -> bool:
         return True
     topic = _content_tokens(defect.defect) | _content_tokens(defect.requirement)
     words = _content_tokens(text)
-    if topic and words and len(topic & words) / min(len(topic), len(words)) < 0.12:
-        return True
-    return False
+    return bool(
+        topic
+        and words
+        and len(topic & words) / min(len(topic), len(words)) < 0.12
+    )
 
 
 def validated_summary(
@@ -867,8 +866,10 @@ def _format_parent(defect: Defect) -> str | None:
     if not defect.parent_check_id:
         return None
     lines = [
-        f"This is a narrower check under {defect.parent_check_id}. "
-        "Decide only the standard in this task. Do not re-score the parent."
+        (
+            f"This is a narrower check under {defect.parent_check_id}. "
+            "Decide only the standard in this task. Do not re-score the parent."
+        )
     ]
     if defect.overlap_note:
         note = _sentence_case(_polish_registry_text(defect.overlap_note))
@@ -928,9 +929,6 @@ def build_defect_prompt(
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
         sections.extend(["", "## Note for AI", ai_note.strip()])
-    trigger_note = _trigger_cues(defect.trigger_words)
-    if trigger_note:
-        sections.extend(["", "## Recognition cues", trigger_note])
     sections.extend(
         [
             "",
