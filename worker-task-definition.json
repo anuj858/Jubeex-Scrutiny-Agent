@@ -145,7 +145,23 @@
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
+          "value": "2"
+        },
+        {
+          "name": "VERTEX_REQUESTS_PER_MINUTE",
           "value": "8"
+        },
+        {
+          "name": "VERTEX_SHARED_RATE_LIMIT",
+          "value": "true"
+        },
+        {
+          "name": "VERTEX_MAX_ATTEMPTS",
+          "value": "6"
+        },
+        {
+          "name": "VISION_CONCURRENCY",
+          "value": "1"
         },
         {
           "name": "FAST_PARSE_TIER",
