@@ -88,7 +88,11 @@
         },
         {
           "name": "VERTEX_REQUESTS_PER_MINUTE",
-          "value": "15"
+          "value": "8"
+        },
+        {
+          "name": "VERTEX_SHARED_RATE_LIMIT",
+          "value": "true"
         },
         {
           "name": "VERTEX_MAX_ATTEMPTS",
@@ -112,7 +116,7 @@
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "4"
+          "value": "2"
         },
         {
           "name": "PARSE_CONCURRENCY",

@@ -1,4 +1,8 @@
+import io
+import json
+
 import pytest
+from botocore.exceptions import ClientError
 
 from extraction_review.llm import (
     LLMError,
@@ -6,10 +10,13 @@ from extraction_review.llm import (
     _is_retryable_vertex_error,
     _OpenRouterRateLimiter,
     _parse_json,
+    _reserve_shared_vertex_slot,
     _vertex_retry_after_seconds,
+    get_genai_client,
     llm_requests_per_minute,
     openrouter_requests_per_minute,
     vertex_max_attempts,
+    vertex_shared_rate_limit_enabled,
 )
 
 
@@ -102,6 +109,78 @@ def test_active_provider_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert llm_requests_per_minute() == 120
     monkeypatch.setenv("LLM_REQUESTS_PER_MINUTE", "80")
     assert llm_requests_per_minute() == 80
+
+
+def test_vertex_shared_rate_limit_defaults_on_for_sqs_with_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERTEX_SHARED_RATE_LIMIT", raising=False)
+    monkeypatch.setenv("JUBEEX_SQS_ENABLED", "true")
+    monkeypatch.setenv("AWS_S3_BUCKET", "artifacts")
+    assert vertex_shared_rate_limit_enabled() is True
+    monkeypatch.setenv("VERTEX_SHARED_RATE_LIMIT", "false")
+    assert vertex_shared_rate_limit_enabled() is False
+
+
+def test_shared_vertex_limiter_reserves_sequential_s3_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeS3:
+        body: bytes | None = None
+        etag = 0
+
+        def get_object(self, **_kwargs):
+            if self.body is None:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                    "GetObject",
+                )
+            return {"ETag": f'"{self.etag}"', "Body": io.BytesIO(self.body)}
+
+        def put_object(self, **kwargs):
+            if self.body is None:
+                assert kwargs.get("IfNoneMatch") == "*"
+            else:
+                assert kwargs.get("IfMatch") == f'"{self.etag}"'
+            self.etag += 1
+            self.body = kwargs["Body"]
+            return {"ETag": f'"{self.etag}"'}
+
+    client = FakeS3()
+    monkeypatch.setattr("extraction_review.llm.time.time", lambda: 1_000.0)
+    first = _reserve_shared_vertex_slot(
+        client=client,
+        bucket="artifacts",
+        key="rate.json",
+        interval_s=7.5,
+    )
+    second = _reserve_shared_vertex_slot(
+        client=client,
+        bucket="artifacts",
+        key="rate.json",
+        interval_s=7.5,
+    )
+    assert first == 0
+    assert second == 7.5
+    assert json.loads(client.body or b"{}")["next_allowed_at"] == 1_015.0
+
+
+def test_genai_client_disables_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    from google import genai
+
+    import extraction_review.llm as llm_module
+
+    captured: dict[str, object] = {}
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(llm_module, "_genai_client", None)
+    monkeypatch.setattr(genai, "Client", fake_client)
+    get_genai_client()
+    http_options = captured["http_options"]
+    assert http_options.retry_options.attempts == 1
 
 
 def test_vertex_retry_settings(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import hashlib
 import json
 import logging
 import os
@@ -39,9 +40,11 @@ MAX_ATTEMPTS = 3
 DEFAULT_REQUESTS_PER_MINUTE = 0
 DEFAULT_VERTEX_MAX_ATTEMPTS = 6
 MAX_VERTEX_RETRY_DELAY_S = 60.0
+MAX_SHARED_RATE_LIMIT_QUEUE_S = 600.0
 
 _genai_client: Any = None
 _genai_client_lock = asyncio.Lock()
+_vertex_rate_limit_s3_client: Any = None
 
 
 class LLMError(RuntimeError):
@@ -175,14 +178,19 @@ def vertex_max_attempts() -> int:
 
 
 class _OpenRouterRateLimiter:
-    """Process-wide, evenly paced limiter for the active LLM provider."""
+    """Process-local, evenly paced fallback limiter."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._next_allowed_at = 0.0
 
-    async def acquire(self) -> None:
-        rpm = llm_requests_per_minute()
+    async def acquire(
+        self,
+        *,
+        rpm: int | None = None,
+        request_label: str | None = None,
+    ) -> None:
+        rpm = llm_requests_per_minute() if rpm is None else max(0, rpm)
         if rpm <= 0:
             return
         interval_s = 60.0 / rpm
@@ -192,7 +200,8 @@ class _OpenRouterRateLimiter:
             self._next_allowed_at = max(now, self._next_allowed_at) + interval_s
         if wait_s > 0:
             logger.info(
-                "[LLM] pacing at %s req/min; waiting %.1fs",
+                "[LLM]%s local pacing at %s req/min; waiting %.1fs",
+                f"[{request_label}]" if request_label else "",
                 rpm,
                 wait_s,
             )
@@ -202,9 +211,148 @@ class _OpenRouterRateLimiter:
 _openrouter_rate_limiter = _OpenRouterRateLimiter()
 
 
-async def acquire_openrouter_slot() -> None:
-    """Wait until this process may fire another LLM request."""
-    await _openrouter_rate_limiter.acquire()
+def vertex_shared_rate_limit_enabled() -> bool:
+    """Use the S3-backed project limiter when workers share an artifact bucket."""
+    raw = (os.getenv("VERTEX_SHARED_RATE_LIMIT") or "").strip().casefold()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    bucket = (os.getenv("AWS_S3_BUCKET") or "").strip() or (
+        os.getenv("JUBEEX_ARTIFACT_BUCKET") or ""
+    ).strip()
+    sqs = (os.getenv("JUBEEX_SQS_ENABLED") or "").strip().casefold()
+    return bool(bucket) and sqs in {"1", "true", "yes", "on"}
+
+
+def _vertex_rate_limit_bucket() -> str:
+    return (os.getenv("AWS_S3_BUCKET") or "").strip() or (
+        os.getenv("JUBEEX_ARTIFACT_BUCKET") or ""
+    ).strip()
+
+
+def _vertex_rate_limit_key(model_name: str | None) -> str:
+    scope = "|".join(
+        (
+            google_cloud_project(),
+            google_cloud_location(),
+            _strip_google_model_prefix(model_name or openrouter_model()),
+        )
+    )
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:24]
+    return f"agent-jobs/rate-limits/vertex-{digest}.json"
+
+
+def _get_vertex_rate_limit_s3_client() -> Any:
+    global _vertex_rate_limit_s3_client
+    if _vertex_rate_limit_s3_client is not None:
+        return _vertex_rate_limit_s3_client
+    import boto3
+
+    from .queue import _client_kwargs
+
+    _vertex_rate_limit_s3_client = boto3.client("s3", **_client_kwargs())
+    return _vertex_rate_limit_s3_client
+
+
+def _s3_error_code(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    if not isinstance(response, dict):
+        return ""
+    detail = response.get("Error")
+    return str(detail.get("Code") or "") if isinstance(detail, dict) else ""
+
+
+def _reserve_shared_vertex_slot(
+    *,
+    client: Any,
+    bucket: str,
+    key: str,
+    interval_s: float,
+) -> float:
+    """Atomically reserve one globally paced request slot in S3."""
+    missing_codes = {"404", "NoSuchKey", "NotFound"}
+    conflict_codes = {"409", "412", "ConditionalRequestConflict", "PreconditionFailed"}
+    for _attempt in range(100):
+        now = time.time()
+        etag: str | None = None
+        next_allowed_at = now
+        try:
+            current = client.get_object(Bucket=bucket, Key=key)
+            etag = str(current.get("ETag") or "").strip() or None
+            stream = current["Body"]
+            try:
+                payload = json.loads(stream.read())
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            stored = float(payload.get("next_allowed_at") or now)
+            if now <= stored <= now + MAX_SHARED_RATE_LIMIT_QUEUE_S:
+                next_allowed_at = stored
+        except Exception as exc:
+            if _s3_error_code(exc) not in missing_codes:
+                raise
+
+        reserved_at = max(now, next_allowed_at)
+        body = json.dumps(
+            {"next_allowed_at": reserved_at + interval_s},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        kwargs: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": key,
+            "Body": body,
+            "ContentType": "application/json",
+        }
+        if etag:
+            kwargs["IfMatch"] = etag
+        else:
+            kwargs["IfNoneMatch"] = "*"
+        try:
+            client.put_object(**kwargs)
+            return max(0.0, reserved_at - now)
+        except Exception as exc:
+            if _s3_error_code(exc) not in conflict_codes:
+                raise
+            time.sleep(random.uniform(0.01, 0.05))
+    raise RuntimeError("Could not reserve a shared Vertex rate-limit slot")
+
+
+async def acquire_openrouter_slot(
+    *,
+    model_name: str | None = None,
+    request_label: str | None = None,
+) -> None:
+    """Wait until the active provider may fire exactly one HTTP request."""
+    rpm = llm_requests_per_minute()
+    if rpm <= 0:
+        return
+    if llm_provider() != "vertex" or not vertex_shared_rate_limit_enabled():
+        await _openrouter_rate_limiter.acquire(rpm=rpm, request_label=request_label)
+        return
+
+    bucket = _vertex_rate_limit_bucket()
+    if not bucket:
+        raise LLMError("VERTEX_SHARED_RATE_LIMIT requires an artifact S3 bucket")
+    try:
+        wait_s = await asyncio.to_thread(
+            _reserve_shared_vertex_slot,
+            client=_get_vertex_rate_limit_s3_client(),
+            bucket=bucket,
+            key=_vertex_rate_limit_key(model_name),
+            interval_s=60.0 / rpm,
+        )
+    except Exception as exc:
+        # Failing closed prevents an S3 outage from turning every ECS task into
+        # an independent burst source and worsening Vertex exhaustion.
+        raise LLMError(f"Shared Vertex rate limiter unavailable: {exc}") from exc
+    if wait_s > 0:
+        logger.info(
+            "[LLM]%s shared Vertex pacing at %s req/min; waiting %.1fs",
+            f"[{request_label}]" if request_label else "",
+            rpm,
+            wait_s,
+        )
+        await asyncio.sleep(max(wait_s, 0.05))
 
 
 def _vertex_retry_after_seconds(error: Exception, attempt: int) -> float:
@@ -255,6 +403,7 @@ def get_genai_client() -> Any:
         return _genai_client
     try:
         from google import genai
+        from google.genai import types
     except ImportError as exc:
         raise LLMError(
             "google-genai is required for LLM_PROVIDER=vertex "
@@ -266,6 +415,11 @@ def get_genai_client() -> Any:
         enterprise=True,
         project=project,
         location=location,
+        # Keep a single retry layer. SDK retries happen below our limiter and
+        # previously multiplied request bursts across ECS worker processes.
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
     )
     logger.info(
         "[LLM] GenAI client ready provider=vertex project=%s location=%s",
@@ -509,6 +663,7 @@ async def _call_structured_vertex[T: BaseModel](
     model_name: str,
     temperature: float,
     token_limit: int | None,
+    request_label: str | None,
 ) -> tuple[T, LlmUsage]:
     """Vertex / Agent Platform via google-genai (ADC locally, WIF on ECS)."""
     from google.genai import types
@@ -525,7 +680,10 @@ async def _call_structured_vertex[T: BaseModel](
     for attempt in range(1, max_attempts + 1):
         attempts_made = attempt
         try:
-            await acquire_openrouter_slot()
+            await acquire_openrouter_slot(
+                model_name=model_name,
+                request_label=request_label,
+            )
             config: dict[str, Any] = {
                 "temperature": temperature,
                 "system_instruction": system_prompt,
@@ -557,7 +715,8 @@ async def _call_structured_vertex[T: BaseModel](
         except ValidationError as e:
             last_error = e
             logger.warning(
-                "[LLM] Vertex attempt %s/%s malformed: %s",
+                "[LLM]%s Vertex attempt %s/%s malformed: %s",
+                f"[{request_label}]" if request_label else "",
                 attempt,
                 max_attempts,
                 str(e)[:300],
@@ -581,7 +740,8 @@ async def _call_structured_vertex[T: BaseModel](
             ):
                 raise LLMFatalError(f"Vertex auth/billing: {msg[:300]}") from e
             logger.warning(
-                "[LLM] Vertex attempt %s/%s failed: %s",
+                "[LLM]%s Vertex attempt %s/%s failed: %s",
+                f"[{request_label}]" if request_label else "",
                 attempt,
                 max_attempts,
                 msg[:300],
@@ -595,7 +755,8 @@ async def _call_structured_vertex[T: BaseModel](
                     continue
                 delay_s = _vertex_retry_after_seconds(e, attempt)
                 logger.info(
-                    "[LLM] Retrying Vertex after %.1fs (attempt %s/%s)",
+                    "[LLM]%s Retrying Vertex after %.1fs (attempt %s/%s)",
+                    f"[{request_label}]" if request_label else "",
                     delay_s,
                     attempt,
                     max_attempts,
@@ -640,7 +801,7 @@ async def generate_vision_json(
         parts.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
 
     client = get_genai_client()
-    await acquire_openrouter_slot()
+    await acquire_openrouter_slot(model_name=model_name, request_label="vision")
     response = await client.aio.models.generate_content(
         model=model_name,
         contents=parts,
@@ -667,6 +828,7 @@ async def call_structured[T: BaseModel](
     temperature: float = 0.0,
     max_tokens: int | None = None,
     client: httpx.AsyncClient | None = None,
+    request_label: str | None = None,
 ) -> tuple[T, LlmUsage]:
     """Call Vertex (default) or OpenRouter and return validated JSON + usage."""
     model_name = model or openrouter_model()
@@ -683,6 +845,7 @@ async def call_structured[T: BaseModel](
             model_name=model_name,
             temperature=temperature,
             token_limit=token_limit,
+            request_label=request_label,
         )
 
     schema = strict_json_schema(response_model)
@@ -728,7 +891,10 @@ async def call_structured[T: BaseModel](
     try:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                await acquire_openrouter_slot()
+                await acquire_openrouter_slot(
+                    model_name=model_name,
+                    request_label=request_label,
+                )
                 response = await http.post(
                     f"{base_url}/chat/completions",
                     headers=_headers(),

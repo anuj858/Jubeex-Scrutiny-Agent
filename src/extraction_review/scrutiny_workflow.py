@@ -289,6 +289,7 @@ async def _run_defect(
         ),
         response_model=DefectResponse,
         model=scrutiny_model(),
+        request_label=defect.check_id,
     )
     response = _sanitize_response(defect, raw, chunks, visual_index, layout)
 

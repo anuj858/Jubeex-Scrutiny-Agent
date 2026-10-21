@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,3 +47,18 @@ def test_workers_prepare_google_adc_before_starting(definition_name: str) -> Non
 
     assert container["entryPoint"] == ["/app/scripts/start.sh"]
     assert container["command"] == ["uv", "run", "jubeex-sqs-worker"]
+
+
+def test_scrutiny_worker_uses_shared_vertex_pacing() -> None:
+    definition = json.loads(
+        (REPO_ROOT / "ecs-scrutiny-worker-task.json").read_text(encoding="utf-8")
+    )
+    environment = {
+        entry["name"]: entry.get("value")
+        for entry in definition["containerDefinitions"][0].get("environment", [])
+    }
+
+    assert environment["VERTEX_SHARED_RATE_LIMIT"] == "true"
+    assert environment["VERTEX_REQUESTS_PER_MINUTE"] == "8"
+    assert environment["VERTEX_MAX_ATTEMPTS"] == "6"
+    assert environment["SCRUTINY_CONCURRENCY"] == "2"

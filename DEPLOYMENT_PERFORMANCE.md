@@ -191,5 +191,7 @@ The scrutiny log must also contain these startup lines before the worker begins:
 [startup] Google ADC/WIF environment prepared
 ```
 
-If Vertex returns quota errors, set `VERTEX_REQUESTS_PER_MINUTE` to the
-project's actual quota instead of restoring the OpenRouter-only limit.
+For autoscaled scrutiny workers, keep `VERTEX_SHARED_RATE_LIMIT=true`. The
+configured `VERTEX_REQUESTS_PER_MINUTE` is then enforced once across all ECS
+tasks through the shared artifact S3 bucket. Google SDK retries are disabled;
+only the application's paced exponential-backoff loop retries Vertex calls.
