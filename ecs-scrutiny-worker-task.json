@@ -88,7 +88,11 @@
         },
         {
           "name": "VERTEX_REQUESTS_PER_MINUTE",
-          "value": "0"
+          "value": "15"
+        },
+        {
+          "name": "VERTEX_MAX_ATTEMPTS",
+          "value": "6"
         },
         {
           "name": "JUBEEX_WORKER_KINDS",
@@ -108,7 +112,7 @@
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "8"
+          "value": "4"
         },
         {
           "name": "PARSE_CONCURRENCY",

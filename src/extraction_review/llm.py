@@ -9,12 +9,13 @@ plain JSON mode and validates with Pydantic either way.
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import json
 import logging
 import os
 import random
 import time
-from collections import deque
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -36,7 +37,8 @@ DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
 DEFAULT_REQUESTS_PER_MINUTE = 0
-_RATE_WINDOW_S = 60.0
+DEFAULT_VERTEX_MAX_ATTEMPTS = 6
+MAX_VERTEX_RETRY_DELAY_S = 60.0
 
 _genai_client: Any = None
 _genai_client_lock = asyncio.Lock()
@@ -163,29 +165,34 @@ def llm_requests_per_minute() -> int:
         return DEFAULT_REQUESTS_PER_MINUTE
 
 
+def vertex_max_attempts() -> int:
+    """Maximum Vertex attempts, including the initial request."""
+    raw = (os.getenv("VERTEX_MAX_ATTEMPTS") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_VERTEX_MAX_ATTEMPTS
+    except ValueError:
+        return DEFAULT_VERTEX_MAX_ATTEMPTS
+
+
 class _OpenRouterRateLimiter:
-    """Process-wide sliding window for LLM completion calls."""
+    """Process-wide, evenly paced limiter for the active LLM provider."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._timestamps: deque[float] = deque()
+        self._next_allowed_at = 0.0
 
     async def acquire(self) -> None:
         rpm = llm_requests_per_minute()
         if rpm <= 0:
             return
-        while True:
-            wait_s = 0.0
-            async with self._lock:
-                now = time.monotonic()
-                while self._timestamps and now - self._timestamps[0] >= _RATE_WINDOW_S:
-                    self._timestamps.popleft()
-                if len(self._timestamps) < rpm:
-                    self._timestamps.append(now)
-                    return
-                wait_s = _RATE_WINDOW_S - (now - self._timestamps[0]) + 0.05
+        interval_s = 60.0 / rpm
+        async with self._lock:
+            now = time.monotonic()
+            wait_s = max(0.0, self._next_allowed_at - now)
+            self._next_allowed_at = max(now, self._next_allowed_at) + interval_s
+        if wait_s > 0:
             logger.info(
-                "[LLM] rate limit %s req/min reached; waiting %.1fs",
+                "[LLM] pacing at %s req/min; waiting %.1fs",
                 rpm,
                 wait_s,
             )
@@ -198,6 +205,47 @@ _openrouter_rate_limiter = _OpenRouterRateLimiter()
 async def acquire_openrouter_slot() -> None:
     """Wait until this process may fire another LLM request."""
     await _openrouter_rate_limiter.acquire()
+
+
+def _vertex_retry_after_seconds(error: Exception, attempt: int) -> float:
+    """Return a bounded Retry-After or exponential-backoff delay."""
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = headers.get("retry-after") if headers else None
+    if retry_after:
+        try:
+            return min(MAX_VERTEX_RETRY_DELAY_S, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            try:
+                retry_at = email.utils.parsedate_to_datetime(str(retry_after))
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                delay = (retry_at - datetime.now(UTC)).total_seconds()
+                return min(MAX_VERTEX_RETRY_DELAY_S, max(0.0, delay))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(MAX_VERTEX_RETRY_DELAY_S, float(2**attempt)) + random.uniform(0, 1)
+
+
+def _is_retryable_vertex_error(error: Exception) -> bool:
+    text = str(error).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "429",
+            "resource_exhausted",
+            "resource exhausted",
+            "408",
+            "409",
+            "500",
+            "502",
+            "503",
+            "504",
+            "deadline",
+            "temporarily unavailable",
+            "timeout",
+        )
+    )
 
 
 def get_genai_client() -> Any:
@@ -471,8 +519,11 @@ async def _call_structured_vertex[T: BaseModel](
     last_error: Exception | None = None
     contents = user_prompt
     use_schema = True
+    max_attempts = vertex_max_attempts()
+    attempts_made = 0
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
+        attempts_made = attempt
         try:
             await acquire_openrouter_slot()
             config: dict[str, Any] = {
@@ -508,19 +559,22 @@ async def _call_structured_vertex[T: BaseModel](
             logger.warning(
                 "[LLM] Vertex attempt %s/%s malformed: %s",
                 attempt,
-                MAX_ATTEMPTS,
+                max_attempts,
                 str(e)[:300],
             )
-            if attempt < MAX_ATTEMPTS:
+            if attempt < min(MAX_ATTEMPTS, max_attempts):
                 contents = (
                     f"{user_prompt}\n\nYour previous response did not match the "
                     f"required schema:\n{str(e)[:1500]}\n\nReturn corrected JSON "
                     "matching the schema exactly. No prose, no markdown."
                 )
+            else:
+                break
         except Exception as e:
             last_error = e
             msg = str(e)
             lower = msg.casefold()
+            schema_retry = "schema" in lower and use_schema
             if any(
                 token in lower
                 for token in ("permission", "unauthenticated", "403", "401", "billing")
@@ -529,19 +583,31 @@ async def _call_structured_vertex[T: BaseModel](
             logger.warning(
                 "[LLM] Vertex attempt %s/%s failed: %s",
                 attempt,
-                MAX_ATTEMPTS,
+                max_attempts,
                 msg[:300],
             )
-            if "schema" in lower and use_schema:
+            if schema_retry:
                 use_schema = False
                 logger.warning("[LLM] Falling back to JSON mime without schema")
-            if attempt < MAX_ATTEMPTS:
-                await asyncio.sleep(min(2**attempt, 8) + random.uniform(0, 0.5))
+            retryable = _is_retryable_vertex_error(e)
+            if attempt < max_attempts and (retryable or schema_retry):
+                if schema_retry and not retryable:
+                    continue
+                delay_s = _vertex_retry_after_seconds(e, attempt)
+                logger.info(
+                    "[LLM] Retrying Vertex after %.1fs (attempt %s/%s)",
+                    delay_s,
+                    attempt,
+                    max_attempts,
+                )
+                await asyncio.sleep(delay_s)
+            elif attempt >= MAX_ATTEMPTS or not retryable:
+                break
 
     if isinstance(last_error, LLMFatalError):
         raise last_error
     raise LLMError(
-        f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+        f"{model_name} failed after {attempts_made} attempts: {last_error}",
         usage=usage,
     ) from last_error
 

@@ -80,6 +80,14 @@
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
+          "value": "4"
+        },
+        {
+          "name": "VERTEX_REQUESTS_PER_MINUTE",
+          "value": "15"
+        },
+        {
+          "name": "VERTEX_MAX_ATTEMPTS",
           "value": "6"
         },
         {

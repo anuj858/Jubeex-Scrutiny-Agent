@@ -3,10 +3,13 @@ import pytest
 from extraction_review.llm import (
     LLMError,
     _complete_structured_fields,
+    _is_retryable_vertex_error,
     _OpenRouterRateLimiter,
     _parse_json,
+    _vertex_retry_after_seconds,
     llm_requests_per_minute,
     openrouter_requests_per_minute,
+    vertex_max_attempts,
 )
 
 
@@ -101,6 +104,22 @@ def test_active_provider_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert llm_requests_per_minute() == 80
 
 
+def test_vertex_retry_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VERTEX_MAX_ATTEMPTS", raising=False)
+    assert vertex_max_attempts() == 6
+    monkeypatch.setenv("VERTEX_MAX_ATTEMPTS", "4")
+    assert vertex_max_attempts() == 4
+    assert _is_retryable_vertex_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert not _is_retryable_vertex_error(RuntimeError("invalid request"))
+
+
+def test_vertex_retry_after_header_is_honoured() -> None:
+    response = type("Response", (), {"headers": {"retry-after": "12"}})()
+    error = RuntimeError("429")
+    error.response = response  # type: ignore[attr-defined]
+    assert _vertex_retry_after_seconds(error, 1) == 12
+
+
 def test_llm_provider_openrouter_keeps_prefixed_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -141,17 +160,12 @@ async def test_openrouter_rate_limiter_paces_requests(
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "2")
     limiter = _OpenRouterRateLimiter()
-    await limiter.acquire()
-    await limiter.acquire()
-    # Third acquire must wait — patch sleep to avoid a real 60s pause.
     slept: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
-        # Expire the oldest stamp so the next loop can proceed.
-        if limiter._timestamps:
-            limiter._timestamps.popleft()
 
     monkeypatch.setattr("extraction_review.llm.asyncio.sleep", fake_sleep)
     await limiter.acquire()
-    assert slept and slept[0] > 0
+    await limiter.acquire()
+    assert slept == [pytest.approx(30.0, abs=0.1)]
