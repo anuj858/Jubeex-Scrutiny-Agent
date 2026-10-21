@@ -80,9 +80,11 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
     apply_manifest_absence_policy,
+    apply_presence_only_policy,
     apply_retrieval_policy,
     apply_status_policy,
     apply_undetermined_policy,
@@ -244,6 +246,7 @@ def _sanitize_response(
         )
     response.check_id = defect.check_id
     response = apply_evidence_pages(response, chunks, defect)
+    response = apply_presence_only_policy(defect, response, chunks, layout)
     if manifest_absence_proven(defect, layout):
         return apply_manifest_absence_policy(defect, response, layout)
     response = apply_status_policy(response)
@@ -251,6 +254,7 @@ def _sanitize_response(
     response = apply_retrieval_policy(defect, response, chunks)
     response = apply_grounded_defect_policy(response)
     response = apply_visual_conflict_policy(defect, response, visual_index)
+    response = apply_evidence_capability_policy(defect, response, visual_index)
     return response
 
 

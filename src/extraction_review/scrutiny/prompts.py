@@ -722,13 +722,16 @@ _WEAK_REASONING = re.compile(
 def _filing_page_phrase(
     pages: list[int] | None,
     evidence_pages: list[int] | None,
+    document_parts: list[str] | None = None,
 ) -> str:
+    part = ", ".join(document_parts or [])
     cited = [p for p in (evidence_pages or []) if p is not None]
     if cited:
         unique = sorted(set(cited))
+        prefix = f"{part}, " if part else ""
         if len(unique) == 1:
-            return f" See page {unique[0]}."
-        return f" See pages {', '.join(str(p) for p in unique)}."
+            return f" See {prefix}page {unique[0]}."
+        return f" See {prefix}pages {', '.join(str(p) for p in unique)}."
     reviewed = [p for p in (pages or []) if p is not None]
     if reviewed:
         unique = sorted(set(reviewed))
@@ -754,7 +757,7 @@ def fallback_reasoning(
 ) -> str:
     """Plain-language reason tied to this catalogue row when the model copy is unusable."""
     requirement = _polish_registry_text(defect.requirement)
-    page_bit = _filing_page_phrase(pages, evidence_pages)
+    page_bit = _filing_page_phrase(pages, evidence_pages, document_parts)
     part = ", ".join(document_parts or []) or "the inspected document part"
     quote = " ".join((evidence_quote or "").split())
     if len(quote) > 240:
@@ -848,6 +851,15 @@ def validated_reasoning(
     document_parts: list[str] | None = None,
 ) -> str:
     cleaned = _strip_rulebook_noise(text)
+    cleaned = re.sub(
+        r"^The\s+.{1,80}?\s+was\s+(?:inspected|examined|reviewed)\s+at\s+"
+        r"pages?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\(chunk\s+[\w-]+\))?\.\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\(?\bchunk\s+[a-z0-9_-]+\)?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;.")
     if _copy_is_weak(cleaned, defect):
         return fallback_reasoning(
             defect,
@@ -857,9 +869,48 @@ def validated_reasoning(
             evidence_quote=evidence_quote,
             document_parts=document_parts,
         )
+    if status == "defect_found":
+        if not re.match(r"^Observed\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned = f"Observed: {cleaned}."
+        if not re.search(r"\bRequired\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned += f" Required: {_polish_registry_text(defect.requirement)}."
+        if not re.search(r"\bConclusion\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned += (
+                " Conclusion: the cited filing content does not meet this requirement."
+            )
     if not re.search(r"\bpages?\s+\d+", cleaned, flags=re.IGNORECASE):
-        cleaned = cleaned.rstrip(".") + "." + _filing_page_phrase(pages, evidence_pages)
+        cleaned = (
+            cleaned.rstrip(".")
+            + "."
+            + _filing_page_phrase(pages, evidence_pages, document_parts)
+        )
     return cleaned
+
+
+def _check_specific_guidance(defect: Defect) -> str | None:
+    check_id = re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
+    if check_id == "D81":
+        return (
+            "This is a visual-quality check. OCR text, OCR errors, or retrieval "
+            "results cannot prove that a scan is dim, blurred, clipped, or illegible. "
+            "Return defect_found only when supplied visual-quality evidence identifies "
+            "the exact affected document/page and the filing also lacks the required "
+            "certified typed or written companion copy. Otherwise return needs_review."
+        )
+    if check_id == "D86":
+        return (
+            "Identify the exact Index row and the exact missing or inconsistent "
+            "pagination field. Do not merely say that the Index was inspected or that "
+            "some Index pages were unavailable."
+        )
+    if check_id == "D93":
+        return (
+            "This check tests only whether a Memo of Parties is present. Party "
+            "particulars under the Main Petition heading 'IN THE MATTER OF' count as "
+            "the Memo of Parties. Do not report missing or incomplete addresses under "
+            "this check; address completeness is a separate defect."
+        )
+    return None
 
 
 def _format_parent(defect: Defect) -> str | None:
@@ -929,6 +980,9 @@ def build_defect_prompt(
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
         sections.extend(["", "## Note for AI", ai_note.strip()])
+    check_guidance = _check_specific_guidance(defect)
+    if check_guidance:
+        sections.extend(["", "## Decision guardrail", check_guidance])
     sections.extend(
         [
             "",
