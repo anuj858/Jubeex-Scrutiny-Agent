@@ -1,9 +1,11 @@
 from extraction_review.queue import (
+    DEFAULT_VISIBILITY_TIMEOUT,
     _client_kwargs,
     extend_job_visibility,
     queue_kind,
     queue_name,
     sqs_enabled,
+    visibility_timeout,
 )
 
 
@@ -17,6 +19,12 @@ def test_queue_kind_splits_ingestion_and_scrutiny() -> None:
 def test_queue_names_default() -> None:
     assert queue_name("process_file") == "jubeex-ingestion-jobs"
     assert queue_name("scrutiny") == "jubeex-scrutiny-jobs"
+
+
+def test_visibility_timeout_defaults_to_ten_minutes(monkeypatch) -> None:
+    monkeypatch.delenv("JUBEEX_SQS_VISIBILITY_TIMEOUT", raising=False)
+    assert DEFAULT_VISIBILITY_TIMEOUT == 600
+    assert visibility_timeout() == 600
 
 
 def test_client_uses_explicit_env_credentials(monkeypatch) -> None:

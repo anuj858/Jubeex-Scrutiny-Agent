@@ -1,6 +1,8 @@
 """Ink-mark detector schema, formality page targeting, and defect attachment."""
 
 import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -914,6 +916,71 @@ async def test_detect_uses_file_id_when_url_missing(
     assert index["error"] is None
     assert index["failures"] == []
     assert index["targets"][0]["document_types"] == [MAIN_PETITION_PART]
+
+
+@pytest.mark.asyncio
+async def test_detect_serializes_native_rendering_and_bounds_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+    monkeypatch.setenv("VISION_CONCURRENCY", "2")
+    monkeypatch.setenv("VISION_RENDER_CONCURRENCY", "1")
+    lock = threading.Lock()
+    active_renders = 0
+    max_active_renders = 0
+    rendered_images = 0
+    max_rendered_images = 0
+
+    def fake_render(*_args, **_kwargs) -> bytes:
+        nonlocal active_renders, max_active_renders, rendered_images
+        nonlocal max_rendered_images
+        with lock:
+            active_renders += 1
+            max_active_renders = max(max_active_renders, active_renders)
+        time.sleep(0.02)
+        with lock:
+            active_renders -= 1
+            rendered_images += 1
+            max_rendered_images = max(max_rendered_images, rendered_images)
+        return b"jpeg"
+
+    async def fake_analyze(**_kwargs):
+        nonlocal rendered_images
+        await asyncio.sleep(0.03)
+        with lock:
+            rendered_images -= 1
+        return [], None, LlmUsage()
+
+    async def fake_download(_file_id: str) -> bytes:
+        return b"%PDF-1.7\n"
+
+    monkeypatch.setattr("extraction_review.visual.detect.render_page_jpeg", fake_render)
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._analyze_with_fallback", fake_analyze
+    )
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("petition", [MAIN_PETITION_PART], file_id="petition"),
+            _part("affidavit", ["Affidavit"], file_id="affidavit"),
+            _part("vakalatnama", ["Vakalatnama"], file_id="vakalatnama"),
+        ],
+        pages_by_slot={
+            "petition": {1: "p"},
+            "affidavit": {1: "a"},
+            "vakalatnama": {1: "v"},
+        },
+        page_parts={
+            1: [MAIN_PETITION_PART],
+            2: ["Affidavit"],
+            3: ["Vakalatnama"],
+        },
+        download_file_id=fake_download,
+    )
+
+    assert index["status"] == "ok"
+    assert max_active_renders == 1
+    assert max_rendered_images <= 2
 
 
 @pytest.mark.asyncio

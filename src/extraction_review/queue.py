@@ -11,7 +11,10 @@ logger = logging.getLogger(__name__)
 
 INGESTION_QUEUE_NAME = "jubeex-ingestion-jobs"
 SCRUTINY_QUEUE_NAME = "jubeex-scrutiny-jobs"
-DEFAULT_VISIBILITY_TIMEOUT = 3600
+# Workers renew this lease while healthy. A shorter default lets SQS retry a
+# job promptly if native code terminates the process before Python can report a
+# failure or release the message.
+DEFAULT_VISIBILITY_TIMEOUT = 600
 
 
 def sqs_enabled() -> bool:
