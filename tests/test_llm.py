@@ -1,5 +1,6 @@
 import io
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from botocore.exceptions import ClientError
@@ -7,10 +8,13 @@ from botocore.exceptions import ClientError
 from extraction_review.llm import (
     LLMError,
     _complete_structured_fields,
+    _extend_shared_vertex_cooldown,
     _is_retryable_vertex_error,
+    _is_vertex_resource_exhausted,
     _OpenRouterRateLimiter,
     _parse_json,
     _reserve_shared_vertex_slot,
+    _shared_vertex_cooldown_remaining,
     _vertex_retry_after_seconds,
     get_genai_client,
     llm_requests_per_minute,
@@ -163,6 +167,129 @@ def test_shared_vertex_limiter_reserves_sequential_s3_slots(
     assert first == 0
     assert second == 7.5
     assert json.loads(client.body or b"{}")["next_allowed_at"] == 1_015.0
+
+
+def test_shared_vertex_limiter_respects_global_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeS3:
+        body = json.dumps(
+            {"next_allowed_at": 1_000.0, "cooldown_until": 1_060.0}
+        ).encode()
+        etag = 1
+
+        def get_object(self, **_kwargs):
+            return {"ETag": f'"{self.etag}"', "Body": io.BytesIO(self.body)}
+
+        def put_object(self, **kwargs):
+            assert kwargs.get("IfMatch") == f'"{self.etag}"'
+            self.etag += 1
+            self.body = kwargs["Body"]
+            return {"ETag": f'"{self.etag}"'}
+
+    client = FakeS3()
+    monkeypatch.setattr("extraction_review.llm.time.time", lambda: 1_000.0)
+    wait_s = _reserve_shared_vertex_slot(
+        client=client,
+        bucket="artifacts",
+        key="rate.json",
+        interval_s=7.5,
+    )
+    assert wait_s == 60.0
+    state = json.loads(client.body)
+    assert state["next_allowed_at"] == 1_067.5
+    assert state["cooldown_until"] == 1_060.0
+
+
+def test_shared_vertex_429_cooldown_is_global_and_adaptive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeS3:
+        body: bytes | None = None
+        etag = 0
+
+        def get_object(self, **_kwargs):
+            if self.body is None:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+                    "GetObject",
+                )
+            return {"ETag": f'"{self.etag}"', "Body": io.BytesIO(self.body)}
+
+        def put_object(self, **kwargs):
+            if self.body is None:
+                assert kwargs.get("IfNoneMatch") == "*"
+            else:
+                assert kwargs.get("IfMatch") == f'"{self.etag}"'
+            self.etag += 1
+            self.body = kwargs["Body"]
+            return {"ETag": f'"{self.etag}"'}
+
+    client = FakeS3()
+    monkeypatch.setattr("extraction_review.llm.time.time", lambda: 1_000.0)
+    first = _extend_shared_vertex_cooldown(
+        client=client,
+        bucket="artifacts",
+        key="rate.json",
+    )
+    second = _extend_shared_vertex_cooldown(
+        client=client,
+        bucket="artifacts",
+        key="rate.json",
+    )
+    assert first == 30.0
+    assert second == 60.0
+    assert (
+        _shared_vertex_cooldown_remaining(
+            client=client,
+            bucket="artifacts",
+            key="rate.json",
+        )
+        == 60.0
+    )
+    state = json.loads(client.body or b"{}")
+    assert state["consecutive_429s"] == 2
+    assert state["cooldown_until"] == 1_060.0
+
+
+def test_vertex_resource_exhausted_detection() -> None:
+    assert _is_vertex_resource_exhausted(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert not _is_vertex_resource_exhausted(RuntimeError("503 unavailable"))
+
+
+@pytest.mark.asyncio
+async def test_vertex_vision_retries_after_shared_429_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    response = type("Response", (), {"text": '{"ok": true}'})()
+    generate = AsyncMock(side_effect=[RuntimeError("429 RESOURCE_EXHAUSTED"), response])
+    models = type("Models", (), {"generate_content": generate})()
+    client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
+    acquire = AsyncMock()
+    publish = AsyncMock(return_value=30.0)
+    sleep = AsyncMock()
+
+    monkeypatch.setenv("LLM_PROVIDER", "vertex")
+    monkeypatch.setenv("VERTEX_MAX_ATTEMPTS", "2")
+    monkeypatch.setattr(llm_module, "get_genai_client", lambda: client)
+    monkeypatch.setattr(llm_module, "acquire_openrouter_slot", acquire)
+    monkeypatch.setattr(llm_module, "_publish_vertex_cooldown", publish)
+    monkeypatch.setattr(llm_module.asyncio, "sleep", sleep)
+
+    content, _usage = await llm_module.generate_vision_json(
+        system_prompt="system",
+        user_prompt="user",
+        images=[],
+        model="gemini-3.8-flash",
+    )
+
+    assert content == '{"ok": true}'
+    assert generate.await_count == 2
+    assert acquire.await_count == 2
+    publish.assert_awaited_once()
+    sleep.assert_awaited_once_with(30.0)
 
 
 def test_genai_client_disables_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> None:
