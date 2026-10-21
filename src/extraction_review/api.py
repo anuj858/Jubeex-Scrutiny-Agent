@@ -14,7 +14,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
@@ -38,6 +38,7 @@ from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
 from .extract_record import stamp_review_status
 from .job_progress import load_job_status, progress_for_status, save_job_status
+from .logging_utils import silence_http_client_request_logs
 from .process_file import (
     CATALOG_JOB_TYPES,
     FileEvent,
@@ -52,10 +53,12 @@ from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
+from .vector_store import delete_workspace_records
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+silence_http_client_request_logs()
 
 JobKind = Literal["process_file", "scrutiny", "annexure_index"]
 JobStatus = Literal["running", "completed", "failed"]
@@ -186,6 +189,7 @@ class FilingDocumentsRequest(BaseModel):
     """Shared body for split-petition / verify / extract / index."""
 
     model_config = ConfigDict(extra="ignore")
+    allow_missing_filing_type: ClassVar[bool] = False
 
     filing_type: str | None = Field(
         default=None,
@@ -222,7 +226,7 @@ class FilingDocumentsRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_filing_type_and_documents(self) -> FilingDocumentsRequest:
-        if not self.filing_type:
+        if not self.filing_type and not self.allow_missing_filing_type:
             raise ValueError(
                 "filing_type is required. Use a real type such as SLP_CIVIL."
             )
@@ -234,6 +238,25 @@ class FilingDocumentsRequest(BaseModel):
             )
         if not self.documents:
             raise ValueError("documents[] is required")
+        return self
+
+
+class ExtractFrontRequest(FilingDocumentsRequest):
+    """Compiled-PDF intake, where the filing type may be classified by the agent."""
+
+    allow_missing_filing_type: ClassVar[bool] = True
+
+    @model_validator(mode="after")
+    def _require_filing_type_and_documents(self) -> ExtractFrontRequest:
+        if not self.documents:
+            raise ValueError("documents[] is required")
+        if self.filing_type:
+            catalog_types = set(ui_catalog())
+            if catalog_types and self.filing_type not in catalog_types:
+                allowed = ", ".join(sorted(catalog_types))
+                raise ValueError(
+                    f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+                )
         return self
 
 
@@ -401,6 +424,10 @@ class JobRecordOut(BaseModel):
     )
     stage: str | None = None
     stage_message: str | None = None
+    has_duplicates: bool | None = Field(
+        default=None,
+        description="True if any document part in the split has duplicate=True",
+    )
     result: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -448,6 +475,9 @@ class JobState:
         self.callback_kind: JobKind = kind
 
     def as_out(self) -> JobRecordOut:
+        has_duplicates = None
+        if isinstance(self.result, dict) and "has_duplicates" in self.result:
+            has_duplicates = bool(self.result["has_duplicates"])
         return JobRecordOut(
             job_id=self.job_id,
             kind=self.kind,
@@ -459,6 +489,7 @@ class JobState:
             progress=self.progress,
             stage=self.stage,
             stage_message=self.stage_message,
+            has_duplicates=has_duplicates,
             result=self.result,
             error=self.error,
             created_at=self.created_at,
@@ -814,6 +845,29 @@ async def split_petition(
 
 
 @app.post(
+    "/v2/filings/split-petition",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def split_petition_v2(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same split as /v1/filings/split-petition. filing_type skips LlamaClassify."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "split_petition"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
     "/v1/filings/verify-document",
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
@@ -849,6 +903,30 @@ async def extract_only(
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
     payload["job_type"] = "extract_only"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/extract-front",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_front(
+    body: ExtractFrontRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same body as extract, with one compiled PDF. Parses an opening slice and the last 5 pages."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload.pop("special_category", None)
+    payload["job_type"] = "extract_front"
     event = _file_event_http(payload)
     return _accept_process_file(
         event,
@@ -1031,6 +1109,29 @@ def _accept_scrutiny(
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
+def _index_event(agent_data_id: str, body: IndexFilingRequest) -> FileEvent:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "index_parsed"
+    payload["agent_data_id"] = agent_data_id
+    payload["edited"] = parse_edited_flag(body.edited)
+    return _file_event_http(payload)
+
+
+def _accept_index_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue ``index_parsed``. Webhook kind is ``scrutiny``."""
+    return _accept_process_file(
+        _index_event(agent_data_id, body),
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+        callback_kind="scrutiny",
+    )
+
+
 @app.post(
     "/v1/filings/{agent_data_id}/index",
     response_model=JobAccepted,
@@ -1049,16 +1150,40 @@ async def index_filing(
     Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
     ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
     """
-    # Fail synchronously instead of accepting an SQS job that is guaranteed to
-    # fail in the worker. This also prevents clients from repeatedly retrying a
-    # stale Agent Data id as though the 202 meant the filing was valid.
-    await _require_filing_for_index(agent_data_id)
-    payload = body.model_dump(exclude_none=True)
-    payload.pop("callback_url", None)
-    payload["job_type"] = "index_parsed"
-    payload["agent_data_id"] = agent_data_id
-    payload["edited"] = parse_edited_flag(body.edited)
-    event = _file_event_http(payload)
+    return _accept_index_filing(agent_data_id, body, background_tasks)
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/reindex",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Clear workspace vectors, then index and run scrutiny",
+    dependencies=[Depends(require_api_key)],
+)
+async def reindex_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same as ``/index`` after deleting this workspace's Pinecone records."""
+    if not body.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="workspace_id is required",
+        )
+    event = _index_event(agent_data_id, body)
+    try:
+        delete_workspace_records(body.workspace_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to delete Pinecone records for workspace %s",
+            body.workspace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to clear previous vectors for this workspace.",
+        ) from exc
     return _accept_process_file(
         event,
         callback_url=body.callback_url,

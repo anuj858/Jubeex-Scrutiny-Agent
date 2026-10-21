@@ -30,6 +30,8 @@ DEFAULT_VERTEX_LOCATION = "global"
 DEFAULT_VERTEX_MODEL = "gemini-3.8-flash"
 # DEFAULT_MODEL kept for OpenRouter ids.
 DEFAULT_MODEL = "google/gemini-3.8-flash"
+DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-3.8-flash"
+DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
@@ -114,6 +116,14 @@ def openrouter_model() -> str:
         )
         return _strip_google_model_prefix(raw)
     return os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+
+
+def scrutiny_model() -> str:
+    """Model used only for registry defect checks."""
+    raw = (os.getenv("SCRUTINY_MODEL") or "").strip()
+    if llm_provider() == "vertex":
+        return _strip_google_model_prefix(raw or DEFAULT_SCRUTINY_VERTEX_MODEL)
+    return raw or DEFAULT_SCRUTINY_OPENROUTER_MODEL
 
 
 def openrouter_enabled() -> bool:

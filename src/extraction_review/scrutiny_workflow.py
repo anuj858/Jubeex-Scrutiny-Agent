@@ -55,8 +55,9 @@ from .llm import (
     llm_requests_per_minute,
     mask_openrouter_api_key,
     openrouter_enabled,
-    openrouter_model,
+    scrutiny_model,
 )
+from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
@@ -271,6 +272,7 @@ async def _run_defect(
             visual_index=visual_index,
         ),
         response_model=DefectResponse,
+        model=scrutiny_model(),
     )
     response = _sanitize_response(defect, raw, chunks)
 
@@ -829,7 +831,7 @@ class ScrutinyWorkflow(Workflow):
             "LLM provider=%s key=%s model=%s rpm=%s",
             llm_provider(),
             mask_openrouter_api_key(),
-            openrouter_model(),
+            scrutiny_model(),
             llm_requests_per_minute() or "unlimited",
         )
 
@@ -917,7 +919,9 @@ class ScrutinyWorkflow(Workflow):
             logger.warning(
                 "Layout index empty pages=0; defect findings will have no "
                 "highlight coordinates url=%s key=%s",
-                layout_url if isinstance(layout_url, str) else None,
+                safe_url_for_log(layout_url)
+                if isinstance(layout_url, str)
+                else None,
                 layout_key if isinstance(layout_key, str) else None,
             )
             ctx.write_event_to_stream(
@@ -1027,11 +1031,11 @@ class ScrutinyWorkflow(Workflow):
                 agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
                 petition_type=filing_type,
-                model=openrouter_model(),
+                model=scrutiny_model(),
                 disclaimer=catalogue.disclaimer,
                 findings=snapshot,
                 summary=summarize(snapshot),
-                usage=summarize_usage(snapshot, model=openrouter_model()),
+                usage=summarize_usage(snapshot, model=scrutiny_model()),
                 planned_checks=planned,
                 stopped_early=stopped_early,
             )

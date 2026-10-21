@@ -504,6 +504,88 @@ class LegalExtractRecord(BaseModel):
         return value
 
 
+class FrontExtractRecord(LegalExtractRecord):
+    """Extract schema for the opening pages plus the last 5. Not used by /v1/filings/extract."""
+
+    court: str | None = Field(
+        default=None,
+        description=(
+            "Court where the petition is filed (e.g. Supreme Court of India, High Court of Delhi), "
+            "as printed on the cover page, petition heading, or memo of parties."
+        ),
+    )
+    petition_type: str | None = Field(
+        default=None,
+        description=(
+            "Petition type (e.g. Special Leave Petition (Civil), Special Leave Petition (Crl.), "
+            "Writ Petition (Civil), Transfer Petition), as printed on the cover page, cause title, or petition heading."
+        ),
+    )
+    special_category: str | None = Field(
+        default=None,
+        description=(
+            "Matter subtype or subject classification printed in the filing, "
+            "such as Tax Matters. Leave null when not explicitly printed."
+        ),
+    )
+    cause_title: CauseTitle | None = Field(
+        default=None,
+        description=(
+            "Cause title from the filing. Formatted title should be '<Petitioner Name(s)> VS <Respondent Name(s)>'. "
+            "Also extract main_petitioner and main_respondent."
+        ),
+    )
+    petitioners: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "List of all petitioners. Extract every petitioner from the Memo of Parties, Position of Parties, "
+            "Cause Title, Parties Schedule, Vakalatnama, or Petition opening (whichever provides the most complete details). "
+            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
+            "guardian (father/mother/husband name), age, occupation, full address, "
+            "city, state, pin_code, email, mobile, and acting_through."
+        ),
+    )
+    respondents: list[Party] = Field(
+        default_factory=list,
+        description=(
+            "List of all respondents. Extract every respondent from the Memo of Parties, Position of Parties, "
+            "Cause Title, Parties Schedule, or Petition opening following VERSUS. "
+            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
+            "guardian (father/mother/husband name), age, occupation, full address, "
+            "city, state, pin_code, email, mobile, and acting_through."
+        ),
+    )
+    advocates_on_record: list[AdvocateOnRecord] = Field(
+        default_factory=list,
+        description=(
+            "Advocate on record from the Vakalatnama (on closing pages), Memo of Appearance, "
+            "or footer at the end of the List of Dates / Petition in the pack. "
+            "Extract name, code, firm/address, email, and phone."
+        ),
+    )
+    impugned_orders: list[ImpugnedOrder] = Field(
+        default_factory=list,
+        description=(
+            "Impugned orders being challenged. Extract court name, order date (DD.MM.YYYY), "
+            "and case number / appeal number from the cause title, synopsis, listing proforma, or petition opening."
+        ),
+    )
+    relief_sort: str | None = Field(
+        default=None,
+        description=(
+            "Leave null. The prayer is on the last pages of the Main Petition, "
+            "which are not in this 30-page slice."
+        ),
+    )
+    petition_date: str | None = Field(
+        default=None,
+        description=(
+            "Leave null. The petition date is on the last pages of the Main "
+            "Petition, which are not in this 30-page slice."
+        ),
+    )
+
+
 class CoreFilingRecord(LegalExtractRecord):
     """Stored compiled-petition JSON. Envelope keys are filled by the pipeline."""
     schema_version: str | None = Field(default=None, description="Leave null. Filled by the pipeline.")

@@ -7,6 +7,9 @@
       "portMappings": [],
       "essential": true,
       "entryPoint": [
+        "/app/scripts/start.sh"
+      ],
+      "command": [
         "uv",
         "run",
         "jubeex-sqs-worker"
@@ -81,8 +84,16 @@
           "value": "google/gemini-3.8-flash"
         },
         {
+          "name": "SCRUTINY_MODEL",
+          "value": "google/gemini-3.8-flash"
+        },
+        {
           "name": "OPENROUTER_BASE_URL",
           "value": "https://openrouter.ai/api/v1"
+        },
+        {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
         },
         {
           "name": "PARSE_CONCURRENCY",

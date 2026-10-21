@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import pytest
+from psycopg import errors
 
-from extraction_review.scrutiny.catalogue_db import catalogue_from_rows
+from extraction_review.scrutiny.catalogue_db import (
+    _attach_remediation_config,
+    catalogue_from_rows,
+)
 from extraction_review.scrutiny.catalogue_export import legacy_selected_ids
 from extraction_review.scrutiny.rules import (
     Defect,
@@ -67,6 +72,34 @@ def test_rows_become_an_explicit_catalogue() -> None:
     assert defect.trigger_words == "index; contents"
     assert defect.agent_filing_types == ["slp_civil"]
     assert catalogue.petition_specials["slp_civil"] == ["Tax Matters"]
+
+
+def test_denied_optional_remediation_lookup_keeps_catalogue_rows(caplog: pytest.LogCaptureFixture) -> None:
+    class Connection:
+        rolled_back = False
+
+        @contextmanager
+        def transaction(self):
+            try:
+                yield
+            except errors.InsufficientPrivilege:
+                self.rolled_back = True
+                raise
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, *_args):
+            raise errors.InsufficientPrivilege("permission denied for table hub_defects")
+
+    rows = [{"check_id": "D-1", "defect": "Sample"}]
+    cursor = Cursor()
+
+    _attach_remediation_config(cursor, rows)
+
+    assert cursor.connection.rolled_back
+    assert rows == [{"check_id": "D-1", "defect": "Sample"}]
+    assert "without remediation actions" in caplog.text
 
 
 def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:

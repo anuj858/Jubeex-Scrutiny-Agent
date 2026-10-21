@@ -83,6 +83,12 @@ not yet been benchmarked.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 
+Registry defect checks use the dedicated `SCRUTINY_MODEL` setting, which
+defaults to Gemini 3.8 Flash (`gemini-3.8-flash` on Vertex AI and
+`google/gemini-3.8-flash` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+`OPENROUTER_VISION_MODEL` remain independent, so changing the scrutiny model
+does not silently change extraction or visual-mark detection.
+
 `SPLIT_OUTPUT_DOCUMENTS` controls which sliced PDFs are emitted, without
 changing extraction, classification, reconciliation, or page-level auditing.
 Unset or blank defaults to `Annexures, Cover Page`; explicit `All` preserves every detected output. `Annexures` selects all

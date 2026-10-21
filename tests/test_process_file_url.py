@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from extraction_review.logging_utils import safe_url_for_log
 from extraction_review.process_file import (
     FileEvent,
     SourceDocument,
@@ -32,6 +33,14 @@ from extraction_review.process_file import (
     take_file_bytes,
     upload_sliced_slot_pdfs,
 )
+
+
+def test_safe_url_for_log_removes_credentials_and_query() -> None:
+    safe = safe_url_for_log(
+        "https://user:secret@s3.example.com/file.pdf?X-Amz-Credential=secret#part"
+    )
+
+    assert safe == "https://s3.example.com/file.pdf"
 
 
 def test_file_event_accepts_file_url_without_file_id() -> None:

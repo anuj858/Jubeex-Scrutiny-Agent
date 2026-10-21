@@ -6,9 +6,13 @@ Parse never writes these tables. Defect checks always read ``v_parse_*`` with
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from datetime import date, datetime
 from typing import Any
+
+from psycopg import errors
 
 from .rules import (
     Catalogue,
@@ -18,6 +22,8 @@ from .rules import (
     normalize_filing_type,
     rewrite_location_source,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def catalogue_database_url() -> str:
@@ -53,6 +59,7 @@ def load_catalogue_from_db(revision: int | None = None) -> Catalogue:
         cur.execute("SELECT * FROM v_parse_defects")
         defect_cols = [desc.name for desc in cur.description]
         defect_rows = [dict(zip(defect_cols, row, strict=True)) for row in cur.fetchall()]
+        _attach_remediation_config(cur, defect_rows)
         cur.execute("SELECT * FROM v_parse_sources")
         source_cols = [desc.name for desc in cur.description]
         source_rows = [dict(zip(source_cols, row, strict=True)) for row in cur.fetchall()]
@@ -99,6 +106,54 @@ def catalogue_from_rows(
         defects=defects,
         petition_specials=specials,
     )
+
+
+def _attach_remediation_config(cur: Any, defect_rows: list[dict[str, Any]]) -> None:
+    """Copy hub_defects.remediation_config onto rows the view left behind."""
+    if not defect_rows or "remediation_config" in defect_rows[0]:
+        return
+    codes = [
+        str(row.get("check_id") or "").strip()
+        for row in defect_rows
+        if str(row.get("check_id") or "").strip()
+    ]
+    if not codes:
+        return
+    try:
+        # A nested transaction creates a savepoint, so a denied optional lookup
+        # cannot poison the transaction used for the remaining catalogue views.
+        with cur.connection.transaction():
+            cur.execute(
+                "SELECT code, remediation_config FROM hub_defects WHERE code = ANY(%s)",
+                (codes,),
+            )
+            by_code = {str(code): config for code, config in cur.fetchall()}
+    except errors.InsufficientPrivilege:
+        logger.warning(
+            "[Scrutiny] Catalogue reader lacks remediation_config access; "
+            "continuing without remediation actions until migration 0085 is applied"
+        )
+        return
+    for row in defect_rows:
+        code = str(row.get("check_id") or "").strip()
+        if code in by_code:
+            row["remediation_config"] = by_code[code]
+
+
+def _remediation_config(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -156,6 +211,7 @@ def _defect_from_row(row: dict[str, Any]) -> Defect:
         context_parts=_string_list(row.get("context_parts")),
         exclude_parts=_optional_string_list(row.get("exclude_parts")),
         how_to_cure=_string_list(row.get("how_to_cure")),
+        remediation_config=_remediation_config(row.get("remediation_config")),
         applicable_rule=_text(row.get("applicable_rule")),
         location_source=str(row.get("location_source") or ""),
         notes=_text(row.get("notes")),

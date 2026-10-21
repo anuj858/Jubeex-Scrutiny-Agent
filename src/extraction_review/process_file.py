@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -71,6 +72,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .logging_utils import safe_url_for_log
 from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .split_upload import (
     UNDEFINED_SLOT_ID,
@@ -308,6 +310,75 @@ FULL_PETITION_SLOTS = frozenset({"fullpetition", "full_petition", "compiled"})
 PETITION_SPLIT_JOB_TYPES = frozenset({"split_petition"})
 VERIFY_JOB_TYPES = frozenset({"verify_document"})
 EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
+EXTRACT_FRONT_JOB_TYPES = frozenset({"extract_front"})
+FRONT_EXTRACT_PAGE_LIMIT = 30
+FRONT_EXTRACT_END_PAGE_LIMIT = 5
+FRONT_EXTRACT_SMALL_BOOK_PAGES = 200
+FRONT_EXTRACT_OPENING_CAP = 120
+
+
+def front_extract_opening_pages(total: int) -> int:
+    """How many opening pages to parse from a compiled PDF.
+
+    A book of 200 pages or fewer uses 30 pages. A longer book starts from
+    20 percent and that share shrinks as the book grows, so 700 pages keeps
+    75 opening pages and 1000 pages keeps 90, never more than 120.
+    """
+    if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
+        return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
+    grown = math.ceil(
+        0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total)
+    )
+    return min(FRONT_EXTRACT_OPENING_CAP, total, grown)
+
+
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    source = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return source.page_count
+    finally:
+        source.close()
+
+
+def first_pages_pdf(
+    pdf_bytes: bytes,
+    page_limit: int = FRONT_EXTRACT_PAGE_LIMIT,
+    end_page_limit: int = FRONT_EXTRACT_END_PAGE_LIMIT,
+) -> bytes:
+    """Keep the opening pages and the last pages, without repeating the overlap.
+
+    The last pages are where the Vakalatnama sits, so the advocate on record
+    can be read from there.
+    """
+    if page_limit < 1:
+        raise ValueError("page_limit must be at least 1")
+    if end_page_limit < 0:
+        raise ValueError("end_page_limit must be at least 0")
+    source = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        total = source.page_count
+        if total < 1:
+            raise ValueError("Compiled PDF has no pages")
+        opening = min(page_limit, total)
+        end_start = max(opening, total - end_page_limit)
+        if end_start >= total:
+            if opening == total:
+                return pdf_bytes
+            sliced = pymupdf.open()
+            try:
+                sliced.insert_pdf(source, from_page=0, to_page=opening - 1)
+                return sliced.tobytes()
+            finally:
+                sliced.close()
+        sliced = pymupdf.open()
+        try:
+            sliced.insert_pdf(source, from_page=0, to_page=opening - 1)
+            sliced.insert_pdf(source, from_page=end_start, to_page=total - 1)
+            return sliced.tobytes()
+        finally:
+            sliced.close()
+    finally:
+        source.close()
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
 FULL_JOB_TYPES = (
     frozenset(
@@ -335,6 +406,7 @@ CATALOG_JOB_TYPES = [
     "split_petition",
     "verify_document",
     "extract_only",
+    "extract_front",
     "index_parsed",
 ]
 DEFAULT_COMPILED_FILING_TYPE = "SLP_CIVIL"
@@ -433,6 +505,8 @@ def normalize_job_type(value: str | None) -> str | None:
     raw = (value or "").strip().lower()
     if raw in FULL_JOB_TYPES:
         return "full"
+    if raw in EXTRACT_FRONT_JOB_TYPES:
+        return "extract_front"
     if raw in SPLIT_JOB_TYPES:
         return "split"
     if raw in VERIFY_JOB_TYPES:
@@ -854,7 +928,16 @@ class FileEvent(StartEvent):
     @model_validator(mode="after")
     def _require_file_id_or_url(self) -> FileEvent:
         mode = intake_mode(self)
-        slot_mode = "split" if mode == "verify" else mode
+        if mode == "extract_front":
+            if len(self.documents) != 1:
+                raise ValueError(
+                    "documents[] must contain the one compiled PDF"
+                )
+            slot_mode = "full"
+        elif mode == "verify":
+            slot_mode = "split"
+        else:
+            slot_mode = mode
         resolved: list[FilingPartIn] = []
         for item in self.documents:
             resolved.append(
@@ -948,6 +1031,7 @@ class PreparedPart(BaseModel):
     name: str | None = None
     label: str | None = None
     page_span: list[dict[str, int]] | None = None
+    duplicate: bool = False
     reason: str | None = None
 
 
@@ -968,6 +1052,7 @@ class VerifiedDocument(BaseModel):
 class BundlePrepared(StopEvent):
     filing_type: str
     parts: list[PreparedPart] = Field(default_factory=list)
+    has_duplicates: bool = False
     documents: list[SourceDocument] = Field(default_factory=list)
     slot_pages: dict[str, list[dict[str, int]]] = Field(default_factory=dict)
     agent_data_id: str | None = None
@@ -1993,7 +2078,7 @@ async def ingest_remote_file(
         remember_file_bytes(file_id, data)
     logger.info(
         "[process-file] Ingested remote file url=%s → file_id=%s name=%s bytes=%s",
-        url[:120],
+        safe_url_for_log(url),
         file_id,
         name,
         len(data),
@@ -2003,7 +2088,8 @@ async def ingest_remote_file(
 
 async def _download_file_bytes(client: AsyncLlamaCloud, file_id: str) -> bytes:
     """Download original PDF bytes via the files content presigned URL."""
-    presigned = await client.files.content(file_id, project_id=project_id)
+    fid = file_id[4:] if file_id.startswith("dfl-") else file_id
+    presigned = await client.files.content(fid, project_id=project_id)
     url = getattr(presigned, "url", None)
     if not url:
         raise RuntimeError(f"No download URL for file {file_id}")
@@ -2248,6 +2334,8 @@ async def _extract_sliced_parts(
     skip_index: bool = False,
     skip_extract: bool = False,
     stitch_in_request_order: bool = False,
+    front_extract: bool = False,
+    front_opening_pages: int = FRONT_EXTRACT_PAGE_LIMIT,
     edited: bool = False,
     parsed_slots: list[str] | None = None,
     agent_data_id: str | None = None,
@@ -2278,6 +2366,8 @@ async def _extract_sliced_parts(
             skip_index=skip_index,
             skip_extract=skip_extract,
             stitch_in_request_order=stitch_in_request_order,
+            front_extract=front_extract,
+            front_opening_pages=front_opening_pages,
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
@@ -2542,6 +2632,116 @@ async def _run_split_from_file_event(
     )
 
 
+async def _run_extract_front(
+    event: FileEvent,
+    ctx: Context[PrepareState],
+    client: AsyncLlamaCloud,
+) -> BundlePrepared:
+    """Parse pages 1–30 of one compiled PDF, then extract. No split or index."""
+    from .process_split_files import SplitPartEvent
+
+    filing_type = (event.filing_type or "").strip() or DEFAULT_COMPILED_FILING_TYPE
+    file_id, file_url, filename, file_hash = compiled_source(event)
+    if not file_id and file_url:
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message="Downloading the compiled PDF for the first 30 pages",
+            )
+        )
+        file_id, content_hash, filename = await ingest_remote_file(
+            client,
+            file_url,
+            filename=filename,
+            external_file_id=(
+                event.documents[0].document_id if event.documents else None
+            )
+            or file_hash,
+            cache_bytes=True,
+        )
+        file_hash = file_hash or content_hash
+    if not file_id:
+        raise ValueError(
+            "Provide download_url or file_id, or documents[] with the compiled PDF"
+        )
+
+    pdf_bytes = await _load_bundle_pdf(client, file_id=file_id)
+    total_pages = pdf_page_count(pdf_bytes)
+    opening_pages = front_extract_opening_pages(total_pages)
+    sliced = first_pages_pdf(pdf_bytes, opening_pages)
+    slice_name = filename or "compiled.pdf"
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"extract_front: parsing the first {opening_pages} pages "
+                f"of {total_pages} and the last {FRONT_EXTRACT_END_PAGE_LIMIT} "
+                "pages. Split, classify, and Pinecone are skipped."
+            ),
+        )
+    )
+    slice_id = await _upload_slot_pdf(
+        client,
+        filename=(
+            f"front-{opening_pages}-end-{FRONT_EXTRACT_END_PAGE_LIMIT}-{slice_name}"
+        ),
+        pdf_bytes=sliced,
+    )
+    source = event.documents[0]
+    part = SplitPartEvent(
+        slot_id="petition",
+        file_id=slice_id,
+        filename=slice_name,
+        file_hash=hashlib.sha256(sliced).hexdigest(),
+        file_url=file_url,
+        document_id=source.document_id,
+    )
+    echo = intake_echo(event)
+    echo["job_type"] = "extract_front"
+    nested_payload = await _extract_sliced_parts(
+        ctx,
+        filing_type=filing_type,
+        parts=[part],
+        echo=echo,
+        require_all_slots=False,
+        parse_scope="all",
+        skip_index=True,
+        stitch_in_request_order=True,
+        front_extract=True,
+        front_opening_pages=opening_pages,
+        special_category=None,
+        court=None,
+    )
+    agent_data_id, report = _split_result_fields(nested_payload)
+    prepared = PreparedPart(
+        slot_id="fullpetition",
+        file_id=part.file_id,
+        file_hash=part.file_hash,
+        filename=source.filename or slice_name,
+        document_id=source.document_id,
+        download_url=source.file_url,
+        name=source.filename or slice_name,
+    )
+    source_docs = [
+        source_document_from_part(
+            item,
+            file_id=item.file_id,
+            file_hash=item.file_hash,
+        )
+        for item in event.documents
+    ]
+    return BundlePrepared(
+        result=agent_data_id,
+        filing_type=filing_type,
+        parts=[prepared],
+        documents=source_docs,
+        agent_data_id=agent_data_id,
+        parsed_slots=["fullpetition"],
+        report=report,
+        **echo,
+    )
+
+
 class ProcessFileWorkflow(Workflow):
     """Classify and split a bundled PDF, or ingest already-split parts."""
 
@@ -2573,6 +2773,8 @@ class ProcessFileWorkflow(Workflow):
         ],
     ) -> FileClassifiedEvent | BundlePrepared:
         mode = intake_mode(event)
+        if mode == "extract_front":
+            return await _run_extract_front(event, ctx, llama_cloud_client)
         if mode == "split":
             return await _run_split_from_file_event(event, ctx, llama_cloud_client)
         if mode == "verify":
@@ -2603,7 +2805,9 @@ class ProcessFileWorkflow(Workflow):
                     cache_bytes=True,
                 )
             except Exception as exc:
-                logger.exception("Failed to ingest file_url %s", file_url)
+                logger.exception(
+                    "Failed to ingest file_url %s", safe_url_for_log(file_url)
+                )
                 ctx.write_event_to_stream(
                     Status(
                         level="error",
@@ -3390,7 +3594,7 @@ class ProcessFileWorkflow(Workflow):
                 else item.filename
             )
             unidentified_reason = None
-            if item.slot_id == "undefined":
+            if item.slot_id == "undefined" or item.slot_id.startswith("undefined_"):
                 reasons = split_audit.get("unidentified_reasons") or []
                 item_pages = set(item.pages)
                 matching = [
@@ -3418,6 +3622,7 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     label=item.label,
                     page_span=list(item.page_span),
+                    duplicate=item.duplicate,
                     reason=unidentified_reason,
                 )
             )
@@ -3431,6 +3636,7 @@ class ProcessFileWorkflow(Workflow):
                 )
             )
 
+        has_duplicates = any(part.duplicate for part in prepared)
         classify_split_seconds = elapsed_seconds(state.started_at)
         file_name = uploaded_filename(state.filename)
         timing = timing_payload(
@@ -3449,12 +3655,14 @@ class ProcessFileWorkflow(Workflow):
                         "organization_id": state.organization_id,
                         "workspace_id": state.workspace_id,
                         "usage": {"llamacloud": usage_summary},
+                        "has_duplicates": has_duplicates,
                         "parts": [
                             {
                                 "slot_id": part.slot_id,
                                 "label": part.label,
                                 "filename": part.filename,
                                 "page_span": part.page_span,
+                                "duplicate": part.duplicate,
                                 "reason": part.reason,
                                 "file_hash": part.file_hash,
                                 "file_id": part.file_id,
@@ -3508,6 +3716,7 @@ class ProcessFileWorkflow(Workflow):
         return BundlePrepared(
             filing_type=catalog.filing_type,
             parts=prepared,
+            has_duplicates=has_duplicates,
             documents=list(state.source_documents),
             slot_pages=slot_pages,
             agent_data_id=None,

@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from functools import lru_cache
+from typing import Any
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -311,6 +312,7 @@ class Defect(_Strict):
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
     how_to_cure: list[str]
+    remediation_config: dict[str, Any] = Field(default_factory=dict)
     applicable_rule: str | None = None
     location_source: str
     notes: str | None = None
@@ -616,7 +618,8 @@ def refresh_catalogue() -> Catalogue:
         logger.exception("[Scrutiny] Database catalogue unavailable")
         raise RuntimeError(
             "Defect catalogue could not be loaded from the database. "
-            "Set CATALOGUE_DATABASE_URL to the hub database."
+            "Check CATALOGUE_DATABASE_URL connectivity and the catalogue reader's "
+            "database permissions; see the preceding error for the exact cause."
         ) from exc
 
     _catalogue_cache.value = catalogue

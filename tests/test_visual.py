@@ -1,5 +1,6 @@
 """Ink-mark detector schema, formality page targeting, and defect attachment."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,7 @@ from extraction_review.visual.detect import (
     detect_visual_marks,
     parse_vision_elements,
     safe_normalized_bbox,
+    vision_request_timeout_s,
 )
 from extraction_review.visual.pages import (
     global_page_sources,
@@ -984,6 +986,50 @@ async def test_detect_api_error_is_vision_failed(
     assert index["marks"] == []
     assert index["failures"][0]["reason"] == "vision_failed"
     assert "401" in (index["failures"][0]["detail"] or "")
+
+
+@pytest.mark.asyncio
+async def test_detect_timeout_is_recorded_and_does_not_block_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_fallback_model",
+        lambda: None,
+    )
+    monkeypatch.setenv("VISION_REQUEST_TIMEOUT_S", "0.01")
+
+    async def never_returns(**_kwargs):
+        await asyncio.sleep(60)
+        return [], LlmUsage()
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.analyze_page_image",
+        never_returns,
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="dfl-petition-1")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=fake_download,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "vision_timeout"
+    assert index["failures"][0]["reason"] == "vision_timeout"
+
+
+def test_vision_timeout_uses_safe_default_for_invalid_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISION_REQUEST_TIMEOUT_S", "not-a-number")
+    assert vision_request_timeout_s() == 120.0
 
 
 def test_parse_vision_empty_array_is_zero_marks() -> None:

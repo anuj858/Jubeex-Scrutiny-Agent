@@ -142,7 +142,21 @@ def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot 
     # id, but normalize it to the unambiguous Certificate slot.
     if key == "aors_declaration":
         key = "aor_s_certificate"
-    return catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    found = catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    if found:
+        return found
+    match = re.fullmatch(r"([a-z0-9_]+)_(\d+)", key)
+    if match:
+        base_key = match.group(1)
+        base_slot = catalog.slot_by_id().get(base_key) or dynamic_upload_slot(base_key)
+        if base_slot:
+            return UploadSlot(
+                id=key,
+                label=base_slot.label,
+                parts=base_slot.parts,
+                required=False,
+            )
+    return None
 
 
 def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
@@ -1319,6 +1333,189 @@ def extract_configuration(
         catalog.extract_field_sources,
     )
     dumped["system_prompt"] = build_extract_system_prompt(catalog)
+    return dumped
+
+
+def build_front_extract_system_prompt() -> str:
+    """Prompt for the front extract slice. Real filings have infinite variations; extract from wherever printed."""
+    return "\n".join(
+        [
+            "You are an expert legal document extraction system for Indian court filings (Supreme Court of India, High Courts).",
+            "You are analyzing a compiled legal filing pack consisting of the opening pages of the filing plus its closing pages (Vakalatnama/appearance).",
+            "The last 5 pages are the Vakalatnama. Pages labelled Vakalatnama are those last pages.",
+            "Cases have infinite structural variations: there may or may not be an explicit 'Main Petition' section in the opening pages. You must search across ALL provided pages to extract complete filing details.",
+            "Copy printed text accurately. Do not invent facts.",
+            "",
+            "1. COURT:",
+            "- Extract court (e.g. 'SUPREME COURT OF INDIA', 'HIGH COURT OF DELHI') from the cover page, petition heading, or memo of parties.",
+            "",
+            "2. PETITION TYPE & SPECIAL CATEGORY:",
+            "- Extract petition_type (e.g. 'SPECIAL LEAVE PETITION (CRL.)', 'SPECIAL LEAVE PETITION (CIVIL)', 'WRIT PETITION (CIVIL)', 'TRANSFER PETITION (CIVIL)', etc.) from the cover page, cause title, or petition heading.",
+            "- special_category is the matter subtype printed in the filing, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
+            "",
+            "3. CAUSE TITLE:",
+            "- Extract cause_title with formatted_title in the format '<Petitioner Name(s)> VS <Respondent Name(s)>'. Also extract main_petitioner and main_respondent.",
+            "",
+            "4. PETITIONERS & RESPONDENTS (ALL DETAILS):",
+            "- Extract EVERY petitioner and EVERY respondent from wherever printed across the pack: Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or petition/order pages. Prioritize the source with the most complete particulars.",
+            "- In cause titles and party tables, parties before 'VERSUS' (or 'VS') are Petitioners/Appellants; parties after 'VERSUS' are Respondents/Opposite Parties.",
+            "- For each petitioner and respondent, thoroughly extract all printed details:",
+            "  * name: Full legal name (individuals or companies/organizations/state/union). Clean out trailing role markers like '...Petitioner' or table column names.",
+            "  * kind: 'INDIVIDUAL' or 'ORGANIZATION'.",
+            "  * relation: Relation prefix (S/o, D/o, W/o, C/o) if printed.",
+            "  * guardian: Name of father, mother, husband, or related person.",
+            "  * acting_through: Representation for entities/states/organizations (e.g., 'Through SHO...', 'Through its Secretary...').",
+            "  * address: Full residential or official postal address.",
+            "  * city, state, pin_code: Extract if present or identifiable from the address.",
+            "  * email: Email address if printed.",
+            "  * mobile: Phone / mobile number if printed.",
+            "  * occupation: Occupation or profession if printed.",
+            "  * is_primary: true for the primary petitioner and respondent.",
+            "- Extract all numbered parties across all consecutive party pages. Do not stop after the first party.",
+            "- Form checklist questions, Yes/No/NA answers, table of contents entries, and court fee receipts are NOT parties.",
+            "",
+            "5. ADVOCATES ON RECORD (AOR):",
+            "- advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
+            "",
+            "6. IMPUGNED ORDERS:",
+            "- impugned_orders comes from the particulars printed on the opening pages: extract court name, order date (DD.MM.YYYY), and case number / appeal number being challenged.",
+            "",
+            "7. OTHER FIELDS:",
+            "- relief_sort and petition_date stay null.",
+            "- documents stays empty.",
+        ]
+    ).strip()
+
+
+def build_front_extract_pack_markdown(
+    page_markdown: Mapping[int, str],
+    page_layout: Mapping[int, Mapping[str, Any]] | None = None,
+    opening_pages: int = 30,
+) -> str:
+    """Opening pages, then the last 5 pages labelled as the Vakalatnama."""
+    page_markdown = _recover_page_markdown(page_markdown, page_layout)
+    sections: list[str] = []
+    main_petition_started = False
+    for page in sorted(page_markdown):
+        body = (page_markdown.get(page) or "").strip()
+        if not body or body.startswith(_PARSE_STUB_PREFIX):
+            continue
+        if page > opening_pages:
+            label = "Vakalatnama"
+        else:
+            is_cover = (
+                page <= 3
+                and bool(
+                    re.search(
+                        r"\b(?:paperbook|cover\s*page|for\s+index\s+kindly\s+see\s+inside|d[ai]{1,2}ry\s+no)\b",
+                        body,
+                        re.IGNORECASE,
+                    )
+                )
+            )
+            if is_cover and not main_petition_started:
+                label = "Cover Page"
+            else:
+                has_party_heading = False
+                for line in body.splitlines():
+                    line_clean = re.sub(r"<[^>]+>", " ", line)
+                    line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
+                    if re.search(
+                        r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\s*$",
+                        line_clean,
+                        re.IGNORECASE,
+                    ):
+                        has_party_heading = True
+                        break
+
+                if not main_petition_started:
+                    if has_party_heading or re.search(
+                        r"\b(?:most\s+respectfully\s+showeth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice)\b",
+                        body,
+                        re.IGNORECASE,
+                    ):
+                        main_petition_started = True
+                    elif (
+                        re.search(
+                            r"in the (?:hon[\x27\x60’]?ble )?supreme court of india",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and re.search(
+                            r"(?:appellate jurisdiction|original jurisdiction|special leave petition|writ petition|criminal appeal|civil appeal)",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and not re.search(
+                            r"(?:listing proforma|proforma for first listing|index of papers|office report on limitation|synopsis and list of dates|synopsis|paperbook)",
+                            body,
+                            re.IGNORECASE,
+                        )
+                        and page > 3
+                    ):
+                        main_petition_started = True
+                label = "Main Petition" if main_petition_started else "Compiled opening"
+        sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
+    packed = "\n\n".join(sections).strip()
+    if not packed:
+        return ""
+    preamble = (
+        "# Extraction rules\n"
+        f"This pack is the first {opening_pages} pages of one compiled filing, "
+        "then its last 5 pages. It has not been split.\n"
+        "Pages labelled Cover Page are the paperbook outer cover.\n"
+        "Pages labelled Main Petition are the starting pages of the Main Petition.\n"
+        "Pages labelled Vakalatnama are those last 5 pages.\n"
+        "Cases have infinite variations: search across all provided pages to extract complete filing details.\n"
+        "Read petition_type, cause_title, special_category, and court from the cover page, petition heading, or memo of parties.\n"
+        "Read petitioners and respondents from the most detailed source available across all pages "
+        "(including Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or Petition opening).\n"
+        "Extract every petitioner before VERSUS and every respondent after VERSUS, "
+        "including all printed details: name, relation prefix (S/o, D/o, W/o), "
+        "guardian/parent/spouse name, occupation, full address, city, state, "
+        "pin_code, email, mobile, and acting_through. "
+        "Read all numbered parties across all consecutive party pages. "
+        "Do not stop after the first party.\n"
+        "Do not copy listing-proforma questions, Yes/NA answers, or order paragraphs.\n"
+        "special_category is the printed matter subtype, such as Tax Matters. "
+        "Leave it null when it is not printed.\n"
+        "Read advocates_on_record from the Vakalatnama (## [Vakalatnama]). If it prints no AOR, "
+        "use the footer at the end of the List of Dates.\n"
+        "Read impugned_orders from the particulars printed on the opening pages.\n"
+        "Leave relief_sort and petition_date null.\n"
+        "Copy printed text only."
+    )
+    return f"{preamble}\n\n{packed}"
+
+
+def _schema_with_special_category_beside_petition_type(
+    schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(dict(schema))
+    props = updated.get("properties")
+    if not isinstance(props, dict) or "special_category" not in props:
+        return updated
+    ordered: dict[str, Any] = {}
+    for key, value in props.items():
+        if key == "special_category":
+            continue
+        ordered[key] = value
+        if key == "petition_type":
+            ordered["special_category"] = props["special_category"]
+    updated["properties"] = ordered
+    return updated
+
+
+def front_extract_configuration(extract_config: Any) -> dict[str, Any]:
+    """Current extract schema plus special_category, for this job only."""
+    from .config import FrontExtractRecord, dump_api_configuration
+
+    dumped = dump_api_configuration(extract_config)
+    dumped.pop("configuration_id", None)
+    dumped["data_schema"] = _schema_with_special_category_beside_petition_type(
+        FrontExtractRecord.model_json_schema()
+    )
+    dumped["system_prompt"] = build_front_extract_system_prompt()
     return dumped
 
 

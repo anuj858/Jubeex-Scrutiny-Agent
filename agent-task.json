@@ -31,6 +31,10 @@
           "value": "180"
         },
         {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
+        },
+        {
           "name": "PINECONE_CLOUD",
           "value": "aws"
         },
@@ -69,6 +73,10 @@
         {
           "name": "OPENROUTER_MODEL",
           "value": "google/gemini-3.7-flash"
+        },
+        {
+          "name": "SCRUTINY_MODEL",
+          "value": "google/gemini-3.8-flash"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
