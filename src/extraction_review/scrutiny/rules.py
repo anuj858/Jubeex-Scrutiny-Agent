@@ -592,7 +592,8 @@ def _load_file_catalogue() -> Catalogue:
 
 
 def get_catalogue() -> Catalogue:
-    if _catalogue_cache.value is None:
+    source = (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()
+    if _catalogue_cache.value is None or _catalogue_cache.source != source:
         return refresh_catalogue()
     return _catalogue_cache.value
 
@@ -601,7 +602,18 @@ get_catalogue.cache_clear = _catalogue_cache.clear  # type: ignore[attr-defined]
 
 
 def refresh_catalogue() -> Catalogue:
-    """Reload defects from the database. Skip the reload when the revision is unchanged."""
+    """Load the configured catalogue; DB remains the production default."""
+    source = (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()
+    if source == "json":
+        catalogue = _load_file_catalogue()
+        _catalogue_cache.value = catalogue
+        _catalogue_cache.source = "json"
+        _catalogue_cache.revision = None
+        return catalogue
+    if source != "db":
+        raise ValueError(
+            "SCRUTINY_CATALOGUE_SOURCE must be 'db' or 'json'"
+        )
     from .catalogue_db import fetch_catalogue_revision, load_catalogue_from_db
 
     try:

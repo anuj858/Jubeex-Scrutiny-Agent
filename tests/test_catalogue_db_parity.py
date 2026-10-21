@@ -15,6 +15,7 @@ from extraction_review.scrutiny.catalogue_db import (
 from extraction_review.scrutiny.catalogue_export import legacy_selected_ids
 from extraction_review.scrutiny.rules import (
     Defect,
+    _allowed_check_ids,
     defects_for_filing_type,
     get_catalogue,
     refresh_catalogue,
@@ -103,6 +104,7 @@ def test_denied_optional_remediation_lookup_keeps_catalogue_rows(caplog: pytest.
 
 
 def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
     monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)
     get_catalogue.cache_clear()
     with pytest.raises(RuntimeError, match="CATALOGUE_DATABASE_URL"):
@@ -122,9 +124,33 @@ def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyP
     get_catalogue.cache_clear()
 
 
+def test_json_catalogue_does_not_require_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "json")
+    monkeypatch.setenv(
+        "SCRUTINY_DEFECTS",
+        "D-1,D-57,D-58,D-64,D-68,D-69,D-112,D-161,D-179,D-226,D-327",
+    )
+    monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)
+    get_catalogue.cache_clear()
+    try:
+        catalogue = refresh_catalogue()
+        assert catalogue.schema_version == "2.1"
+        selected_ids = {
+            "D-1", "D-57", "D-58", "D-64", "D-68", "D-69",
+            "D-112", "D-161", "D-179", "D-226", "D-327",
+        }
+        assert {item.check_id for item in catalogue.defects} >= selected_ids
+        assert _allowed_check_ids(catalogue) == selected_ids
+        assert {d.check_id for d in defects_for_filing_type("SLP (Civil)")} <= selected_ids
+    finally:
+        get_catalogue.cache_clear()
+
+
 def test_refresh_reloads_only_when_revision_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     loads: list[int] = []
     revisions = [4]
+
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
 
     def fake_revision() -> int:
         return revisions[0]

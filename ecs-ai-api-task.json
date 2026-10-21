@@ -73,11 +73,15 @@
         },
         {
           "name": "SCRUTINY_DEFECTS",
-          "value": "all"
+          "value": "D-1,D-57,D-58,D-64,D-68,D-69,D-112,D-161,D-179,D-226,D-327"
+        },
+        {
+          "name": "SCRUTINY_CATALOGUE_SOURCE",
+          "value": "json"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "6"
+          "value": "8"
         },
         {
           "name": "SCRUTINY_TOP_K",

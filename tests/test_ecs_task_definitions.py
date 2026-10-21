@@ -61,4 +61,6 @@ def test_scrutiny_worker_uses_shared_vertex_pacing() -> None:
     assert environment["VERTEX_SHARED_RATE_LIMIT"] == "true"
     assert environment["VERTEX_REQUESTS_PER_MINUTE"] == "8"
     assert environment["VERTEX_MAX_ATTEMPTS"] == "6"
-    assert environment["SCRUTINY_CONCURRENCY"] == "2"
+    assert environment["SCRUTINY_CONCURRENCY"] == "8"
+    assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "json"
+    assert len(environment["SCRUTINY_DEFECTS"].split(",")) == 11

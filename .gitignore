@@ -19,6 +19,7 @@ docs/
 !docs/
 docs/*
 !docs/SPLIT_EVALUATION.md
+!docs/DOCUMENT_SPLITTING_RULES.md
 .cursor
 AGENTS.md
 # Local secrets
