@@ -652,19 +652,34 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
     return UNDEFINED_SLOT_ID
 
 
+def _slot_is_undefined(slot: str | None) -> bool:
+    key = (slot or "").strip().lower()
+    return not key or key == UNDEFINED_SLOT_ID or key.startswith("undefined_")
+
+
 def resolve_document_slot(
     item: FilingPartIn,
     *,
     mode: str,
     filing_type: str | None,
 ) -> str:
+    """Map one uploaded file onto a catalog slot.
+
+    A file sent as ``undefined`` still keeps a recognizable name, such as
+    ``Application_1.pdf``. That name is the slot. Otherwise the pages are
+    labelled Undefined and a check for the Application never sees them.
+    """
+    catalog_mode = mode in {"split", "verify"} or mode in SPLIT_JOB_TYPES
     explicit = blank_or_placeholder(item.slot_id)
+    resolved_explicit = None
     if explicit:
-        return (
+        resolved_explicit = (
             coerce_slot_id(explicit, filing_type=filing_type)
-            if mode == "split"
+            if catalog_mode
             else explicit
         )
+        if not catalog_mode or not _slot_is_undefined(resolved_explicit):
+            return resolved_explicit
     if mode == "full":
         return "fullpetition"
     names = [
@@ -675,7 +690,7 @@ def resolve_document_slot(
         resolved = slot_id_from_name(name, filing_type)
         if resolved and resolved not in FULL_PETITION_SLOTS:
             return coerce_slot_id(resolved, filing_type=filing_type)
-    if mode == "split":
+    if catalog_mode:
         return UNDEFINED_SLOT_ID
     label = item.filename or item.document_id or item.file_url or "document"
     raise ValueError(

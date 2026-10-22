@@ -783,7 +783,7 @@ def test_complete_manifest_can_prove_explicit_missing_document_check() -> None:
     )
     decided = apply_manifest_absence_policy(defect, response, layout)
     assert decided.status == "defect_found"
-    assert decided.confidence == 0.95
+    assert decided.confidence == 1.0
     assert decided.summary == "The Advocate's Checklist is missing from the case file."
 
 
@@ -1050,9 +1050,36 @@ def test_missing_appendix_skips_the_model_wording() -> None:
     }
     assert missing_parts_in_layout(defect, layout) == ["Appendix"]
     finding = missing_document_finding(defect, ["Appendix"])
-    assert finding.status == "needs_review"
-    assert finding.reasoning == "The Appendix could not be located in the case file."
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Appendix is missing from the case file."
     assert finding.evidence == []
+
+
+def test_numbered_annexures_and_application_count_as_present() -> None:
+    annexures = _scrutiny_row(check_id="D-68", inspect_parts=["Annexures"])
+    labelled = {index: {"document_part": f"Annexure P-{index}"} for index in range(1, 7)}
+    assert missing_parts_in_layout(annexures, labelled) == []
+
+    application = _scrutiny_row(
+        check_id="D-112",
+        inspect_parts=["Main Petition", "Application"],
+    )
+    present = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": "Application 1"},
+    }
+    assert missing_parts_in_layout(application, present) == []
+
+
+def test_missing_annexures_are_a_defect() -> None:
+    defect = _scrutiny_row(check_id="D-68", inspect_parts=["Annexures"])
+    layout = {1: {"document_part": "Main Petition"}}
+    assert missing_parts_in_layout(defect, layout) == ["Annexures"]
+    finding = missing_document_finding(defect, ["Annexures"])
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Annexures are missing from the case file."
 
 
 def test_missing_vakalatnama_with_the_switch_on_is_only_that_sentence() -> None:
@@ -1066,7 +1093,7 @@ def test_missing_vakalatnama_with_the_switch_on_is_only_that_sentence() -> None:
     assert missing_parts_in_layout(defect, layout) == ["Vakalatnama"]
     finding = missing_document_finding(defect, ["Vakalatnama"])
     assert finding.status == "defect_found"
-    assert finding.confidence == 0.95
+    assert finding.confidence == 1.0
     assert finding.reasoning == "The Vakalatnama is missing from the case file."
     assert finding.location == "Not found in the case file."
     assert finding.evidence == []
@@ -1085,7 +1112,9 @@ def test_one_of_two_documents_missing_reports_only_that_document() -> None:
     missing = missing_parts_in_layout(defect, layout)
     assert missing == ["Vakalatnama"]
     finding = missing_document_finding(defect, missing or [])
-    assert "Vakalatnama" in finding.reasoning
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Vakalatnama is missing from the case file."
     assert "Main Petition" not in finding.reasoning
 
 

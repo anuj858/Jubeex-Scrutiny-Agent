@@ -600,8 +600,24 @@ def get_catalogue() -> Catalogue:
 get_catalogue.cache_clear = _catalogue_cache.clear  # type: ignore[attr-defined]
 
 
+def _use_json_catalogue() -> bool:
+    """The word local, and only that word, selects the checked-in JSON catalogue."""
+    return (os.getenv("CATALOGUE_DATABASE_URL") or "").strip().casefold() == "local"
+
+
 def refresh_catalogue() -> Catalogue:
-    """Reload defects from the database. Skip the reload when the revision is unchanged."""
+    """Reload defects from the database. Skip the reload when the revision is unchanged.
+
+    CATALOGUE_DATABASE_URL=local reads scrutiny_harness/rules/sci_registry_defects.v1.json
+    and does not open a database connection. Any other value uses the database.
+    """
+    if _use_json_catalogue():
+        catalogue = _load_file_catalogue()
+        _catalogue_cache.value = catalogue
+        _catalogue_cache.source = "file"
+        _catalogue_cache.revision = None
+        return catalogue
+
     from .catalogue_db import fetch_catalogue_revision, load_catalogue_from_db
 
     try:

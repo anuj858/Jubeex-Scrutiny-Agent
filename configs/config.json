@@ -2,9 +2,6 @@
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
   "config_version": "1.0.35",
-  "scrutiny": {
-    "missing_document_is_defect": []
-  },
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",

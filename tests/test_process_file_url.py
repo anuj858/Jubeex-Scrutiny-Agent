@@ -306,6 +306,32 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("Filing_Memo.pdf", "SLP_CIVIL") == "filing_memo"
     assert slot_id_from_name("Filing Memo.pdf", "SLP_CRIMINAL") == "filing_memo"
     assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "application_3"
+    assert (
+        slot_id_from_name("Defect_File__001-Application_1.pdf", "SLP_CIVIL")
+        == "application_1"
+    )
+
+
+def test_undefined_application_file_is_labelled_from_its_name() -> None:
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-test",
+        documents=[
+            {
+                "slot_id": "undefined",
+                "name": "Defect_File__001-Application_1.pdf",
+                "download_url": "https://example.com/Defect_File__001-Application_1.pdf",
+            },
+            {
+                "slot_id": "undefined",
+                "name": "scan.pdf",
+                "download_url": "https://example.com/scan.pdf",
+            },
+        ],
+    )
+    assert event.documents[0].slot_id == "application_1"
+    assert event.documents[1].slot_id == "undefined"
 
 
 def test_upload_separate_maps_application_pdf_to_numbered_slot() -> None:

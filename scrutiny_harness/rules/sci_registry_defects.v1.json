@@ -450,24 +450,30 @@
       "main_category": "Appeals",
       "special_category": "Appeal (Armed Forces)",
       "defect": "The Appeal is not accompanied by the Certified copy of the impugned order passed by the Armed Forces Tribunal",
-      "requirement": "Appeal should be accompanied by the Certified copy of the impugned order passed by the Armed Forces Tribunal",
-      "trigger_words": "Section 30 Armed Forces Tribunal Act, Armed Forces Appeal, Section 31 Armed Forces Tribunal Act, Armed Forces Appeal",
+      "requirement": "An Appeal under Section 30 of the Armed Forces Tribunal Act against an order of the Armed Forces Tribunal must be accompanied by a certified copy of the impugned order passed by the Armed Forces Tribunal.",
+      "trigger_words": "Armed Forces Tribunal; Armed Forces Tribunal Act; Certified to be true copy",
       "where_to_look": [
-        "Check for Impugned Judgement/order after the synopsis and list of dates"
+        "Impugned Order: certification of the Armed Forces Tribunal order",
+        "Read the certification stamp or endorsement on the order, such as “Certified to be true copy”, with the copying section’s seal and the dates of application and issue.",
+        "The Tribunal’s own order shows “Armed Forces Tribunal” in the cause title, the coram, the operative part and the Members’ signatures; use only such pages.",
+        "A plain or downloaded copy, or a copy marked only “True copy” by the Advocate, is not a certified copy."
       ],
       "inspect_parts": [
         "Synopsis",
         "Impugned Order"
       ],
       "how_to_cure": [
-        "Option for the User to upload the Certified copy of the impugned order passed by the Armed Forces Tribunal ."
+        "Option for the User to upload the certified copy of the impugned order passed by the Armed Forces Tribunal.",
+        "If the copy filed is a plain, downloaded or uncertified copy: Option for the User to upload and replace the impugned order with a corrected version, namely the certified copy issued by the Armed Forces Tribunal.",
+        "Option for the User to mark this defect as complete if the filing is not an appeal against an order of the Armed Forces Tribunal, or the certified copy is already filed at another page of the case file."
       ],
       "applicable_rule": "Section 30",
       "location_source": "Armed Forces Tribunal Act.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "The impugned order is the Armed Forces Tribunal’s own order or judgment, headed “Order”, “Final Order” or “Judgment”, naming the “Armed Forces Tribunal”, its “Principal Bench” or a “Regional Bench”, usually with an “O.A. No.”. The excerpt label may be wrong, so identify the order by its own cause title, coram and signature.\nCompliance needs (a) the Tribunal’s order under challenge and (b) certification of that copy, such as “Certified to be true copy”, a copying-section stamp or seal, dates of application and issue, or a certifying officer’s signature.\nDo not treat a plain or downloaded copy, or a copy marked only “True copy” by the Advocate, as a certified copy. Certification stamps are often lost in OCR; check the visual detections on the order’s pages.\nReturn not_applicable when the filing is not an appeal against an Armed Forces Tribunal order. Return defect_found only when the order’s pages are in the excerpts and positively show an uncertified copy, such as a download line or only an Advocate’s “True copy”, with no certification text or stamp detection; quote that line. Return compliant when certification wording or a stamp detection appears on the order; quote the certification line. Return needs_review when the order’s pages are not in the excerpts or the certification cannot be read."
     },
     {
       "check_id": "D-2",
@@ -1915,11 +1921,13 @@
       "main_category": "General/Global",
       "special_category": null,
       "defect": "Vakalatnama is not of the same or prior date to that of drafting the petition",
-      "requirement": "Vakalatnama shall be of the same or the date prior to the drafting date of the petition",
-      "trigger_words": null,
+      "requirement": "The Vakalatnama must bear a date of execution that is the same as, or earlier than, the date of drafting of the petition shown below the prayer in the Main Petition.",
+      "trigger_words": "VAKALATNAMA; Vakalat Nama; Vakalath; DRAWN ON; Drawn & Filed; Drawn and Filed",
       "where_to_look": [
-        "1. Check the date of drafting at the end of the Main Petition, below the prayer.",
-        "2. Check the Vakalatnama (placed at the end of the file) for its date of execution, the date must be of the same or a prior date to the date of drafting of petition"
+        "Vakalatnama: date of execution by the executant",
+        "Main Petition: date of drafting below the prayer on the last page",
+        "Read the executant’s date near the signature on the Vakalatnama, such as “Dated this … day of”, and the “DRAWN ON” or “Drawn & Filed” line below the prayer.",
+        "Use only the Vakalatnama bearing this matter’s Supreme Court cause title, and compare its date of execution with the date of drafting."
       ],
       "inspect_parts": [
         "Main Petition",
@@ -1930,49 +1938,52 @@
         "Filing Memo"
       ],
       "how_to_cure": [
-        "1. Option for Jubeex to auto-edit the vakalatnama to correct the date",
-        "2. Option to upload fresh vakalatnama bearing a valid date",
-        "3. Option to edit/draft vakalatnama with Jubeex"
+        "Option for Jubeex to auto-draft a fresh Vakalatnama bearing a date the same as or earlier than the date of drafting of the petition; it must be duly executed by the party and accepted by the Advocate-on-Record before filing.",
+        "Option for the User to edit the Vakalatnama with Jubeex to correct a wrongly typed date so that it shows the actual date of execution.",
+        "Option for the User to upload a fresh Vakalatnama, duly executed and accepted, bearing a date the same as or earlier than the date of drafting of the petition.",
+        "Option for the User to upload and replace the Vakalatnama with a corrected version, duly executed and accepted, bearing a valid date.",
+        "Option for the User to mark this defect as complete if the Vakalatnama is already of the same or an earlier date than the date of drafting of the petition."
       ],
       "applicable_rule": null,
       "location_source": "Page 83 of the PDFCourt Processes Handbook.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "The Vakalatnama (also “Vakalat Nama”, “Vakalath”) appoints the Advocate-on-Record for this matter; the executant’s date usually reads “Dated this … day of …” near the signature. The date of drafting is below the prayer of the Main Petition, often as “Drawn on” or “Drawn & Filed by”. Labels may be wrong; identify each document by its own heading and cause title.\nCompliance needs (a) the Vakalatnama’s date of execution, (b) the petition’s date of drafting, and (c) the first being the same as or earlier than the second.\nDo not use the Advocate-on-Record’s acceptance date as the date of execution, and do not use a Vakalatnama of the courts below. Handwritten dates are often missing from OCR; check the visual detections for a handwritten date value.\nnot_applicable does not arise for this check. Return defect_found only when both dates are legible and the Vakalatnama is dated after the date of drafting; quote the Vakalatnama’s date line and give the drafting date and its page in the reasoning. Return compliant when both are legible and the Vakalatnama’s date is the same or earlier; quote its date line. Return needs_review when either document is missing from the excerpts, either date is blank or illegible, or only the acceptance date is visible."
     },
     {
       "check_id": "D-58",
       "main_category": "General/Global",
       "special_category": null,
-      "defect": "The case file/paper book does not have a common index with running pagination corresponding to the documents and/or applications to be kept in Part I of the case file. The applications to be listed are not placed in Part I and Part II, respectively.",
-      "requirement": "The case file/paper book shall have one common index, as given below, having running pagination as per Column (iii),\ncorresponding to the documents and/or applications to be kept in Part I of the case file. The applications to be listed before the Court and Judge in Chamber/Court of Registrar must be placed in Part I and Part II respectively.",
-      "trigger_words": null,
+      "defect": "The page numbers written in the Index of the case file/paper book are not in running pagination order; they restart, skip, overlap or go out of sequence.",
+      "requirement": "The page numbers written against every entry in the Index (all documents and applications, not only applications) must follow running pagination: each entry must start on the page after the previous entry ends, continuing in order from the first entry to the last without restarting, gaps, overlaps or going backwards.",
+      "trigger_words": "INDEX; Particulars of Document; Contents of Paper Book; Contents of file alone; Page No. of part",
       "where_to_look": [
-        "Go to the index and check whether the documents forming Part I and the applications to be listed in Part II are placed in their respective parts, as shown in the Index columns."
+        "Index: page numbers written against every entry",
+        "Read every Index page, including continuation sheets, down to the last entry.",
+        "Read the page numbers written against each entry in the “Particulars of Document” column, in the page-number columns for Part I (“Contents of Paper Book”) and Part II (“Contents of file alone”), allowing for OCR errors such as “Part-1” or “Part 11”.",
+        "Follow the page numbers entry by entry from the first to the last: each entry must start on the page after the previous entry ends, with no restart, gap, overlap or backward step."
       ],
       "inspect_parts": [
         "Index"
       ],
       "context_parts": [
-        "Application"
+        "Index"
       ],
       "how_to_cure": [
-        "1. Common index with running pagination:",
-        "1.1. Option for Jubeex to auto-generate the common index and pagination",
-        "1.2. Option for user to edit with Jubeex",
-        "1.3 Re-upload amended doc",
-        "2. Arrangement of Part I and Part II:",
-        "2.1. Option for Jubeex to auto-rearrange the documents into Part I and Part II",
-        "2.2. Option for User to rearrange the documents",
-        "2.3. Re-upload amended doc"
+        "Option for Jubeex to auto-draft the Index with running pagination for every entry.",
+        "Option for the User to edit the existing Index with Jubeex to correct the page numbers so that they run in order.",
+        "Option for the User to upload and replace the Index with a corrected version having running pagination.",
+        "Option for the User to mark this defect as complete if the page numbers in the Index already run in order."
       ],
       "applicable_rule": null,
       "location_source": "Page 83 of the PDF, refer to format of index as given on Page 84 Court Processes Handbook.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "This check is only about whether the page numbers written in the Index run in order, for every entry and not only for applications. Compliance needs the page numbers to run in order from the first entry to the last: each entry starts on the page after the previous entry ends (for example 1–5, then 6–20, then 21), with no restart, gap, overlap or backward step. Preliminary pages numbered with letters (for example A, B–F for the Listing Proforma and Synopsis) form their own sequence before page 1 and must run in alphabetical order. If Part II page numbers are given, they must run in order within Part II. An entry with no page number (blank or “–”) is not a defect by itself; compare the numbered entries around it. Do not judge which part an entry is placed in.\nPage numbers may be handwritten; check the visual detections for handwritten values.\nnot_applicable does not arise for this check. Return defect_found only when two consecutive numbered entries break running order (a restart, gap, overlap or backward step); quote both entry lines with their page numbers. Return compliant when all Index pages are in the excerpts and every page number follows running order; quote the last entry line. Return needs_review when Index pages appear missing or page numbers are illegible."
     },
     {
       "check_id": "D-59",
@@ -2122,12 +2133,13 @@
       "main_category": "General/Global",
       "special_category": null,
       "defect": "Petition, appeal or interlocutory application not accompanied by a proper and duly sworn affidavit in support of the allegations of fact made therein.",
-      "requirement": "No petition, appeal or interlocutory application be registered unless it is accompanied by a proper and duly sworn affidavit in support of the allegations of fact made therein as stipulated in Rule 4 of Order XVIII and Rule 4(1)(e) of Order XVI of the Supreme Court Rules, 1966.",
-      "trigger_words": null,
+      "requirement": "Every petition, appeal or interlocutory application must be accompanied by a proper and duly sworn affidavit in support of the allegations of fact made in it, as stipulated in Rule 4 of Order XVIII and Rule 4(1)(e) of Order XVI of the Supreme Court Rules, 1966.",
+      "trigger_words": "solemnly affirm; DEPONENT; Verified at; Identified by",
       "where_to_look": [
-        "1. Check for an Affidavit filed immediately after the Main Petition/application (after the AOR's Certificate) in support of the allegations of fact made in it.",
-        "2. Check the attestation and the notarial seal at the end of the Affidavit to confirm it is duly sworn.",
-        "3. IN CASE OF AN AFFIDAVIT FILED SEPARATELY ALONG WITH AN I.A. THAT IS NOT A PART OF THE MAIN PETITION CHECK THE CAUSE TITLE ALSO AS IT SHOULD SAY \"I.A. NO. ____/2026 IN SLP(C) NO. _____/2026\""
+        "Affidavit: sworn statement supporting the facts of the petition",
+        "Read the verification, the deponent’s signature and the notary’s attestation and seal on the last page of the Affidavit.",
+        "Read the opening “do hereby solemnly affirm and state” and the cause title to see which petition, appeal or application it supports; one filed with an I.A. separately from the Main Petition should read like “I.A. No. ____/2026 in SLP(C) No. ____/2026”.",
+        "Read “Identified by” or the recorded mode of identification of the deponent in the attestation."
       ],
       "inspect_parts": [
         "Affidavit"
@@ -2137,16 +2149,18 @@
         "Application"
       ],
       "how_to_cure": [
-        "1. Option for Jubeex to auto-generate the affidavit in support of the allegations of fact and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
-        "2. Option for the User to upload the affidavit with Jubeex.",
-        "3. Re-upload the petition/appeal/interlocutory application along with the affidavit."
+        "Option for Jubeex to auto-draft the Affidavit in support of the allegations of fact made in the petition, appeal or application; the User must have it duly sworn and attested by a Notary before filing.",
+        "Option for the User to upload the duly sworn Affidavit in support of the allegations of fact.",
+        "If the Affidavit filed is not proper or not duly sworn: Option for the User to upload and replace the Affidavit with a corrected version, duly sworn and attested by a Notary.",
+        "Option for the User to mark this defect as complete if a proper and duly sworn Affidavit in support of the allegations of fact is already filed with the petition, appeal or application."
       ],
       "applicable_rule": "Rule 4(1)(e) of Order XVI of the Supreme Court Rules, 1966",
       "location_source": "F.No.57/Judl./2009 dated Dated August 3, 2009, Page 5 of the PDF 2024042339.pdf",
       "notes": "The Affidavit accompanying the Petition must be duly attested/notarised. The Affidavit should contain the prescribed verification of the facts stated therein, the required paragraphs as per the prescribed format, the relevant page numbers corresponding to the Synopsis and the LOD filed, a statement confirming that the Annexures are true copies of the respective documents, and reference to the Interlocutory Applications filed along with the Main Petition, wherever applicable.\n\nDuly Attested Meaning:- The Affidavit must be notarised and the corresponding entry must be made in the Notary’s register. The Affidavit should bear the prescribed notarial stamp/seal, including the registration/serial number (Need to check for square stamp). The deponent must also be duly identified before the Notary, ordinarily by an Advocate. Where the deponent appears personally without an Advocate identifying them, the Notary should record the mode of identification, such as identification through an identity document.\n\nWhere the deponent is not a resident of the city in which the Affidavit has been notarised, the Affidavit should contain the requisite statement/paragraph regarding this circumstance. The Affidavit should also contain the appropriate verification stating that the facts mentioned therein are true and correct to the best of the deponent’s knowledge and belief.",
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "The affidavit is headed “AFFIDAVIT”, usually opens “I, …, do hereby solemnly affirm and state”, and ends with a “VERIFICATION”, the deponent’s signature and the notary’s attestation and seal. An affidavit with an I.A. filed separately carries a cause title like “I.A. No. ____/2026 in SLP(C) No. ____/2026”. Labels may be wrong; identify it by its heading and cause title.\nA proper, duly sworn affidavit shows (a) support for the allegations of fact in this petition, appeal or application, (b) a verification that the facts are true and correct to the deponent’s knowledge and belief, (c) notarisation with the notary’s stamp or seal bearing a registration or serial number, (d) identification of the deponent, ordinarily by an Advocate, or the recorded mode of identification, and (e) where applicable, references to the Synopsis and List of Dates pages, a statement that the Annexures are true copies, reference to the Interlocutory Applications filed, and a statement if the deponent is not resident in the city of notarisation.\nDo not use an affidavit reproduced in the Annexures or from the courts below. Notary seals are often lost in OCR; check the visual detections.\nnot_applicable does not arise. Return defect_found only when the affidavit excerpt shows a blank verification, an unsigned deponent line, another matter’s cause title, or an empty attestation block with no notary detection; quote that line. Return compliant when verification and notarisation are shown in text or visual detections; quote the verification line. Return needs_review when the affidavit is not in the excerpts or the attestation cannot be read."
     },
     {
       "check_id": "D-65",
@@ -2235,11 +2249,13 @@
       "main_category": "General/Global",
       "special_category": null,
       "defect": "Translations of vernacular documents/portions/lines are not filed",
-      "requirement": "If there are any vernacular documents/portions/lines, translation of such documents must be filed",
-      "trigger_words": null,
+      "requirement": "Where any document, or any portion or line of a document, in the case file is in a vernacular language, a translation of it must be filed, in terms of Order VIII Rule 2 of the Supreme Court Rules, 2013.",
+      "trigger_words": "Translated copy; English translation; True translation; Translated from",
       "where_to_look": [
-        "1. Check the Annexures for any document, or any portion or line within a document, that is in a vernacular language.",
-        "2. Check whether a translation of such document/portion is filed alongside it and is described as a translated copy in the Index and List of Dates."
+        "Annexures: vernacular documents, portions or lines",
+        "Read each Annexure for text in a non-Latin script or another language, including single portions or lines inside an English document.",
+        "Annexures: translations headed “Translated copy”, “English translation” or “True translation”",
+        "Match each vernacular document, portion or line with a translation of the same document filed with it."
       ],
       "inspect_parts": [
         "Annexures"
@@ -2248,26 +2264,29 @@
         "Index"
       ],
       "how_to_cure": [
-        "1. Option for the User to upload the translated document with Jubeex.",
-        "2. Re-upload the petition along with the translated document."
+        "Option for the User to upload the translation of each vernacular document, portion or line, placed with the document it translates.",
+        "Option for the User to mark this defect as complete if the case file contains no vernacular document, portion or line, or the translation is already filed at another page of the case file."
       ],
       "applicable_rule": "Order VIII, Rule 2",
       "location_source": "Page 2, Defect List.pdf\nSCR, 2013, Page 13 of the PDF 2024011691-1.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "Vernacular material is a document, portion or line in a language other than English. In OCR it appears in a non-Latin script or as words of another language. A translation is filed with the document it translates and may be headed “TRANSLATION”, “Translated copy”, “English translation” or “True translation”. Labels may be wrong; identify each Annexure by its own heading.\nCompliance needs (a) each vernacular document, portion or line, and (b) a translation of it filed with that document.\nDo not treat garbled OCR of an English page, or personal and place names, as vernacular material.\nReturn not_applicable when every Annexure in the excerpts is entirely in English and the excerpts cover every numbered Annexure. Return defect_found only when an excerpt shows vernacular text and the following pages of that Annexure in the excerpts move to another document with no translation; quote the vernacular line or its heading. Return compliant when each vernacular document in the excerpts is followed by its translation; quote the translation heading. Return needs_review when the translation could lie on pages not in the excerpts, or the language of a page cannot be identified."
     },
     {
       "check_id": "D-69",
       "main_category": "General/Global",
       "special_category": null,
       "defect": "Official Translation is not filed. An application for exemption from filing the official translation, with affidavit and court fee, also not filed",
-      "requirement": "An official translation must be filed for any vernacular documents/sentences. If not done so, an application for exemption from filing the official translation, with an affidavit and court fee, must be filed",
-      "trigger_words": "Vernacular, local language",
+      "requirement": "An official translation must be filed for every vernacular document or sentence; where it is not filed, an application for exemption from filing the official translation, supported by an affidavit and court fee, must be filed.",
+      "trigger_words": "official translation; exemption from filing official translation; exemption from filing the official translation",
       "where_to_look": [
-        "1. Check the Annexures for the official translation of any vernacular document.",
-        "2. If the translation filed is not an official one, check the Applications placed after the Annexures for an application seeking exemption from filing the official translation."
+        "Annexures: official translation of each vernacular document",
+        "Application: exemption from filing official translation",
+        "Read whether each translation is described as an official translation on its face.",
+        "Read the exemption application for its supporting affidavit and court fee."
       ],
       "inspect_parts": [
         "Annexures"
@@ -2277,15 +2296,16 @@
         "Affidavit"
       ],
       "how_to_cure": [
-        "1. Option for Jubeex to draft the Application for Exemption from Filing Official Translation (with an option for the User to review and edit them).",
-        "2. Prompt the User to pay the requisite court fee and upload the application, supporting affidavit, and proof of payment with Jubeex."
+        "Option for the User to upload the Application for Exemption from Filing Official Translation, with the court fee paid.",
+        "Option for the User to upload the supporting affidavit to the Application for Exemption from Filing Official Translation, duly sworn.",
+        "Option for the User to mark this defect as complete if no vernacular document is filed, the official translation is already filed, or the exemption application with its affidavit and court fee is already filed at another page of the case file."
       ],
       "applicable_rule": null,
       "location_source": "Page 2, Defect List.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "ai_note": "This is a conditional composite check. First positively identify vernacular content, then determine whether an official translation exists. Only if it does not, inspect the complete exemption application package for the application, supporting affidavit and court-fee proof. State exactly which prerequisite and which package component failed; otherwise return needs_review.",
+      "ai_note": "Vernacular material is any document or sentence in a local language. An official translation is filed with the document and is described as official on its face. The exemption request is an application headed like “Application for exemption from filing official translation”, with its own supporting affidavit. Labels may be wrong; identify each document by its own heading.\nCompliance needs, for every vernacular document or sentence, either (a) an official translation, or (b) an application for exemption from filing the official translation, with (c) a supporting affidavit and (d) court fee.\nDo not treat a translation not described as official as an official translation, and do not treat an application seeking another exemption as this one. Court fee may appear only as a stamp lost in OCR; check the visual detections.\nReturn not_applicable when every Annexure in the excerpts is in English and the excerpts cover every numbered Annexure. Return defect_found only when an excerpt shows a translation stated not to be official while the application excerpts contain no exemption application, or the exemption application’s affidavit is blank or unsigned; quote that line. Return compliant when an official translation or a complete exemption application is shown; quote its heading. Return needs_review when it is unclear whether a translation is official, or the application or its affidavit is not in the excerpts.",
       "parent_check_id": null
     },
     {
@@ -3445,26 +3465,31 @@
       "check_id": "D-112",
       "main_category": "General/Global",
       "special_category": null,
-      "defect": "The main petition and the application does not disclose who the counsel is representing i.e Petitioner or respondent",
-      "requirement": "The main petition and the application must disclose who the counsel is representing i.e Petitioner or respondent",
-      "trigger_words": null,
+      "defect": "The petition and the application do not disclose who the counsel is representing  i.e Petitioner or respondent",
+      "requirement": "The Main Petition and every Application filed with it must state, below the advocate's name or signature at the end of the document, whom the advocate represents, such as \"Advocate for the Petitioner\" or \"Advocate for the Respondent\".",
+      "trigger_words": "Advocate for the Petitioner; Advocate for the Appellant; Advocate for the Respondent; Counsel for the Petitioner; Drawn & Filed by; Drawn and Filed by",
       "where_to_look": [
-        "Check at all required places for the signature and name of the counsel along with disclosure of who they are representing"
+        "Main Petition: advocate's name and party represented on the last page",
+        "Application: advocate's name and party represented below the prayer on the last page of each Application.",
+        "The advocate's line, \"Advocate for the Petitioner\", \"Advocate for the Appellant\" or \"Advocate for the Respondent\", under the name or signature or under \"Drawn & Filed by\".",
+        "Each Application's ending separately from the Main Petition's, checking that the party described matches the side the AOR appears for in the filing record."
       ],
       "inspect_parts": [
         "Main Petition",
         "Application"
       ],
       "how_to_cure": [
-        "1. Option for the User to Auto-edit with Jubeex",
-        "2. Option for User to edit with Jubeex"
+        "Option for the User to edit the Petition or the Application with Jubeex to insert, below the advocate's name at the end, whom the advocate represents (for example \"Advocate for the Petitioner\").",
+        "Option for the User to upload and replace the Petition or the Application with a corrected version that states whom the advocate represents.",
+        "Option for the User to mark this defect as complete if the Petition and every Application already state whom the advocate represents."
       ],
       "applicable_rule": null,
       "location_source": "Official source not recorded",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "The closing block of the Main Petition and of each Application follows the prayer: place, date, often \"Drawn & Filed by\" or \"FILED BY\", then the advocate's name. Excerpt labels may be wrong; identify each document by its content.\n\nFor the Main Petition and each Application: (a) the advocate's name or signature at the end; (b) a line stating whom the advocate represents, such as \"Advocate for the Petitioner\" or \"for the Respondent\".\n\nThe same description on the Listing Proforma, the Certificate or a copy from the courts below does not satisfy this row.\n\nnot_applicable only when the filing record shows the party appears in person. defect_found only when a closing block shows the advocate's name with no party described; quote that name line. compliant when every Main Petition and Application ending in the excerpts names the party; quote the Main Petition's line. needs_review when the last page of the Main Petition or any Application is missing from the excerpts, or the block is handwritten or stamped and unreadable in OCR and the visual detections."
     },
     {
       "check_id": "D-113",
@@ -4778,23 +4803,29 @@
       "main_category": "SLP (Civil)",
       "special_category": null,
       "defect": "Paragraph 1 of the SLP does not specify the Court/Tribunal against whose order leave to appeal is sought, and/or the case number, date of the impugned order, and/or the nature of the impugned order.",
-      "requirement": "The petition shall specify the Court/Tribunal against whose order the leave to appeal is sought, the number of the case, the date of the order and the nature of the order, such as allowing or dismissing the matter or granting or refusing the interim order",
-      "trigger_words": null,
+      "requirement": "Paragraph 1 of the SLP must state (a) the Court or Tribunal against whose order leave to appeal is sought, (b) the case number, (c) the date of the order and (d) the nature of the order, such as allowing or dismissing the matter or granting or refusing the interim order, as required by Order XXI Rule 3(1)(a) of the Supreme Court Rules, 2013 and Form No. 28.",
+      "trigger_words": "respectfully submits this petition; seeking special leave to appeal; special leave to appeal against; impugned final judgment and order dated; impugned judgment and order dated",
       "where_to_look": [
-        "Check Paragraph 1 of the SLP for the particulars of the impugned judgment/order, including the name of the Court/Tribunal, case number, date of the order, and nature of the order"
+        "Main Petition: paragraph 1 particulars of the impugned order",
+        "Paragraph 1, the first numbered paragraph below the cause title, usually opening \"The Petitioner respectfully submits this petition seeking special leave to appeal\".",
+        "Paragraph 1's court or tribunal name, case number (\"No.\"), order date (\"dated\") and outcome words such as \"allowed\", \"dismissed\", \"granted\" or \"refused\".",
+        "Paragraph 1 of this SLP under the Supreme Court cause title, not the opening of a copy from the courts below."
       ],
       "inspect_parts": [
         "Main Petition"
       ],
       "how_to_cure": [
-        "Option for User to edit the paragraph from the Main Petitio with Jubeex."
+        "Option for the User to edit the Petition with Jubeex to state in paragraph 1 the Court or Tribunal, the case number, the date of the impugned order and its nature.",
+        "Option for the User to upload and replace the Petition with a corrected version whose paragraph 1 states these particulars.",
+        "Option for the User to mark this defect as complete if paragraph 1 of the Petition already states the Court or Tribunal, case number, date and nature of the impugned order."
       ],
       "applicable_rule": "Order XXI, Rule 3(1)(a)",
       "location_source": "SCR, 2013, Page 30 of the PDF 2024011691-1.pdf\nForm No. 28 Form 28 - SLP.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "Paragraph 1 is the first numbered paragraph of the SLP after the cause title, usually opening \"The Petitioner respectfully submits this petition seeking special leave to appeal\". Excerpt labels may be wrong; identify it by its content.\n\nParagraph 1 itself must state: (a) the Court or Tribunal; (b) the case number; (c) the order date; (d) its nature, meaning what the order did (allowed, dismissed, granted or refused interim relief).\n\nThe same particulars in the grounds or another document in the file do not cure a gap in paragraph 1. Paragraph 1A is a separate paragraph.\n\nnot_applicable only when the filing record shows the petition is not an SLP (Civil). defect_found only when paragraph 1 is fully visible and omits one of (a) to (d); quote its opening line and name the missing element. compliant when paragraph 1 states all four; quote the line with the court, case number and date. needs_review when paragraph 1 is missing or cut off, or the nature is given only as \"final judgment and order\"."
     },
     {
       "check_id": "D-162",
@@ -5246,28 +5277,29 @@
       "main_category": "SLP (Civil)",
       "special_category": null,
       "defect": "SLP does not state whether Letters Patent Appeal or Writ Appeal lies against impugned judgment and whether that remedy was availed",
-      "requirement": "The SLP shall contain a statement as to whether a letters patent appeal or writ appeal lies against the impugned judgment or order and whether the said remedy has been availed",
-      "trigger_words": null,
+      "requirement": "Paragraph 1A of the SLP must state whether a Letters Patent Appeal or Writ Appeal lies against the impugned judgment or order and whether that remedy has been availed; where the order is of a Single Bench of the High Court and the petitioner has come directly to this Court, it must also give the reason for not availing the Division Bench remedy (Order XXI Rule 3(5), Supreme Court Rules, 2013).",
+      "trigger_words": "Letters Patent; Letter Patent; Writ Appeal; intra-court appeal; intra court appeal",
       "where_to_look": [
-        "Check Paragraph 1A of the SLP, particularly where the impugned order is passed by a Single Bench of the High Court, for a statement as to (i) whether an intra-court appeal before a Division Bench, including a Letters Patent Appeal or Writ Appeal, lies against the impugned order; (ii) whether such remedy has been availed; and (iii) where the petitioner has approached the Supreme Court directly, the reason for not availing the remedy before the Division Bench."
+        "Main Petition: paragraph 1A statement on Letters Patent or Writ Appeal",
+        "Paragraph 1A, immediately after paragraph 1, which gives the particulars of the impugned order.",
+        "The words \"Letters Patent Appeal\", \"Writ Appeal\" or \"intra-court appeal\", whether the remedy \"lies\" or \"does not lie\", and whether it \"has been availed\" or filed.",
+        "For a Single Bench order, the reason given in paragraph 1A for approaching this Court directly instead of the Division Bench."
       ],
       "inspect_parts": [
         "Main Petition"
       ],
       "how_to_cure": [
-        "1. Whether LPA/Writ Appeal Lies",
-        "1.1. Prompt the User to provide details of whether a Letters Patent Appeal or Writ Appeal lies against the impugned judgment/order, and option for Jubeex to incorporate the required statement in the SLP.",
-        "1.2. Option for the User to add and edit the SLP twith Jubeex.",
-        "2. Whether the Remedy Has Been Availed",
-        "2.1. Prompt the User to provide details of whether the Letters Patent Appeal or Writ Appeal has been availed and, if so, the relevant particulars, and option for Jubeex to incorporate the required statement in the SLP.",
-        "2.2. Option for the User to add and edit the SLP with Jubeex."
+        "Option for the User to edit the Petition with Jubeex to insert in paragraph 1A whether a Letters Patent Appeal or Writ Appeal lies against the impugned order, whether it was availed and, for a Single Bench order, why the petitioner approached this Court directly.",
+        "Option for the User to upload and replace the Petition with a corrected version containing this statement in paragraph 1A.",
+        "Option for the User to mark this defect as complete if paragraph 1A of the Petition already contains this statement."
       ],
       "applicable_rule": "Order XXI, Rule 3(5)",
       "location_source": "SCR, 2013, Page 31 of the PDF 2024011691-1.pdf",
       "notes": null,
       "ivan_comment": "Ivan's comment:- If you are approaching SC directly from Single bench order of the HC then in Para 1A of the SLP, you have to make such declaration - \n\n1) Whether there is division bench appeal against the impugned order and why have petitioner approached the SC directly",
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "Paragraph 1A of the SLP follows paragraph 1; OCR may give \"1 A\", \"1(A)\" or \"IA\", but an \"I.A. No.\" is an application number. Excerpt labels may be wrong; identify it by its content.\n\n(a) whether a Letters Patent or Writ Appeal (intra-court appeal to a Division Bench) lies against the impugned order; (b) whether it was availed; (c) for a Single Bench order challenged directly here, why the Division Bench remedy was not availed.\n\nA Letters Patent or Writ Appeal mentioned in the grounds or a copy from the courts below is not the 1A statement.\n\nnot_applicable only when paragraph 1 or the filing record shows the impugned order is not of a High Court. defect_found only when paragraph 2 directly follows paragraph 1, or 1A omits (a), (b) or a required (c); quote the 1A line, or paragraph 2's opening if 1A is absent. compliant when 1A states (a), (b) and any required (c); quote the 1A line. needs_review when the text after paragraph 1 is not in the excerpts, or the bench strength is unclear."
     },
     {
       "check_id": "D-180",
@@ -6390,11 +6422,13 @@
       "main_category": "SLP (Civil)/SLP (Criminal)",
       "special_category": null,
       "defect": "The English version of the relevant provisions of the Constitution, statutes, ordinances, rules, regulations, bye laws, orders etc. referred to in the impugned judgment/ order has not been filed as Appendix to the SLP.",
-      "requirement": "The English version of the relevant provisions of the Constitution, statutes, ordinances, rules, regulations, bye laws, orders etc. referred to in the impugned judgment/ order has been filed as Appendix to the SLP.",
-      "trigger_words": null,
+      "requirement": "Where the impugned judgment or order refers to provisions of the Constitution, statutes, ordinances, rules, regulations, bye-laws, orders etc., the English version of the relevant provisions must be filed as an \"Appendix\" to the SLP.",
+      "trigger_words": "relevant provision; relevant extract; English version",
       "where_to_look": [
-        "1. Check the Impugned Judgment/Order for the provisions of the Constitution, statutes, ordinances, rules, regulations, bye-laws or orders referred to in it.",
-        "2. Check the case file after the Affidavit supporting the main petition for an Appendix reproducing the English version of each of those provisions."
+        "Appendix: English text of the provisions referred to in the impugned order",
+        "Impugned Order: provisions cited in its reasoning, such as \"Section\", \"Article\", \"Rule\" or \"Order\" with a number and the Act or instrument.",
+        "Appendix: text under the \"APPENDIX\" heading reproducing each provision in English with its Act and section, article or rule number.",
+        "Each relevant provision the Impugned Order refers to, matched against those reproduced in the Appendix."
       ],
       "inspect_parts": [
         "Appendix",
@@ -6405,14 +6439,15 @@
         "Affidavit"
       ],
       "how_to_cure": [
-        "Option for the User to upload the Appendix."
+        "Option for the User to upload the Appendix setting out the English version of the relevant provisions referred to in the impugned judgment or order.",
+        "Option for the User to mark this defect as complete if the Appendix already sets out the English version of every relevant provision, or the impugned judgment or order refers to none."
       ],
       "applicable_rule": "N.A",
       "location_source": "Page 4, Defect List.pdf",
       "notes": null,
       "ivan_comment": "Ivan to confirm",
       "notes_2": "Ivan's comment:- It is a mandate, and English translation is required & there is no exemption for this",
-      "ai_note": "First extract the distinct provisions actually relied on in the Impugned Order, then compare that set with the Appendix. Do not treat every procedural citation as substantively relevant without explaining why. State the exact missing provision; if relevance is ambiguous, return needs_review.",
+      "ai_note": "The Appendix is headed \"APPENDIX\" and reproduces the text of sections, articles or rules, often under \"Relevant provisions of\". Excerpt labels may be wrong; identify it by its content.\n\n(a) an Appendix is filed with the SLP; (b) it is in English; (c) it reproduces the relevant provisions the impugned judgment or order refers to.\n\nA provision quoted inside the Impugned Order or the SLP's grounds is not an Appendix. A non-English text does not meet this row; the English version is mandatory without exemption. Passing citations need not be reproduced.\n\nnot_applicable only when the Impugned Order refers to no provision of any Constitution, statute, rule or other instrument; quote its operative line. defect_found only when the Appendix is present but omits a relevant provision the Impugned Order names, or is not in English; quote the Impugned Order line naming it and give the Appendix pages in the reasoning. compliant when each relevant provision appears in English in the Appendix; quote that Appendix line. needs_review when no Appendix page or none of the Impugned Order's reasoning is in the excerpts.",
       "parent_check_id": null
     },
     {
@@ -9093,12 +9128,14 @@
       "check_id": "D-327",
       "main_category": "General/Global",
       "special_category": null,
-      "defect": "List of dates not filed in chronological order with relevant material facts/events of each date",
-      "requirement": "Along with the petition, a list of dates in chronological order with relevant material facts or events pertaining to each of the dates shall be furnished",
-      "trigger_words": null,
+      "defect": "List of dates not filed in the chronological order with relevant material facts/events of each date furnished",
+      "requirement": "The \"List of Dates and Events\" filed along with the petition must set out its dates in chronological order, with the relevant material facts or events pertaining to each date stated against it.",
+      "trigger_words": "LIST OF DATES AND EVENTS; LIST OF DATES & EVENTS; Hence the present",
       "where_to_look": [
-        "1. Check the case file after the Synopsis and before the Impugned Order for a date-wise List of Dates & Events setting out the relevant material facts and events in chronological order.",
-        "2. Verify that the relevant Annexures are referred to against the corresponding dates/events in the List of Dates & Events, wherever applicable."
+        "List of Dates & Events: dates in sequence with the event against each",
+        "The date column from the first entry to the last entry, including continuation pages, read in the order printed.",
+        "The entries under the heading \"LIST OF DATES AND EVENTS\" or \"LIST OF DATES & EVENTS\", pairing each date with the fact or event beside it.",
+        "Each date compared with the date of the entry before it, using only the list filed under this petition's cause title."
       ],
       "inspect_parts": [
         "List of Dates & Events"
@@ -9109,15 +9146,17 @@
         "Impugned Order"
       ],
       "how_to_cure": [
-        "1. Option for the User to edit the List of Dates with Jubeex.",
-        "2. Option for the User to upload List of Dates."
+        "Option for the User to edit the Synopsis and List of Dates & Events with Jubeex to arrange the entries in chronological order and state the relevant material fact or event against each date.",
+        "Option for the User to upload and replace the Synopsis and List of Dates & Events with a corrected version in chronological order, with the relevant fact or event stated against each date.",
+        "Option for the User to mark this defect as complete if the List of Dates & Events is already in chronological order with the relevant fact or event stated against each date."
       ],
       "applicable_rule": null,
       "location_source": "Official source not recorded",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "A list or two-column table of dates and events, often sharing pages with the Synopsis; OCR may merge the columns. Excerpt labels may be wrong; identify the list by its content.\n\n(a) each entry has a date; (b) each date has a relevant fact or event against it; (c) the dates run from earliest to latest.\n\nThe Synopsis narrative need not be dated. A list of dates in an Annexure or a copy from the courts below is not this list. Two events on one date are not out of order.\n\nnot_applicable only when the filing record shows the filing is not a petition. defect_found only when an entry's date is earlier than the entry before it, or a date has no event against it; quote that entry and give the preceding entry and its page in the reasoning. compliant when the whole list is in the excerpts, in order, with an event for each date; quote the last entry. needs_review when the list or a continuation page is missing from the excerpts, or OCR has separated dates from events."
     },
     {
       "check_id": "D-328",

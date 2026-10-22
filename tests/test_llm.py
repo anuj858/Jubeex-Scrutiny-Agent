@@ -30,6 +30,32 @@ def test_parse_json_truncated_object_is_repaired() -> None:
     assert parsed["status"] == "compliant"
 
 
+def test_a_cut_off_sentence_is_not_a_complete_answer() -> None:
+    from extraction_review.llm import (
+        ANSWER_TOKEN_BUDGET,
+        DEFAULT_MAX_TOKENS,
+        _answer_was_cut,
+        _hard_token_limit,
+        _loads_complete_json,
+        _with_output_budget,
+    )
+
+    cut = """{
+  "check_id": "D-68",
+  "status": "needs_review",
+  "summary": "The language of Annexure P-6 cannot be identified.",
+  "observed": "Annexures P-1 through P-5 appear in English, but Annexure P-"""
+    assert _loads_complete_json(cut) is None
+    assert _answer_was_cut(cut) is True
+    assert DEFAULT_MAX_TOKENS == 9000
+    assert ANSWER_TOKEN_BUDGET == 8200
+    assert _hard_token_limit(None) == 9000
+    assert _hard_token_limit(20000) == 9000
+    told = _with_output_budget("Decide this defect.")
+    assert "8200" in told
+    assert _with_output_budget(told) == told
+
+
 def test_parse_json_truncated_reasoning_is_salvaged() -> None:
     parsed = _parse_json(
         """{

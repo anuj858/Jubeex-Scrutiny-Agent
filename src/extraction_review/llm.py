@@ -33,7 +33,11 @@ DEFAULT_MODEL = "google/gemini-3.8-flash"
 DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-3.8-flash"
 DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-3.8-flash"
 DEFAULT_TIMEOUT_S = 180.0
-DEFAULT_MAX_TOKENS = 2800
+# Hard ceiling sent to the model. It is never raised.
+DEFAULT_MAX_TOKENS = 9000
+# The model is told to finish the whole JSON inside this. The gap up to
+# 9000 is spare so a finished sentence is not cut at the ceiling.
+ANSWER_TOKEN_BUDGET = 8200
 MAX_ATTEMPTS = 3
 DEFAULT_REQUESTS_PER_MINUTE = 0
 _RATE_WINDOW_S = 60.0
@@ -430,6 +434,66 @@ def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
     return completed
 
 
+def _loads_complete_json(content: str) -> dict[str, Any] | None:
+    """Parse a finished JSON object. A reply cut off mid-sentence is not one."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        text = text.removeprefix("json").strip()
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _answer_was_cut(content: str, *, finish_reason: str = "") -> bool:
+    """True when the token budget stopped the reply before the JSON closed."""
+    if _loads_complete_json(content) is None:
+        return True
+    return finish_reason.strip().upper() in {"MAX_TOKENS", "LENGTH"}
+
+
+def output_budget_instruction() -> str:
+    """Tell the model the whole structured reply must finish inside the budget."""
+    return (
+        f"The entire JSON object must be complete in {ANSWER_TOKEN_BUDGET} "
+        "tokens or fewer. Finish every sentence and close every field inside "
+        "that budget. Do not write past it."
+    )
+
+
+def _with_output_budget(system_prompt: str) -> str:
+    note = output_budget_instruction()
+    base = (system_prompt or "").rstrip()
+    if note in base:
+        return base
+    return f"{base}\n\n{note}" if base else note
+
+
+def _hard_token_limit(limit: int | None) -> int:
+    """Never send a structured call more than DEFAULT_MAX_TOKENS."""
+    if limit is None or limit <= 0:
+        return DEFAULT_MAX_TOKENS
+    return min(int(limit), DEFAULT_MAX_TOKENS)
+
+
+def _finish_reason_name(response: Any) -> str:
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return ""
+    reason = getattr(candidates[0], "finish_reason", None)
+    name = getattr(reason, "name", None)
+    return str(name or reason or "")
+
+
 def _parse_json(content: str) -> dict[str, Any]:
     text = content.strip()
     if text.startswith("```"):
@@ -505,7 +569,31 @@ async def _call_structured_vertex[T: BaseModel](
                     return response_model.model_validate(parsed_obj.model_dump()), usage
             if not content:
                 raise LLMError("Vertex response had empty text")
-            parsed = _complete_structured_fields(_parse_json(content))
+            reason = _finish_reason_name(response)
+            if _answer_was_cut(content, finish_reason=reason):
+                logger.warning(
+                    "[LLM] Vertex reply was cut off (%s); retrying inside "
+                    "max_output_tokens=%s",
+                    reason or "incomplete JSON",
+                    token_limit,
+                )
+                if attempt < MAX_ATTEMPTS:
+                    contents = (
+                        f"{user_prompt}\n\n{output_budget_instruction()} "
+                        "The previous reply was cut off. Return the complete "
+                        "JSON inside that budget."
+                    )
+                    continue
+                complete = _loads_complete_json(content)
+                if complete is None:
+                    raise LLMError(
+                        "The model reply was cut off before the sentence finished"
+                    )
+            else:
+                complete = _loads_complete_json(content)
+            if complete is None:
+                raise LLMError("Vertex response was not a JSON object")
+            parsed = _complete_structured_fields(complete)
             return response_model.model_validate(parsed), usage
         except ValidationError as e:
             last_error = e
@@ -608,6 +696,7 @@ async def call_structured[T: BaseModel](
 ) -> tuple[T, LlmUsage]:
     """Call Vertex (default) or OpenRouter and return validated JSON + usage."""
     model_name = model or openrouter_model()
+    system_prompt = _with_output_budget(system_prompt)
     if llm_provider() == "vertex":
         model_name = _strip_google_model_prefix(model_name)
         token_limit = max_tokens
@@ -620,7 +709,7 @@ async def call_structured[T: BaseModel](
             response_model=response_model,
             model_name=model_name,
             temperature=temperature,
-            token_limit=token_limit,
+            token_limit=_hard_token_limit(token_limit),
         )
 
     schema = strict_json_schema(response_model)
@@ -630,6 +719,7 @@ async def call_structured[T: BaseModel](
     if token_limit is None:
         raw_limit = os.getenv("OPENROUTER_MAX_TOKENS", "").strip()
         token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
+    token_limit = _hard_token_limit(token_limit)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -717,17 +807,40 @@ async def call_structured[T: BaseModel](
                         parse_openrouter_usage(payload, model=model_name)
                     )
                 content = _extract_content(payload)
-                parsed = _complete_structured_fields(_parse_json(content))
                 finish = ""
                 if isinstance(payload, dict):
                     choices = payload.get("choices") or []
                     if choices and isinstance(choices[0], dict):
                         finish = str(choices[0].get("finish_reason") or "")
-                if finish == "length":
+                if _answer_was_cut(content, finish_reason=finish):
                     logger.warning(
-                        "[LLM] %s hit max_tokens; salvaged truncated JSON",
+                        "[LLM] %s reply was cut off (%s); retrying inside max_tokens=%s",
                         model_name,
+                        finish or "incomplete JSON",
+                        token_limit,
                     )
+                    if attempt < MAX_ATTEMPTS:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"{output_budget_instruction()} "
+                                    "The previous reply was cut off. Return the "
+                                    "complete JSON inside that budget."
+                                ),
+                            }
+                        )
+                        continue
+                    complete = _loads_complete_json(content)
+                    if complete is None:
+                        raise LLMError(
+                            "The model reply was cut off before the sentence finished"
+                        )
+                else:
+                    complete = _loads_complete_json(content)
+                if complete is None:
+                    raise LLMError("Response was not a JSON object")
+                parsed = _complete_structured_fields(complete)
                 value = response_model.model_validate(parsed)
                 return value, usage
 

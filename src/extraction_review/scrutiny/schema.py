@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from ..document_parts import (
     _part_match,
     allows_index_evidence,
+    chunks_cover_part,
     missing_required_parts,
     parts_named_in_where_to_look,
     parts_on_page,
@@ -1033,21 +1034,20 @@ def missing_parts_in_layout(
     """
     if not layout:
         return None
-    labelled_pages: list[list[str]] = []
+    pages: list[dict[str, Any]] = []
     for page in layout.values():
         if not isinstance(page, dict):
             return None
         names = parts_on_page(page.get("document_part"))
         if not names:
             return None
-        labelled_pages.append(names)
-    if not labelled_pages:
+        pages.append({"document_part": names, "chunk_kind": "page"})
+    if not pages:
         return None
-    available = {name.casefold() for names in labelled_pages for name in names}
     required = required_parts_for_defect(defect)
     if not required:
         return None
-    return [part for part in required if part.casefold() not in available]
+    return [part for part in required if not chunks_cover_part(pages, part)]
 
 
 def manifest_absence_proven(
@@ -1062,15 +1062,14 @@ def manifest_absence_proven(
     return bool(missing) and bool(required) and len(missing) == len(required)
 
 
-def missing_document_sentence(parts: list[str], *, is_defect: bool) -> str:
+def missing_document_sentence(parts: list[str]) -> str:
     """The only sentence published when a required document type is absent."""
     label = _english_join([part for part in parts if part])
     if not label:
         label = "required document"
-    if is_defect:
-        verb = "is missing" if len(parts) <= 1 else "are missing"
-        return f"The {label} {verb} from the case file."
-    return f"The {label} could not be located in the case file."
+    plural = len([part for part in parts if part]) > 1 or label.casefold() == "annexures"
+    verb = "are missing" if plural else "is missing"
+    return f"The {label} {verb} from the case file."
 
 
 def _english_join(parts: list[str]) -> str:
@@ -1083,31 +1082,6 @@ def _english_join(parts: list[str]) -> str:
     return ", ".join(parts[:-1]) + f" and {parts[-1]}"
 
 
-def absence_is_a_defect(defect: Defect) -> bool:
-    """Rows whose missing document is itself the defect.
-
-    The catalogue flag wins. Until that column is loaded for a row, a check id
-    listed in configs/config.json under scrutiny.missing_document_is_defect
-    has the same effect.
-    """
-    if bool(getattr(defect, "manifest_absence_proves_defect", False)):
-        return True
-    check_id = str(getattr(defect, "check_id", "") or "").strip()
-    return bool(check_id) and check_id in missing_document_check_ids()
-
-
-def missing_document_check_ids() -> frozenset[str]:
-    from ..config import load_config_payload
-
-    scrutiny = load_config_payload().get("scrutiny") or {}
-    raw = scrutiny.get("missing_document_is_defect") or []
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return frozenset()
-    return frozenset(str(item).strip() for item in raw if str(item).strip())
-
-
 def apply_manifest_absence_policy(
     defect: Defect,
     response: DefectResponse,
@@ -1116,12 +1090,9 @@ def apply_manifest_absence_policy(
     """Record a wholly missing document. The model is not asked to explain it."""
     if not manifest_absence_proven(defect, layout):
         return response
-    sentence = missing_document_sentence(
-        required_parts_for_defect(defect),
-        is_defect=True,
-    )
+    sentence = missing_document_sentence(required_parts_for_defect(defect))
     response.status = "defect_found"
-    response.confidence = max(response.confidence, 0.95)
+    response.confidence = 1.0
     response.summary = sentence
     response.observed = ""
     response.conclusion = sentence
@@ -1334,8 +1305,7 @@ def missing_document_finding(
     record: dict[str, Any] | None = None,
 ) -> DefectFinding:
     """Publish a missing document type without calling the model."""
-    is_defect = absence_is_a_defect(defect)
-    sentence = missing_document_sentence(parts, is_defect=is_defect)
+    sentence = missing_document_sentence(parts)
     try:
         catalogue = get_catalogue()
     except RuntimeError:
@@ -1362,9 +1332,9 @@ def missing_document_finding(
         requirement=str(getattr(defect, "requirement", "") or ""),
         main_category=str(getattr(defect, "main_category", "") or ""),
         special_category=getattr(defect, "special_category", None),
-        status="defect_found" if is_defect else "needs_review",
+        status="defect_found",
         summary=sentence,
-        confidence=0.95 if is_defect else 0.5,
+        confidence=1.0,
         reasoning=sentence,
         evidence=[],
         visual_localizations=visual_localizations,
