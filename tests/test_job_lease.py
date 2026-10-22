@@ -7,13 +7,18 @@ from extraction_review.job_lease import JobLease
 
 
 class FakeS3:
-    def __init__(self) -> None:
+    def __init__(self, *, deny_missing_reads: bool = False) -> None:
         self.objects: dict[str, tuple[bytes, str]] = {}
         self.version = 0
+        self.deny_missing_reads = deny_missing_reads
+        self.get_calls = 0
 
     def get_object(self, *, Bucket: str, Key: str):
         del Bucket
+        self.get_calls += 1
         if Key not in self.objects:
+            if self.deny_missing_reads:
+                raise ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
             raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
         body, etag = self.objects[Key]
         return {"Body": io.BytesIO(body), "ETag": etag}
@@ -44,3 +49,17 @@ def test_job_lease_excludes_other_worker_until_release(monkeypatch) -> None:
     assert second.acquire() is True
     with pytest.raises(RuntimeError, match="ownership was lost"):
         first.renew()
+
+
+def test_new_job_lease_does_not_require_listing_bucket(monkeypatch) -> None:
+    store = FakeS3(deny_missing_reads=True)
+    monkeypatch.setattr("extraction_review.job_lease._bucket", lambda: "bucket")
+    monkeypatch.setattr("extraction_review.job_lease._s3_client", lambda: store)
+    first = JobLease("new-job")
+    second = JobLease("new-job")
+
+    assert first.acquire() is True
+    assert store.get_calls == 0
+    assert second.acquire() is False
+    first.release()
+    assert second.acquire() is True

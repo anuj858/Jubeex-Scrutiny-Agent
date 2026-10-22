@@ -64,6 +64,15 @@ class JobLease:
 
     def acquire(self) -> bool:
         for _ in range(20):
+            # A missing lease is normal for a new job. Create it conditionally
+            # before reading: S3 otherwise returns 403 (rather than 404) for
+            # a missing key when the task role cannot list the bucket.
+            try:
+                self._write(time.time() + self.duration, None)
+                return True
+            except Exception as exc:
+                if _error_code(exc) not in _CONFLICT:
+                    raise
             payload, etag = self._read()
             if float(payload.get("expires_at") or 0) > time.time():
                 return False
