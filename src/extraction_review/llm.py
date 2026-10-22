@@ -29,12 +29,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_VERTEX_PROJECT = "scrutiny-jubeex"
 DEFAULT_VERTEX_LOCATION = "global"
-DEFAULT_VERTEX_MODEL = "gemini-3.8-flash"
+DEFAULT_VERTEX_MODEL = "gemini-4-argon"
 # DEFAULT_MODEL kept for OpenRouter ids.
-DEFAULT_MODEL = "google/gemini-3.8-flash"
-DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-3.8-flash"
-DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-3.8-flash"
+DEFAULT_MODEL = "google/gemini-4-argon"
+DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-4-argon"
+DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-4-argon"
 DEFAULT_TIMEOUT_S = 180.0
+DEFAULT_VERTEX_REQUEST_TIMEOUT_S = 900
 DEFAULT_MAX_TOKENS = 2800
 MAX_ATTEMPTS = 3
 DEFAULT_REQUESTS_PER_MINUTE = 0
@@ -177,6 +178,20 @@ def vertex_max_attempts() -> int:
         return max(1, int(raw)) if raw else DEFAULT_VERTEX_MAX_ATTEMPTS
     except ValueError:
         return DEFAULT_VERTEX_MAX_ATTEMPTS
+
+
+def vertex_request_timeout_seconds() -> int:
+    """Bound a single Argon request while allowing long reasoning responses."""
+    raw = (os.getenv("VERTEX_REQUEST_TIMEOUT_S") or "").strip()
+    if not raw:
+        return DEFAULT_VERTEX_REQUEST_TIMEOUT_S
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise ValueError("VERTEX_REQUEST_TIMEOUT_S must be an integer") from exc
+    if not 60 <= timeout <= 3600:
+        raise ValueError("VERTEX_REQUEST_TIMEOUT_S must be between 60 and 3600")
+    return timeout
 
 
 class _OpenRouterRateLimiter:
@@ -569,14 +584,18 @@ def get_genai_client() -> Any:
         ) from exc
     project = google_cloud_project()
     location = google_cloud_location()
+    from .aws_wif import ecs_google_credentials
+
     _genai_client = genai.Client(
         enterprise=True,
         project=project,
         location=location,
+        credentials=ecs_google_credentials(),
         # Keep a single retry layer. SDK retries happen below our limiter and
         # previously multiplied request bursts across ECS worker processes.
         http_options=types.HttpOptions(
             retry_options=types.HttpRetryOptions(attempts=1),
+            timeout=vertex_request_timeout_seconds() * 1000,
         ),
     )
     logger.info(

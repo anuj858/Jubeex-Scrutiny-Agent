@@ -37,17 +37,26 @@ def _is_loopback_url(url: str) -> bool:
 
 
 def resolve_callback_url(callback_url: str | None) -> str:
-    """Prefer a public URL. Request localhost must not override ECS env."""
+    """Use the trusted worker endpoint unless request overrides are opted in."""
     requested = (callback_url or "").strip()
     configured = (os.getenv("JUBEEX_CALLBACK_URL") or "").strip()
-    if requested and not _is_loopback_url(requested):
+    allow_request_override = (
+        os.getenv("JUBEEX_CALLBACK_ALLOW_REQUEST_OVERRIDE") or ""
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if (
+        requested
+        and not _is_loopback_url(requested)
+        and (allow_request_override or not configured)
+    ):
         return requested
     if configured and not _is_loopback_url(configured):
-        if requested and _is_loopback_url(requested):
+        if requested and requested != configured:
             logger.warning(
-                "Ignoring loopback callback_url=%s; using JUBEEX_CALLBACK_URL=%s",
-                requested,
-                configured,
+                "Ignoring request callback URL; using configured worker endpoint"
             )
         return configured
     return requested or configured
@@ -84,10 +93,10 @@ async def notify_job_finished(
     result: dict[str, Any] | None,
     artifacts: dict[str, Any] | None = None,
     event_id: str,
-) -> None:
+) -> bool:
     url = resolve_callback_url(callback_url)
     if not url:
-        return
+        return True
     if _is_loopback_url(url):
         logger.error(
             "Skipping callback for job %s — URL %s is not reachable from this "
@@ -96,7 +105,7 @@ async def notify_job_finished(
             job_id,
             url,
         )
-        return
+        return False
     completed = status == "completed"
     if kind == "process_file":
         event = "INGESTION_COMPLETED" if completed else "INGESTION_FAILED"
@@ -159,7 +168,7 @@ async def notify_job_finished(
                         job_id,
                         candidate,
                     )
-                return
+                return True
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 if exc.response is not None and exc.response.status_code == 404:
@@ -170,7 +179,7 @@ async def notify_job_finished(
                     job_id,
                     candidate,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - retain SQS message on callback failure
                 last_error = exc
                 logger.warning(
                     "Callback attempt %s/3 failed for job %s at %s",
@@ -184,3 +193,4 @@ async def notify_job_finished(
         job_id,
         exc_info=last_error,
     )
+    return False

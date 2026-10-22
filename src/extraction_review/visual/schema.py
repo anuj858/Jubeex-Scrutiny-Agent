@@ -78,7 +78,7 @@ _VISUAL_INDEX_EXAMPLE = {
         "completion_tokens": 400,
         "total_tokens": 1600,
         "calls": 1,
-        "model": "google/gemini-3.8-flash",
+        "model": "google/gemini-4-argon",
     },
     "marks": [
         {

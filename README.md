@@ -84,10 +84,20 @@ not yet been benchmarked.
 enable/disable switch.
 
 Registry defect checks use the dedicated `SCRUTINY_MODEL` setting, which
-defaults to Gemini 3.8 Flash (`gemini-3.8-flash` on Vertex AI and
-`google/gemini-3.8-flash` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+defaults to Gemini 4 Argon (`gemini-4-argon` on Vertex AI and
+`google/gemini-4-argon` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
 `OPENROUTER_VISION_MODEL` remain independent, so changing the scrutiny model
 does not silently change extraction or visual-mark detection.
+For ECS queue, lease, callback, and rollout checks see
+[`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
+Argon must be validated for project access, latency, 429 rate, cost, and defect
+accuracy before a production rollout.
+Checked-in release defaults use the enabled production defects from the DB
+catalogue (`SCRUTINY_CATALOGUE_SOURCE=db`, `SCRUTINY_DEFECTS=all`). The former
+11-code JSON subset is only an explicit test override. SQS workers impose a
+configurable 90-minute workflow deadline by default so a hung job fails with
+a terminal callback rather than remaining in Review indefinitely. This does
+not replace live queue, Vertex-capacity, and backend acceptance testing.
 
 `SPLIT_OUTPUT_DOCUMENTS` controls which sliced PDFs are emitted, without
 changing extraction, classification, reconciliation, or page-level auditing.

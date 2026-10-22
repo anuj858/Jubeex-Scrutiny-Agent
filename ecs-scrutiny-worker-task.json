@@ -11,6 +11,7 @@
   "containerDefinitions": [
     {
       "name": "jubeex-scrutiny-worker",
+      "stopTimeout": 120,
       "image": "893338224943.dkr.ecr.ap-south-1.amazonaws.com/jubeex-scrutiny-agent:worker-452c864-amd64",
       "essential": true,
       "entryPoint": [
@@ -60,11 +61,11 @@
         },
         {
           "name": "OPENROUTER_MODEL",
-          "value": "google/gemini-3.8-flash"
+          "value": "google/gemini-4-argon"
         },
         {
           "name": "SCRUTINY_MODEL",
-          "value": "google/gemini-3.8-flash"
+          "value": "google/gemini-4-argon"
         },
         {
           "name": "OPENROUTER_BASE_URL",
@@ -99,8 +100,16 @@
           "value": "6"
         },
         {
+          "name": "VERTEX_REQUEST_TIMEOUT_S",
+          "value": "900"
+        },
+        {
           "name": "JUBEEX_WORKER_KINDS",
           "value": "scrutiny"
+        },
+        {
+          "name": "JUBEEX_WORKER_MAX_JOB_SECONDS",
+          "value": "5400"
         },
         {
           "name": "OPENROUTER_APP_TITLE",
@@ -112,11 +121,11 @@
         },
         {
           "name": "SCRUTINY_DEFECTS",
-          "value": "D-1,D-57,D-58,D-64,D-68,D-69,D-112,D-161,D-179,D-226,D-327"
+          "value": "all"
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "json"
+          "value": "db"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",

@@ -121,6 +121,16 @@ class ScrutinyAfterIndexError(Exception):
         self.agent_data_id = agent_data_id
 
 
+def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
+    """Never report provider/check failures as a completed scrutiny run."""
+    failed = sum(bool(finding.error) for finding in findings)
+    if failed:
+        raise RuntimeError(
+            f"Scrutiny incomplete: {failed} of {planned} checks failed; "
+            "rerun scrutiny"
+        )
+
+
 class ScrutinyEvent(StartEvent):
     agent_data_id: str | None = None
     file_hash: str | None = None
@@ -1239,6 +1249,19 @@ class ScrutinyWorkflow(Workflow):
             organization_id=event.organization_id,
             workspace_id=event.workspace_id,
         )
+
+        failed_checks = sum(bool(finding.error) for finding in findings)
+        if failed_checks:
+            ctx.write_event_to_stream(
+                Status(
+                    level="error",
+                    message=(
+                        f"Scrutiny incomplete: {failed_checks} of {planned} "
+                        "checks failed. Partial results were saved; rerun scrutiny."
+                    ),
+                )
+            )
+            require_successful_checks(findings, planned)
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:

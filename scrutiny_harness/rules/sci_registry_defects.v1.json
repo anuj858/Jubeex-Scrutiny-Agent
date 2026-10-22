@@ -1872,8 +1872,8 @@
         "2. Check the Affidavit filed after the Main Petition for its own date, it must be of the same or a subsequent date of the drafting of petition."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Affidavit"
+        "Affidavit",
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Date of the affidavit:",
@@ -1898,8 +1898,8 @@
         "2. Check the body of the Affidavit for the date, number of paragraphs and number of pages of the petition, and cross-check the paragraph and page count against the Main Petition itself."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Affidavit"
+        "Affidavit",
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Number of paragraphs and pages of the petition:",
@@ -1927,8 +1927,8 @@
         "4. Use only the Vakalatnama bearing this matter’s Supreme Court cause title, and compare its date of execution with the date of drafting."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Vakalatnama"
+        "Vakalatnama",
+        "Main Petition"
       ],
       "context_parts": [
         "Memo of Parties",

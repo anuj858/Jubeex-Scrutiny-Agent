@@ -48,11 +48,11 @@
         },
         {
           "name": "SCRUTINY_DEFECTS",
-          "value": "D-1,D-57,D-58,D-64,D-68,D-69,D-112,D-161,D-179,D-226,D-327"
+          "value": "all"
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "json"
+          "value": "db"
         },
         {
           "name": "PINECONE_REGION",
@@ -80,7 +80,7 @@
         },
         {
           "name": "SCRUTINY_MODEL",
-          "value": "google/gemini-3.8-flash"
+          "value": "google/gemini-4-argon"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
@@ -97,6 +97,10 @@
         {
           "name": "VERTEX_MAX_ATTEMPTS",
           "value": "6"
+        },
+        {
+          "name": "VERTEX_REQUEST_TIMEOUT_S",
+          "value": "900"
         },
         {
           "name": "PINECONE_TEXT_FIELD",

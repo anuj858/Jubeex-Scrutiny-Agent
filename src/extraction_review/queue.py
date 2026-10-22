@@ -98,18 +98,9 @@ def _queue_url(kind: str) -> str:
         return explicit
     client = _client()
     name = queue_name(kind)
-    try:
-        return str(client.get_queue_url(QueueName=name)["QueueUrl"])
-    except Exception:
-        created = client.create_queue(
-            QueueName=name,
-            Attributes={
-                "VisibilityTimeout": str(_visibility_timeout()),
-                "MessageRetentionPeriod": "1209600",
-                "ReceiveMessageWaitTimeSeconds": "20",
-            },
-        )
-        return str(created["QueueUrl"])
+    # Queue creation is infrastructure's responsibility. Auto-creating here
+    # silently omitted a dead-letter queue and hid IAM/region mistakes.
+    return str(client.get_queue_url(QueueName=name)["QueueUrl"])
 
 
 def enqueue_job(message: dict[str, Any]) -> str:
@@ -167,4 +158,15 @@ def extend_job_visibility(
         QueueUrl=str(url),
         ReceiptHandle=str(handle),
         VisibilityTimeout=max(60, min(int(timeout), 43200)),
+    )
+
+
+def release_job_visibility(message: dict[str, Any]) -> None:
+    """Make an unfinished message immediately retryable during worker shutdown."""
+    handle = message.get("_receipt_handle")
+    url = message.get("_queue_url")
+    if not handle or not url:
+        return
+    _client().change_message_visibility(
+        QueueUrl=str(url), ReceiptHandle=str(handle), VisibilityTimeout=0
     )

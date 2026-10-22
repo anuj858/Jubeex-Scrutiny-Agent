@@ -110,18 +110,18 @@ def _s3_client():
     return boto3.client("s3", **kwargs)
 
 
-def save_job_status(payload: dict[str, Any], *, force: bool = False) -> None:
+def save_job_status(payload: dict[str, Any], *, force: bool = False) -> bool:
     """Persist job poll payload. Throttled unless force (accept / terminal)."""
     job_id = str(payload.get("job_id") or "").strip()
     if not job_id:
-        return
+        return False
     bucket = _bucket()
     if not bucket:
-        return
+        return False
     now = time.monotonic()
     last = _last_write_at.get(job_id, 0.0)
     if not force and (now - last) < _WRITE_MIN_INTERVAL_S:
-        return
+        return True
     try:
         client = _s3_client()
         client.put_object(
@@ -131,8 +131,10 @@ def save_job_status(payload: dict[str, Any], *, force: bool = False) -> None:
             ContentType="application/json",
         )
         _last_write_at[job_id] = now
+        return True
     except Exception:
         logger.warning("Could not persist job status for %s", job_id, exc_info=True)
+        return False
 
 
 def load_job_status(job_id: str) -> dict[str, Any] | None:

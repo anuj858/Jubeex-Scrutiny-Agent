@@ -23,37 +23,7 @@ print("[startup] WIF configuration created")
 PY
 
 export GOOGLE_APPLICATION_CREDENTIALS=/tmp/google-wif-credentials.json
-
-# Get the current Fargate task-role credentials.
-eval "$(
-/app/.venv/bin/python - <<'PY'
-import json
-import os
-import shlex
-import urllib.request
-
-relative = os.environ["AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"]
-url = "http://169.254.170.2" + relative
-
-with urllib.request.urlopen(url, timeout=5) as response:
-    credentials = json.load(response)
-
-print(
-    "export AWS_ACCESS_KEY_ID="
-    + shlex.quote(credentials["AccessKeyId"])
-)
-print(
-    "export AWS_SECRET_ACCESS_KEY="
-    + shlex.quote(credentials["SecretAccessKey"])
-)
-print(
-    "export AWS_SESSION_TOKEN="
-    + shlex.quote(credentials["Token"])
-)
-PY
-)"
-
-echo "[startup] Google ADC/WIF environment prepared"
+echo "[startup] Google WIF configuration ready; AWS task credentials will refresh"
 
 if [ "$#" -gt 0 ]; then
     exec "$@"

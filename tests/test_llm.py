@@ -20,6 +20,7 @@ from extraction_review.llm import (
     llm_requests_per_minute,
     openrouter_requests_per_minute,
     vertex_max_attempts,
+    vertex_request_timeout_seconds,
     vertex_shared_rate_limit_enabled,
 )
 
@@ -304,10 +305,22 @@ def test_genai_client_disables_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> N
         return object()
 
     monkeypatch.setattr(llm_module, "_genai_client", None)
+    monkeypatch.setenv("VERTEX_REQUEST_TIMEOUT_S", "900")
     monkeypatch.setattr(genai, "Client", fake_client)
     get_genai_client()
     http_options = captured["http_options"]
     assert http_options.retry_options.attempts == 1
+    assert http_options.timeout == 900000
+
+
+def test_vertex_request_timeout_must_be_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VERTEX_REQUEST_TIMEOUT_S", raising=False)
+    assert vertex_request_timeout_seconds() == 900
+    monkeypatch.setenv("VERTEX_REQUEST_TIMEOUT_S", "30")
+    with pytest.raises(ValueError, match="between 60 and 3600"):
+        vertex_request_timeout_seconds()
 
 
 def test_vertex_retry_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,14 +350,14 @@ def test_llm_provider_openrouter_keeps_prefixed_model(
     assert openrouter_model() == "google/gemini-3.8-flash"
 
 
-def test_scrutiny_model_defaults_to_gemini_3_8_for_vertex(
+def test_scrutiny_model_defaults_to_gemini_4_argon_for_vertex(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from extraction_review.llm import scrutiny_model
 
     monkeypatch.setenv("LLM_PROVIDER", "vertex")
     monkeypatch.delenv("SCRUTINY_MODEL", raising=False)
-    assert scrutiny_model() == "gemini-3.8-flash"
+    assert scrutiny_model() == "gemini-4-argon"
 
 
 def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
