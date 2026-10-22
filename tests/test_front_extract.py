@@ -11,7 +11,6 @@ from extraction_review.config import ExtractConfig, FrontExtractRecord, LegalExt
 from extraction_review.extract_record import finalize_front_extract
 from extraction_review.process_file import (
     FRONT_EXTRACT_END_PAGE_LIMIT,
-    FRONT_EXTRACT_OPENING_CAP,
     FRONT_EXTRACT_PAGE_LIMIT,
     FileEvent,
     first_pages_pdf,
@@ -79,22 +78,20 @@ def test_front_slice_does_not_repeat_pages_already_in_the_opening() -> None:
     assert _page_count(sliced) == 32
 
 
-def test_opening_stays_at_30_until_200_then_shrinks_below_20_percent() -> None:
-    assert front_extract_opening_pages(100) == 30
-    assert front_extract_opening_pages(200) == 30
-    assert front_extract_opening_pages(700) == 75
-    assert front_extract_opening_pages(700) >= 34
-    assert front_extract_opening_pages(1000) == 90
-    assert front_extract_opening_pages(1000) < 200
-    assert front_extract_opening_pages(5000) == FRONT_EXTRACT_OPENING_CAP
+def test_opening_is_30_pages_or_the_whole_shorter_file() -> None:
+    assert front_extract_opening_pages(12) == 12
+    assert front_extract_opening_pages(30) == 30
+    assert front_extract_opening_pages(62) == 30
+    assert front_extract_opening_pages(700) == 30
+    assert front_extract_opening_pages(5000) == FRONT_EXTRACT_PAGE_LIMIT
 
 
-def test_long_book_keeps_the_main_petition_start_and_the_vakalatnama() -> None:
+def test_long_book_keeps_the_first_30_pages_and_the_closing_pages() -> None:
     opening = front_extract_opening_pages(700)
     sliced = first_pages_pdf(_marked_pdf(700), opening)
     joined = "\n".join(_page_texts(sliced))
-    assert "PAGE-34" in joined
-    assert "PAGE-76" not in joined
+    assert "PAGE-30" in joined
+    assert "PAGE-31" not in joined
     assert "PAGE-696" in joined
     assert "PAGE-700" in joined
     assert _page_count(sliced) == opening + FRONT_EXTRACT_END_PAGE_LIMIT
@@ -117,9 +114,10 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "special_category" in FrontExtractRecord.model_fields
     assert "special_category" not in LegalExtractRecord.model_fields
     prompt = build_front_extract_system_prompt()
-    assert "Vakalatnama" in prompt
-    assert "List of Dates" in prompt
+    assert "Opening pages" in prompt
+    assert "petition_date" in prompt
     assert "special_category" in prompt
+    assert "stay null" not in prompt
     assert "configuration_id" not in front
 
 
@@ -132,11 +130,13 @@ def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
     assert "page 1 text" in front
     assert "page 20 text" in front
     assert "page 30 text" in front
-    assert "## [Vakalatnama] (p. 31)" in front
+    assert "## [Opening pages] (p. 20)" in front
+    assert "## [Closing pages] (p. 31)" in front
+    assert "## [Cover Page]" not in front
     assert "page 35 text" in front
     wide = build_front_extract_pack_markdown(pages, opening_pages=75)
-    assert "## [Compiled opening] (p. 31)" in wide
-    assert "## [Vakalatnama] (p. 31)" not in wide
+    assert "## [Opening pages] (p. 31)" in wide
+    assert "## [Closing pages] (p. 31)" not in wide
 
 
 def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> None:
@@ -159,8 +159,8 @@ def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> Non
     assert keys.index("special_category") == keys.index("petition_type") + 1
     assert done["special_category"] is None
     assert done["petition_type"] == "Special Leave Petition (Civil)"
-    assert done["relief_sort"] is None
-    assert done["petition_date"] is None
+    assert done["relief_sort"] == "Grant leave to appeal"
+    assert done["petition_date"] == "01.01.2024"
     assert done["documents"] == []
     assert done["document_counts"] == {"processed": 0, "failed": 0}
     assert done["advocates_on_record"] == [{"name": "Ravi"}]
@@ -288,6 +288,128 @@ def test_front_party_name_drops_parse_markup_and_the_list_number() -> None:
     assert done["cause_title"]["formatted_title"] == (
         "JITENDER KUMAR PURI VS SUNDER LAL GUPTA and Ors."
     )
+
+
+def test_wrapped_party_block_keeps_the_second_petitioner_and_the_address() -> None:
+    page = """
+    IN THE SUPREME COURT OF INDIA
+    SPECIAL LEAVE PETITION (C) NO. OF 2026
+    BETWEEN:
+    Anoop
+    Kumar
+    @
+    Anup
+    Kumar
+    S/o Ragya Parsad
+    R/o 28 behind Lawrence road
+    hotel, Lawrence Road, Amritsar.
+    Rajeev Lakhanpal
+    S/o Naranjan Dass
+    R/o 28 behind Lawrence road
+    hotel, Lawrence Road, Amritsar.
+    Petitioner No. 1
+    Petitioner No. 2
+    VERSUS
+    Gautam Khanna
+    Registered Address at
+    IFFCO House, 2 & 3 Floor
+    34, Nehru Place
+    New Delhi- 110019
+    Respondent No. 1
+    """
+    high_court = """
+    IN THE HON'BLE HIGH COURT OF PUNJAB AND HARYANA AT CHANDIGARH
+    MEMO OF PARTIES
+    1. Anoop Kumar @ Anup Kumar, aged 56 years, son of Ragya Parsad resident of somewhere
+    VERSUS
+    1. Mr Gautam Khanna resident of House No. A-432 Ranjeet Avenue Amritsar.
+    """
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CIVIL)",
+            "cause_title": {"formatted_title": "Anoop Kumar @ Anup Kumar & Anr. VS Gautam Khanna"},
+            "petitioners": [{"name": "Anoop Kumar @ Anup Kumar"}],
+            "respondents": [{"name": "Gautam Khanna"}],
+        },
+        page_markdown={1: "Anoop Kumar & Anr.\nVersus\nGautam Khanna", 20: page, 33: high_court},
+    )
+    assert [party["name"] for party in done["petitioners"]] == [
+        "Anoop Kumar @ Anup Kumar",
+        "Rajeev Lakhanpal",
+    ]
+    assert done["petitioners"][1]["relation"] == "S/o"
+    assert "Lawrence Road" in done["petitioners"][1]["address"]
+    assert 20 in done["petitioners"][1]["source_pages"]
+    assert "Rajeev" not in done["petitioners"][0]["address"]
+    assert "Nehru Place" in done["respondents"][0]["address"]
+    assert 20 in done["respondents"][0]["source_pages"]
+
+
+def test_same_person_spelled_two_ways_is_one_petitioner() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CIVIL)",
+            "cause_title": {"main_petitioner": "Anoop Kumar @ Anup Kumar"},
+            "petitioners": [
+                {
+                    "name": "Anoop Kumar @ Anup Kumar",
+                    "relation": "S/o",
+                    "guardian": "Ragya Parsad",
+                },
+                {
+                    "name": "Rajiv Lakhanpal",
+                    "relation": "son of",
+                    "guardian": "Naranjan Dass",
+                    "address": "a shop at Kucha Tai Khana",
+                },
+                {
+                    "name": "Rajeev Lakhanpal",
+                    "relation": "S/o",
+                    "guardian": "Naranjan Dass",
+                    "address": "R/o 28 behind Lawrence Road, Amritsar",
+                    "source_pages": [20],
+                },
+            ],
+            "respondents": [
+                {
+                    "name": "Gautam Khanna",
+                    "address": "IFFCO House, 2 &x26; 3 Floor, Nehru Place THE HON'BLE THE",
+                },
+                {"name": "2025 passed by the", "source_pages": [3]},
+            ],
+        }
+    )
+    assert [party["name"] for party in done["petitioners"]] == [
+        "Anoop Kumar @ Anup Kumar",
+        "Rajeev Lakhanpal",
+    ]
+    assert done["petitioners"][1]["relation"] == "S/o"
+    assert [party["name"] for party in done["respondents"]] == ["Gautam Khanna"]
+    assert done["respondents"][0]["address"] == (
+        "IFFCO House, 2 & 3 Floor, Nehru Place"
+    )
+    assert done["cause_title"]["formatted_title"] == (
+        "Anoop Kumar @ Anup Kumar and Anr. VS Gautam Khanna"
+    )
+
+
+def test_petition_date_after_prayer_skips_the_page_number() -> None:
+    pages = {
+        5: "OFFICE REPORT ON LIMITATION\nDated: 01.01.2020",
+        27: (
+            "MAIN PRAYER:\n"
+            "In the circumstances stated above, the Petitioners pray that this\n"
+            "Hon'ble Court may be pleased to grant leave.\n"
+            "Dated:\n"
+            "14\n"
+            "02.03.2026\n"
+        ),
+    }
+    done = finalize_front_extract(
+        {"petition_type": "SPECIAL LEAVE PETITION (CIVIL)", "petition_date": None},
+        page_markdown=pages,
+    )
+    assert done["petition_date"] == "02.03.2026"
 
 
 def test_printed_special_category_is_kept() -> None:

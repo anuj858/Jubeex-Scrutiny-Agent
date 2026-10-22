@@ -60,18 +60,19 @@ EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
     "Vakalatnama": (VAKALATNAMA_PACK_FIRST_PAGES, VAKALATNAMA_PACK_LAST_PAGES),
 }
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
+OPENING_PAGES_SOURCE = "Opening pages"
+CLOSING_PAGES_SOURCE = "Closing pages"
+OPENING_PAGE_LIMIT = 30
+CLOSING_PAGE_LIMIT = 5
+_PAGE_WINDOW_SOURCES = frozenset({OPENING_PAGES_SOURCE, CLOSING_PAGES_SOURCE})
 AOR_EXTRACT_RULES = (
-    "Copy the printed AOR footer only. Leave a field null if it is not printed; "
-    "do not invent name, code, email, mobile, firm, chamber, or PIN. "
-    "Do not copy petitioner or respondent names or addresses. "
-    "Prefer Vakalatnama. If Vakalatnama is not in this pack or prints no AOR, "
-    "use the Memo of Appearance footer, then the last page of the Main Petition "
-    "(very end: Drawn By, Filed on, DRAWN & FILED BY, Advocate for "
-    "Petitioner/Respondent, Chamber lines under the name). "
-    "Do not use Main Petition opening or party-list pages. "
-    "If office_address is still blank, last page of Listing Proforma / "
-    "Proforma for First Listing. Remaining blanks: AOR's Certificate signature "
-    "/ DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama."
+    "Copy the printed advocate-on-record footer only. Leave a field null if it "
+    "is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. "
+    "Do not copy a petitioner or respondent address into the chamber. "
+    "The footer may be on any opening page or on the closing pages. Use the block "
+    "that prints Advocate-on-Record, Vakalatnama, Memo of Appearance, or "
+    "Drawn By / Filed on / DRAWN & FILED BY, with the chamber lines under that name. "
+    "Record source_pages for the page that printed it."
 )
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
@@ -580,15 +581,45 @@ def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
     return names - {part for part in names if _excluded_from_extract_pack(part)}
 
 
+def _field_uses_page_window(spec: FieldSources) -> bool:
+    names = {name for name in spec.all_parts() if name}
+    return bool(names) and names <= _PAGE_WINDOW_SOURCES
+
+
+def _sources_use_page_window(sources: Mapping[str, FieldSources]) -> bool:
+    return bool(sources) and all(_field_uses_page_window(spec) for spec in sources.values())
+
+
+def _uses_page_window(source_parts: set[str]) -> bool:
+    return bool(source_parts) and source_parts <= _PAGE_WINDOW_SOURCES
+
+
+def opening_window_limit(page_count: int) -> int:
+    """First 30 pages, or every page when the file is shorter."""
+    if page_count <= 0:
+        return 0
+    return page_count if page_count <= OPENING_PAGE_LIMIT else OPENING_PAGE_LIMIT
+
+
 def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool:
     labels = [name for name in names if name]
     if not labels:
         return False
     if all(_excluded_from_extract_pack(name) for name in labels):
         return False
-    if not source_parts:
+    if not source_parts or _uses_page_window(source_parts):
         return not any(_excluded_from_extract_pack(name) for name in labels)
     return any(name in source_parts for name in labels)
+
+
+def _page_in_extract_window(page: int, page_count: int, source_parts: set[str]) -> bool:
+    if page_count <= 0:
+        return False
+    if page <= opening_window_limit(page_count):
+        return True
+    if CLOSING_PAGES_SOURCE not in source_parts:
+        return False
+    return page > page_count - CLOSING_PAGE_LIMIT
 
 
 PRECISE_PARSE_SLOT_IDS = frozenset(
@@ -1019,7 +1050,40 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     return notes
 
 
+def _window_extract_preamble() -> str:
+    return "\n".join(
+        [
+            "# Extraction rules",
+            "This filing has not been split. Do not assume which page is the "
+            "Cover Page, Main Petition, Vakalatnama, or any other section.",
+            f"Search every page labelled Opening pages. That is the first "
+            f"{OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter. "
+            f"Pages labelled Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
+            "Copy printed text only. Do not invent names, addresses, dates, or "
+            "categories. If a value is not printed in that window, write N/A.",
+            "Record source_pages as the heading page numbers for every value.",
+            "",
+            "- court, petition_type, cause_title, petitioners, respondents, "
+            "impugned_orders, relief_sort, and petition_date may be on any opening page.",
+            "- petitioners and respondents: list every numbered party. A line that "
+            "says '& Anr.' or 'and Anr.' or '& Ors.' is not the second party's name. Find that "
+            "person's name, relation, and address on another opening page. Keep the "
+            "fullest block.",
+            "- petition_date: after Main Prayer or Prayer, the date next to Date, "
+            "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
+            "drafted and filed dates are printed. Skip a page number sitting between "
+            "the label and the date.",
+            "- relief_sort: the prayer body only, without the Main Prayer heading.",
+            f"- advocates_on_record: {AOR_EXTRACT_RULES}",
+            "- impugned_orders.bench: judge names under CORAM, joined with '; '.",
+        ]
+    )
+
+
 def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
+    sources = catalog.extract_field_sources if catalog is not None else {}
+    if _sources_use_page_window(sources):
+        return _window_extract_preamble()
     lines = [
         "# Extraction rules",
         "Copy printed text only. Do not invent names, addresses, dates, or "
@@ -1027,7 +1091,6 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
         "value is not printed there, write N/A. Do not guess from other parts.",
         "",
     ]
-    sources = catalog.extract_field_sources if catalog is not None else {}
     for field_name, spec in sources.items():
         fill = ", ".join(f"[{p}]" for p in spec.fill) or "(none)"
         bit = f"- {field_name}: fill from {fill}"
@@ -1147,15 +1210,29 @@ def build_extract_pack_markdown(
 ) -> str:
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
-    window_keep = _windowed_pages_to_keep(page_markdown, page_parts)
-    notes = _section_use_notes(catalog)
+    page_window = _uses_page_window(source_parts)
+    page_count = max(page_markdown) if page_markdown else 0
+    window_keep = {} if page_window else _windowed_pages_to_keep(page_markdown, page_parts)
+    notes = {} if page_window else _section_use_notes(catalog)
     for page in sorted(page_markdown):
         names = parts_on_page(page_parts.get(page))
-        if not page_is_extract_source(names, source_parts):
+        if page_window:
+            if not _page_in_extract_window(page, page_count, source_parts):
+                continue
+            if names and all(_excluded_from_extract_pack(name) for name in names):
+                continue
+            if not names:
+                continue
+        elif not page_is_extract_source(names, source_parts):
             continue
-        if not _keep_extract_page(page, names, source_parts, window_keep):
+        elif not _keep_extract_page(page, names, source_parts, window_keep):
             continue
-        label = " / ".join(names) or "Unknown"
+        if page_window and page <= opening_window_limit(page_count):
+            label = OPENING_PAGES_SOURCE
+        elif page_window:
+            label = CLOSING_PAGES_SOURCE
+        else:
+            label = " / ".join(names) or "Unknown"
         body = (page_markdown.get(page) or "").strip()
         if body.startswith(_PARSE_STUB_PREFIX):
             continue
@@ -1170,7 +1247,78 @@ def build_extract_pack_markdown(
     return f"{extract_pack_preamble(catalog)}\n\n{packed}"
 
 
+def _window_look_only(field_name: str) -> str:
+    """Where to read a field when split labels do not exist yet."""
+    where = (
+        f"Search every page in the opening window: the first {OPENING_PAGE_LIMIT} "
+        "pages, or every page when the file has fewer than that. "
+        "Do not assume a Cover Page, Main Petition, Listing Proforma, or any other "
+        "split section. Those labels are not known yet. "
+    )
+    if field_name in PARTY_FIELDS:
+        return (
+            where
+            + "List every numbered petitioner and respondent printed in that window, "
+            "with relation, guardian, address, and acting-through when printed. "
+            "A caption that says '& Anr.' or '& Ors.' is only a count hint; find the "
+            "other names and addresses on another page in the same window. "
+            "Use the fullest party block. Do not stop after the first name, and do "
+            "not invent a party that is not printed. "
+            "Record source_pages as the page numbers in the headings."
+        )
+    if field_name == "cause_title":
+        return (
+            where
+            + "Read the caption from whichever opening page prints it. "
+            "main_petitioner and main_respondent are the first petitioner and first "
+            "respondent in the fullest party list, without And Anr, And Ors, or the "
+            "role label. formatted_title uses those names plus 'and Anr.' for exactly "
+            "one extra party on that side and 'and Ors.' for two or more. "
+            "Join the sides with ' VS '. Never use square brackets."
+        )
+    if field_name == "petition_type":
+        return (
+            where
+            + "Copy the petition type from the page that prints it, for example "
+            "Special Leave Petition (Civil)."
+        )
+    if field_name == "court":
+        return where + "Copy the court heading from the page that prints it."
+    if field_name == "advocates_on_record":
+        return (
+            where
+            + f"Also search the last {CLOSING_PAGE_LIMIT} pages. {AOR_EXTRACT_RULES}"
+        )
+    if field_name == "impugned_orders":
+        return (
+            where
+            + "Copy the court, date, and case number of the order under challenge "
+            "from the page that prints those particulars. bench is the judge names "
+            "under CORAM, joined with '; '. It is not a city or the forum name."
+        )
+    if field_name == "relief_sort":
+        return (
+            where
+            + "Copy only the prayer body under Main Prayer or Prayer. Omit the "
+            "heading, clause number, and markdown. Leave null if that prayer is not "
+            "in the window."
+        )
+    if field_name == "petition_date":
+        return (
+            where
+            + "After Main Prayer or Prayer, copy the date next to Date, Dated, "
+            "Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on "
+            "are printed, use only Date Drafted. Return the date only. A page number "
+            "between the label and the date is not the date. Do not use an "
+            "impugned-order date or a date inside the prayer. Leave null if no such "
+            "date is printed in the window."
+        )
+    return where + "Copy the printed value. Record source_pages."
+
+
 def _look_only_text(field_name: str, spec: FieldSources) -> str:
+    if _field_uses_page_window(spec):
+        return _window_look_only(field_name)
     fill = ", ".join(spec.fill) or "no fill source"
     extra = f"Fill only from {fill}."
     if spec.verify:
@@ -1286,7 +1434,33 @@ def inject_where_to_look(
     return updated
 
 
+def _window_extract_system_prompt() -> str:
+    return "\n".join(
+        [
+            "You are extracting a compiled court filing before it has been split.",
+            "Do not assume where the Cover Page, Main Petition, Vakalatnama, or any other section is.",
+            f"Opening pages are the first {OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter.",
+            f"Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
+            "A field may be on any opening page. Copy printed text only. If it is not printed, write N/A.",
+            "source_part is Opening pages or Closing pages. source_pages are the heading page numbers.",
+            "",
+            "- court: the court heading, from whichever opening page prints it.",
+            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever opening page prints it.",
+            "- cause_title: the caption from whichever opening page prints it. Main names come from the fullest party list, without And Anr or And Ors.",
+            "- petitioners and respondents: every numbered party in the opening pages, including name, S/o D/o W/o, the related person's name, occupation, address, city, state, pin, email, and mobile. '& Anr.' or '& Ors.' means more parties are printed somewhere in the opening; list those people. Do not stop after the first name.",
+            "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
+            "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
+            "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
+            "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
+            "- confidence: percentage strings such as 95% or 65%.",
+        ]
+    )
+
+
 def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
+    if _sources_use_page_window(catalog.extract_field_sources):
+        return _window_extract_system_prompt()
     lines = [
         "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
         "Each section is labelled with its document part, for example ## [Cover Page] (p. 1).",
@@ -1340,53 +1514,17 @@ def extract_configuration(
 
 
 def build_front_extract_system_prompt() -> str:
-    """Prompt for the front extract slice. Real filings have infinite variations; extract from wherever printed."""
-    return "\n".join(
-        [
-            "You are an expert legal document extraction system for Indian court filings (Supreme Court of India, High Courts).",
-            "You are analyzing a compiled legal filing pack consisting of the opening pages of the filing plus its closing pages (Vakalatnama/appearance).",
-            "The last 5 pages are the Vakalatnama. Pages labelled Vakalatnama are those last pages.",
-            "Cases have infinite structural variations: there may or may not be an explicit 'Main Petition' section in the opening pages. You must search across ALL provided pages to extract complete filing details.",
-            "Copy printed text accurately. Do not invent facts.",
-            "",
-            "1. COURT:",
-            "- Extract court (e.g. 'SUPREME COURT OF INDIA', 'HIGH COURT OF DELHI') from the cover page, petition heading, or memo of parties.",
-            "",
-            "2. PETITION TYPE & SPECIAL CATEGORY:",
-            "- Extract petition_type (e.g. 'SPECIAL LEAVE PETITION (CRL.)', 'SPECIAL LEAVE PETITION (CIVIL)', 'WRIT PETITION (CIVIL)', 'TRANSFER PETITION (CIVIL)', etc.) from the cover page, cause title, or petition heading.",
-            "- special_category is the matter subtype printed in the filing, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
-            "",
-            "3. CAUSE TITLE:",
-            "- Extract cause_title with formatted_title in the format '<Petitioner Name(s)> VS <Respondent Name(s)>'. Also extract main_petitioner and main_respondent.",
-            "",
-            "4. PETITIONERS & RESPONDENTS (ALL DETAILS):",
-            "- Extract EVERY petitioner and EVERY respondent from wherever printed across the pack: Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or petition/order pages. Prioritize the source with the most complete particulars.",
-            "- In cause titles and party tables, parties before 'VERSUS' (or 'VS') are Petitioners/Appellants; parties after 'VERSUS' are Respondents/Opposite Parties.",
-            "- For each petitioner and respondent, thoroughly extract all printed details:",
-            "  * name: Full legal name (individuals or companies/organizations/state/union). Clean out trailing role markers like '...Petitioner' or table column names.",
-            "  * kind: 'INDIVIDUAL' or 'ORGANIZATION'.",
-            "  * relation: Relation prefix (S/o, D/o, W/o, C/o) if printed.",
-            "  * guardian: Name of father, mother, husband, or related person.",
-            "  * acting_through: Representation for entities/states/organizations (e.g., 'Through SHO...', 'Through its Secretary...').",
-            "  * address: Full residential or official postal address.",
-            "  * city, state, pin_code: Extract if present or identifiable from the address.",
-            "  * email: Email address if printed.",
-            "  * mobile: Phone / mobile number if printed.",
-            "  * occupation: Occupation or profession if printed.",
-            "  * is_primary: true for the primary petitioner and respondent.",
-            "- Extract all numbered parties across all consecutive party pages. Do not stop after the first party.",
-            "- Form checklist questions, Yes/No/NA answers, table of contents entries, and court fee receipts are NOT parties.",
-            "",
-            "5. ADVOCATES ON RECORD (AOR):",
-            "- advocates_on_record comes from the Vakalatnama on the last 5 pages. Copy the printed AOR footer only. If the Vakalatnama prints no AOR, use the footer at the end of the List of Dates.",
-            "",
-            "6. IMPUGNED ORDERS:",
-            "- impugned_orders comes from the particulars printed on the opening pages: extract court name, order date (DD.MM.YYYY), and case number / appeal number being challenged.",
-            "",
-            "7. OTHER FIELDS:",
-            "- relief_sort and petition_date stay null.",
-            "- documents stays empty.",
-        ]
+    """Prompt for the opening-page extract. Split labels are not known yet."""
+    return (
+        _window_extract_system_prompt()
+        + "\n"
+        + "\n".join(
+            [
+                "- special_category: the printed matter subtype, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
+                "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
+                "- documents stays empty.",
+            ]
+        )
     ).strip()
 
 
@@ -1395,98 +1533,25 @@ def build_front_extract_pack_markdown(
     page_layout: Mapping[int, Mapping[str, Any]] | None = None,
     opening_pages: int = 30,
 ) -> str:
-    """Opening pages, then the last 5 pages labelled as the Vakalatnama."""
+    """Opening pages, then the closing pages. No section names are guessed."""
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
-    main_petition_started = False
     for page in sorted(page_markdown):
         body = (page_markdown.get(page) or "").strip()
         if not body or body.startswith(_PARSE_STUB_PREFIX):
             continue
-        if page > opening_pages:
-            label = "Vakalatnama"
-        else:
-            is_cover = (
-                page <= 3
-                and bool(
-                    re.search(
-                        r"\b(?:paperbook|cover\s*page|for\s+index\s+kindly\s+see\s+inside|d[ai]{1,2}ry\s+no)\b",
-                        body,
-                        re.IGNORECASE,
-                    )
-                )
-            )
-            if is_cover and not main_petition_started:
-                label = "Cover Page"
-            else:
-                has_party_heading = False
-                for line in body.splitlines():
-                    line_clean = re.sub(r"<[^>]+>", " ", line)
-                    line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
-                    if re.search(
-                        r"^(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\s*$",
-                        line_clean,
-                        re.IGNORECASE,
-                    ):
-                        has_party_heading = True
-                        break
-
-                if not main_petition_started:
-                    if has_party_heading or re.search(
-                        r"\b(?:most\s+respectfully\s+showeth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice)\b",
-                        body,
-                        re.IGNORECASE,
-                    ):
-                        main_petition_started = True
-                    elif (
-                        re.search(
-                            r"in the (?:hon[\x27\x60’]?ble )?supreme court of india",
-                            body,
-                            re.IGNORECASE,
-                        )
-                        and re.search(
-                            r"(?:appellate jurisdiction|original jurisdiction|special leave petition|writ petition|criminal appeal|civil appeal)",
-                            body,
-                            re.IGNORECASE,
-                        )
-                        and not re.search(
-                            r"(?:listing proforma|proforma for first listing|index of papers|office report on limitation|synopsis and list of dates|synopsis|paperbook)",
-                            body,
-                            re.IGNORECASE,
-                        )
-                        and page > 3
-                    ):
-                        main_petition_started = True
-                label = "Main Petition" if main_petition_started else "Compiled opening"
+        label = CLOSING_PAGES_SOURCE if page > opening_pages else OPENING_PAGES_SOURCE
         sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
     packed = "\n\n".join(sections).strip()
     if not packed:
         return ""
     preamble = (
-        "# Extraction rules\n"
-        f"This pack is the first {opening_pages} pages of one compiled filing, "
-        "then its last 5 pages. It has not been split.\n"
-        "Pages labelled Cover Page are the paperbook outer cover.\n"
-        "Pages labelled Main Petition are the starting pages of the Main Petition.\n"
-        "Pages labelled Vakalatnama are those last 5 pages.\n"
-        "Cases have infinite variations: search across all provided pages to extract complete filing details.\n"
-        "Read petition_type, cause_title, special_category, and court from the cover page, petition heading, or memo of parties.\n"
-        "Read petitioners and respondents from the most detailed source available across all pages "
-        "(including Memo of Parties, Position of Parties, Cause Title, Parties Schedule, Vakalatnama, or Petition opening).\n"
-        "Extract every petitioner before VERSUS and every respondent after VERSUS, "
-        "including all printed details: name, relation prefix (S/o, D/o, W/o), "
-        "guardian/parent/spouse name, occupation, full address, city, state, "
-        "pin_code, email, mobile, and acting_through. "
-        "Read all numbered parties across all consecutive party pages. "
-        "Do not stop after the first party.\n"
-        "Do not copy listing-proforma questions, Yes/NA answers, or order paragraphs.\n"
+        f"{_window_extract_preamble()}\n"
+        f"This pack is the first {opening_pages} pages, "
+        f"then the last {CLOSING_PAGE_LIMIT} pages when the file is longer.\n"
         "special_category is the printed matter subtype, such as Tax Matters. "
         "Leave it null when it is not printed.\n"
-        "Read advocates_on_record from the Vakalatnama (## [Vakalatnama]). If it prints no AOR, "
-        "use the footer at the end of the List of Dates.\n"
-        "Read impugned_orders from the particulars printed on the opening pages.\n"
-        "Leave relief_sort and petition_date null.\n"
-        "Copy printed text only."
+        "Do not copy checklist questions, Yes/NA answers, or index rows as parties."
     )
     return f"{preamble}\n\n{packed}"
 

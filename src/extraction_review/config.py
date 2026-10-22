@@ -114,55 +114,52 @@ class CauseTitle(BaseModel):
     formatted_title: str | None = Field(
         default=None,
         description=(
-            "Cause title built from Cover Page main names and party counts when "
-            "Cover Page is in this pack. If Cover Page is missing, use Main Petition "
-            "petitioner 1 and respondent 1. "
+            "Cause title from the fullest party list in the opening pages. "
+            "Split labels are not known yet, so the list may be on any of those pages. "
             "Each side is 'MainName' if that side has 1 party, "
             "'MainName and Anr.' if that side has exactly 2 parties, "
             "'MainName and Ors.' if that side has 3 or more. "
             "Join sides with ' VS '. Example: two petitioners and four respondents → "
             "'Meera Krishnan and Anr. VS Union of India and Ors.' "
             "Never write [And ors.], [and Anr.], or any square brackets around "
-            "and Anr./and Ors. Main names come from the Cover Page if present, else "
-            "the Main Petition caption. Do not invent extra parties."
+            "and Anr./and Ors. A caption line that says '& Anr.' or '& Ors.' is a "
+            "count hint, not the second party's name. Do not invent extra parties."
         ),
     )
     raw_text: str | None = Field(default=None, description="The cause title verbatim, including '...and others' / '...and another'")
     main_petitioner: str | None = Field(
         default=None,
         description=(
-            "Main petitioner name from the Cover Page cause-title line if Cover Page "
-            "is in this pack. If Cover Page is missing, use petitioner 1 from the "
-            "Main Petition caption. The person's or body's name only. Do not include "
-            "And Anr, And Ors, Petitioner, Petitioner(s), or leading dots. Cover Page "
-            "has only this one petitioner. This person must be the same as petitioner 1 "
-            "on the Main Petition starting pages (the party list can run 3-4 pages or more)."
+            "First petitioner's name from the fullest numbered party list in the "
+            "opening pages. The person's or body's name only. Do not include "
+            "And Anr, And Ors, Petitioner, Petitioner(s), or leading dots. "
+            "A short caption may print only this name plus And Anr/Ors; the other "
+            "names are on another opening page."
         ),
     )
     main_respondent: str | None = Field(
         default=None,
         description=(
-            "Main respondent name from the Cover Page cause-title line if Cover Page "
-            "is in this pack. If Cover Page is missing, use respondent 1 from the "
-            "Main Petition caption. The person's or body's name only. Do not include "
-            "And Anr, And Ors, Respondent, Respondent(s), or leading dots. Cover Page "
-            "has only this one respondent. This person must be the same as respondent 1 "
-            "on the Main Petition starting pages (the party list can run 3-4 pages or more)."
+            "First respondent's name from the fullest numbered party list in the "
+            "opening pages. The person's or body's name only. Do not include "
+            "And Anr, And Ors, Respondent, Respondent(s), or leading dots. "
+            "A short caption may print only this name plus And Anr/Ors; the other "
+            "names and the address are on another opening page."
         ),
     )
-    source_part: str | None = Field(default=None, description="Split label where the stored title was filled (Cover Page or Main Petition).")
+    source_part: str | None = Field(default=None, description="Opening pages or Closing pages. Record source_pages for the page that printed this.")
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
     confidence: ConfidencePercent = Field(default=None, description=CONFIDENCE_DESCRIPTION)
 
 
 class Party(BaseModel):
-    """One petitioner or respondent from the complete filing party schedule."""
+    """One petitioner or respondent. Name, relation, and address may be on any opening page. And Anr or And Ors is not the second party's name."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
         description=(
-            "INDIVIDUAL or ORGANIZATION from the printed name on the Main Petition "
-            "starting pages (and Cover Page if present). ORGANIZATION if the name has a prefix "
+            "INDIVIDUAL or ORGANIZATION from the printed name on any opening page. "
+            "ORGANIZATION if the name has a prefix "
             "M/s, M/s., Messrs, The, Union, Government of, Ministry of, Department of, "
             "or a suffix Pvt Ltd, Pvt. Ltd., Private Limited, Ltd, Limited, LLP, LLC, "
             "Inc., Corp., Corporation, Co., Company, Foundation, Trust, Society, Association. "
@@ -190,7 +187,7 @@ class Party(BaseModel):
     relation: str | None = Field(default=None, description="Relation prefix only, e.g. S/o, D/o, W/o. Leave null if not printed.")
     guardian: str | None = Field(default=None, description="Related person's name after S/o, D/o, W/o. Leave null if not printed.")
     occupation: str | None = Field(default=None, description="Occupation ONLY if explicitly stated.")
-    address: str | None = Field(default=None, description="Verbatim address. Leave null if not printed on a fill source. Never copy from Vakalatnama.")
+    address: str | None = Field(default=None, description="Verbatim address printed with this party on any opening page. Leave null if no address is printed. Do not invent one, and do not copy an advocate's chamber.")
     city: str | None = Field(default=None, description="Extracted city")
     state: str | None = Field(default=None, description="Extracted state")
     pin_code: str | None = Field(default=None, description="Extracted pincode")
@@ -199,16 +196,15 @@ class Party(BaseModel):
     is_primary: bool | None = Field(
         default=None,
         description=(
-            "True for the party whose name matches the Cover Page main petitioner or "
-            "main respondent. False for the others. Do not invent a party from Cover Page."
+            "True for petitioner 1 and respondent 1. False for every later party. "
+            "Do not invent a party from a caption that only says And Anr or And Ors."
         ),
     )
     raw_text: str | None = Field(default=None, description="Verbatim party block as printed, including name, relation, and address lines.")
     source_part: str | None = Field(
         default=None,
         description=(
-            "Main Petition normally; Cover Page or Listing Proforma only when used "
-            "to recover a missing party name/count. Never Vakalatnama or Memo of Parties."
+            "Opening pages. Record source_pages for the page that printed the name and address."
         ),
     )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
@@ -255,18 +251,15 @@ class AdvocateOnRecord(BaseModel):
             "Printed Chamber/office lines under the AOR name. Copy exactly. Often "
             "labelled Chamber: not Address. Include PIN if printed. Leave null if "
             "those lines are not printed. Never invent a chamber number, block, or PIN. "
-            "Never use a party address from Cover Page, Memo of Parties, or Main "
-            "Petition opening pages. On Main Petition this footer is at the very end "
-            "of the last page after Drawn By / Filed on / DRAWN & FILED BY."
+            "Never use a party's address. The chamber may be on any opening page or "
+            "on the closing pages, under the advocate name after Drawn By / Filed on "
+            "/ DRAWN & FILED BY."
         ),
     )
     source_part: str | None = Field(
         default=None,
         description=(
-            "Split label of the footer used. Vakalatnama if it prints the AOR. Else "
-            "Memo of Appearance. Else Main Petition last page. Else Listing Proforma "
-            "last page for office_address. Else AOR's Certificate or Advocate's "
-            "Checklist for remaining blanks."
+            "Opening pages or Closing pages, whichever printed this footer. Record source_pages."
         ),
     )
     raw_text: str | None = Field(
@@ -286,19 +279,19 @@ class AdvocateOnRecord(BaseModel):
 
 
 class ImpugnedOrder(BaseModel):
-    """The order under challenge. Impugned Order PDF first; else bracketed captions."""
+    """The order under challenge. Its court, date, and case number may be printed on any opening page."""
     model_config = ConfigDict(populate_by_name=True)
 
     is_primary: bool | None = Field(default=True, description="True for the Impugned Order slot. Do not invent extra annexure orders.")
     case_number: str | None = Field(default=None, description="Case number before the earlier court")
-    order_date: str | None = Field(default=None, description="Date of the order under challenge. A filename or slot named Impugned Order is not proof of its contents. Do not use dates of earlier orders merely quoted, summarized, or discussed in Synopsis, List of Dates, pleadings, or applications. Require the actual standalone order or explicit particulars identifying the order challenged in this petition; otherwise return null.")
+    order_date: str | None = Field(default=None, description="Date of the order under challenge, printed with its case number on any opening page. Do not use a date that is only quoted inside the prayer. Leave null if the challenged order is not identified.")
     Forum: str | None = Field(default=None, description="The court/forum that passed the impugned order")
     bench: str | None = Field(
         default=None,
         description=(
-            "Judicial bench/coram: copy judge names printed under CORAM in the "
-            "Impugned Order, preserving honorifics. Join multiple judges with '; '. "
-            "Do not put the city, court seat, place of decision, or forum here."
+            "Judge names printed under CORAM on any opening page, preserving "
+            "honorifics. Join multiple judges with '; '. Do not put the city, "
+            "court seat, place of decision, or forum here."
         ),
     )
     certified_copy_applied_on: str | None = Field(default=None, description="Date the certified copy was applied for")
@@ -307,9 +300,7 @@ class ImpugnedOrder(BaseModel):
     source_part: str | None = Field(
         default=None,
         description=(
-            "Impugned Order if that document is in this pack. If it is not attached, "
-            "Main Petition, Cover Page, AOR's Certificate, or Affidavit — the "
-            "bracketed particulars on those pages."
+            "Opening pages. Record source_pages for the page that printed these particulars."
         ),
     )
     source_pages: list[int] = Field(default_factory=list, description="Global page numbers containing this data")
@@ -375,7 +366,7 @@ class LegalExtractRecord(BaseModel):
         default=None,
         description=(
             "Court where the petition is filed, as a string. "
-            "Fill from Cover Page; check spelling on Main Petition and Vakalatnama."
+            "It may be printed on any opening page."
         ),
     )
     petition_type: str | None = Field(
@@ -383,16 +374,14 @@ class LegalExtractRecord(BaseModel):
         description=(
             "Petition type as printed, e.g. Special Leave Petition (Civil), Civil Appeal, "
             "Writ Petition (Criminal), or Miscellaneous Application. "
-            "Fill from the Main Petition cause title first. If not printed there, fill "
-            "from the Cover Page cause title. Check spelling against the other."
+            "It may be printed on any opening page."
         ),
     )
     cause_title: CauseTitle | None = Field(
         default=None,
         description=(
-            "Cause title representing petitioner vs respondent. Fill from Cover Page. "
-            "If Cover Page is not in this pack, fill from the Main Petition caption "
-            "and draft formatted_title from party counts."
+            "Cause title representing petitioner vs respondent. "
+            "Read it from whichever opening page prints the fullest caption."
         ),
     )
     petitioners: list[Party] = Field(default_factory=list, description="Petitioners. One record per petitioner.")
@@ -400,73 +389,55 @@ class LegalExtractRecord(BaseModel):
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Printed AOR footer only. Leave a field null if it is not printed; do "
-            "not invent name, code, email, mobile, firm, chamber, or PIN. Do not "
-            "copy petitioner or respondent names or addresses. Prefer Vakalatnama. "
-            "If Vakalatnama is not in this pack or prints no AOR, use the Memo of "
-            "Appearance footer, then the last page of the Main Petition (very end: "
-            "Drawn By, Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent, "
-            "Chamber lines under the name). Do not use Main Petition opening or "
-            "party-list pages. If office_address is still blank, last page of Listing "
-            "Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate "
-            "signature / DRAWN & FILED BY and Advocate's Checklist. Never override "
-            "Vakalatnama."
+            "Printed advocate-on-record footer only. Leave a field null if it is not "
+            "printed; do not invent name, code, email, mobile, firm, chamber, or PIN. "
+            "Do not copy a party's address. The footer may be on any opening page or "
+            "on the closing pages."
         ),
     )
     impugned_orders: list[ImpugnedOrder] = Field(
         default_factory=list,
         description=(
-            "Primary impugned order only. Fill from the Impugned Order PDF if it is in "
-            "this pack. If it is not attached, fill from bracketed particulars on the "
-            "Main Petition cause title, Cover Page, AOR's Certificate, and Affidavit. "
-            "If the same order appears in several of those, keep the Impugned Order PDF "
-            "values when present; otherwise keep one consistent set and record mismatches "
-            "in inconsistencies."
+            "Primary order under challenge. Its court, date, and case number may be "
+            "printed on any opening page. Keep one consistent set."
         ),
     )
     relief_sort: str | None = Field(
         default=None,
         description=(
-            "Main prayer body only from the Main Petition last 2-3 pages. "
+            "Main prayer body from the opening pages. "
             "Copy the text under the heading Main Prayer or Prayer. "
             "Do not include the heading, clause number, markdown, or HTML "
             "(for example omit '7. MAIN PRAYER:' and '<u>**MAIN PRAYER**</u>:'). "
             "Start at the prayer sentence, e.g. 'In the circumstances stated above…'. "
-            "Leave null if that heading is not printed."
+            "Leave null if that heading is not printed in the opening window."
         ),
     )
     petition_date: str | None = Field(
         default=None,
         description=(
-            "Date of this petition from the last page of the Main Petition, after "
-            "the heading Main Prayer or Prayer. Use the date printed next to Date, "
-            "Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on "
-            "are printed, use only the Date Drafted date. Return the date as printed, "
-            "without the label. Do not use a date inside the prayer, an impugned-order "
-            "date, or a date from any other document. Leave null if none of those "
-            "labels is printed after the prayer."
+            "Date of this petition from the opening pages, after the heading Main "
+            "Prayer or Prayer. Use the date printed next to Date, Dated, Date Drafted, "
+            "or Date Filed on. If both Date Drafted and Date Filed on are printed, "
+            "use only the Date Drafted date. A page number between the label and the "
+            "date is not the date. Return the date as printed, without the label. "
+            "Do not use a date inside the prayer or an impugned-order date. "
+            "Leave null if none of those labels is printed after the prayer."
         ),
     )
     inconsistencies: Inconsistencies | None = Field(
         default=None,
         description=(
-            "Spelling mismatches between fill and verify sources, plus an ORGANIZATION "
-            "party with no acting_through. Always include a letter-level mismatch of "
-            "the Cause Title main petitioner or main respondent versus petitioner 1 / "
-            "respondent 1 on the Main Petition starting pages (e.g. Shalija vs Shailja). "
-            "Cover Page has only one name per side; extra parties continue on later "
-            "starting pages. Also flag when that Cause Title person is missing on those "
-            "pages, is a different person than petitioner 1 / respondent 1, or is listed "
-            "on the other side. Extra parties are not a mismatch against Cover Page "
-            "And Anr/Ors. Also record Impugned Order case number, date, or forum "
-            "mismatches across Impugned Order, Main Petition, Cover Page, AOR's "
-            "Certificate, and Affidavit. Also record printed AOR chamber/office "
-            "address mismatches across Vakalatnama, Memo of Appearance, Main Petition "
-            "last page, Listing Proforma last page, and AOR's Certificate. Quote both "
-            "printed strings. Do not invent an address. Ignore extra Ph. on the same "
-            "chamber line. Party-name items[].raw_text "
-            'is Cause Title: "Name"; Main Petition: "Name". '
-            "items[].id is '1', '2', …."
+            "Spelling or value mismatches between two printed copies of the same "
+            "fact in the opening pages, plus an ORGANIZATION party with no "
+            "acting_through. Compare the cause-title main petitioner and main "
+            "respondent with petitioner 1 and respondent 1. And Anr or And Ors on "
+            "a short caption is not a second party and is not a mismatch. Also "
+            "record a mismatch of the challenged order's case number, date, or "
+            "forum when those particulars are printed more than once. Also record "
+            "a mismatch of the advocate chamber address when it is printed more "
+            "than once. Quote both printed strings. Do not invent an address. "
+            "Ignore an extra Ph. on the same chamber line. items[].id is '1', '2', …."
         ),
     )
 
@@ -511,14 +482,14 @@ class FrontExtractRecord(LegalExtractRecord):
         default=None,
         description=(
             "Court where the petition is filed (e.g. Supreme Court of India, High Court of Delhi), "
-            "as printed on the cover page, petition heading, or memo of parties."
+            "as printed on any opening page."
         ),
     )
     petition_type: str | None = Field(
         default=None,
         description=(
             "Petition type (e.g. Special Leave Petition (Civil), Special Leave Petition (Crl.), "
-            "Writ Petition (Civil), Transfer Petition), as printed on the cover page, cause title, or petition heading."
+            "Writ Petition (Civil), Transfer Petition), as printed on any opening page."
         ),
     )
     special_category: str | None = Field(
@@ -538,50 +509,50 @@ class FrontExtractRecord(LegalExtractRecord):
     petitioners: list[Party] = Field(
         default_factory=list,
         description=(
-            "List of all petitioners. Extract every petitioner from the Memo of Parties, Position of Parties, "
-            "Cause Title, Parties Schedule, Vakalatnama, or Petition opening (whichever provides the most complete details). "
-            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
-            "guardian (father/mother/husband name), age, occupation, full address, "
-            "city, state, pin_code, email, mobile, and acting_through."
+            "Every petitioner printed on any opening page. A caption that says "
+            "'& Anr.' or '& Ors.' is not the second name; find that person on another "
+            "opening page. Capture name, relation (S/o, D/o, W/o), guardian, "
+            "occupation, full address, city, state, pin_code, email, mobile, and acting_through. "
+            "Record source_pages."
         ),
     )
     respondents: list[Party] = Field(
         default_factory=list,
         description=(
-            "List of all respondents. Extract every respondent from the Memo of Parties, Position of Parties, "
-            "Cause Title, Parties Schedule, or Petition opening following VERSUS. "
-            "Capture all printed details: name, relation prefix (S/o, D/o, W/o), "
-            "guardian (father/mother/husband name), age, occupation, full address, "
-            "city, state, pin_code, email, mobile, and acting_through."
+            "Every respondent printed on any opening page, including the address when "
+            "it is printed with the name. Capture name, relation (S/o, D/o, W/o), "
+            "guardian, occupation, full address, city, state, pin_code, email, mobile, "
+            "and acting_through. Record source_pages."
         ),
     )
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocate on record from the Vakalatnama (on closing pages), Memo of Appearance, "
-            "or footer at the end of the List of Dates / Petition in the pack. "
-            "Extract name, code, firm/address, email, and phone."
+            "Advocate on record from any opening page or the closing pages. "
+            "Copy the printed name, code, chamber, email, and phone. Do not invent them."
         ),
     )
     impugned_orders: list[ImpugnedOrder] = Field(
         default_factory=list,
         description=(
-            "Impugned orders being challenged. Extract court name, order date (DD.MM.YYYY), "
-            "and case number / appeal number from the cause title, synopsis, listing proforma, or petition opening."
+            "Order under challenge. Extract court name, order date, and case number "
+            "from whichever opening page prints them."
         ),
     )
     relief_sort: str | None = Field(
         default=None,
         description=(
-            "Leave null. The prayer is on the last pages of the Main Petition, "
-            "which are not in this 30-page slice."
+            "Prayer body under Main Prayer or Prayer on any opening page. "
+            "Omit the heading. Leave null only when that prayer is not in the window."
         ),
     )
     petition_date: str | None = Field(
         default=None,
         description=(
-            "Leave null. The petition date is on the last pages of the Main "
-            "Petition, which are not in this 30-page slice."
+            "Date after Main Prayer or Prayer on any opening page, next to Date, "
+            "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
+            "are printed. A page number between the label and the date is not the "
+            "date. Leave null only when no such date is printed in the window."
         ),
     )
 

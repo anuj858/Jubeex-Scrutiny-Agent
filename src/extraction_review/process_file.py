@@ -12,7 +12,6 @@ import asyncio
 import hashlib
 import io
 import logging
-import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -313,23 +312,16 @@ EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
 EXTRACT_FRONT_JOB_TYPES = frozenset({"extract_front"})
 FRONT_EXTRACT_PAGE_LIMIT = 30
 FRONT_EXTRACT_END_PAGE_LIMIT = 5
-FRONT_EXTRACT_SMALL_BOOK_PAGES = 200
-FRONT_EXTRACT_OPENING_CAP = 120
 
 
 def front_extract_opening_pages(total: int) -> int:
     """How many opening pages to parse from a compiled PDF.
 
-    A book of 200 pages or fewer uses 30 pages. A longer book starts from
-    20 percent and that share shrinks as the book grows, so 700 pages keeps
-    75 opening pages and 1000 pages keeps 90, never more than 120.
+    Split has not run, so a field may sit on any of these pages. A file of
+    30 pages or fewer is read in full. A longer file is read from its first
+    30 pages. The last 5 pages are still attached for the closing block.
     """
-    if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
-        return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
-    grown = math.ceil(
-        0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total)
-    )
-    return min(FRONT_EXTRACT_OPENING_CAP, total, grown)
+    return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
@@ -347,8 +339,8 @@ def first_pages_pdf(
 ) -> bytes:
     """Keep the opening pages and the last pages, without repeating the overlap.
 
-    The last pages are where the Vakalatnama sits, so the advocate on record
-    can be read from there.
+    The last pages are included because the advocate block is often printed
+    there. Those pages are not assumed to be a Vakalatnama.
     """
     if page_limit < 1:
         raise ValueError("page_limit must be at least 1")
