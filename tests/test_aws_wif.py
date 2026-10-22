@@ -50,3 +50,6 @@ def test_ecs_wif_uses_custom_supplier(tmp_path, monkeypatch) -> None:
         from_info.call_args.kwargs["aws_security_credentials_supplier"],
         EcsCredentialSupplier,
     )
+    assert from_info.call_args.kwargs["scopes"] == [
+        "https://www.googleapis.com/auth/cloud-platform"
+    ]

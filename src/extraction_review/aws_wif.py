@@ -57,4 +57,5 @@ def ecs_google_credentials() -> aws.Credentials | None:
     return aws.Credentials.from_info(
         info,
         aws_security_credentials_supplier=EcsCredentialSupplier(),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
     )
