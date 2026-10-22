@@ -74,6 +74,7 @@ from .llama_usage import (
 )
 from .logging_utils import safe_url_for_log
 from .s3_artifacts import STEP_SPLIT, upload_step_json
+from .source_url import renew_workspace_s3_url
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
@@ -2164,7 +2165,7 @@ def _require_pdf_bytes(data: bytes, url: str) -> None:
         return
     preview = data[:180].decode("utf-8", errors="replace").replace("\n", " ")
     raise ValueError(
-        f"Downloaded body from {url} is not a PDF "
+        f"Downloaded body from {safe_url_for_log(url)} is not a PDF "
         f"({len(data)} bytes, starts with {preview!r})"
     )
 
@@ -2176,6 +2177,8 @@ async def ingest_remote_file(
     filename: str | None = None,
     external_file_id: str | None = None,
     cache_bytes: bool = False,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> tuple[str, str, str]:
     """Download a remote PDF and upload it to LlamaCloud.
 
@@ -2185,14 +2188,32 @@ async def ingest_remote_file(
     if not url:
         raise ValueError("file_url is empty")
 
+    url = await asyncio.to_thread(
+        renew_workspace_s3_url,
+        url,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
     timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
-        response = await http.get(url)
-        response.raise_for_status()
-        data = response.content
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+            response = await http.get(url)
+            response.raise_for_status()
+            data = response.content
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"PDF download failed with HTTP {exc.response.status_code} "
+            f"from {safe_url_for_log(url)}"
+        ) from None
+    except httpx.RequestError as exc:
+        raise RuntimeError(
+            f"PDF download failed from {safe_url_for_log(url)} "
+            f"({type(exc).__name__})"
+        ) from None
 
     if not data:
-        raise ValueError(f"Downloaded empty body from {url}")
+        raise ValueError(f"Downloaded empty body from {safe_url_for_log(url)}")
     _require_pdf_bytes(data, url)
 
     name = _upload_filename((filename or "").strip() or _filename_from_url(url))
@@ -2341,6 +2362,8 @@ async def _verify_one_document(
     catalog: Any,
     split_config: SplitConfig,
     semaphore: asyncio.Semaphore,
+    organization_id: str | None,
+    workspace_id: str | None,
 ) -> VerifiedDocument:
     name = item.filename or item.document_id or item.slot_id
     expected = (item.slot_id or "").strip()
@@ -2354,6 +2377,8 @@ async def _verify_one_document(
                     item.file_url or "",
                     filename=filename,
                     external_file_id=item.document_id or item.file_hash,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
                 )
             page_parts, _job_id, _exchange = await _split_page_parts(
                 client,
@@ -2395,6 +2420,8 @@ async def _run_verify_from_file_event(
                 catalog=catalog,
                 split_config=split_config,
                 semaphore=semaphore,
+                organization_id=event.organization_id,
+                workspace_id=event.workspace_id,
             )
             for item in event.documents
         ]
@@ -2650,6 +2677,8 @@ async def _run_split_from_file_event(
                 item.file_url or "",
                 filename=filename,
                 external_file_id=item.document_id or file_hash,
+                organization_id=event.organization_id,
+                workspace_id=event.workspace_id,
             )
             file_hash = verified_content_hash(file_hash, digest)
         split_parts.append(
@@ -2787,6 +2816,8 @@ async def _run_extract_front(
             )
             or file_hash,
             cache_bytes=True,
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
         )
         file_hash = verified_content_hash(file_hash, content_hash)
     if not file_id:
@@ -2932,6 +2963,8 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     external_file_id=compiled_external or file_hash_hint,
                     cache_bytes=True,
+                    organization_id=event.organization_id,
+                    workspace_id=event.workspace_id,
                 )
             except Exception as exc:
                 logger.exception(

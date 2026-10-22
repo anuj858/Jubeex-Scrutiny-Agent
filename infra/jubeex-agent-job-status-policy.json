@@ -36,6 +36,12 @@
         "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/defectfiles/*",
         "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/visualfiles/*"
       ]
+    },
+    {
+      "Sid": "ReadWorkspaceSourceDocuments",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::jubeex-893338224943-ap-south-1-an/org/*/filing-workspace/*/document/*"
     }
   ]
 }

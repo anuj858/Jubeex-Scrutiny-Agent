@@ -64,6 +64,14 @@ absence of Vertex `429 RESOURCE_EXHAUSTED` responses.
    require `GetObject` and `PutObject`. Keep SQS receive/delete/change-visibility
    permissions on the matching queue only. Check Secrets Manager access for
    `jubeex/google-wif-credentials`.
+   The worker renews a backend's short-lived presigned PDF URL at download time
+   only when the URL belongs to the request's own workspace. Before deploying
+   that code, explicitly approve and apply the checked-in policy's
+   `ReadWorkspaceSourceDocuments` `s3:GetObject` grant on
+   `org/*/filing-workspace/*/document/*`. This grants the task role read access
+   to source documents across workspaces; code-level tenant checks do not
+   replace an IAM security review. Without the grant, delayed jobs may still
+   fail to download after URL expiry. Do not broaden this to `s3:ListBucket`.
 3. Scale each ECS service from its own SQS backlog per running task, and set a
    bounded minimum/maximum. Use queue wait-time and real job-duration targets
    to choose the scaling target. Scale-out is not a remedy for Vertex 429s:
@@ -114,6 +122,9 @@ absence of Vertex `429 RESOURCE_EXHAUSTED` responses.
 ## Pre-deployment acceptance tests
 
 - Run one upload through split/extraction and one scrutiny through Review.
+- Delay an `extract-front` job beyond the backend's 15-minute presigned URL
+  lifetime. The worker must renew the same workspace document URL and finish
+  without exposing the URL signature in job errors or logs.
 - Start two scrutiny jobs simultaneously. Both must finish without duplicate
   callbacks, duplicated defects, or a stuck progress display.
 - Force one Vertex 429. The job may retry, but if a check remains failed, the

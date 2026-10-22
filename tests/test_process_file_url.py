@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -612,6 +613,45 @@ async def test_ingest_remote_file_uploads_to_llamacloud(
     assert kwargs["external_file_id"] == "backend-doc-99"
     assert kwargs["file"][0] == "My_Filing.pdf"
     assert take_file_bytes(file_id) is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_remote_file_uses_refreshed_workspace_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = "https://s3.example/old.pdf?X-Amz-Signature=old"
+    refreshed = "https://s3.example/new.pdf?X-Amz-Signature=new"
+    seen: list[str] = []
+
+    def renew(url: str, *, organization_id: str | None, workspace_id: str | None) -> str:
+        assert (url, organization_id, workspace_id) == (original, "org", "workspace")
+        return refreshed
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> httpx.Response:
+            seen.append(url)
+            return httpx.Response(403, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(
+        "extraction_review.process_file.renew_workspace_s3_url", renew
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as error:
+        await ingest_remote_file(
+            MagicMock(), original, organization_id="org", workspace_id="workspace"
+        )
+    assert seen == [refreshed]
+    assert "X-Amz-Signature" not in str(error.value)
 
 
 @pytest.mark.asyncio

@@ -401,6 +401,8 @@ class ProcessSplitFilesWorkflow(Workflow):
             llama_cloud_client,
             event.parts,
             concurrency=ingest_concurrency(),
+            organization_id=event.organization_id or event.org_id,
+            workspace_id=event.workspace_id,
         )
         ingest_seconds = elapsed_seconds(ingest_started)
 
@@ -1018,6 +1020,9 @@ class ProcessSplitFilesWorkflow(Workflow):
 async def _ingest_one_part(
     client: AsyncLlamaCloud,
     part: SplitPartEvent,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> SplitPartEvent:
     file_id = (part.file_id or "").strip() or None
     filename = (part.filename or "").strip() or None
@@ -1030,6 +1035,8 @@ async def _ingest_one_part(
             part.file_url or "",
             filename=filename,
             external_file_id=part.document_id or file_hash,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
         )
         file_hash = verified_content_hash(file_hash, digest)
     return part.model_copy(
@@ -1046,12 +1053,19 @@ async def _ingest_labeled_parts(
     parts: list[SplitPartEvent],
     *,
     concurrency: int,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> list[SplitPartEvent]:
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _one(part: SplitPartEvent) -> SplitPartEvent:
         async with semaphore:
-            return await _ingest_one_part(client, part)
+            return await _ingest_one_part(
+                client,
+                part,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
 
     return list(await asyncio.gather(*[_one(part) for part in parts]))
 
