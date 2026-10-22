@@ -49,6 +49,12 @@ def test_workers_prepare_google_adc_before_starting(definition_name: str) -> Non
     assert container["command"] == ["uv", "run", "jubeex-sqs-worker"]
 
 
+def test_api_prepares_google_adc_before_starting() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile.api").read_text(encoding="utf-8")
+    assert 'ENTRYPOINT ["/app/scripts/start.sh"]' in dockerfile
+    assert 'CMD ["uv", "run", "uvicorn", "extraction_review.api:app"' in dockerfile
+
+
 @pytest.mark.parametrize(
     "definition_name", ["worker-task-definition.json", "ecs-scrutiny-worker-task.json"]
 )
