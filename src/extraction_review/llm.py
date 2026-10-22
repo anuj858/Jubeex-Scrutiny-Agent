@@ -404,13 +404,19 @@ def _close_truncated_json(text: str) -> str | None:
 
 def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
     completed = dict(data)
+    legacy = completed.get("reasoning")
+    if not str(completed.get("observed") or "").strip():
+        if isinstance(legacy, str) and legacy.strip():
+            completed["observed"] = legacy.strip()
     if not completed.get("summary"):
-        reasoning = completed.get("reasoning")
-        if isinstance(reasoning, str) and reasoning.strip():
-            first = reasoning.strip().split(".")[0].strip()
+        source = completed.get("observed") or ""
+        if isinstance(source, str) and source.strip():
+            first = source.strip().split(".")[0].strip()
             completed["summary"] = f"{first}." if first else "Model omitted summary."
         else:
             completed["summary"] = "Model omitted summary."
+    if not str(completed.get("observed") or "").strip():
+        completed["observed"] = completed.get("summary") or "Model response was truncated."
     if completed.get("confidence") is None:
         status = str(completed.get("status") or "").strip().lower()
         # Conservative defaults when the model drops the field.
@@ -418,10 +424,8 @@ def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
             completed["confidence"] = 0.7
         else:
             completed["confidence"] = 0.5
-    if not completed.get("reasoning"):
-        completed["reasoning"] = (
-            completed.get("summary") or "Model response was truncated."
-        )
+    completed.setdefault("elements", [])
+    completed.setdefault("conclusion", "")
     completed.setdefault("evidence", [])
     return completed
 

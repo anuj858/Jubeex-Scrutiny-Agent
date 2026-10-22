@@ -259,8 +259,8 @@ def test_excerpts_are_labeled_with_short_chunk_ids() -> None:
         },
     ]
     text = _format_evidence(chunks)
-    assert "[c1 | Page 14 — Annexure P-4]" in text
-    assert "[c2 | Page 15 — Annexure P-4]" in text
+    assert "[c1 | Annexure P-4, page 14]" in text
+    assert "[c2 | Annexure P-4, page 15]" in text
     assert chunks[0]["excerpt_id"] == "c1"
     assert chunks[1]["excerpt_id"] == "c2"
 
