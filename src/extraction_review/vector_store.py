@@ -28,6 +28,7 @@ from typing import Any, cast
 from pinecone import Pinecone
 
 from .document_parts import _part_match, parts_on_page, pool_search_queries
+from .parsed_document import build_semantic_chunks, coerce_structured_pages
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEXT_FIELD = "normalized_text"
 MAX_CHUNK_CHARS = 3500
 CHUNK_OVERLAP = 200
-VECTOR_SCHEMA_VERSION = 2
+VECTOR_SCHEMA_VERSION = 3
 EMPTY_PAGE_MARKER = "[No extractable text on this page; visual review required.]"
 _PAGE_SEGMENT_RE = re.compile(
     r"^--- page (?P<page>\d+) \((?P<role>primary|overlap)\) ---\n",
@@ -414,6 +415,83 @@ def _neighbor_margin(
     )
 
 
+def _structured_page_records(
+    *,
+    base_id: str,
+    page_num: int,
+    page: dict[str, Any],
+    base_meta: dict[str, Any],
+    page_meta: dict[str, Any] | None,
+    document_part: Any,
+) -> list[dict[str, Any]]:
+    """Build compatible evidence records from compact LlamaParse items."""
+
+    chunks = build_semantic_chunks(page)
+    if not chunks:
+        return []
+    parser_meta: dict[str, Any] = {}
+    raw_parser_meta = page.get("metadata")
+    if isinstance(raw_parser_meta, dict):
+        parser_meta = raw_parser_meta
+    records: list[dict[str, Any]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        text = str(chunk.get("text") or "").strip()
+        if not text:
+            continue
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        metadata = {
+            **base_meta,
+            **_flatten_metadata(page_meta),
+            "chunk_kind": "page",
+            "content_kind": str(chunk.get("content_kind") or "structured_text"),
+            "parser_source": (
+                "markdown_fallback"
+                if "markdown_fallback" in (chunk.get("item_types") or [])
+                else "items"
+            ),
+            "page_start": page_num,
+            "page_end": page_num,
+            "primary_page": page_num,
+            "source_pages": [str(page_num)],
+            "pages": str(page_num),
+            "chunk_index": chunk_index,
+            "item_start": int(chunk.get("item_start") or 0),
+            "item_end": int(chunk.get("item_end") or 0),
+            "item_types": [str(value) for value in chunk.get("item_types") or []],
+            "heading_path": [str(value) for value in chunk.get("heading_path") or []],
+            "token_count": int(chunk.get("token_count") or 0),
+            "content_hash": content_hash,
+            "ocr_status": "text",
+            "requires_visual_review": False,
+            "parse_success": bool(page.get("success", True)),
+            "vector_schema_version": VECTOR_SCHEMA_VERSION,
+        }
+        for source, target in (
+            ("confidence", "parse_confidence"),
+            ("printed_page_number", "printed_page_number"),
+            ("original_orientation_angle", "original_orientation_angle"),
+        ):
+            if parser_meta.get(source) is not None:
+                metadata[target] = parser_meta[source]
+        for key in ("table_row_start", "table_row_end"):
+            if chunk.get(key) is not None:
+                metadata[key] = int(chunk[key])
+        concerns = [str(value) for value in chunk.get("parse_concerns") or []]
+        if concerns:
+            metadata["parse_concerns"] = concerns
+            metadata["requires_visual_review"] = True
+        if document_part:
+            metadata["document_part"] = document_part
+        records.append(
+            {
+                "record_id": f"{base_id}:page:{page_num}:{chunk_index}",
+                "chunk_text": text,
+                "metadata": metadata,
+            }
+        )
+    return records
+
+
 def build_page_records(
     *,
     base_id: str,
@@ -421,11 +499,14 @@ def build_page_records(
     metadata: dict[str, Any] | None = None,
     page_parts: dict[int, Any] | None = None,
     page_metadata: dict[int, dict[str, Any]] | None = None,
+    page_structures: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Build Pinecone records from parse page markdown.
+    Build Pinecone records from structured parse pages, with Markdown fallback.
 
-    Each page is window-chunked if longer than MAX_CHUNK_CHARS.
+    Expanded LlamaParse items are grouped into token-aware semantic chunks.
+    Legacy/reused artifacts without structured items retain the prior character
+    window behavior, including same-document neighbour context.
     `page_parts` is the Split map (page number → Listing Proforma, …).
     The first/last window of a page also takes CHUNK_OVERLAP characters from
     the previous/next page when Split labelled both as the same part. Cover
@@ -435,15 +516,33 @@ def build_page_records(
     base_meta = metadata or {}
     parts = page_parts or {}
     per_page = page_metadata or {}
+    structured = coerce_structured_pages(page_structures)
     records: list[dict[str, Any]] = []
     empty_pages = 0
 
     for page_num in sorted(page_markdown.keys()):
         page_text = (page_markdown.get(page_num) or "").strip()
+        names = parts_on_page(parts.get(page_num))
+        document_part: Any = names[0] if len(names) == 1 else names
+        if page_num in structured:
+            structured_records = _structured_page_records(
+                base_id=base_id,
+                page_num=page_num,
+                page=structured[page_num],
+                base_meta=base_meta,
+                page_meta=per_page.get(page_num),
+                document_part=document_part,
+            )
+            if structured_records:
+                records.extend(structured_records)
+                logger.info(
+                    "[Pinecone] Page %s → %s structured chunk(s)",
+                    page_num,
+                    len(structured_records),
+                )
+                continue
         if not page_text:
             empty_pages += 1
-            names = parts_on_page(parts.get(page_num))
-            document_part: Any = names[0] if len(names) == 1 else names
             meta = {
                 **base_meta,
                 **_flatten_metadata(per_page.get(page_num)),
@@ -476,8 +575,6 @@ def build_page_records(
             len(page_text),
             len(windows),
         )
-        names = parts_on_page(parts.get(page_num))
-        document_part: Any = names[0] if len(names) == 1 else names
         prev_margin = _neighbor_margin(
             page_num=page_num,
             neighbor=page_num - 1,
@@ -805,6 +902,18 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "ocr_status": fields.get("ocr_status"),
         "requires_visual_review": bool(fields.get("requires_visual_review")),
         "index_generation": fields.get("index_generation"),
+        "content_kind": fields.get("content_kind"),
+        "parser_source": fields.get("parser_source"),
+        "heading_path": fields.get("heading_path") or [],
+        "item_types": fields.get("item_types") or [],
+        "item_start": fields.get("item_start"),
+        "item_end": fields.get("item_end"),
+        "table_row_start": fields.get("table_row_start"),
+        "table_row_end": fields.get("table_row_end"),
+        "parse_confidence": fields.get("parse_confidence"),
+        "parse_concerns": fields.get("parse_concerns") or [],
+        "printed_page_number": fields.get("printed_page_number"),
+        "content_hash": fields.get("content_hash"),
     }
 
 
@@ -866,6 +975,18 @@ def search_filing_chunks(
                 "ocr_status",
                 "requires_visual_review",
                 "index_generation",
+                "content_kind",
+                "parser_source",
+                "heading_path",
+                "item_types",
+                "item_start",
+                "item_end",
+                "table_row_start",
+                "table_row_end",
+                "parse_confidence",
+                "parse_concerns",
+                "printed_page_number",
+                "content_hash",
             ],
         )
 

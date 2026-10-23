@@ -1,6 +1,6 @@
 # Jubeex Scrutiny Agent
 
-A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** for page markdown, LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + page chunks in Pinecone.
+A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** structured page items (with Markdown fallback), LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + provenance-rich semantic chunks in Pinecone.
 
 # Running the application
 
@@ -16,6 +16,7 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
    - `PINECONE_EMBED_MODEL` — integrated embed model (default `llama-text-embed-v2`)
    - `PINECONE_TEXT_FIELD` — record text field mapped for embedding (this index uses `normalized_text`)
    - `PINECONE_NAMESPACE` — namespace for filing vectors (default `jubeex-filings`)
+   - `SCRUTINY_RERANK_ENABLED`, `PINECONE_RERANK_MODEL` — defect-aware Pinecone reranking (defaults `true`, `bge-reranker-v2-m3`)
    - `VECTOR_BACKEND` — `pinecone` to index after extract, or anything else to skip
 3. Run the **production API** (what your other application should call):
 

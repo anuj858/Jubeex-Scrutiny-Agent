@@ -780,9 +780,7 @@ def _annexure_mark_from_title_or_stamp(
         # as ``i so ANNEXURE-P-11 as`` and stamps followed by a document title.
         prefix = line[: match.start()].strip()
         remainder = line[match.end() :].strip(" .;:-~_|")
-        if prefix.casefold() == "as" and re.match(
-            r"(?i)^is\s+a\s+copy\b", remainder
-        ):
+        if prefix.casefold() == "as" and re.match(r"(?i)^is\s+a\s+copy\b", remainder):
             continue
         if match.groupdict().get("bare_num") and len(lines) > 1:
             # A bare folio at the top of a scanned continuation is not an
@@ -862,9 +860,7 @@ def _annexure_mark_from_title_or_stamp(
     for index, line in enumerate(lines[:24]):
         context_start = max(0, index - 4)
         previous = "\n".join(lines[context_start:index])
-        mark = _mark_from_title_line(
-            line, allow_body_tail=True, prev_context=previous
-        )
+        mark = _mark_from_title_line(line, allow_body_tail=True, prev_context=previous)
         if mark is not None:
             return mark
     tail_start = max(0, len(lines) - 10)
@@ -874,9 +870,7 @@ def _annexure_mark_from_title_or_stamp(
             continue
         context_start = max(0, index - 4)
         previous = "\n".join(lines[context_start:index])
-        mark = _mark_from_title_line(
-            line, allow_body_tail=False, prev_context=previous
-        )
+        mark = _mark_from_title_line(line, allow_body_tail=False, prev_context=previous)
         if mark is not None:
             return mark
     return None
@@ -908,8 +902,7 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
         )
     }
     explicit_is_rebuilt_index_row = bool(
-        explicit
-        and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
+        explicit and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
     )
     # An Annexure name printed *inside* an already opened document is an
     # inventory/citation, not the physical start of that Annexure. OCR can
@@ -2004,9 +1997,9 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
     targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
-    if _requires_annexure_collection_coverage(defect) or _requires_index_collection_coverage(
+    if _requires_annexure_collection_coverage(
         defect
-    ):
+    ) or _requires_index_collection_coverage(defect):
         return max(1, ceiling)
     budget = ceiling
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
@@ -2027,9 +2020,7 @@ def _requires_annexure_collection_coverage(defect: Defect) -> bool:
     copy`` above a non-compliant annexure that omits them.  Checks quantified
     over each annexure therefore need breadth across the numbered documents.
     """
-    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     if not any(family_split_name(part) == ANNEXURE_FAMILY for part in targets):
         return False
     wording = " ".join(
@@ -2046,9 +2037,7 @@ def _requires_annexure_collection_coverage(defect: Defect) -> bool:
 
 def _requires_index_collection_coverage(defect: Defect) -> bool:
     """Whether every available Index page is needed to judge completeness."""
-    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     if "Index" not in targets:
         return False
     wording = " ".join(
@@ -2199,12 +2188,13 @@ def select_chunks_for_defect(
             )
         ]
 
-    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, int, float]:
+    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, float, int, float]:
         look_hit = 1 if look_parts and _part_match(chunk, look_parts) else 0
         part_hit = 1 if _part_match(chunk, preferred) else 0
+        rerank = float(chunk.get("rerank_score") or 0)
         hits = _term_hits(chunk, terms)
         score = _chunk_score(chunk)
-        return (look_hit, part_hit, hits, score)
+        return (look_hit, part_hit, rerank, hits, score)
 
     ranked = sorted(pages, key=rank_key, reverse=True)
     focused = [

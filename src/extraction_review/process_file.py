@@ -327,9 +327,7 @@ def front_extract_opening_pages(total: int) -> int:
     """
     if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
         return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
-    grown = math.ceil(
-        0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total)
-    )
+    grown = math.ceil(0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total))
     return min(FRONT_EXTRACT_OPENING_CAP, total, grown)
 
 
@@ -380,6 +378,8 @@ def first_pages_pdf(
             sliced.close()
     finally:
         source.close()
+
+
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
 FULL_JOB_TYPES = (
     frozenset(
@@ -959,9 +959,7 @@ class FileEvent(StartEvent):
         mode = intake_mode(self)
         if mode == "extract_front":
             if len(self.documents) != 1:
-                raise ValueError(
-                    "documents[] must contain the one compiled PDF"
-                )
+                raise ValueError("documents[] must contain the one compiled PDF")
             slot_mode = "full"
         elif mode == "verify":
             slot_mode = "split"
@@ -2022,9 +2020,7 @@ def _document_first_page_ownership(
             and follows_previous
             and previous_category
             and family_split_name(previous_category) != ANNEXURE_FAMILY
-            and embedded_annexure_on_continuation(
-                (page_texts or {}).get(pages[0], "")
-            )
+            and embedded_annexure_on_continuation((page_texts or {}).get(pages[0], ""))
         ):
             corrected_category = previous_category
             correction_evidence = "continuous_parent_document_body"
@@ -2208,8 +2204,7 @@ async def ingest_remote_file(
         ) from None
     except httpx.RequestError as exc:
         raise RuntimeError(
-            f"PDF download failed from {safe_url_for_log(url)} "
-            f"({type(exc).__name__})"
+            f"PDF download failed from {safe_url_for_log(url)} ({type(exc).__name__})"
         ) from None
 
     if not data:
@@ -2499,6 +2494,7 @@ async def _extract_sliced_parts(
     court: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
+    reuse_structured_pages_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
@@ -2531,6 +2527,7 @@ async def _extract_sliced_parts(
             court=court,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
+            reuse_structured_pages_by_slot=reuse_structured_pages_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
         )
     )
@@ -2563,6 +2560,7 @@ async def _run_split_from_file_event(
     parsed_slots = [slot for slot in (event.parsed_slots or []) if slot]
     reuse_pages: dict[str, dict[str, str]] = {}
     reuse_layouts: dict[str, dict[str, Any]] = {}
+    reuse_structured: dict[str, dict[str, Any]] = {}
     reuse_jobs: dict[str, str] = {}
     agent_data_id = (event.agent_data_id or "").strip() or None
     if agent_data_id:
@@ -2591,7 +2589,10 @@ async def _run_split_from_file_event(
         ):
             dumped = item.data.model_dump(mode="json")
             data = dumped if isinstance(dumped, dict) else {}
-        meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        meta: dict[str, Any] = {}
+        raw_meta = data.get("metadata")
+        if isinstance(raw_meta, dict):
+            meta = raw_meta
         split_files = meta.get("split_files")
         if isinstance(split_files, dict):
             prior_file_ids = {
@@ -2621,9 +2622,14 @@ async def _run_split_from_file_event(
                 if str(slot).strip()
             ]
         artifact = download_json_object(str(meta.get(PARSE_ARTIFACT_KEY_KEY) or ""))
-        _slots, _order, pages_by_slot, job_ids, layouts_by_slot = load_parse_artifact(
-            artifact
-        )
+        (
+            _slots,
+            _order,
+            pages_by_slot,
+            job_ids,
+            layouts_by_slot,
+            structured_by_slot,
+        ) = load_parse_artifact(artifact)
         reuse_pages = {
             slot: {str(page): text for page, text in pages.items()}
             for slot, pages in pages_by_slot.items()
@@ -2633,6 +2639,10 @@ async def _run_split_from_file_event(
             for slot, layout in layouts_by_slot.items()
         }
         reuse_jobs = dict(job_ids)
+        reuse_structured = {
+            slot: {str(page): payload for page, payload in pages.items()}
+            for slot, pages in structured_by_slot.items()
+        }
         if not parsed_slots:
             parsed_slots = list(_slots)
 
@@ -2762,6 +2772,7 @@ async def _run_split_from_file_event(
         court=event.court,
         reuse_pages_by_slot=reuse_pages if index_only else {},
         reuse_layouts_by_slot=reuse_layouts if index_only else {},
+        reuse_structured_pages_by_slot=reuse_structured if index_only else {},
         reuse_parse_job_ids=reuse_jobs if index_only else {},
     )
     agent_data_id, report = _split_result_fields(nested_payload)

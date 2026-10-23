@@ -59,6 +59,7 @@ from .llm import (
 )
 from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
     build_defect_prompt,
@@ -126,8 +127,7 @@ def require_successful_checks(findings: list[DefectFinding], planned: int) -> No
     failed = sum(bool(finding.error) for finding in findings)
     if failed:
         raise RuntimeError(
-            f"Scrutiny incomplete: {failed} of {planned} checks failed; "
-            "rerun scrutiny"
+            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
         )
 
 
@@ -364,7 +364,8 @@ async def _chunks_for_defect(
             defect, [], layout=layout, max_chunks=page_budget
         )
 
-    selected = select_chunks_for_defect(pool, defect, max_chunks=page_budget)
+    reranked = await asyncio.to_thread(rerank_chunks_for_defect, pool, defect)
+    selected = select_chunks_for_defect(reranked, defect, max_chunks=page_budget)
     return _add_layout_fallback_chunks(
         defect,
         selected,
@@ -926,7 +927,11 @@ class ScrutinyWorkflow(Workflow):
         vector_organization_id = (
             str(
                 vector_meta.get("organization_id")
-                or (metadata.get("organization_id") if isinstance(metadata, dict) else "")
+                or (
+                    metadata.get("organization_id")
+                    if isinstance(metadata, dict)
+                    else ""
+                )
                 or event.organization_id
                 or ""
             ).strip()
@@ -942,13 +947,19 @@ class ScrutinyWorkflow(Workflow):
             or None
         )
         vector_file_hash = str(vector_meta.get("file_hash") or "").strip()
-        if index_generation and vector_file_hash and vector_file_hash != str(file_hash or ""):
+        if (
+            index_generation
+            and vector_file_hash
+            and vector_file_hash != str(file_hash or "")
+        ):
             raise ValueError(
                 "Active Pinecone generation belongs to a different filing hash; reindex "
                 "this workspace before running scrutiny"
             )
         if event.organization_id and vector_organization_id != event.organization_id:
-            raise ValueError("Active Pinecone generation belongs to another organization")
+            raise ValueError(
+                "Active Pinecone generation belongs to another organization"
+            )
         if event.workspace_id and vector_workspace_id != event.workspace_id:
             raise ValueError("Active Pinecone generation belongs to another workspace")
         filing_type = (

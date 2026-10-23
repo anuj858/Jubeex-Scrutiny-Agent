@@ -76,6 +76,7 @@ from .process_file import (
     positive_int_env,
     verified_content_hash,
 )
+from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .s3_artifacts import (
     STEP_EXTRACT,
     STEP_LAYOUT,
@@ -105,6 +106,8 @@ from .split_upload import (
     slot_needs_precise_parse,
     stitch_parsed_parts,
     stitch_parsed_parts_in_order,
+    stitch_structured_pages,
+    stitch_structured_pages_in_order,
     validate_parts,
 )
 from .vector_store import (
@@ -207,6 +210,9 @@ class SplitFilesEvent(StartEvent):
     court: str | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
     reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    reuse_structured_pages_by_slot: dict[str, dict[str, Any]] = Field(
+        default_factory=dict
+    )
     reuse_parse_job_ids: dict[str, str] = Field(default_factory=dict)
 
     @field_validator(
@@ -245,6 +251,7 @@ class SplitFilesState(BaseModel):
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
     page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
+    page_structures: dict[int, dict[str, Any]] = Field(default_factory=dict)
     started_at: float | None = None
     extract_started_at: float | None = None
     classify_split_seconds: float | None = None
@@ -262,6 +269,9 @@ class SplitFilesState(BaseModel):
     court: str | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     parse_artifact_url: str | None = None
     parse_artifact_key: str | None = None
 
@@ -424,7 +434,9 @@ class ProcessSplitFilesWorkflow(Workflow):
         )
         petition = find_part(parts, PETITION_SLOT_ID)
         source_parts = extract_source_parts(catalog)
-        reuse_pages, reuse_layouts, reuse_jobs = _reuse_parse_maps(event, parts=parts)
+        reuse_pages, reuse_layouts, reuse_structured, reuse_jobs = _reuse_parse_maps(
+            event, parts=parts
+        )
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -440,6 +452,7 @@ class ProcessSplitFilesWorkflow(Workflow):
         parse_started = start_timer()
         (
             pages_by_slot,
+            structured_pages_by_slot,
             parse_job_ids,
             layouts_by_slot,
             parse_usage,
@@ -453,6 +466,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             reuse_slots=set(event.parsed_slots),
             reuse_pages=reuse_pages,
             reuse_layouts=reuse_layouts,
+            reuse_structured_pages=reuse_structured,
             reuse_job_ids=reuse_jobs,
             ctx=ctx,
         )
@@ -477,12 +491,21 @@ class ProcessSplitFilesWorkflow(Workflow):
                 part_order=parts,
                 omit_empty=omit_empty,
             )
+            page_structures = stitch_structured_pages_in_order(
+                parts,
+                pages_by_slot,
+                structured_pages_by_slot,
+                omit_empty=omit_empty,
+            )
         else:
             page_markdown, page_parts = stitch_parsed_parts(
                 catalog, parts, pages_by_slot
             )
             page_layout = stitch_slot_layouts(
                 catalog, parts, pages_by_slot, layouts_by_slot
+            )
+            page_structures = stitch_structured_pages(
+                catalog, parts, pages_by_slot, structured_pages_by_slot
             )
         parsed_slots = [
             item.slot_id
@@ -526,6 +549,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.page_markdown = page_markdown
             state.page_parts = page_parts
             state.page_layout = page_layout
+            state.page_structures = page_structures
             state.started_at = started_at
             state.classify_split_seconds = event.classify_split_seconds
             state.llamacloud_jobs = list(parse_usage)
@@ -542,6 +566,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.court = event.court
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
+            state.structured_pages_by_slot = structured_pages_by_slot
 
         set_job_context(
             file_hash or filename,
@@ -555,6 +580,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             pages_by_slot=pages_by_slot,
             parse_job_ids=parse_job_ids,
             layouts_by_slot=layouts_by_slot,
+            structured_pages_by_slot=structured_pages_by_slot,
             organization_id=event.organization_id or event.org_id,
             workspace_id=event.workspace_id,
             job_id=file_hash,
@@ -600,6 +626,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 page_markdown=page_markdown,
                 page_parts=page_parts,
                 page_layout=page_layout,
+                page_structures=page_structures,
             )
             return StopEvent(result=payload)
         return ParsedEvent()
@@ -983,6 +1010,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                     page_markdown=page_markdown,
                     page_parts=page_parts,
                     page_layout=coerce_page_layout(state.page_layout),
+                    page_structures=coerce_structured_pages(state.page_structures),
                     ctx=ctx,
                 )
                 await _activate_vector_generation(
@@ -1081,10 +1109,12 @@ async def _parse_one_file(
     action: str = "parse",
     reuse_pages: dict[int, str] | None = None,
     reuse_layout: dict[int, dict[str, Any]] | None = None,
+    reuse_structured_pages: dict[int, dict[str, Any]] | None = None,
     reuse_job_id: str | None = None,
 ) -> tuple[
     str,
     dict[int, str],
+    dict[int, dict[str, Any]],
     str | None,
     dict[int, dict[str, Any]],
     dict[str, Any] | None,
@@ -1098,17 +1128,18 @@ async def _parse_one_file(
                     message=f"Skipping parse for {label} (not an extract source)",
                 )
             )
-            return part.slot_id, {}, None, {}, None
+            return part.slot_id, {}, {}, None, {}, None
         if action == "reuse":
             pages = dict(reuse_pages or {})
             layout = dict(reuse_layout or {})
+            structured = coerce_structured_pages(reuse_structured_pages)
             ctx.write_event_to_stream(
                 Status(
                     level="info",
                     message=f"Reusing S3 markdown for {label} ({len(pages)} page(s))",
                 )
             )
-            return part.slot_id, pages, reuse_job_id, layout, None
+            return part.slot_id, pages, structured, reuse_job_id, layout, None
         try:
             precise = slot_needs_precise_parse(part, source_parts)
             create_kwargs = parse_create_kwargs(
@@ -1130,10 +1161,11 @@ async def _parse_one_file(
             await _wait_for_parse(client, parse_job.id)
             parse_result = await client.parsing.get(
                 parse_job.id,
-                expand=["markdown", "usage"],
+                expand=["markdown", "text", "items", "metadata", "usage"],
                 project_id=project_id,
             )
             pages = _extract_page_markdown(parse_result)
+            structured = extract_structured_pages(parse_result)
             usage_row = await collect_parse_usage(
                 client,
                 parse_job.id,
@@ -1151,7 +1183,7 @@ async def _parse_one_file(
                     message=f"Parsed {len(pages)} page(s) from {label}",
                 )
             )
-            return part.slot_id, pages, parse_job.id, layout, usage_row
+            return part.slot_id, pages, structured, parse_job.id, layout, usage_row
         except Exception as exc:
             logger.exception("Parse failed for %s", label)
             ctx.write_event_to_stream(
@@ -1160,7 +1192,7 @@ async def _parse_one_file(
                     message=f"Parse failed for {label}; continuing without page text: {exc}",
                 )
             )
-            return part.slot_id, {}, None, {}, None
+            return part.slot_id, {}, {}, None, {}, None
 
 
 async def _parse_labeled_files(
@@ -1175,9 +1207,11 @@ async def _parse_labeled_files(
     reuse_slots: set[str] | None = None,
     reuse_pages: dict[str, dict[int, str]] | None = None,
     reuse_layouts: dict[str, dict[int, dict[str, Any]]] | None = None,
+    reuse_structured_pages: dict[str, dict[int, dict[str, Any]]] | None = None,
     reuse_job_ids: dict[str, str] | None = None,
 ) -> tuple[
     dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
     dict[str, str],
     dict[str, dict[int, dict[str, Any]]],
     list[dict[str, Any]],
@@ -1206,22 +1240,31 @@ async def _parse_labeled_files(
                 action=action,
                 reuse_pages=(reuse_pages or {}).get(part.slot_id),
                 reuse_layout=(reuse_layouts or {}).get(part.slot_id),
+                reuse_structured_pages=(reuse_structured_pages or {}).get(part.slot_id),
                 reuse_job_id=(reuse_job_ids or {}).get(part.slot_id),
             )
         )
     results = await asyncio.gather(*tasks)
     pages_by_slot: dict[str, dict[int, str]] = {}
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
     parse_job_ids: dict[str, str] = {}
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
     usage_jobs: list[dict[str, Any]] = []
-    for slot_id, pages, job_id, layout, usage_row in results:
+    for slot_id, pages, structured, job_id, layout, usage_row in results:
         pages_by_slot[slot_id] = pages
+        structured_pages_by_slot[slot_id] = structured
         layouts_by_slot[slot_id] = layout
         if job_id:
             parse_job_ids[slot_id] = job_id
         if usage_row:
             usage_jobs.append(usage_row)
-    return pages_by_slot, parse_job_ids, layouts_by_slot, usage_jobs
+    return (
+        pages_by_slot,
+        structured_pages_by_slot,
+        parse_job_ids,
+        layouts_by_slot,
+        usage_jobs,
+    )
 
 
 async def _index_split_upload(
@@ -1233,6 +1276,7 @@ async def _index_split_upload(
     page_markdown: dict[int, str],
     page_parts: dict[int, list[str]],
     page_layout: dict[int, dict[str, Any]],
+    page_structures: dict[int, dict[str, Any]] | None = None,
     ctx: Context[SplitFilesState],
 ) -> dict[str, Any]:
     file_hash = str(extracted_data.file_hash or state.file_hash or "").strip()
@@ -1302,6 +1346,7 @@ async def _index_split_upload(
         metadata=shared_meta,
         page_parts=page_parts,
         page_metadata=page_metadata,
+        page_structures=page_structures,
     )
     pinecone_items.extend(page_records)
     try:
@@ -1454,11 +1499,12 @@ def _reuse_parse_maps(
 ) -> tuple[
     dict[str, dict[int, str]],
     dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
     dict[str, str],
 ]:
     del parts
     if (event.parse_scope or "all") != "unparsed":
-        return {}, {}, {}
+        return {}, {}, {}, {}
     pages = {
         slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})
         for slot, raw in (event.reuse_pages_by_slot or {}).items()
@@ -1475,7 +1521,11 @@ def _reuse_parse_maps(
                 if isinstance(payload, dict):
                     slot_layout[number] = payload
         layouts[slot] = slot_layout
-    return pages, layouts, dict(event.reuse_parse_job_ids or {})
+    structured = {
+        slot: coerce_structured_pages(raw if isinstance(raw, dict) else {})
+        for slot, raw in (event.reuse_structured_pages_by_slot or {}).items()
+    }
+    return pages, layouts, structured, dict(event.reuse_parse_job_ids or {})
 
 
 def _persist_visual_metadata(
@@ -1544,6 +1594,7 @@ def _upload_parse_artifact(
     pages_by_slot: dict[str, dict[int, str]],
     parse_job_ids: dict[str, str],
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]],
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]],
     organization_id: str | None,
     workspace_id: str | None,
     job_id: str | None,
@@ -1554,6 +1605,7 @@ def _upload_parse_artifact(
         pages_by_slot=pages_by_slot,
         parse_job_ids=parse_job_ids,
         layouts_by_slot=layouts_by_slot,
+        structured_pages_by_slot=structured_pages_by_slot,
     )
     if organization_id:
         payload["organization_id"] = organization_id
@@ -1580,6 +1632,7 @@ async def _complete_index_only(
     page_markdown: dict[int, str],
     page_parts: dict[int, list[str]],
     page_layout: dict[int, dict[str, Any]],
+    page_structures: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     del catalog, pages_by_slot, layouts_by_slot
     state = await ctx.store.get_state()
@@ -1658,6 +1711,7 @@ async def _complete_index_only(
                 page_markdown=page_markdown,
                 page_parts=page_parts,
                 page_layout=page_layout,
+                page_structures=page_structures or {},
                 ctx=ctx,
             )
             await _activate_vector_generation(

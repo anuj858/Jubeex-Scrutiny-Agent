@@ -211,6 +211,24 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
             part = format_document_parts(chunk.get("document_part"))
             loc = f"Page {page}"
             place = f"{loc} — {part}" if part else loc
+            provenance: list[str] = []
+            printed = chunk.get("printed_page_number")
+            if printed not in (None, "", page, str(page)):
+                provenance.append(f"printed page {printed}")
+            headings = chunk.get("heading_path") or []
+            if isinstance(headings, list) and headings:
+                provenance.append("heading: " + " > ".join(str(v) for v in headings))
+            row_start = chunk.get("table_row_start")
+            row_end = chunk.get("table_row_end")
+            if row_start is not None:
+                rows = (
+                    str(row_start)
+                    if row_end in (None, row_start)
+                    else f"{row_start}-{row_end}"
+                )
+                provenance.append(f"table rows {rows}")
+            if provenance:
+                place += " | " + " | ".join(provenance)
             header = f"[{label} | {place}]" if label else f"[{place}]"
         else:
             header = "[Document excerpt]"
@@ -811,9 +829,7 @@ def _copy_is_weak(text: str, defect: Defect) -> bool:
     topic = _content_tokens(defect.defect) | _content_tokens(defect.requirement)
     words = _content_tokens(text)
     return bool(
-        topic
-        and words
-        and len(topic & words) / min(len(topic), len(words)) < 0.12
+        topic and words and len(topic & words) / min(len(topic), len(words)) < 0.12
     )
 
 
