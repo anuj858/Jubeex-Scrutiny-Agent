@@ -1123,7 +1123,7 @@ async def _parse_one_file(
             await _wait_for_parse(client, parse_job.id)
             parse_result = await client.parsing.get(
                 parse_job.id,
-                expand=["markdown", "usage"],
+                expand=["markdown","text","items","metadata","usage","sidecar_pages"],
                 project_id=project_id,
             )
             pages = _extract_page_markdown(parse_result)

@@ -45,3 +45,4 @@ output_samples/
 /worker-task-fixed.json
 /worker-task-v[0-9]*.json
 scrutiny_harness/
+extract_capture/
