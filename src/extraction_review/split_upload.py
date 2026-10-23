@@ -1065,10 +1065,13 @@ def _window_extract_preamble() -> str:
             "",
             "- court, petition_type, cause_title, petitioners, respondents, "
             "impugned_orders, relief_sort, and petition_date may be on any opening page.",
-            "- petitioners and respondents: list every numbered party. A line that "
-            "says '& Anr.' or 'and Anr.' or '& Ors.' is not the second party's name. Find that "
-            "person's name, relation, and address on another opening page. Keep the "
-            "fullest block.",
+            "- petitioners and respondents: read every numbered party from the "
+            "petition opening in these pages. Copy the relation, guardian, age, "
+            "occupation, and address printed under that name. When the same "
+            "schedule has a lower-court column and a current-court column "
+            "(Before High Court and Before Supreme Court, or In this Court), use "
+            "only the current-court column. '& Anr.', 'and Anr.', or '& Ors.' is "
+            "not a party. Do not copy a memo of parties headed as the lower court's memo.",
             "- petition_date: after Main Prayer or Prayer, the date next to Date, "
             "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
             "drafted and filed dates are printed. Skip a page number sitting between "
@@ -1258,12 +1261,13 @@ def _window_look_only(field_name: str) -> str:
     if field_name in PARTY_FIELDS:
         return (
             where
-            + "List every numbered petitioner and respondent printed in that window, "
-            "with relation, guardian, address, and acting-through when printed. "
-            "A caption that says '& Anr.' or '& Ors.' is only a count hint; find the "
-            "other names and addresses on another page in the same window. "
-            "Use the fullest party block. Do not stop after the first name, and do "
-            "not invent a party that is not printed. "
+            + "Read every numbered party from the petition opening, and copy the "
+            "relation, guardian, age, occupation, and address printed under that "
+            "name. When the same schedule has a lower-court column and a "
+            "current-court column (Before High Court and Before Supreme Court, "
+            "or In this Court), use only the current-court column. '& Anr.' or "
+            "'& Ors.' is not a party. Do not copy a memo of parties headed as the "
+            "lower court's memo. Do not stop after the first name. "
             "Record source_pages as the page numbers in the headings."
         )
     if field_name == "cause_title":
@@ -1447,7 +1451,7 @@ def _window_extract_system_prompt() -> str:
             "- court: the court heading, from whichever opening page prints it.",
             "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever opening page prints it.",
             "- cause_title: the caption from whichever opening page prints it. Main names come from the fullest party list, without And Anr or And Ors.",
-            "- petitioners and respondents: every numbered party in the opening pages, including name, S/o D/o W/o, the related person's name, occupation, address, city, state, pin, email, and mobile. '& Anr.' or '& Ors.' means more parties are printed somewhere in the opening; list those people. Do not stop after the first name.",
+            "- petitioners and respondents: every numbered party in the petition opening, with the relation, guardian, age, occupation, and address printed under that name. When one schedule has a lower-court column and a current-court column, use only the current-court column. '& Anr.' or '& Ors.' is not a party. Do not copy a memo of parties headed as the lower court's memo. Do not stop after the first name.",
             "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
             "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
             "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",

@@ -33,6 +33,7 @@ from .extract_record import (
     apply_extract_envelope,
     field_confidence_from_job,
     finalize_front_extract,
+    merge_dropped_party_schedule,
     overall_confidence_from_job,
     stamp_review_status,
     stamp_source_pages,
@@ -200,6 +201,7 @@ class SplitFilesEvent(StartEvent):
     stitch_in_request_order: bool = False
     front_extract: bool = False
     front_opening_pages: int = 30
+    front_text_layer: dict[int, str] = Field(default_factory=dict)
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
@@ -487,6 +489,11 @@ class ProcessSplitFilesWorkflow(Workflow):
             for item in parts
             if pages_by_slot.get(item.slot_id) or item.slot_id in parse_job_ids
         ]
+        if event.front_extract and event.front_text_layer:
+            page_markdown = merge_dropped_party_schedule(
+                page_markdown,
+                event.front_text_layer,
+            )
 
         async with ctx.store.edit_state() as state:
             state.filing_type = catalog.filing_type

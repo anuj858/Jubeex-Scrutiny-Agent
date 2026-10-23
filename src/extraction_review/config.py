@@ -153,7 +153,7 @@ class CauseTitle(BaseModel):
 
 
 class Party(BaseModel):
-    """One petitioner or respondent. Name, relation, and address may be on any opening page. And Anr or And Ors is not the second party's name."""
+    """One numbered party from the petition opening. Copy the relation, occupation, and address printed under the name. And Anr or And Ors is not a party. Use only the current-court column when the schedule also has a lower-court column."""
     serial: int | None = Field(default=None, description="Position in the cause title, 1-based")
     kind: str | None = Field(
         default=None,
@@ -509,20 +509,21 @@ class FrontExtractRecord(LegalExtractRecord):
     petitioners: list[Party] = Field(
         default_factory=list,
         description=(
-            "Every petitioner printed on any opening page. A caption that says "
-            "'& Anr.' or '& Ors.' is not the second name; find that person on another "
-            "opening page. Capture name, relation (S/o, D/o, W/o), guardian, "
-            "occupation, full address, city, state, pin_code, email, mobile, and acting_through. "
-            "Record source_pages."
+            "Every numbered petitioner from the petition opening. Copy the "
+            "relation, guardian, age, occupation, and address printed under the "
+            "name. When the schedule has a lower-court column and a current-court "
+            "column, use only the current-court column. '& Anr.' or '& Ors.' is not "
+            "a party. Do not copy a lower-court memo of parties. Record source_pages."
         ),
     )
     respondents: list[Party] = Field(
         default_factory=list,
         description=(
-            "Every respondent printed on any opening page, including the address when "
-            "it is printed with the name. Capture name, relation (S/o, D/o, W/o), "
-            "guardian, occupation, full address, city, state, pin_code, email, mobile, "
-            "and acting_through. Record source_pages."
+            "Every numbered respondent from the petition opening, including the "
+            "address printed under the name. When the schedule has a lower-court "
+            "column and a current-court column, use only the current-court column. "
+            "'& Ors.' is not a party. Do not copy a lower-court memo of parties. "
+            "Record source_pages."
         ),
     )
     advocates_on_record: list[AdvocateOnRecord] = Field(

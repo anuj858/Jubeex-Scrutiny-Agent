@@ -8,7 +8,10 @@ import pymupdf
 import pytest
 
 from extraction_review.config import ExtractConfig, FrontExtractRecord, LegalExtractRecord
-from extraction_review.extract_record import finalize_front_extract
+from extraction_review.extract_record import (
+    finalize_front_extract,
+    merge_dropped_party_schedule,
+)
 from extraction_review.process_file import (
     FRONT_EXTRACT_END_PAGE_LIMIT,
     FRONT_EXTRACT_PAGE_LIMIT,
@@ -491,3 +494,66 @@ async def test_extract_front_uploads_the_30_page_slice_and_skips_the_request_cat
     assert result.parsed_slots == ["fullpetition"]
     assert len(event.documents) == 1
     assert result.job_type == "extract_front"
+
+
+def test_defect_file_001_parties_come_from_the_current_court_column() -> None:
+    """Pages 15-18 are the petition opening. The High Court memo is not the party list."""
+    opening = 'IN THE SUPREME COURT OF INDIA \n[ORDER XXI RULE 3(1)(A)] \nCIVIL APPELLATE JURISDICTION \n(Under Article 136 of Constitution of India) \nSPECIAL LEAVE PETITION (Civil)NO.         \n OF 2025 \nWITH PRAYER FOR INTERIM RELIEF \nIN THE \nMATTER OF \nBEFORE HIGH \nCOURT \nBEFORE \nSUPREME \nCOURT \n1.Col. \nPawan \nKumar \nGopinath \nSharma, \ns/o \nGopinath \nSharma, \nIndian Jew\nRespondent No.  \nPetitioner  \nVersus \n1. K.D.R. Farms Co.\nop Housing Society\nLtd., Gut No. 79,\nSharnaur,\nAurangabad,\nDistrict\nAurangabad,\nthrough \nits\nChairman\nPetitioner No.  \nRespondent No.  \n2. Rajendra\nMadhukarrao\nKulkarni, age 52\nyears, occupation\nBusiness, \nr/o\nK.D.R. Farms Co.\nop. \nHousing\nSociety Ltd. Gut\nNo. 79, Sharnuar,\nAurangabad\nPetitioner No.  \nRespondent No. \n13\n\n3. The \nState \nof\nMaharashtra,\nthrough \nits \nSecretary, \nDepartment \nof \nCooperation \nand \nTextile, \nMantralaya, \nMumbai \nRespondent No.  \nRespondent No. \n4. The\nHon’ble\nMinister Cooperation,\nthrough Principal\nSecretary (Cooperation\nand Marketing),\nGovernment of\nMaharashtra,\nMantralaya, Mumbai,\nRespondent No.  \nRespondent No. \n5. The \nDivisional\nJoint \nRegistrar,\nCooperative\nSocieties,\nAurangabad\nDivision, \nhaving\nOffice at Adalat\nRoad, District and\ncity Aurangabad\nRespondent No. \nRespondent No.  \n6. The Taluka Dy.\nRegistrar,\nCooperative\nSocieties,\nAurangabad,\nTaluka and District\nAurangabad\nRespondent No. \nRespondent No.  \n7. Raibham \ns/o\nMithuji \nMohade,\nage \n68 \nyears,\nRespondent No.  \nRespondent No. \n14\n\noccupation Retired, \nr/o Plot no. \n25, \nK.D.R. Farms,\nSharnaur,\nAurangabad\n8. Colonel Vitthal s/o\nPitamber \nChitte,\nAge \n55 \nyears,\noccupation\nService, r/o Plot\nNo. \n35, \nK.D.R.\nFarms, Sharnapur,\nDistrict and city\nAurangabad\nRespondent No. \nRespondent No.  \n9. Mrs. Chandrakala,\nw.o \nKisanrao\nDeshmukh, age 61\nyears, occupation\nService, r/o Plot\nNo. \n59, \nK.D.R.\nFarms, \nSharnaur,\nAurangabad,\nDistrict\nAurangabad\nRespondent No.  \nRespondent No. \n10. Mr. \nPratap, \ns/o\nHaridas \nDhopte,\nRespondent No. \nRespondent No.  \n15\n\nAurangabad – 431 \n210 \nTO, \nTHE HON’BLE THE CHIEF JUSTICE OF INDIA AND \nHIS COMPANION JUSTICES OF THE HON’BLE \nSUPREME COURT OF INDIA. \nMOST RESPECTFULLY SHOWETH:'
+    high_court_memo = 'HON’BLE HIGH COURT OF JUDICATURE OF BOMBAY \nBENCH AT AURANGABAD \nWRIT PETITION NO. 12255 OF 2015 \nMEMO OF PARTIES BEFORE THE HIGH COURT \n1. K.D.R. Farms Co. op Housing Society Ltd.,\nGut No. 79, Sharnaur, Aurangabad,\nDistrict Aurangabad, through its Chairman.\n…PETITIONER 1 \n2. Rajendra Madhukarrao Kulkarni, age 52 years,\noccupation Business, r/o K.D.R. Farms\nCo. op. Housing Society Ltd.\nGut No. 79, Sharnuar, Aurangabad\n …Petitioner 2 \nVERSUS \n1. The State of Maharashtra,\nthrough its Secretary,\nDepartment of Cooperation and Textile,\nMantralaya, Mumbai\n…Respondent No. 1 \n2. The Hon’ble Minister for Cooperation,\nGovernment of Maharashtra,\nMantralaya, Mumbai\n…Respondent No.2 \n3. The Divisional Joint Registrar,\nCooperative Societies,\nAurangabad Division,\nhaving Office at Adalat Road,\nDistrict and city Aurangabad\n…Respondent No. 3 \n4. The Taluka Dy. Registrar,\nCooperative Societies, Aurangabad,\nTaluka and District Aurangabad           …Respondent No. 4 \n5. Col. Pawan Kumar Sharma,\n105\n\ns/o Gopinath Sharma,  \nr/o Plot No. 6, K.D.R. Farms, \n Sharnapur \n             …Respondent No. 5 \n6. Raibham\ns/o Mithuji Mohade, age 68 years,\noccupation Retired,\nr/o Plot no. 25, K.D.R. Farms,\nSharnaur, Aurangabad\n …Respondent No. 6 \n7. Colonel Vitthal\ns/o Pitamber Chitte,\nAge 55 years, occupation Service,\nr/o Plot No. 35, K.D.R. Farms,\nSharnapur, District and city Aurangabad       …Respondent No. 7\n8. Mrs. Chandrakala,\nw.o Kisanrao Deshmukh, age 61 years,\noccupation Service,\nr/o Plot No. 59, K.D.R. Farms,\nSharnaur, Aurangabad, District Aurangabad       …Respondent No.8\n9. Mr. Pratap,\ns/o Haridas Dhopte, age 42 years,\noccupation Service,\nc/o Excelize Software Pvt. Ltd.,\nT-25, Block C and D, M.I.D.C. Chikalthana,       …Respondent No. 9\n106\n'
+    done = finalize_front_extract(
+        {
+            "petitioners": [
+                {"serial": 1, "name": "K.D.R. Farms Co-op Housing Society Ltd"},
+                {"serial": 2, "name": "Rajendra Madhukarrao Kulkarni"},
+            ],
+            "respondents": [{"serial": 1, "name": "Col. Pawan Kumar Sharma"}],
+            "cause_title": {},
+        },
+        page_markdown={15: opening, 107: high_court_memo},
+    )
+    petitioners = done["petitioners"]
+    respondents = done["respondents"]
+    assert [party["name"] for party in petitioners] == ["Col. Pawan Kumar Gopinath Sharma"]
+    assert petitioners[0]["relation"] == "S/o"
+    assert petitioners[0]["guardian"] == "Gopinath Sharma"
+    assert len(respondents) == 10
+    names = [party["name"] for party in respondents]
+    assert names[0].startswith("K.D.R. Farms")
+    assert "Rajendra Madhukarrao Kulkarni" in names[1]
+    assert "State of Maharashtra" in names[2]
+    assert "Minister" in names[3]
+    assert "Divisional Joint Registrar" in names[4]
+    assert "Taluka" in names[5]
+    assert names[6] == "Raibham"
+    assert "Vitthal" in names[7]
+    assert "Chandrakala" in names[8]
+    assert names[9] == "Mr. Pratap"
+    for party in respondents:
+        assert party.get("relation") or party.get("address")
+    assert respondents[6]["relation"] == "S/o"
+    assert respondents[6]["guardian"] == "Mithuji Mohade"
+    assert respondents[6]["occupation"] == "Retired"
+    assert "Plot" in respondents[6]["address"]
+    assert "431" in respondents[9]["address"]
+    assert all(15 in party["source_pages"] for party in [*petitioners, *respondents])
+    assert "K.D.R. Farms" not in petitioners[0]["name"]
+    assert "Rajendra" not in petitioners[0]["name"]
+
+    filled = merge_dropped_party_schedule(
+        {15: "not a party schedule " * 400, 107: high_court_memo},
+        {15: opening},
+    )
+    assert "BEFORE" in filled[15] and "SUPREME" in filled[15]
+    restored = finalize_front_extract(
+        {
+            "petitioners": [
+                {"serial": 1, "name": "K.D.R. Farms Co-op Housing Society Ltd"}
+            ],
+            "respondents": [{"serial": 1, "name": "Col. Pawan Kumar Sharma"}],
+            "cause_title": {},
+        },
+        page_markdown=filled,
+    )
+    assert len(restored["petitioners"]) == 1
+    assert len(restored["respondents"]) == 10
+    assert restored["petitioners"][0]["name"] == "Col. Pawan Kumar Gopinath Sharma"

@@ -1748,6 +1748,10 @@ def _looks_like_party_name(name: str | None) -> bool:
         return False
     if re.match(r"^\d{4}\b", text) or re.search(r"\bpassed by\b", text, re.IGNORECASE):
         return False
+    if re.fullmatch(r"(?:col|mr|mrs|ms|shri|smt|the)\.?", text, re.IGNORECASE):
+        return False
+    if re.match(r"^(?:occupation|age|years)\b", text, re.IGNORECASE):
+        return False
     if re.fullmatch(r"[\d\s\-_.,/()]+", text):
         return False
     if re.match(
@@ -1783,6 +1787,7 @@ def _party_record(
     pages: Sequence[int] | None = None,
     relation: str | None = None,
     guardian: str | None = None,
+    occupation: str | None = None,
     acting_through: str | None = None,
     address: str | None = None,
     source_part: str = "Opening pages",
@@ -1804,6 +1809,7 @@ def _party_record(
         "name": cleaned,
         "relation": relation,
         "guardian": guardian,
+        "occupation": occupation,
         "acting_through": acting_through,
         "address": address,
         "source_part": source_part,
@@ -2172,9 +2178,291 @@ def _parse_memo_of_parties(
     return {"petitioners": petitioners, "respondents": respondents}
 
 
+_COLUMN_ROLE = re.compile(
+    r"^(?:petitioners?|respondents?)(?:\s*(?:no|number)\.?)?\s*\d*$",
+    re.IGNORECASE,
+)
+_COLUMN_STOP = re.compile(
+    r"^(?:most\s+respectfully\s+showeth|questions?\s+of\s+law|to\s*,|1\.\s+that\b)",
+    re.IGNORECASE,
+)
+_SCHEDULE_NUMBERED_LINE = re.compile(r"^\d+\s*[.)]\s*\S")
+_DETAIL_SPLIT = re.compile(
+    r"(?i)(?=,?\s*(?:age\b|occupation\b|gut\s+no\b|[sdw]/o|[sdw]\.o\b|r/o\b|through\b|having\s+office\b))"
+)
+
+
+def _column_role_kind(line: str) -> str | None:
+    if re.match(r"^petitioner", line, re.IGNORECASE):
+        return "petitioner"
+    if re.match(r"^respondent", line, re.IGNORECASE):
+        return "respondent"
+    return None
+
+
+def _has_court_columns(text: str) -> bool:
+    """A party schedule printed as Before High Court beside Before Supreme Court."""
+    lowered = text.lower()
+    return (
+        re.search(r"before\s+(?:the\s+)?high\s+court", lowered) is not None
+        and re.search(r"before\s+(?:the\s+)?supreme\s+court", lowered) is not None
+    )
+
+
+def _split_at_numbered_party(lines: list[str]) -> tuple[list[str], list[str]]:
+    for index, line in enumerate(lines):
+        if _SCHEDULE_NUMBERED_LINE.match(line):
+            return lines[:index], lines[index:]
+    return lines, []
+
+
+def _is_paper_folio(line: str, previous: str) -> bool:
+    """A bare paper-book page number, not the second half of a pin code."""
+    if not re.fullmatch(r"\d{1,3}", line):
+        return False
+    if previous and re.search(r"[–-]\s*\d+\s*$", previous):
+        return False
+    return int(line) < 200
+
+
+def _schedule_party_record(
+    lines: list[str],
+    *,
+    serial: int,
+    pages: Sequence[int],
+) -> dict[str, Any] | None:
+    """Name, relation, occupation, and address from one numbered schedule block."""
+    name_bits: list[str] = []
+    rest: list[str] = []
+    started = False
+    for index, raw in enumerate(lines):
+        line = re.sub(r"^\d+\s*[.)]\s*", "", raw).strip() if index == 0 else raw.strip()
+        if not line or _is_paper_folio(line, rest[-1] if rest else ""):
+            continue
+        pieces = _DETAIL_SPLIT.split(line, maxsplit=1)
+        head = pieces[0].strip(" ,")
+        tail = pieces[1].strip() if len(pieces) == 2 else ""
+        if not started and tail:
+            if head:
+                name_bits.append(head)
+            rest.append(tail)
+            started = True
+            continue
+        if not started and (
+            re.match(
+                r"^(?:[sdw]/o|[sdw]\.o|r/o|through|age|occupation|gut\s+no|having\s+office)\b",
+                line,
+                re.IGNORECASE,
+            )
+            or (
+                len(name_bits) >= 3
+                and re.match(r"^(?:taluka|district|city|mantralaya|mumbai|aurangabad)\b", line, re.IGNORECASE)
+            )
+        ):
+            started = True
+        if started:
+            rest.append(line.strip())
+        elif head:
+            name_bits.append(head)
+    name = re.sub(r"\s+", " ", " ".join(name_bits)).strip(" ,.")
+    name = re.sub(r"\bCo\.\s+op\b", "Co-op", name, flags=re.IGNORECASE)
+    if not _looks_like_party_name(name):
+        return None
+    blob = re.sub(r"\s+", " ", " ".join(part for part in rest if part)).strip(" ,")
+    relation = None
+    guardian = None
+    relation_match = re.search(
+        r"\b([sdw]/o|[sdw]\.o)\s+([A-Za-z][A-Za-z .'\u2019]+?)(?=\s*(?:,|$|\bage\b|\boccupation\b|\br/o\b|\bthrough\b))",
+        blob,
+        re.IGNORECASE,
+    )
+    if relation_match:
+        prefix = relation_match.group(1).lower().replace(".", "/")
+        relation = prefix[0].upper() + prefix[1:]
+        guardian_words: list[str] = []
+        for word in relation_match.group(2).split():
+            if re.match(r"^(?:indian|jew|years?|occupation|age)$", word, re.IGNORECASE):
+                break
+            guardian_words.append(word.strip(" ,."))
+            if len(guardian_words) == 4:
+                break
+        guardian = " ".join(word for word in guardian_words if word)
+    occupation_match = re.search(r"\boccupation\s+([A-Za-z]+)", blob, re.IGNORECASE)
+    occupation = occupation_match.group(1).strip() if occupation_match else None
+    acting_through = None
+    address = None
+    place_match = re.search(
+        r"\b((?:r/o|gut\s+no\.?|having\s+office\s+at|office\s+at)\s+.+?)(?:\s+through\b|$)",
+        blob,
+        re.IGNORECASE,
+    )
+    if place_match:
+        address = re.sub(
+            r"\bCo\.\s+op\.?\b",
+            "Co-op",
+            place_match.group(1),
+            flags=re.IGNORECASE,
+        ).strip(" ,.")
+    through_match = re.search(
+        r"\bthrough\s+((?:its|his|her)\s+)?([^,]+?)(?:,\s*(.*))?$",
+        blob,
+        re.IGNORECASE,
+    )
+    if through_match:
+        acting_through = re.sub(
+            r"\s+",
+            " ",
+            " ".join(
+                part.strip()
+                for part in (through_match.group(1), through_match.group(2))
+                if part and part.strip()
+            ),
+        ).strip(" ,.")
+        if not address and through_match.group(3):
+            address = through_match.group(3).strip(" ,.")
+    if not address:
+        tail_match = re.search(
+            r"((?:Aurangabad|Mumbai|Mantralaya|Plot\s+no\.?).+)$",
+            blob,
+            re.IGNORECASE,
+        )
+        if tail_match:
+            address = tail_match.group(1).strip(" ,.")
+    record = _party_record(
+        name,
+        serial=serial,
+        pages=pages,
+        relation=relation,
+        guardian=guardian or None,
+        occupation=occupation,
+        acting_through=acting_through,
+        address=_clean_party_address(address) if address else None,
+    )
+    return record
+
+
+def _parse_court_column_schedule(
+    text: str,
+    pages: Sequence[int],
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Keep the current-court column when a schedule prints both court columns."""
+    if not _has_court_columns(text):
+        return None
+    lines = _clean_markdown_to_lines(text)
+    page_numbers = {str(page) for page in pages}
+    blocks: list[tuple[str, list[str]]] = []
+    buffer: list[str] = []
+    pairs = 0
+    index = 0
+
+    def attach(extra: list[str]) -> None:
+        if extra and blocks:
+            blocks[-1][1].extend(extra)
+
+    while index < len(lines):
+        line = lines[index]
+        if _COLUMN_STOP.match(line):
+            continuation, _body = _split_at_numbered_party(buffer)
+            attach(continuation)
+            buffer = []
+            break
+        previous = buffer[-1] if buffer else ""
+        if (
+            line in page_numbers
+            or _is_paper_folio(line, previous)
+            or re.match(r"^(?:versus|vs\.?|v/s)\b", line, re.IGNORECASE)
+        ):
+            index += 1
+            continue
+        if _COLUMN_ROLE.match(line):
+            nxt = index + 1
+            while nxt < len(lines) and lines[nxt] in page_numbers:
+                nxt += 1
+            if nxt < len(lines) and _COLUMN_ROLE.match(lines[nxt]):
+                kind = _column_role_kind(lines[nxt])
+                continuation, body = _split_at_numbered_party(buffer)
+                attach(continuation)
+                if body and kind:
+                    blocks.append((kind, body))
+                    pairs += 1
+                buffer = []
+                index = nxt + 1
+                continue
+        buffer.append(line)
+        index += 1
+    if pairs < 2:
+        return None
+    petitioners: list[dict[str, Any]] = []
+    respondents: list[dict[str, Any]] = []
+    for kind, body in blocks:
+        target = petitioners if kind == "petitioner" else respondents
+        record = _schedule_party_record(body, serial=len(target) + 1, pages=pages)
+        if record:
+            target.append(record)
+    if not petitioners or not respondents:
+        return None
+    return {"petitioners": petitioners, "respondents": respondents, "_replace": True}
+
+
+def merge_dropped_party_schedule(
+    page_markdown: Mapping[int, str],
+    text_layer: Mapping[int, str] | None,
+) -> dict[int, str]:
+    """Use the PDF text layer when parsing dropped a two-column party schedule.
+
+    LlamaParse often returns only the page number for that schedule. The text
+    layer still has every numbered party and the lines under the name.
+    """
+    merged = {int(page): text for page, text in page_markdown.items()}
+    if not text_layer:
+        return merged
+    layer = {int(page): text or "" for page, text in text_layer.items()}
+    for page in sorted(layer):
+        if not _has_court_columns(layer[page]):
+            continue
+        for follow in range(page, page + 4):
+            follow_text = layer.get(follow)
+            if follow_text is None:
+                break
+            current = merged.get(follow) or ""
+            # A long OCR dump can still omit the schedule. Prefer the text layer
+            # until that schedule has already been read.
+            if not _has_court_columns(current):
+                merged[follow] = follow_text
+            if re.search(r"most\s+respectfully\s+showeth", follow_text, re.IGNORECASE):
+                break
+    return merged
+
+
+def _court_column_parties(
+    page_markdown: Mapping[int, str] | None,
+) -> dict[str, list[dict[str, Any]]] | None:
+    if not page_markdown:
+        return None
+    sorted_pages = sorted(page_markdown)
+    for page in sorted_pages:
+        text = page_markdown.get(page) or ""
+        if not _has_court_columns(text):
+            continue
+        pages_to_check = [page]
+        for next_page in range(page + 1, min(page + 4, max(sorted_pages) + 1)):
+            pages_to_check.append(next_page)
+            next_text = page_markdown.get(next_page) or ""
+            if re.search(r"most\s+respectfully\s+showeth", next_text, re.IGNORECASE):
+                break
+        combined = "\n".join(page_markdown.get(item, "") for item in pages_to_check)
+        parsed = _parse_court_column_schedule(combined, pages_to_check)
+        if parsed:
+            return parsed
+    return None
+
+
 def _parties_from_memo(
     page_markdown: Mapping[int, str] | None,
 ) -> dict[str, list[dict[str, Any]]] | None:
+    column = _court_column_parties(page_markdown)
+    if column:
+        return column
     if not page_markdown:
         return None
     sorted_pages = sorted(page_markdown)
@@ -2319,7 +2607,7 @@ def _merge_memo_parties(
         if matched is not None:
             if memo_p.get("name"):
                 matched["name"] = memo_p["name"]
-            for field in ("address", "relation", "guardian", "acting_through"):
+            for field in ("address", "relation", "guardian", "occupation", "acting_through"):
                 if memo_p.get(field):
                     matched[field] = memo_p[field]
             if memo_p.get("source_part"):
@@ -2344,13 +2632,18 @@ def repair_front_parties(
     memo = _parties_from_memo(page_markdown)
     memo_petitioners = memo.get("petitioners") or [] if memo else []
     memo_respondents = memo.get("respondents") or [] if memo else []
+    replace_with_schedule = bool(memo and memo.get("_replace"))
 
-    payload["petitioners"] = _collapse_same_parties(
-        _merge_memo_parties(existing_petitioners, memo_petitioners)
-    )
-    payload["respondents"] = _collapse_same_parties(
-        _merge_memo_parties(existing_respondents, memo_respondents)
-    )
+    if replace_with_schedule:
+        payload["petitioners"] = _collapse_same_parties(memo_petitioners)
+        payload["respondents"] = _collapse_same_parties(memo_respondents)
+    else:
+        payload["petitioners"] = _collapse_same_parties(
+            _merge_memo_parties(existing_petitioners, memo_petitioners)
+        )
+        payload["respondents"] = _collapse_same_parties(
+            _merge_memo_parties(existing_respondents, memo_respondents)
+        )
 
     cause = payload.get("cause_title")
     if not isinstance(cause, dict):

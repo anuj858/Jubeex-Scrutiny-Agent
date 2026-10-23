@@ -1812,12 +1812,13 @@
       "main_category": "General/Global",
       "special_category": null,
       "defect": "Judicial Officer, who has disposed of the case in the Court below, is impleaded as a party in the main case.",
-      "requirement": "No Judicial Officer, who has disposed of the case in the Court below, shall be impleaded as a party in the main case.",
-      "trigger_words": null,
+      "requirement": "No Judicial Officer who has disposed of the case in the Court below, and no Court or Tribunal, is impleaded as a party in the main case.",
+      "trigger_words": "Judicial Officer; Presiding Officer; IN THE MATTER OF; Most Respectfully Showeth; Humble Appeal of the Appellant",
       "where_to_look": [
-        "1. Check the Memo of Parties for the array of respondents. [Note: Check the details provided below the heading “IN THE MATTER OF” up to the point in the petition where either of the following lines appears:",
-        "“The Hon’ble Chief Justice of India and His Hon’ble Companion Judges of the Supreme Court of India The Humble Appeal of the Appellant Named Above” or “Most Respectfully Showeth:”]",
-        "2. Check whether any respondent is described as a Judge, Judicial Officer or Presiding Officer of the Court below; cross-check the name against the Judges who passed all the orders/judgements from lower courts."
+        "Memo of Parties: respondents in the main case",
+        "The party array under the heading \"IN THE MATTER OF\", ending at \"The Hon’ble Chief Justice of India and His Hon’ble Companion Judges of the Supreme Court of India The Humble Appeal of the Appellant Named Above\" or \"Most Respectfully Showeth:\".",
+        "A respondent described as a Judge, Judicial Officer or Presiding Officer of the Court below, and a Court or Tribunal named as a party.",
+        "The Judges named on the orders or judgements of the courts below, matched to the names in that party array."
       ],
       "inspect_parts": [
         "Main Petition",
@@ -1825,15 +1826,17 @@
         "Impugned Order"
       ],
       "how_to_cure": [
-        "1. Option for Jubeex to auto-edit and remove the name of such a judicial officer, where arrayed as a respondent",
-        "2. Option for User to edit the document with Jubeex"
+        "Option for the User to edit the Petition with Jubeex to remove any Judicial Officer who disposed of the case in the Court below, and any Court or Tribunal, where arrayed as a party.",
+        "Option for the User to upload and replace the Petition with a corrected version that does not implead such a Judicial Officer, Court or Tribunal as a party.",
+        "Option for the User to mark this defect as complete if no such Judicial Officer, Court or Tribunal is impleaded as a party in the main case."
       ],
       "applicable_rule": null,
       "location_source": "Page 82 of the PDF Court Processes Handbook.pdf",
       "notes": null,
       "ivan_comment": "Ivan's comment- \nALSO NOTE THAT NO COURT/TRIBUNAL SHALL BE IMPLEADED AS PARTY",
       "notes_2": null,
-      "parent_check_id": null
+      "parent_check_id": null,
+      "ai_note": "The party array of the main case sits under the heading \"IN THE MATTER OF\" and ends at \"The Hon’ble Chief Justice of India and His Hon’ble Companion Judges of the Supreme Court of India The Humble Appeal of the Appellant Named Above\" or \"Most Respectfully Showeth:\". A Judicial Officer may be described as a Judge, Judicial Officer or Presiding Officer of the Court below. A Court or Tribunal impleaded as a party is named in that array. Labels may be wrong; identify the array by that heading and those closing lines.\nThe array complies when (a) no respondent is a Judicial Officer who disposed of the case in the Court below, checked against the Judges named on the orders or judgements of the courts below, and (b) no Court or Tribunal is impleaded as a party.\nDo not treat a Judge named only as the author of an order of the court below as a party. The officer is impleaded only when that name is in the respondent array.\nThis check is who is impleaded. not_applicable does not arise. Return defect_found when a respondent is such a Judicial Officer, or a Court or Tribunal is a party. Return compliant when the array shows neither. Return needs_review when the party array or the lower-court orders are not in the excerpts."
     },
     {
       "check_id": "D-54",

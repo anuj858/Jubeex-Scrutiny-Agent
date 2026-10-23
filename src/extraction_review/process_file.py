@@ -332,6 +332,18 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
         source.close()
 
 
+def _pdf_text_layer(pdf_bytes: bytes) -> dict[int, str]:
+    """Page text from the PDF text layer, numbered from 1."""
+    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return {
+            index + 1: document[index].get_text() or ""
+            for index in range(document.page_count)
+        }
+    finally:
+        document.close()
+
+
 def first_pages_pdf(
     pdf_bytes: bytes,
     page_limit: int = FRONT_EXTRACT_PAGE_LIMIT,
@@ -2480,6 +2492,7 @@ async def _extract_sliced_parts(
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
+    front_text_layer: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -2504,6 +2517,7 @@ async def _extract_sliced_parts(
             stitch_in_request_order=stitch_in_request_order,
             front_extract=front_extract,
             front_opening_pages=front_opening_pages,
+            front_text_layer=front_text_layer or {},
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
@@ -2845,6 +2859,7 @@ async def _run_extract_front(
         stitch_in_request_order=True,
         front_extract=True,
         front_opening_pages=opening_pages,
+        front_text_layer=_pdf_text_layer(sliced),
         special_category=None,
         court=None,
     )

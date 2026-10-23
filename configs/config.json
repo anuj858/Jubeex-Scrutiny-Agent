@@ -575,7 +575,7 @@
           "type": "object"
         },
         "Party": {
-          "description": "One petitioner or respondent. Name, relation, and address may be on any opening page. And Anr or And Ors is not the second party's name.",
+          "description": "One numbered party from the petition opening. Copy the relation, occupation, and address printed under the name. And Anr or And Ors is not a party. Use only the current-court column when the schedule also has a lower-court column.",
           "properties": {
             "serial": {
               "anyOf": [
@@ -865,7 +865,7 @@
           "description": "Cause title representing petitioner vs respondent. Read it from whichever opening page prints the fullest caption."
         },
         "petitioners": {
-          "description": "Petitioners. One record per petitioner.",
+          "description": "Every numbered petitioner from the petition opening. Copy the relation, guardian, age, occupation, and address printed under the name. When the schedule has a lower-court column and a current-court column, use only the current-court column. '& Anr.' or '& Ors.' is not a party. Do not copy a lower-court memo of parties.",
           "items": {
             "$ref": "#/$defs/Party"
           },
@@ -873,7 +873,7 @@
           "type": "array"
         },
         "respondents": {
-          "description": "Respondents. One record per respondent.",
+          "description": "Every numbered respondent from the petition opening, including the address printed under the name. When the schedule has a lower-court column and a current-court column, use only the current-court column. '& Ors.' is not a party. Do not copy a lower-court memo of parties.",
           "items": {
             "$ref": "#/$defs/Party"
           },
