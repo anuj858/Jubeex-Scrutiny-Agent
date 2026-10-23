@@ -212,6 +212,9 @@ def _format_evidence(chunks: list[dict[str, Any]]) -> str:
             loc = f"Page {page}"
             place = f"{loc} — {part}" if part else loc
             provenance: list[str] = []
+            original_page = chunk.get("original_page")
+            if original_page not in (None, "", page, str(page)):
+                provenance.append(f"original compiled page {original_page}")
             printed = chunk.get("printed_page_number")
             if printed not in (None, "", page, str(page)):
                 provenance.append(f"printed page {printed}")

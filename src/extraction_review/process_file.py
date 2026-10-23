@@ -459,6 +459,7 @@ class FilingPartIn(BaseModel):
     )
     file_id: str | None = None
     file_hash: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
     @field_validator(
         "slot_id",
@@ -2699,6 +2700,7 @@ async def _run_split_from_file_event(
                 file_hash=file_hash,
                 file_url=item.file_url,
                 document_id=item.document_id,
+                page_span=item.page_span,
             )
         )
         source_docs.append(

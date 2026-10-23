@@ -38,6 +38,7 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
 )
 
 PINECONE_QUERY_MAX_CHARS = 110
+EVIDENCE_QUERY_MAX_CHARS = 240
 
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
@@ -1867,13 +1868,89 @@ def _presence_queries_for_defect(defect: Defect) -> list[str]:
     return queries
 
 
+def _evidence_payload_hint(defect: Defect) -> str:
+    """Name the concrete filing values retrieval should return, not a verdict."""
+
+    wording = " ".join(
+        [
+            defect.requirement,
+            *defect.where_to_look,
+            str(getattr(defect, "ai_note", None) or ""),
+        ]
+    ).casefold()
+    if any(
+        term in wording for term in ("respondent", "petitioner", "parties", "party")
+    ):
+        return "the actual names, descriptions, designations, and addresses for every party"
+    if any(
+        term in wording for term in ("case number", "judgment", "order under challenge")
+    ):
+        return "the actual case numbers, dates, courts, and surrounding references"
+    if any(
+        term in wording for term in ("signature", "signed", "stamp", "seal", "notary")
+    ):
+        return "the visible signature, stamp, seal, associated label, or blank field"
+    if "date" in wording:
+        return "the actual date value, its label, and the surrounding clause"
+    return "the actual clause, field value, omission, or blank and its surrounding text"
+
+
+def evidence_seeking_queries_for_defect(defect: Defect) -> list[str]:
+    """Build concise positive queries for candidate evidence.
+
+    The defect statement is intentionally excluded: a negative objection such
+    as "particulars are missing" tends to retrieve other negative legal prose.
+    Pinecone only locates candidate text; the later Gemini check decides whether
+    that evidence proves compliance, a defect, or neither.
+    """
+
+    parts = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    location = ", ".join(parts[:4]) or "the filing"
+    wording = " ".join(
+        [
+            defect.requirement,
+            *defect.where_to_look,
+            str(getattr(defect, "ai_note", None) or ""),
+        ]
+    ).casefold()
+    roles: list[str] = []
+    if re.search(r"\bpart(?:y|ies)\b", wording):
+        roles = ["respondent", "petitioner or appellant"]
+    else:
+        if re.search(r"\brespondents?\b", wording):
+            roles.append("respondent")
+        if re.search(r"\b(?:petitioners?|appellants?)\b", wording):
+            roles.append("petitioner or appellant")
+    if roles:
+        return [
+            _clip_query(
+                f"Find the {role} table. Retrieve the names and descriptions of "
+                f"every {role}, their designations, addresses, and any required "
+                "particulars. Include surrounding table rows.",
+                limit=EVIDENCE_QUERY_MAX_CHARS,
+            )
+            for role in roles
+        ]
+    query = (
+        f"Find evidence in {location}. Retrieve {_evidence_payload_hint(defect)}. "
+        f"Verify this requirement: {defect.requirement}"
+    )
+    return [_clip_query(query, limit=EVIDENCE_QUERY_MAX_CHARS)]
+
+
+def evidence_seeking_query_for_defect(defect: Defect) -> str:
+    """Return the primary evidence query for callers needing one string."""
+
+    return evidence_seeking_queries_for_defect(defect)[0]
+
+
 def pinecone_queries_for_defect(defect: Defect) -> list[str]:
     """Queries sent to Pinecone: target part names, short headings, and cues.
 
     Long where-to-look sentences are not sent — they mention landmarks
     ("before the Cover Page") and pull the wrong pages.
     """
-    queries: list[str] = []
+    queries: list[str] = list(evidence_seeking_queries_for_defect(defect))
     if defect.trigger_words:
         queries.extend(
             p.strip() for p in re.split(r"[;|]", defect.trigger_words) if p.strip()
@@ -1967,11 +2044,12 @@ def missing_required_parts(defect: Defect, chunks: list[dict[str, Any]]) -> list
 
 
 def _bare_where_to_look(step: str) -> str:
+    step = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", step.strip())
     return re.sub(
         r"^(check|read|look at|look for|examine|verify|confirm|review|go to|search)\s+"
         r"(the\s+|for\s+the\s+|for\s+|a\s+|for a\s+)?",
         "",
-        step.strip(),
+        step,
         flags=re.IGNORECASE,
     )
 
@@ -2151,6 +2229,25 @@ def _term_hits(chunk: dict[str, Any], terms: list[str]) -> int:
     return sum(1 for term in terms if term.lower() in text)
 
 
+def _needs_preceding_table_context(chunk: dict[str, Any]) -> bool:
+    """Whether a table page needs a prior-page row or inherited header."""
+
+    if chunk.get("content_kind") != "table_rows":
+        return False
+    lines = [
+        line.strip()
+        for line in str(chunk.get("text") or "").splitlines()
+        if line.strip()
+    ]
+    if any(re.match(r"^Column \d+:\s*", line) for line in lines[:6]):
+        return True
+    first = lines[0] if lines else ""
+    if not first or ":" not in first:
+        return False
+    value = first.split(":", 1)[1].strip()
+    return bool(value) and not bool(re.match(r"^\(?\d+[.)]\s*", value))
+
+
 def select_chunks_for_defect(
     pool: list[dict[str, Any]],
     defect: Defect,
@@ -2220,6 +2317,37 @@ def select_chunks_for_defect(
             if not _part_match(chunk, [part]):
                 continue
             chosen.append(chunk)
+            if record_id:
+                used.add(record_id)
+            break
+
+    # LlamaParse can split one table row across physical pages or omit repeated
+    # headers on the next page. Reserve the immediately preceding table page
+    # for an unnumbered continuation or generic Column N labels.
+    anchors = list(chosen)
+    anchor_index = 0
+    while anchor_index < len(anchors):
+        anchor = anchors[anchor_index]
+        anchor_index += 1
+        if len(chosen) >= page_budget or not _needs_preceding_table_context(anchor):
+            continue
+        try:
+            previous_page = int(anchor.get("page")) - 1
+        except (TypeError, ValueError):
+            continue
+        for chunk in ranked:
+            record_id = str(chunk.get("record_id") or "")
+            has_table = chunk.get("content_kind") == "table_rows" or "table" in (
+                chunk.get("item_types") or []
+            )
+            if record_id in used or not has_table:
+                continue
+            if chunk.get("page") != previous_page:
+                continue
+            if not _part_match(chunk, parts_on_page(anchor.get("document_part"))):
+                continue
+            chosen.append(chunk)
+            anchors.append(chunk)
             if record_id:
                 used.add(record_id)
             break

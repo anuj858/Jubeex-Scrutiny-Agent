@@ -209,6 +209,7 @@ class SplitPartInput:
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 @lru_cache(maxsize=1)

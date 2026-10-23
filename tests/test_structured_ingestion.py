@@ -97,6 +97,7 @@ def test_structured_chunk_becomes_exact_integrated_embedding_field(
         page_markdown={1: "markdown fallback must not be embedded"},
         page_parts={1: ["Index"]},
         page_structures={1: page},
+        page_metadata={1: {"global_page": 105, "local_page": 1, "original_page": 2}},
         metadata={
             "file_hash": "f" * 64,
             "organization_id": "org-1",
@@ -107,6 +108,7 @@ def test_structured_chunk_becomes_exact_integrated_embedding_field(
     assert records
     assert all(record["metadata"]["parser_source"] == "items" for record in records)
     assert records[0]["metadata"]["page_start"] == 1
+    assert records[0]["metadata"]["original_page"] == 2
     assert records[0]["metadata"]["printed_page_number"] == "16"
     assert records[0]["metadata"]["document_part"] == "Index"
     assert records[0]["metadata"]["heading_path"] == ["I N D E X"]
@@ -139,9 +141,10 @@ def test_gemini_evidence_label_includes_parser_provenance() -> None:
             {
                 "record_id": "chunk-1",
                 "chunk_kind": "page",
-                "page": 2,
+                "page": 105,
                 "document_part": "Index",
                 "printed_page_number": "A-1",
+                "original_page": 2,
                 "heading_path": ["I N D E X"],
                 "table_row_start": 3,
                 "table_row_end": 11,
@@ -149,7 +152,8 @@ def test_gemini_evidence_label_includes_parser_provenance() -> None:
             }
         ]
     )
-    assert "Page 2 — Index" in evidence
+    assert "Page 105 — Index" in evidence
+    assert "original compiled page 2" in evidence
     assert "printed page A-1" in evidence
     assert "heading: I N D E X" in evidence
     assert "table rows 3-11" in evidence

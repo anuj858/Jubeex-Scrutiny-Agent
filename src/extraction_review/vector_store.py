@@ -56,7 +56,7 @@ vector_backend = (os.getenv("VECTOR_BACKEND") or "pinecone").strip().lower()
 _cached_client: Pinecone | None = None
 _cached_index: Any = None
 _cached_text_field: str | None = None
-_cache_lock = threading.Lock()
+_cache_lock = threading.RLock()
 _query_semaphore: threading.Semaphore | None = None
 
 # Scrutiny retrieval. Env overrides these; do not duplicate the numbers elsewhere.
@@ -913,6 +913,7 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "parse_confidence": fields.get("parse_confidence"),
         "parse_concerns": fields.get("parse_concerns") or [],
         "printed_page_number": fields.get("printed_page_number"),
+        "original_page": fields.get("original_page"),
         "content_hash": fields.get("content_hash"),
     }
 
@@ -986,6 +987,7 @@ def search_filing_chunks(
                 "parse_confidence",
                 "parse_concerns",
                 "printed_page_number",
+                "original_page",
                 "content_hash",
             ],
         )

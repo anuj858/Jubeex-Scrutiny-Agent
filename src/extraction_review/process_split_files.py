@@ -63,6 +63,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .process_file import (
     ExtractedEvent,
     ExtractedInvalidEvent,
@@ -76,7 +77,6 @@ from .process_file import (
     positive_int_env,
     verified_content_hash,
 )
-from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .s3_artifacts import (
     STEP_EXTRACT,
     STEP_LAYOUT,
@@ -183,6 +183,7 @@ class SplitPartEvent(BaseModel):
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 class SplitFilesEvent(StartEvent):
@@ -538,6 +539,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                     file_url=getattr(
                         ingested_by_slot.get(item.slot_id), "file_url", None
                     ),
+                    page_span=item.page_span,
                 )
                 for item in parts
             ]
@@ -842,6 +844,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                     "document_id": item.document_id,
                     "file_id": item.file_id,
                     "file_hash": item.file_hash,
+                    "page_span": item.page_span,
                 }
                 for item in state.parts
             ]
@@ -1332,13 +1335,19 @@ async def _index_split_upload(
     for page, entry in coerce_page_layout(page_layout).items():
         slot_id = str(entry.get("slot_id") or "").strip()
         source = part_by_slot.get(slot_id)
+        local_page = entry.get("local_page")
+        original_page = _original_page_for_local(
+            source.page_span if source else None,
+            local_page,
+        )
         page_metadata[page] = {
             "global_page": page,
-            "local_page": entry.get("local_page"),
+            "local_page": local_page,
             "slot_id": slot_id or None,
             "document_id": source.document_id if source else None,
             "source_file_id": source.file_id if source else None,
             "source_file_hash": source.file_hash if source else None,
+            "original_page": original_page,
         }
     page_records = build_page_records(
         base_id=base_id,
@@ -1392,6 +1401,31 @@ async def _index_split_upload(
         "record_count": count,
         "status": "active",
     }
+
+
+def _original_page_for_local(
+    page_span: list[dict[str, int]] | None,
+    local_page: Any,
+) -> int | None:
+    """Map a split PDF's 1-based local page back to the compiled source page."""
+
+    try:
+        offset = int(local_page) - 1
+    except (TypeError, ValueError):
+        return None
+    if offset < 0:
+        return None
+    pages: list[int] = []
+    for span in page_span or []:
+        try:
+            start = int(span.get("start"))
+            end = int(span.get("end"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if start <= 0 or end < start:
+            continue
+        pages.extend(range(start, end + 1))
+    return pages[offset] if offset < len(pages) else None
 
 
 def _active_vector_generation(metadata: Mapping[str, Any]) -> str | None:
@@ -1662,6 +1696,7 @@ async def _complete_index_only(
             "document_id": part.document_id,
             "file_id": part.file_id,
             "file_hash": part.file_hash,
+            "page_span": part.page_span,
         }
         for part in state.parts
     ]
@@ -1802,6 +1837,7 @@ def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:
             file_hash=item.file_hash,
             filename=item.filename,
             document_id=item.document_id,
+            page_span=item.page_span,
         )
         for item in parts
     ]

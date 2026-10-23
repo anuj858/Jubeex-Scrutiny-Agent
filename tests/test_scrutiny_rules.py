@@ -8,7 +8,11 @@ import re
 import jsonschema
 
 import extraction_review.scrutiny.rules as rules_mod
-from extraction_review.document_parts import pinecone_queries_for_defect
+from extraction_review.document_parts import (
+    evidence_seeking_queries_for_defect,
+    evidence_seeking_query_for_defect,
+    pinecone_queries_for_defect,
+)
 from extraction_review.scrutiny.prompts import (
     _filing_phrase,
     build_defect_prompt,
@@ -116,6 +120,44 @@ def test_trigger_words_are_used_for_retrieval_but_not_sent_to_model() -> None:
     assert "PRIVATE RETRIEVAL CUE" not in prompt
     assert "Recognition cues" not in prompt
     assert any("PRIVATE RETRIEVAL CUE" in query for query in retrieval_queries)
+
+
+def test_evidence_query_seeks_filing_values_not_negative_defect_wording() -> None:
+    defect = _defect("D-PARTIES", "General/Global").model_copy(
+        update={
+            "defect": "The petition does not contain complete respondent particulars.",
+            "requirement": "Every respondent must have complete particulars.",
+            "where_to_look": [
+                "1. Check the Memo of Parties for respondent names and addresses."
+            ],
+            "inspect_parts": ["Main Petition", "Memo of Parties"],
+        }
+    )
+
+    query = evidence_seeking_query_for_defect(defect)
+
+    assert query.startswith("Find the respondent table")
+    assert "names and descriptions" in query
+    assert "every respondent" in query
+    assert defect.defect not in query
+    assert pinecone_queries_for_defect(defect)[0] == query
+
+
+def test_all_parties_produces_separate_petitioner_and_respondent_queries() -> None:
+    defect = _defect("D-ALL-PARTIES", "General/Global").model_copy(
+        update={
+            "defect": "Party particulars are incomplete.",
+            "requirement": "Complete particulars must be supplied for all parties.",
+            "where_to_look": ["Check the Memo of Parties."],
+            "inspect_parts": ["Main Petition", "Memo of Parties"],
+        }
+    )
+
+    queries = evidence_seeking_queries_for_defect(defect)
+
+    assert len(queries) == 2
+    assert "every respondent" in queries[0]
+    assert "every petitioner or appellant" in queries[1]
 
 
 def test_catalogue_has_complete_gemini_decision_inputs() -> None:

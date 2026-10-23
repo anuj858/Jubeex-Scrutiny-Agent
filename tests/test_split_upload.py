@@ -58,6 +58,7 @@ from extraction_review.process_split_files import (
     SplitFilesState,
     SplitPartEvent,
     _ingest_labeled_parts,
+    _original_page_for_local,
     extract_input_file_id,
     fast_parse_tier,
     ingest_concurrency,
@@ -116,6 +117,15 @@ def _required_parts(
     if extra:
         parts.extend(extra)
     return parts
+
+
+def test_split_local_page_maps_back_to_compiled_page_span() -> None:
+    spans = [{"start": 2, "end": 3}, {"start": 105, "end": 106}]
+    assert _original_page_for_local(spans, 1) == 2
+    assert _original_page_for_local(spans, 2) == 3
+    assert _original_page_for_local(spans, 3) == 105
+    assert _original_page_for_local(spans, 4) == 106
+    assert _original_page_for_local(spans, 5) is None
 
 
 def test_config_json_has_versioning() -> None:

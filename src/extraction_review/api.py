@@ -82,6 +82,7 @@ class DocumentIn(BaseModel):
     file_hash: str | None = None
     filename: str | None = None
     file_url: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
     @field_validator(
         "name",

@@ -30,6 +30,7 @@ from .document_parts import (
     _is_numbered_annexure,
     _requires_annexure_collection_coverage,
     chunks_cover_part,
+    evidence_seeking_queries_for_defect,
     expand_parts_for_retrieval,
     family_split_name,
     filing_type_label,
@@ -100,6 +101,7 @@ from .vector_store import (
     gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
+    scrutiny_top_k,
 )
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
@@ -366,6 +368,48 @@ async def _chunks_for_defect(
 
     reranked = await asyncio.to_thread(rerank_chunks_for_defect, pool, defect)
     selected = select_chunks_for_defect(reranked, defect, max_chunks=page_budget)
+    missing = missing_required_parts(defect, selected)
+    if missing:
+        # One bounded recall pass is allowed when the first semantic search did
+        # not return a required part. It retains every tenant/generation filter
+        # and searches only the missing part labels with a larger top-k.
+        broader_queries = [
+            *evidence_seeking_queries_for_defect(defect),
+            *missing,
+        ]
+        try:
+            broader = await asyncio.to_thread(
+                gather_filing_evidence,
+                broader_queries,
+                file_hash=file_hash,
+                top_k=min(32, max(16, scrutiny_top_k() * 2)),
+                max_chunks=gather_cap,
+                document_parts=expand_parts_for_retrieval(missing),
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                index_generation=index_generation,
+            )
+        except Exception as exc:  # noqa: BLE001 - bounded external search must fail open
+            logger.warning(
+                "[Scrutiny] Broader retrieval failed for %s: %s",
+                defect.check_id,
+                exc,
+            )
+        else:
+            by_id = {
+                str(chunk.get("record_id")): chunk
+                for chunk in [*pool, *broader]
+                if chunk.get("record_id")
+            }
+            combined = list(by_id.values())
+            reranked = await asyncio.to_thread(
+                rerank_chunks_for_defect, combined, defect
+            )
+            selected = select_chunks_for_defect(
+                reranked,
+                defect,
+                max_chunks=page_budget,
+            )
     return _add_layout_fallback_chunks(
         defect,
         selected,
