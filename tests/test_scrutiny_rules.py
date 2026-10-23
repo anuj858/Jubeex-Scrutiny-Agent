@@ -513,7 +513,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert catalogue.defect("D-60").inspect_parts == ["AOR's Certificate"]
     assert catalogue.defect("D-60").context_parts == ["Vakalatnama"]
     assert catalogue.defect("D-58").inspect_parts == ["Index"]
-    assert catalogue.defect("D-58").context_parts == ["Application"]
+    assert catalogue.defect("D-58").context_parts == []
     assert catalogue.defect("D-88").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-89").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-110").inspect_parts == [

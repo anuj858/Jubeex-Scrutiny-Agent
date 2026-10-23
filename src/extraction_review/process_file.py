@@ -12,7 +12,6 @@ import asyncio
 import hashlib
 import io
 import logging
-import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -314,16 +313,14 @@ EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
 EXTRACT_FRONT_JOB_TYPES = frozenset({"extract_front"})
 FRONT_EXTRACT_PAGE_LIMIT = 30
 FRONT_EXTRACT_END_PAGE_LIMIT = 5
-FRONT_EXTRACT_SMALL_BOOK_PAGES = 200
-FRONT_EXTRACT_OPENING_CAP = 120
 
 
 def front_extract_opening_pages(total: int) -> int:
     """How many opening pages to parse from a compiled PDF.
 
-    A book of 200 pages or fewer uses 30 pages. A longer book starts from
-    20 percent and that share shrinks as the book grows, so 700 pages keeps
-    75 opening pages and 1000 pages keeps 90, never more than 120.
+    Split has not run, so a field may sit on any of these pages. A file of
+    30 pages or fewer is read in full. A longer file is read from its first
+    30 pages. The last 5 pages are still attached for the closing block.
     """
     if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
         return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
@@ -339,6 +336,18 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
         source.close()
 
 
+def _pdf_text_layer(pdf_bytes: bytes) -> dict[int, str]:
+    """Page text from the PDF text layer, numbered from 1."""
+    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return {
+            index + 1: document[index].get_text() or ""
+            for index in range(document.page_count)
+        }
+    finally:
+        document.close()
+
+
 def first_pages_pdf(
     pdf_bytes: bytes,
     page_limit: int = FRONT_EXTRACT_PAGE_LIMIT,
@@ -346,8 +355,8 @@ def first_pages_pdf(
 ) -> bytes:
     """Keep the opening pages and the last pages, without repeating the overlap.
 
-    The last pages are where the Vakalatnama sits, so the advocate on record
-    can be read from there.
+    The last pages are included because the advocate block is often printed
+    there. Those pages are not assumed to be a Vakalatnama.
     """
     if page_limit < 1:
         raise ValueError("page_limit must be at least 1")
@@ -662,19 +671,34 @@ def coerce_slot_id(slot: str, *, filing_type: str | None) -> str:
     return UNDEFINED_SLOT_ID
 
 
+def _slot_is_undefined(slot: str | None) -> bool:
+    key = (slot or "").strip().lower()
+    return not key or key == UNDEFINED_SLOT_ID or key.startswith("undefined_")
+
+
 def resolve_document_slot(
     item: FilingPartIn,
     *,
     mode: str,
     filing_type: str | None,
 ) -> str:
+    """Map one uploaded file onto a catalog slot.
+
+    A file sent as ``undefined`` still keeps a recognizable name, such as
+    ``Application_1.pdf``. That name is the slot. Otherwise the pages are
+    labelled Undefined and a check for the Application never sees them.
+    """
+    catalog_mode = mode in {"split", "verify"} or mode in SPLIT_JOB_TYPES
     explicit = blank_or_placeholder(item.slot_id)
+    resolved_explicit = None
     if explicit:
-        return (
+        resolved_explicit = (
             coerce_slot_id(explicit, filing_type=filing_type)
-            if mode == "split"
+            if catalog_mode
             else explicit
         )
+        if not catalog_mode or not _slot_is_undefined(resolved_explicit):
+            return resolved_explicit
     if mode == "full":
         return "fullpetition"
     names = [
@@ -685,7 +709,7 @@ def resolve_document_slot(
         resolved = slot_id_from_name(name, filing_type)
         if resolved and resolved not in FULL_PETITION_SLOTS:
             return coerce_slot_id(resolved, filing_type=filing_type)
-    if mode == "split":
+    if catalog_mode:
         return UNDEFINED_SLOT_ID
     label = item.filename or item.document_id or item.file_url or "document"
     raise ValueError(
@@ -2497,6 +2521,7 @@ async def _extract_sliced_parts(
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_structured_pages_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
+    front_text_layer: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -2521,6 +2546,7 @@ async def _extract_sliced_parts(
             stitch_in_request_order=stitch_in_request_order,
             front_extract=front_extract,
             front_opening_pages=front_opening_pages,
+            front_text_layer=front_text_layer or {},
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
@@ -2882,6 +2908,7 @@ async def _run_extract_front(
         stitch_in_request_order=True,
         front_extract=True,
         front_opening_pages=opening_pages,
+        front_text_layer=_pdf_text_layer(sliced),
         special_category=None,
         court=None,
     )

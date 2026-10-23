@@ -14,11 +14,12 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..document_parts import (
     _part_match,
     allows_index_evidence,
+    chunks_cover_part,
     missing_required_parts,
     parts_named_in_where_to_look,
     parts_on_page,
@@ -27,8 +28,8 @@ from ..document_parts import (
 )
 from ..layout_index import boxes_on_pages, page_entry, part_for_page, quote_in_text
 from .prompts import (
-    filing_location,
-    validated_reasoning,
+    compose_reasoning,
+    location_for_finding,
     validated_summary,
 )
 from .rules import (
@@ -137,6 +138,39 @@ class VisualLocalization(BaseModel):
     confidence: float | None = None
 
 
+ElementState = Literal["present", "missing", "incomplete", "not_visible"]
+
+GapKind = Literal[
+    "part_not_in_excerpts",
+    "element_page_not_in_excerpts",
+    "unreadable",
+    "ambiguous",
+    "conflict",
+    "low_confidence",
+]
+
+
+class ElementFinding(BaseModel):
+    """One element of this row, as the Note for AI lists them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "The element named in the Note for AI or the Requirement, "
+            "such as paragraph 1A or the English text of a cited provision."
+        )
+    )
+    state: ElementState
+    detail: str = Field(
+        default="",
+        description=(
+            "The specific item, such as the provision that is missing. "
+            "Empty when there is nothing to add."
+        ),
+    )
+
+
 class DefectResponse(BaseModel):
     """Exactly what the model returns for one defect."""
 
@@ -151,15 +185,58 @@ class DefectResponse(BaseModel):
             "Do not copy the Standard paragraph or mention rulebook pages."
         )
     )
-    reasoning: str = Field(
+    observed: str = Field(
+        default="",
         description=(
-            "2-4 plain sentences: which filing part and excerpt page were "
-            "checked, and why this defect's requirement is met or not. "
-            "Quote the filing. Do not mention location_source, handbook "
-            "PDF pages, or catalogue check ids."
-        )
+            "One or two sentences on what this filing shows for this row. "
+            "Name the document and the clause. Do not mention page numbers, "
+            "excerpt ids, chunks, search, retrieval, or OCR."
+        ),
+    )
+    elements: list[ElementFinding] = Field(
+        default_factory=list,
+        description=(
+            "One item for each element the Note for AI or the Requirement "
+            "names, such as (a), (b) and (c)."
+        ),
+    )
+    gap: GapKind | None = Field(
+        default=None,
+        description=(
+            "Why the row is needs_review. Null for every other status. "
+            "part_not_in_excerpts: the document type was not shown. "
+            "element_page_not_in_excerpts: the document was shown but not "
+            "the clause this row checks. unreadable: the clause cannot be "
+            "read. ambiguous: the wording does not decide the row. "
+            "conflict: the text and a visual mark disagree."
+        ),
+    )
+    gap_detail: str = Field(
+        default="",
+        description=(
+            "The missing element, or the visible mark that conflicts. "
+            "Empty when gap is null."
+        ),
+    )
+    conclusion: str = Field(
+        default="",
+        description=(
+            "One sentence. Cite a rule only when that citation is written "
+            "in the Requirement."
+        ),
     )
     evidence: list[EvidenceRef]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_reasoning(cls, data: Any) -> Any:
+        """Older callers passed a free-text reasoning string."""
+        if isinstance(data, dict) and "reasoning" in data:
+            data = dict(data)
+            legacy = data.pop("reasoning")
+            if not str(data.get("observed") or "").strip() and isinstance(legacy, str):
+                data["observed"] = legacy
+        return data
 
 
 class Coverage(BaseModel):
@@ -860,24 +937,26 @@ def apply_status_policy(response: DefectResponse) -> DefectResponse:
         response.status in ("defect_found", "compliant")
         and response.confidence < review_confidence_threshold()
     ):
-        return _move_to_review(
-            response,
-            "The model's confidence was below the publication threshold, so the "
-            "available evidence requires human review before a defect or compliant "
-            "decision is shown.",
-        )
+        return _move_to_review(response, gap="low_confidence")
     return response
 
 
-def _move_to_review(response: DefectResponse, reason: str) -> DefectResponse:
-    """Downgrade an unsafe conclusion and keep its explanation consistent."""
+def _move_to_review(
+    response: DefectResponse,
+    *,
+    gap: GapKind,
+    detail: str = "",
+) -> DefectResponse:
+    """Downgrade an unsafe conclusion. The published sentence is composed later."""
     response.status = "needs_review"
     review_confidence = max(0.0, review_confidence_threshold() - 0.01)
     response.confidence = min(response.confidence, review_confidence)
     response.summary = (
         "Needs review because the available evidence does not safely prove this defect."
     )
-    response.reasoning = reason
+    response.gap = gap
+    if detail:
+        response.gap_detail = detail
     return response
 
 
@@ -897,9 +976,8 @@ def apply_grounded_defect_policy(response: DefectResponse) -> DefectResponse:
         return response
     return _move_to_review(
         response,
-        "The required document part was searched, but no filing-page quotation "
-        "or visible field was grounded as proof of the defect. Absence in semantic "
-        "search results is not enough to publish a defect.",
+        gap="element_page_not_in_excerpts",
+        detail="No filing-page quotation was grounded as proof of the defect.",
     )
 
 
@@ -952,9 +1030,8 @@ def apply_visual_conflict_policy(
         return response
     return _move_to_review(
         response,
-        "OCR suggested that required material was missing, but visual analysis "
-        f"found potentially conflicting evidence ({'; '.join(conflicts[:3])}). "
-        "A reviewer must reconcile the visible mark with the textual requirement.",
+        gap="conflict",
+        detail="; ".join(conflicts[:3]),
     )
 
 
@@ -1055,19 +1132,32 @@ def manifest_absence_proven(
     defect: Defect,
     layout: dict[int, dict[str, Any]] | None,
 ) -> bool:
-    """Whether a complete classified page manifest proves a whole part absent."""
-    if not defect.manifest_absence_proves_defect or not layout:
+    """Whether a complete layout proves every required part of a switched row absent."""
+    if not getattr(defect, "manifest_absence_proves_defect", False):
         return False
-    labelled_pages = [
-        parts_on_page(page.get("document_part"))
-        for page in layout.values()
-        if isinstance(page, dict)
-    ]
-    if not labelled_pages or any(not names for names in labelled_pages):
-        return False
-    available = {name.casefold() for names in labelled_pages for name in names}
+    missing = missing_parts_in_layout(defect, layout)
     required = required_parts_for_defect(defect)
-    return bool(required) and all(part.casefold() not in available for part in required)
+    return bool(missing) and bool(required) and len(missing) == len(required)
+
+
+def missing_document_sentence(parts: list[str]) -> str:
+    """The only sentence published when a required document type is absent."""
+    label = _english_join([part for part in parts if part])
+    if not label:
+        label = "required document"
+    plural = len([part for part in parts if part]) > 1 or label.casefold() == "annexures"
+    verb = "are missing" if plural else "is missing"
+    return f"The {label} {verb} from the case file."
+
+
+def _english_join(parts: list[str]) -> str:
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f" and {parts[-1]}"
 
 
 def apply_manifest_absence_policy(
@@ -1075,19 +1165,16 @@ def apply_manifest_absence_policy(
     response: DefectResponse,
     layout: dict[int, dict[str, Any]] | None,
 ) -> DefectResponse:
-    """Publish an explicitly configured missing-document defect from the manifest."""
+    """Record a wholly missing document. The model is not asked to explain it."""
     if not manifest_absence_proven(defect, layout):
         return response
-    missing = required_parts_for_defect(defect)
-    label = ", ".join(missing)
+    sentence = missing_document_sentence(required_parts_for_defect(defect))
     response.status = "defect_found"
-    response.confidence = max(response.confidence, 0.95)
-    response.summary = f"Defect: the filing does not contain {label}."
-    response.reasoning = (
-        f"Observed: the complete classified filing manifest contains no {label}. "
-        f"Required: {defect.requirement.rstrip('.')}. "
-        "Conclusion: the required document is absent from the filing."
-    )
+    response.confidence = 1.0
+    response.summary = sentence
+    response.observed = ""
+    response.conclusion = sentence
+    response.gap = None
     response.evidence = []
     return response
 
@@ -1104,9 +1191,8 @@ def apply_retrieval_policy(
     if missing:
         return _move_to_review(
             response,
-            "The excerpts did not contain every required document part "
-            f"({', '.join(missing)}). A retrieval gap cannot prove that the filing "
-            "itself is defective.",
+            gap="part_not_in_excerpts",
+            detail=", ".join(missing),
         )
     return response
 
@@ -1120,15 +1206,13 @@ def apply_undetermined_policy(
     if response.status != "not_determined":
         return response
     missing = missing_required_parts(defect, chunks)
-    detail = (
-        f" Required excerpts were missing for: {', '.join(missing)}."
-        if missing
-        else " The available excerpts or visual evidence were inconclusive."
-    )
-    return _move_to_review(
-        response,
-        "This check could not be determined safely." + detail,
-    )
+    if missing:
+        return _move_to_review(
+            response,
+            gap="part_not_in_excerpts",
+            detail=", ".join(missing),
+        )
+    return _move_to_review(response, gap="unreadable")
 
 
 class ScrutinySummary(BaseModel):
@@ -1175,36 +1259,6 @@ def _pages_from_chunks(chunks: list[dict[str, Any]] | None) -> list[int]:
     return pages
 
 
-def _parts_for_pages(
-    chunks: list[dict[str, Any]] | None, pages: list[int]
-) -> list[str]:
-    if not chunks or not pages:
-        names: list[str] = []
-        for chunk in chunks or []:
-            if chunk.get("chunk_kind") == "summary":
-                continue
-            name = str(chunk.get("document_part") or "").strip()
-            if name and name not in names:
-                names.append(name)
-        return names
-    wanted = set(pages)
-    names: list[str] = []
-    for chunk in chunks:
-        if chunk.get("chunk_kind") == "summary":
-            continue
-        page = chunk.get("page")
-        try:
-            page_i = int(page) if page is not None else None
-        except (TypeError, ValueError):
-            page_i = None
-        if page_i not in wanted:
-            continue
-        name = str(chunk.get("document_part") or "").strip()
-        if name and name not in names:
-            names.append(name)
-    return names
-
-
 def build_finding(
     defect: Defect,
     response: DefectResponse,
@@ -1233,16 +1287,11 @@ def build_finding(
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     reviewed_local = _local_pages(layout, reviewed_global)
     pages = reviewed_local
-    seen_parts: list[str] = []
-    for ref in evidence:
-        if ref.document_part and ref.document_part not in seen_parts:
-            seen_parts.append(ref.document_part)
-    if not seen_parts:
-        seen_parts = _parts_for_pages(chunks, reviewed_global)
-    location = filing_location(
-        evidence_pages=evidence_pages,
-        reviewed_pages=reviewed_local or evidence_pages,
-        document_parts=seen_parts,
+    location = location_for_finding(
+        evidence=evidence,
+        chunks=chunks,
+        layout=layout,
+        reviewed_pages=reviewed_global,
     )
     coverage = coverage.model_copy(update={"pages_reviewed": reviewed_local})
     from ..visual.attach import attach_visual_localizations
@@ -1268,14 +1317,12 @@ def build_finding(
             evidence_pages=evidence_pages,
         ),
         confidence=response.confidence,
-        reasoning=validated_reasoning(
+        reasoning=compose_reasoning(
             defect,
-            response.reasoning,
-            response.status,
-            pages=pages,
-            evidence_pages=evidence_pages,
-            evidence_quote=evidence[0].quote if evidence else None,
-            document_parts=seen_parts,
+            response,
+            chunks=chunks,
+            layout=layout,
+            evidence=evidence,
         ),
         evidence=evidence,
         how_to_cure=cure_from_defect(defect),
@@ -1328,6 +1375,60 @@ def failed_finding(
         error=error,
         usage=usage,
         defect_version=defect.defect_version,
+    )
+
+
+def missing_document_finding(
+    defect: Defect,
+    parts: list[str],
+    *,
+    visual_index: dict[str, Any] | None = None,
+    page_parts: dict[int, list[str]] | None = None,
+    record: dict[str, Any] | None = None,
+) -> DefectFinding:
+    """Publish a missing document type without calling the model."""
+    sentence = missing_document_sentence(parts)
+    try:
+        catalogue = get_catalogue()
+    except RuntimeError:
+        catalogue = None
+    try:
+        sources = official_source_locations(defect, catalogue)
+    except AttributeError:
+        sources = []
+    try:
+        cure = cure_from_defect(defect)
+    except AttributeError:
+        cure = HowToCure(steps=list(getattr(defect, "how_to_cure", None) or []))
+    from ..visual.attach import attach_visual_localizations
+
+    visual_localizations = attach_visual_localizations(
+        defect,
+        visual_index=visual_index,
+        page_parts=page_parts,
+        record=record,
+    )
+    return DefectFinding(
+        check_id=str(getattr(defect, "check_id", "") or ""),
+        defect=str(getattr(defect, "defect", "") or ""),
+        requirement=str(getattr(defect, "requirement", "") or ""),
+        main_category=str(getattr(defect, "main_category", "") or ""),
+        special_category=getattr(defect, "special_category", None),
+        status="defect_found",
+        summary=sentence,
+        confidence=1.0,
+        reasoning=sentence,
+        evidence=[],
+        visual_localizations=visual_localizations,
+        how_to_cure=cure,
+        applicable_rule=getattr(defect, "applicable_rule", None),
+        location="Not found in the case file.",
+        location_source=sources,
+        coverage=Coverage(
+            structured_record_available=isinstance(record, dict) and bool(record),
+            evidence_complete=True,
+        ),
+        defect_version=int(getattr(defect, "defect_version", 1) or 1),
     )
 
 

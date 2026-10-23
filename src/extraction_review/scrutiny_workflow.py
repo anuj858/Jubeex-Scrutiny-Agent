@@ -93,7 +93,8 @@ from .scrutiny.schema import (
     apply_visual_conflict_policy,
     build_finding,
     failed_finding,
-    manifest_absence_proven,
+    missing_document_finding,
+    missing_parts_in_layout,
     summarize,
     summarize_usage,
 )
@@ -247,7 +248,6 @@ def _sanitize_response(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
     visual_index: dict[str, Any] | None = None,
-    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
@@ -280,14 +280,21 @@ async def _run_defect(
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
 ) -> DefectFinding:
+    absent = missing_parts_in_layout(defect, layout)
+    if absent:
+        return missing_document_finding(
+            defect,
+            absent,
+            visual_index=visual_index,
+            record=record if isinstance(record, dict) else None,
+        )
+
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
-    complete_manifest_proves_absence = manifest_absence_proven(defect, layout)
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=complete_manifest_proves_absence
-        or (bool(record) and not missing_required_parts(defect, chunks)),
+        evidence_complete=bool(record) and not missing_required_parts(defect, chunks),
     )
 
     raw, usage = await call_structured(
@@ -298,12 +305,13 @@ async def _run_defect(
             chunks=chunks,
             catalogue=catalogue,
             visual_index=visual_index,
+            layout=layout,
         ),
         response_model=DefectResponse,
         model=scrutiny_model(),
         request_label=defect.check_id,
     )
-    response = _sanitize_response(defect, raw, chunks, visual_index, layout)
+    response = _sanitize_response(defect, raw, chunks, visual_index)
 
     return build_finding(
         defect,

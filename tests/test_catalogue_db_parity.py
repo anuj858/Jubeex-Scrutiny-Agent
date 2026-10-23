@@ -103,6 +103,44 @@ def test_denied_optional_remediation_lookup_keeps_catalogue_rows(caplog: pytest.
     assert "without remediation actions" in caplog.text
 
 
+def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "local")
+
+    def unavailable() -> int:
+        raise AssertionError("the database must not be contacted")
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        unavailable,
+    )
+    get_catalogue.cache_clear()
+    catalogue = refresh_catalogue()
+    assert catalogue.schema_version != "db"
+    assert catalogue.catalogue_version == "3.0.1"
+    assert len(catalogue.defects) == 321
+    assert catalogue.defect("D-179") is not None
+    get_catalogue.cache_clear()
+
+
+def test_localhost_database_url_is_not_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "CATALOGUE_DATABASE_URL",
+        "postgresql://parse:secret@localhost:5432/none",
+    )
+
+    def unavailable() -> int:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        unavailable,
+    )
+    get_catalogue.cache_clear()
+    with pytest.raises(RuntimeError, match="could not be loaded from the database"):
+        refresh_catalogue()
+    get_catalogue.cache_clear()
+
+
 def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
     monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)

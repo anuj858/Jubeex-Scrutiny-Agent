@@ -601,6 +601,11 @@ def get_catalogue() -> Catalogue:
 get_catalogue.cache_clear = _catalogue_cache.clear  # type: ignore[attr-defined]
 
 
+def _use_json_catalogue() -> bool:
+    """The word local, and only that word, selects the checked-in JSON catalogue."""
+    return (os.getenv("CATALOGUE_DATABASE_URL") or "").strip().casefold() == "local"
+
+
 def refresh_catalogue() -> Catalogue:
     """Load the configured catalogue; DB remains the production default."""
     source = (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()

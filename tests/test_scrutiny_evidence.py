@@ -1,5 +1,6 @@
 """Shared Pinecone pool, record slicing, and petition-type system prompts."""
 
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -37,6 +38,8 @@ from extraction_review.scrutiny.schema import (
     apply_status_policy,
     apply_visual_conflict_policy,
     manifest_absence_proven,
+    missing_document_finding,
+    missing_parts_in_layout,
 )
 from extraction_review.scrutiny_workflow import _add_layout_fallback_chunks
 from extraction_review.vector_store import build_page_records
@@ -685,7 +688,8 @@ def test_ungrounded_defect_is_not_published() -> None:
     )
     gated = apply_grounded_defect_policy(response)
     assert gated.status == "needs_review"
-    assert "not enough to publish" in gated.reasoning
+    assert gated.gap == "element_page_not_in_excerpts"
+    assert "No filing-page quotation was grounded" in gated.gap_detail
 
 
 def test_grounded_blank_field_can_remain_a_defect() -> None:
@@ -729,7 +733,8 @@ def test_positive_visual_mark_routes_ocr_absence_to_review() -> None:
         },
     )
     assert gated.status == "needs_review"
-    assert "05 JUN 2026" in gated.reasoning
+    assert gated.gap == "conflict"
+    assert "05 JUN 2026" in gated.gap_detail
 
 
 def test_d81_legibility_is_not_published_without_page_quality_evidence() -> None:
@@ -812,19 +817,30 @@ def test_published_quote_removes_overlap_and_html_noise() -> None:
 
 def test_fallback_reasoning_explains_observed_required_and_conclusion() -> None:
     defect = SimpleNamespace(
-        requirement="The AOR code must be stated in the AOR Certificate"
+        requirement="The AOR code must be stated in the AOR Certificate",
+        applicable_rule="",
+        defect="AOR code missing",
+        inspect_parts=["AOR's Certificate"],
     )
-    reasoning = fallback_reasoning(
-        defect,
-        "defect_found",
-        evidence_pages=[18],
-        evidence_quote="Filed by Anurag Soan, Advocate for Petitioner",
-        document_parts=["AOR's Certificate"],
+    response = SimpleNamespace(
+        status="defect_found",
+        observed="The certificate names the advocate and leaves the code blank.",
+        conclusion="the Advocate-on-Record code has not been stated",
+        gap=None,
+        gap_detail="",
+        elements=[
+            SimpleNamespace(name="AOR code", state="missing", detail=""),
+        ],
     )
-    assert "Observed in AOR's Certificate" in reasoning
-    assert "Required:" in reasoning
-    assert "Conclusion:" in reasoning
+    evidence = [
+        SimpleNamespace(page=18, document_part="AOR's Certificate", quote="Filed by"),
+    ]
+    reasoning = compose_reasoning(defect, response, evidence=evidence)
+    assert "AOR's Certificate" in reasoning
     assert "page 18" in reasoning
+    assert "AOR code" in reasoning
+    assert "c1" not in reasoning
+    assert "excerpt" not in reasoning.casefold()
 
 
 def test_complete_manifest_can_prove_explicit_missing_document_check() -> None:
@@ -852,8 +868,8 @@ def test_complete_manifest_can_prove_explicit_missing_document_check() -> None:
     )
     decided = apply_manifest_absence_policy(defect, response, layout)
     assert decided.status == "defect_found"
-    assert decided.confidence == 0.95
-    assert "complete classified filing manifest" in decided.reasoning
+    assert decided.confidence == 1.0
+    assert decided.summary == "The Advocate's Checklist is missing from the case file."
 
 
 def test_partial_manifest_does_not_prove_document_absence() -> None:
@@ -954,15 +970,19 @@ def test_filing_location_states_page_or_page_missing() -> None:
             reviewed_pages=[2],
             document_parts=["Advocate's Checklist"],
         )
-        == "Advocate's Checklist, page 2."
+        == "Advocate's Checklist — page 2."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[3, 4], document_parts=[])
-        == "Page missing — no page number on the citation. Excerpts were reviewed on pages 3, 4."
+        == "Pages 3–4."
     )
     assert (
         filing_location(evidence_pages=[], reviewed_pages=[], document_parts=[])
-        == "Page missing — no page was identified in the retrieved excerpts."
+        == "No page was identified in the pages reviewed."
+    )
+    assert (
+        filing_location(document_parts=["['Main Petition']"], evidence_pages=[1])
+        == "Main Petition — page 1."
     )
 
 
@@ -984,3 +1004,227 @@ def test_published_finding_keeps_one_evidence_item() -> None:
     assert len(kept) == 1
     assert kept[0].quote == "the line with a box"
     assert kept[0].boxes_status == "matched"
+
+
+def _scrutiny_row(**overrides: object) -> SimpleNamespace:
+    fields: dict[str, object] = {
+        "check_id": "D-179",
+        "defect": "paragraph 1A is missing",
+        "requirement": (
+            "Paragraph 1A must state whether a Letters Patent Appeal lies "
+            "(Order XXI Rule 3(5), Supreme Court Rules, 2013)."
+        ),
+        "applicable_rule": "Order XXI Rule 3(5)",
+        "inspect_parts": ["Main Petition"],
+        "context_parts": [],
+        "where_to_look": [],
+        "how_to_cure": [],
+        "remediation_config": {},
+        "main_category": "SLP (Civil)",
+        "special_category": None,
+        "location_source": "",
+        "location_text": "",
+        "defect_version": 1,
+        "manifest_absence_proves_defect": False,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_needs_review_names_the_unshown_paragraph_without_excerpt_ids() -> None:
+    defect = _scrutiny_row()
+    response = SimpleNamespace(
+        status="needs_review",
+        observed="The shown pages contain the heading and the prayers.",
+        conclusion="compliance cannot be determined",
+        gap="element_page_not_in_excerpts",
+        gap_detail="paragraph 1A",
+        elements=[],
+    )
+    chunks = [
+        {"chunk_kind": "page", "page": 12, "document_part": "Main Petition", "text": "heading"},
+        {"chunk_kind": "page", "page": 19, "document_part": "Main Petition", "text": "prayer"},
+    ]
+    layout = {
+        12: {"document_part": "Main Petition", "local_page": 1},
+        19: {"document_part": "Main Petition", "local_page": 8},
+        20: {"document_part": "Main Petition", "local_page": 9},
+    }
+    reasoning = compose_reasoning(defect, response, chunks=chunks, layout=layout)
+    assert "Main Petition" in reasoning
+    assert "pages 1 and 8" in reasoning
+    assert "paragraph 1A" in reasoning
+    assert "Order XXI Rule 3(5)" in reasoning
+    assert "cannot be determined" in reasoning
+    assert not re.search(r"\bc\d+\b", reasoning)
+
+
+def test_defect_found_lists_the_missing_provisions() -> None:
+    defect = _scrutiny_row(
+        check_id="D-226",
+        defect="Appendix incomplete",
+        requirement='The English version of the relevant provisions must be filed as an "Appendix".',
+        applicable_rule="",
+        inspect_parts=["Appendix", "Impugned Order"],
+    )
+    response = SimpleNamespace(
+        status="defect_found",
+        observed="The Appendix is headed APPENDIX.",
+        conclusion="the Appendix is incomplete",
+        gap=None,
+        gap_detail="",
+        elements=[
+            SimpleNamespace(
+                name="English text of Section 2",
+                state="missing",
+                detail="the Act referred to in the impugned order",
+            )
+        ],
+    )
+    evidence = [SimpleNamespace(page=2, document_part="Appendix", quote="APPENDIX")]
+    reasoning = compose_reasoning(defect, response, evidence=evidence)
+    assert "Appendix" in reasoning
+    assert "page 2" in reasoning
+    assert "Section 2" in reasoning
+    assert "incomplete" in reasoning
+    assert "Order XXI" not in reasoning
+
+
+def test_full_range_is_used_only_when_every_page_was_sent() -> None:
+    defect = _scrutiny_row()
+    response = SimpleNamespace(
+        status="compliant",
+        observed="Paragraph 1A states that no Letters Patent Appeal lies.",
+        conclusion="",
+        gap=None,
+        gap_detail="",
+        elements=[],
+    )
+    layout = {
+        1: {"document_part": "Main Petition", "local_page": 1},
+        2: {"document_part": "Main Petition", "local_page": 2},
+    }
+    partial = compose_reasoning(
+        defect,
+        response,
+        chunks=[{"chunk_kind": "page", "page": 1, "document_part": "Main Petition"}],
+        layout=layout,
+    )
+    complete = compose_reasoning(
+        defect,
+        response,
+        chunks=[
+            {"chunk_kind": "page", "page": 1, "document_part": "Main Petition"},
+            {"chunk_kind": "page", "page": 2, "document_part": "Main Petition"},
+        ],
+        layout=layout,
+    )
+    assert "in full" not in partial
+    assert "inspected in full (pages 1–2)" in complete
+
+
+def test_missing_appendix_skips_the_model_wording() -> None:
+    defect = _scrutiny_row(
+        check_id="D-226",
+        inspect_parts=["Appendix"],
+        manifest_absence_proves_defect=False,
+    )
+    layout = {
+        1: {"document_part": "Main Petition", "local_page": 1},
+        2: {"document_part": "Impugned Order", "local_page": 1},
+    }
+    assert missing_parts_in_layout(defect, layout) == ["Appendix"]
+    finding = missing_document_finding(defect, ["Appendix"])
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Appendix is missing from the case file."
+    assert finding.evidence == []
+
+
+def test_numbered_annexures_and_application_count_as_present() -> None:
+    annexures = _scrutiny_row(check_id="D-68", inspect_parts=["Annexures"])
+    labelled = {index: {"document_part": f"Annexure P-{index}"} for index in range(1, 7)}
+    assert missing_parts_in_layout(annexures, labelled) == []
+
+    application = _scrutiny_row(
+        check_id="D-112",
+        inspect_parts=["Main Petition", "Application"],
+    )
+    present = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": "Application 1"},
+    }
+    assert missing_parts_in_layout(application, present) == []
+
+
+def test_missing_annexures_are_a_defect() -> None:
+    defect = _scrutiny_row(check_id="D-68", inspect_parts=["Annexures"])
+    layout = {1: {"document_part": "Main Petition"}}
+    assert missing_parts_in_layout(defect, layout) == ["Annexures"]
+    finding = missing_document_finding(defect, ["Annexures"])
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Annexures are missing from the case file."
+
+
+def test_missing_vakalatnama_with_the_switch_on_is_only_that_sentence() -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        inspect_parts=["Vakalatnama"],
+        manifest_absence_proves_defect=True,
+        requirement="A Vakalatnama must be filed.",
+    )
+    layout = {1: {"document_part": "Main Petition", "local_page": 1}}
+    assert missing_parts_in_layout(defect, layout) == ["Vakalatnama"]
+    finding = missing_document_finding(defect, ["Vakalatnama"])
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Vakalatnama is missing from the case file."
+    assert finding.location == "Not found in the case file."
+    assert finding.evidence == []
+
+
+def test_one_of_two_documents_missing_reports_only_that_document() -> None:
+    defect = _scrutiny_row(
+        check_id="D-57",
+        inspect_parts=["Vakalatnama", "Main Petition"],
+        manifest_absence_proves_defect=False,
+    )
+    layout = {
+        1: {"document_part": "Main Petition", "local_page": 1},
+        2: {"document_part": "Index", "local_page": 1},
+    }
+    missing = missing_parts_in_layout(defect, layout)
+    assert missing == ["Vakalatnama"]
+    finding = missing_document_finding(defect, missing or [])
+    assert finding.status == "defect_found"
+    assert finding.confidence == 1.0
+    assert finding.reasoning == "The Vakalatnama is missing from the case file."
+    assert "Main Petition" not in finding.reasoning
+
+
+def test_unlabelled_page_does_not_prove_a_document_is_missing() -> None:
+    defect = _scrutiny_row(inspect_parts=["Vakalatnama"])
+    layout = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": None},
+    }
+    assert missing_parts_in_layout(defect, layout) is None
+
+
+def test_reasoning_drops_a_citation_the_requirement_does_not_contain() -> None:
+    defect = _scrutiny_row(
+        requirement="Paragraph 1A must state whether a Letters Patent Appeal lies.",
+        applicable_rule="",
+    )
+    response = SimpleNamespace(
+        status="needs_review",
+        observed="Shown pages omit paragraph 1A, contrary to Order XXI Rule 9.",
+        conclusion="",
+        gap="element_page_not_in_excerpts",
+        gap_detail="paragraph 1A",
+        elements=[],
+    )
+    reasoning = compose_reasoning(defect, response)
+    assert "Order XXI Rule 9" not in reasoning
+    assert "this requirement" in reasoning

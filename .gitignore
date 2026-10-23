@@ -46,3 +46,5 @@ output_samples/
 /worker-task-current.json
 /worker-task-fixed.json
 /worker-task-v[0-9]*.json
+scrutiny_harness/
+extract_capture/

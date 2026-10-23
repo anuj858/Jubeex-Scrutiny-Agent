@@ -50,6 +50,10 @@ logger = logging.getLogger("test_extract_front")
 
 # Global container for intercepting the exact extract artifact uploaded to S3
 _CAPTURED_EXTRACT_ARTIFACTS: dict[str, dict[str, Any]] = {}
+_CAPTURED_LLAMAPARSE_RESULTS: list[dict[str, Any]] = []
+_CAPTURED_EXTRACT_PACKS: list[dict[str, Any]] = []
+_CAPTURED_EXTRACT_CONFIGS: list[dict[str, Any]] = []
+_CAPTURED_EXTRACT_RESULTS: list[dict[str, Any]] = []
 
 _original_upload_step_json = s3_artifacts_mod.upload_step_json
 
@@ -62,6 +66,98 @@ def _intercepting_upload_step_json(step: str, payload: Any, **kwargs: Any) -> An
 
 
 s3_artifacts_mod.upload_step_json = _intercepting_upload_step_json
+
+from llama_cloud.resources.parsing import AsyncParsingResource
+from llama_cloud.resources.files import AsyncFilesResource
+from llama_cloud.resources.extract import AsyncExtractResource
+
+_orig_parsing_get = AsyncParsingResource.get
+
+
+async def _hooked_parsing_get(self: Any, *args: Any, **kwargs: Any) -> Any:
+    res = await _orig_parsing_get(self, *args, **kwargs)
+    try:
+        if hasattr(res, "model_dump"):
+            dumped = res.model_dump(mode="json")
+        elif hasattr(res, "model_dump_json"):
+            dumped = json.loads(res.model_dump_json())
+        elif hasattr(res, "dict"):
+            dumped = res.dict()
+        else:
+            dumped = {"raw": str(res)}
+    except Exception as exc:
+        dumped = {"error": str(exc), "repr": repr(res)}
+    _CAPTURED_LLAMAPARSE_RESULTS.append(dumped)
+    return res
+
+
+AsyncParsingResource.get = _hooked_parsing_get
+
+_orig_files_create = AsyncFilesResource.create
+
+
+async def _hooked_files_create(self: Any, *args: Any, **kwargs: Any) -> Any:
+    file_arg = kwargs.get("file")
+    purpose = kwargs.get("purpose")
+    if purpose == "extract" and file_arg:
+        try:
+            fname = file_arg[0] if isinstance(file_arg, tuple) else "pack.md"
+            stream = file_arg[1] if isinstance(file_arg, tuple) else None
+            content = ""
+            if stream and hasattr(stream, "getvalue"):
+                content = stream.getvalue().decode("utf-8", errors="replace")
+            _CAPTURED_EXTRACT_PACKS.append({"filename": fname, "content": content, "purpose": purpose})
+        except Exception as exc:
+            logger.warning("Could not capture extract pack: %s", exc)
+    return await _orig_files_create(self, *args, **kwargs)
+
+
+AsyncFilesResource.create = _hooked_files_create
+
+_orig_extract_create = AsyncExtractResource.create
+
+
+async def _hooked_extract_create(self: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        cfg = kwargs.get("configuration")
+        if hasattr(cfg, "model_dump"):
+            cfg_dumped = cfg.model_dump(mode="json")
+        elif isinstance(cfg, dict):
+            cfg_dumped = cfg
+        else:
+            cfg_dumped = str(cfg)
+        _CAPTURED_EXTRACT_CONFIGS.append({
+            "file_input": kwargs.get("file_input"),
+            "configuration": cfg_dumped,
+            "configuration_id": kwargs.get("configuration_id"),
+            "project_id": kwargs.get("project_id"),
+        })
+    except Exception as exc:
+        logger.warning("Could not capture extract config: %s", exc)
+    return await _orig_extract_create(self, *args, **kwargs)
+
+
+AsyncExtractResource.create = _hooked_extract_create
+
+_orig_extract_get = AsyncExtractResource.get
+
+
+async def _hooked_extract_get(self: Any, *args: Any, **kwargs: Any) -> Any:
+    res = await _orig_extract_get(self, *args, **kwargs)
+    try:
+        if hasattr(res, "model_dump"):
+            dumped = res.model_dump(mode="json")
+        elif hasattr(res, "dict"):
+            dumped = res.dict()
+        else:
+            dumped = {"raw": str(res)}
+    except Exception as exc:
+        dumped = {"error": str(exc), "repr": repr(res)}
+    _CAPTURED_EXTRACT_RESULTS.append(dumped)
+    return res
+
+
+AsyncExtractResource.get = _hooked_extract_get
 
 
 def infer_filing_type(filename: str) -> str:
@@ -571,6 +667,31 @@ async def process_single_pdf(
     print(f"\n[OK] Results saved:")
     print(f"  - Full Extraction JSON : {json_path.name}")
     print(f"  - Readable Text Card   : {card_path.name}")
+
+    # Save intercepted pipeline artifacts
+    if _CAPTURED_LLAMAPARSE_RESULTS:
+        llamaparse_path = output_dir / f"{stem}_llamaparse_output.json"
+        with open(llamaparse_path, "w", encoding="utf-8") as f:
+            json.dump(_CAPTURED_LLAMAPARSE_RESULTS[-1], f, indent=2, ensure_ascii=False)
+        print(f"  - LlamaParse Full Output JSON : {llamaparse_path.name}")
+
+    if _CAPTURED_EXTRACT_PACKS:
+        extract_pack_path = output_dir / f"{stem}_llamaextract_pack.md"
+        with open(extract_pack_path, "w", encoding="utf-8") as f:
+            f.write(_CAPTURED_EXTRACT_PACKS[-1].get("content", ""))
+        print(f"  - LlamaExtract Pack Markdown  : {extract_pack_path.name}")
+
+    if _CAPTURED_EXTRACT_CONFIGS:
+        extract_config_path = output_dir / f"{stem}_llamaextract_config.json"
+        with open(extract_config_path, "w", encoding="utf-8") as f:
+            json.dump(_CAPTURED_EXTRACT_CONFIGS[-1], f, indent=2, ensure_ascii=False)
+        print(f"  - LlamaExtract Input Config   : {extract_config_path.name}")
+
+    if _CAPTURED_EXTRACT_RESULTS:
+        extract_result_path = output_dir / f"{stem}_llamaextract_output.json"
+        with open(extract_result_path, "w", encoding="utf-8") as f:
+            json.dump(_CAPTURED_EXTRACT_RESULTS[-1], f, indent=2, ensure_ascii=False)
+        print(f"  - LlamaExtract Full Result    : {extract_result_path.name}")
 
     # Print summary highlights to console
     kf = extracted_fields

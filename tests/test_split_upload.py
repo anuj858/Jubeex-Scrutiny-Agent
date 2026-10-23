@@ -621,37 +621,17 @@ def test_extract_pack_keeps_source_parts_and_drops_noise() -> None:
         extract_source_parts(catalog),
         catalog=catalog,
     )
-    assert "[Cover Page]" in pack
-    assert "[Main Petition]" in pack
-    assert "[Memo of Parties]" not in pack
-    assert "[Affidavit]" in pack
-    assert "[Office Report on Limitation]" not in pack
+    assert "[Opening pages]" in pack
+    assert "cover caption" in pack
+    assert "petition first page parties" in pack
+    assert "petition grounds later page" in pack
+    assert "memo of parties ram lal address" in pack
     assert "affidavit deponent" in pack
     assert "office report limitation" not in pack
-    assert "petition first page parties" in pack
-    assert "petition party page 2" in pack
-    assert f"petition party page {PETITION_PACK_FIRST_PAGES}" in pack
-    assert "petition prayer page one" in pack
-    assert "petition prayer page three" in pack
-    assert PETITION_PACK_LAST_PAGES == 3
-    assert "memo of parties ram lal address" not in pack
-    assert "Fill advocates_on_record" in pack
-    assert "very last page" in pack
-    assert "Prefer Vakalatnama" in pack
-    assert "Do not copy petitioner or respondent names" in pack
-    assert (
-        "Never copy party names or addresses from Vakalatnama or Memo of Parties"
-        in pack
-    )
-    assert "and Anr." in pack
-    assert "petition grounds later page" not in pack
     assert "index listing" not in pack
     assert "[Index]" not in pack
-    assert "[Listing Proforma]" in pack
-    assert "listing columns" in pack
-    assert "Never override Vakalatnama" in pack
-    assert "Chamber" in pack
-    assert "bracketed particulars" in pack
+    assert "Do not assume" in pack
+    assert "and Anr." in pack
     assert "annexure p-1" not in pack
     assert "appendix text" not in pack
     assert "Annexures" not in pack
@@ -708,15 +688,11 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     )
     assert "cover caption" in pack
     assert "impugned caption page one" in pack
-    assert "impugned caption page two" in pack
-    assert "impugned closing page five" in pack
+    assert "impugned judgment body page three" in pack
     assert "impugned signature page six" in pack
-    assert "impugned judgment body page three" not in pack
-    assert "impugned judgment body page four" not in pack
     assert "vakalatnama first page" in pack
-    assert "vakalatnama last page one" in pack
+    assert "vakalatnama middle page" in pack
     assert "vakalatnama last page two" in pack
-    assert "vakalatnama middle page" not in pack
     assert "checklist yes no" in pack
     assert "synopsis of the case" not in pack
     assert "list of dates events" not in pack
@@ -724,54 +700,25 @@ def test_extract_pack_trims_impugned_order_and_vakalatnama() -> None:
     assert "memo of appearance advocates" in pack
 
 
-def test_party_fields_use_listing_proforma_as_ocr_fallback() -> None:
+def test_party_fields_use_the_opening_window() -> None:
     catalog = type_catalog("SLP_CIVIL")
-    court_verify = (
-        "Main Petition",
-        "Vakalatnama",
-    )
-    party_sources = FieldSources(
-        fill=("Main Petition", "Cover Page", "Listing Proforma"),
-        verify=("Main Petition", "Cover Page", "Listing Proforma"),
-    )
-    assert catalog.extract_field_sources["petitioners"] == party_sources
-    assert catalog.extract_field_sources["respondents"] == party_sources
-    assert catalog.extract_field_sources["court"] == FieldSources(
-        fill=("Cover Page",),
-        verify=court_verify,
-    )
-    assert catalog.extract_field_sources["petition_type"] == FieldSources(
-        fill=("Main Petition", "Cover Page"),
-        verify=("Cover Page", "Main Petition"),
-    )
-    assert catalog.extract_field_sources["cause_title"] == FieldSources(
-        fill=("Cover Page", "Main Petition"),
-        verify=("Main Petition",),
-    )
+    opening = FieldSources(fill=("Opening pages",), verify=("Opening pages",))
+    assert catalog.extract_field_sources["petitioners"] == opening
+    assert catalog.extract_field_sources["respondents"] == opening
+    assert catalog.extract_field_sources["court"] == opening
+    assert catalog.extract_field_sources["petition_type"] == opening
+    assert catalog.extract_field_sources["cause_title"] == opening
     assert catalog.extract_field_sources["relief_sort"] == FieldSources(
-        fill=("Main Petition",),
+        fill=("Opening pages",),
     )
     assert catalog.extract_field_sources["petition_date"] == FieldSources(
-        fill=("Main Petition",),
+        fill=("Opening pages",),
     )
     assert catalog.extract_field_sources["advocates_on_record"] == FieldSources(
-        fill=(
-            "Vakalatnama",
-            "Memo of Appearance",
-            "Main Petition",
-            "Listing Proforma",
-            "AOR's Certificate",
-            "Advocate's Checklist",
-        ),
+        fill=("Opening pages", "Closing pages"),
     )
     assert catalog.extract_field_sources["impugned_orders"] == FieldSources(
-        fill=(
-            "Impugned Order",
-            "Main Petition",
-            "Cover Page",
-            "AOR's Certificate",
-            "Affidavit",
-        ),
+        fill=("Opening pages",),
     )
     assert "applications" not in catalog.extract_field_sources
     assert "classification" not in catalog.extract_field_sources
@@ -779,17 +726,7 @@ def test_party_fields_use_listing_proforma_as_ocr_fallback() -> None:
 
 def test_extract_source_parts_include_petition_and_index() -> None:
     parts = extract_source_parts(type_catalog("SLP_CIVIL"))
-    assert parts == {
-        "Cover Page",
-        "Main Petition",
-        "Impugned Order",
-        "Vakalatnama",
-        "AOR's Certificate",
-        "Affidavit",
-        "Listing Proforma",
-        "Advocate's Checklist",
-        "Memo of Appearance",
-    }
+    assert parts == {"Opening pages", "Closing pages"}
     assert "Memo of Parties" not in parts
     assert "Office Report on Limitation" not in parts
     assert "Undefined" not in parts
@@ -901,14 +838,9 @@ def test_inject_where_to_look_falls_back_to_petition_last_page_for_aor() -> None
         "Fill only from Vakalatnama, Memo of Appearance, Main Petition, Listing Proforma, AOR's Certificate, Advocate's Checklist"
         in text
     )
-    assert "If Vakalatnama is not in this pack or prints no AOR" in text
-    assert "Memo of Appearance footer" in text
-    assert "last page of the Main Petition" in text
-    assert "Do not use Main Petition opening or party-list pages" in text
-    assert "last page of Listing Proforma / Proforma for First Listing" in text
+    assert "may be on any opening page or on the closing pages" in text
     assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in text
     assert "Advocate's Checklist" in text
-    assert "Never override Vakalatnama" in text
 
 
 def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
@@ -946,7 +878,7 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
     assert "AOR's Certificate, and Affidavit" in impugned
 
 
-def test_extract_system_prompt_forbids_vakalatnama_for_parties() -> None:
+def test_extract_system_prompt_searches_the_opening_window() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
     assert (
         "petitioners: fill Main Petition, Cover Page, Listing Proforma; verify "
