@@ -10,6 +10,7 @@ If ``JUBEEX_API_KEY`` is set, protected routes require
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -81,6 +82,7 @@ class DocumentIn(BaseModel):
     file_hash: str | None = None
     filename: str | None = None
     file_url: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
     @field_validator(
         "name",
@@ -447,6 +449,7 @@ class JobRecordOut(BaseModel):
     created_at: str
     updated_at: str | None = None
     completed_at: str | None = None
+    callback_delivered: bool = False
 
 
 class JobState:
@@ -480,6 +483,7 @@ class JobState:
         # Webhook event family. /index runs process_file (vector + nested
         # defects) but the JubeeX backend stores it on scrutiny_jobs.
         self.callback_kind: JobKind = kind
+        self.callback_delivered = False
 
     def as_out(self) -> JobRecordOut:
         has_duplicates = None
@@ -502,10 +506,11 @@ class JobState:
             created_at=self.created_at,
             updated_at=self.updated_at,
             completed_at=self.completed_at,
+            callback_delivered=self.callback_delivered,
         )
 
-    def persist(self, *, force: bool = False) -> None:
-        save_job_status(self.as_out().model_dump(mode="json"), force=force)
+    def persist(self, *, force: bool = False) -> bool:
+        return save_job_status(self.as_out().model_dump(mode="json"), force=force)
 
     def bump_progress(
         self,
@@ -533,6 +538,16 @@ class JobState:
 
 
 JOBS: dict[str, JobState] = {}
+
+
+def _persist_accepted_job(job: JobState) -> None:
+    if job.persist(force=True) or not sqs_enabled():
+        return
+    JOBS.pop(job.job_id, None)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Job status storage is unavailable; the job was not queued",
+    )
 
 
 def _apply_event_progress(job: JobState, event: Any) -> None:
@@ -625,15 +640,23 @@ def _scrutiny_after_index_error(exc: BaseException) -> ScrutinyAfterIndexError |
     return None
 
 
-async def _run_workflow(job: JobState, handler: Any) -> None:
+async def _run_workflow(
+    job: JobState,
+    handler: Any,
+    *,
+    require_durable_status: bool = False,
+    max_runtime_seconds: int | None = None,
+) -> bool:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     job.bump_progress(5, stage="starting", message="Workflow started", force=True)
+    cancelled = False
     try:
-        stream = getattr(handler, "stream_events", None)
-        if callable(stream):
-            async for event in stream():
-                _apply_event_progress(job, event)
-        result = await handler
+        async with asyncio.timeout(max_runtime_seconds):
+            stream = getattr(handler, "stream_events", None)
+            if callable(stream):
+                async for event in stream():
+                    _apply_event_progress(job, event)
+            result = await handler
         payload = _serialize_result(result)
         artifacts = recorded_artifacts(job.job_id)
         if artifacts:
@@ -644,6 +667,18 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.progress = 100
         job.stage = "completed"
         job.stage_message = "Job completed"
+    except TimeoutError:
+        logger.error(
+            "Job %s exceeded the %ss workflow deadline",
+            job.job_id,
+            max_runtime_seconds,
+        )
+        job.status = "failed"
+        job.error = (
+            f"Workflow exceeded its {max_runtime_seconds}s deadline; retry the job"
+        )
+        job.stage = "failed"
+        job.stage_message = job.error[:240]
     except Exception as exc:
         nested = _scrutiny_after_index_error(exc)
         if nested is not None:
@@ -661,28 +696,46 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
             job.error = str(exc)
         job.stage = "failed"
         job.stage_message = (job.error or "Job failed")[:240]
+    except asyncio.CancelledError:
+        cancelled = True
+        job.stage = "retrying"
+        job.stage_message = "Worker stopped before completion; awaiting retry"
+        raise
     finally:
-        job.completed_at = datetime.now(UTC).isoformat()
-        job.updated_at = job.completed_at
+        job.updated_at = datetime.now(UTC).isoformat()
+        if not cancelled:
+            job.completed_at = job.updated_at
         artifacts = recorded_artifacts(job.job_id)
         if job.result is None and artifacts:
             job.result = {"artifacts": artifacts}
         elif isinstance(job.result, dict) and artifacts:
             job.result["artifacts"] = artifacts
-        job.persist(force=True)
-        await notify_job_finished(
-            callback_url=job.callback_url,
-            job_id=job.job_id,
-            kind=job.callback_kind or job.kind,
-            status=job.status,
-            agent_data_id=job.agent_data_id,
-            organization_id=job.organization_id,
-            workspace_id=job.workspace_id,
-            error=job.error,
-            result=job.result,
-            artifacts=artifacts,
-            event_id=job.event_id,
-        )
+        if cancelled:
+            job.persist(force=True)
+        else:
+            persisted = job.persist(force=True)
+            if persisted or not require_durable_status:
+                job.callback_delivered = bool(
+                    await notify_job_finished(
+                        callback_url=job.callback_url,
+                        job_id=job.job_id,
+                        kind=job.callback_kind or job.kind,
+                        status=job.status,
+                        agent_data_id=job.agent_data_id,
+                        organization_id=job.organization_id,
+                        workspace_id=job.workspace_id,
+                        error=job.error,
+                        result=job.result,
+                        artifacts=artifacts,
+                        event_id=job.event_id,
+                    )
+                )
+                persisted = job.persist(force=True) and persisted
+            if require_durable_status and not persisted:
+                raise RuntimeError(
+                    f"Could not persist terminal status for {job.job_id}"
+                )
+    return job.callback_delivered
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
@@ -727,7 +780,7 @@ def _accept_process_file(
     if callback_kind:
         job.callback_kind = callback_kind
     JOBS[job_id] = job
-    job.persist(force=True)
+    _persist_accepted_job(job)
     if sqs_enabled():
         enqueue_job(
             {
@@ -1015,7 +1068,8 @@ async def _require_scrutiny_before_annexure_index(agent_data_id: str) -> None:
     """Annexure descriptions run only after defects have been saved."""
     item = await _load_filing_item(agent_data_id)
     data = _as_data_dict(getattr(item, "data", None))
-    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    raw_metadata = data.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     if not metadata.get("scrutiny_report"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1099,7 +1153,7 @@ def _accept_scrutiny(
     job.callback_url = callback_url
     job.callback_kind = "scrutiny"
     JOBS[job_id] = job
-    job.persist(force=True)
+    _persist_accepted_job(job)
     if sqs_enabled():
         enqueue_job(
             {
@@ -1233,7 +1287,7 @@ def _accept_annexure_index(
     job = JobState(job_id=job_id, kind="annexure_index")
     job.callback_kind = "annexure_index"
     JOBS[job_id] = job
-    job.persist(force=True)
+    _persist_accepted_job(job)
     if sqs_enabled():
         enqueue_job(
             {

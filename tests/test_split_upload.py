@@ -58,6 +58,7 @@ from extraction_review.process_split_files import (
     SplitFilesState,
     SplitPartEvent,
     _ingest_labeled_parts,
+    _original_page_for_local,
     extract_input_file_id,
     fast_parse_tier,
     ingest_concurrency,
@@ -116,6 +117,15 @@ def _required_parts(
     if extra:
         parts.extend(extra)
     return parts
+
+
+def test_split_local_page_maps_back_to_compiled_page_span() -> None:
+    spans = [{"start": 2, "end": 3}, {"start": 105, "end": 106}]
+    assert _original_page_for_local(spans, 1) == 2
+    assert _original_page_for_local(spans, 2) == 3
+    assert _original_page_for_local(spans, 3) == 105
+    assert _original_page_for_local(spans, 4) == 106
+    assert _original_page_for_local(spans, 5) is None
 
 
 def test_config_json_has_versioning() -> None:
@@ -178,7 +188,10 @@ def test_config_json_has_versioning() -> None:
     assert "inside an ongoing Synopsis" in annexure_rule
     assert "A label or Index mention alone is insufficient" in annexure_rule
     assert "if the label is absent/unreadable" in annexure_rule
-    assert "matched outer Index range and the actual indexed source opening" in annexure_rule
+    assert (
+        "matched outer Index range and the actual indexed source opening"
+        in annexure_rule
+    )
     strategy = split_sent.get("splitting_strategy") or {}
     instructions = strategy.get("custom_instructions") or ""
     assert strategy.get("allow_uncategorized") == "include"
@@ -867,14 +880,48 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
 
 def test_extract_system_prompt_searches_the_opening_window() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
-    assert "before it has been split" in prompt
-    assert "first 30 pages" in prompt
-    assert "petitioners and respondents" in prompt
-    assert "& Anr." in prompt
-    assert "petition_date" in prompt
-    assert "Date Drafted wins" in prompt
-    assert "Do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
-    assert "fill Main Petition" not in prompt
+    assert (
+        "petitioners: fill Main Petition, Cover Page, Listing Proforma; verify "
+        "Main Petition, Cover Page, Listing Proforma" in prompt
+    )
+    assert "cause_title: fill Cover Page, Main Petition; verify Main Petition" in prompt
+    assert (
+        "petition_type: fill Main Petition, Cover Page; verify Cover Page, Main Petition"
+        in prompt
+    )
+    assert "Never use [And ors.] or other square brackets" in prompt
+    assert "Copy printed text only" in prompt
+    assert "write N/A" in prompt
+    assert "inconsistencies: one item per spelling" in prompt
+    assert (
+        "Always keep the Cause Title main petitioner/respondent letter mismatch"
+        in prompt
+    )
+    assert "Cover Page has only one name per side" in prompt
+    assert "Main Petition starting pages" in prompt
+    assert (
+        "Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources"
+        in prompt
+    )
+    assert (
+        "advocates_on_record: fill Vakalatnama, Memo of Appearance, Main Petition, Listing Proforma, AOR's Certificate, Advocate's Checklist"
+        in prompt
+    )
+    assert (
+        "If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition"
+        in prompt
+    )
+    assert (
+        "impugned_orders: fill Impugned Order, Main Petition, Cover Page, AOR's Certificate, Affidavit"
+        in prompt
+    )
+    assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
+    assert "printed AOR chamber/office address mismatches" in prompt
+    assert "petition_date: fill Main Petition" in prompt
+    assert (
+        "If both Date Drafted and Date Filed on are printed, use only Date Drafted"
+        in prompt
+    )
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -1372,14 +1419,15 @@ def test_petition_date_prefers_date_drafted_over_date_filed_on() -> None:
     )
     assert petition_date_from_closing(closing) == "10th March, 2024"
     assert (
-        clean_petition_date(
-            "Date Drafted: 10.03.2024\nDate Filed on: 15.03.2024"
-        )
+        clean_petition_date("Date Drafted: 10.03.2024\nDate Filed on: 15.03.2024")
         == "10.03.2024"
     )
-    assert petition_date_from_closing(
-        "MAIN PRAYER:\n\nDate Filed on: 15.03.2024\nAdvocate for the Petitioner"
-    ) == "15.03.2024"
+    assert (
+        petition_date_from_closing(
+            "MAIN PRAYER:\n\nDate Filed on: 15.03.2024\nAdvocate for the Petitioner"
+        )
+        == "15.03.2024"
+    )
     assert (
         petition_date_from_closing(
             "MAIN PRAYER:\nDate Drafted\n10.03.2024\nDate Filed on\n15.03.2024\n"
@@ -2567,9 +2615,7 @@ def test_numbered_annexure_drops_later_disconnected_islands() -> None:
     assert 102 not in collapsed
     assert 104 not in collapsed
     assert format_page_span([29, 30]) == "pp. 29–30"
-    assert format_page_span([29, 30, 100, 101, 102, 104]) == (
-        "pp. 29–30, 100–102, 104"
-    )
+    assert format_page_span([29, 30, 100, 101, 102, 104]) == ("pp. 29–30, 100–102, 104")
     assert page_ranges([29, 30, 100, 101, 102, 104]) == [
         {"start": 29, "end": 30},
         {"start": 100, "end": 102},
@@ -2865,7 +2911,14 @@ async def test_ingest_labeled_parts_runs_in_parallel(
     in_flight = 0
     peak = 0
 
-    async def _fake_ingest(_client, url, *, filename=None, external_file_id=None):
+    async def _fake_ingest(
+        _client,
+        url,
+        *,
+        filename=None,
+        external_file_id=None,
+        **_kwargs,
+    ):
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
@@ -2995,12 +3048,13 @@ def test_parse_artifact_round_trip_merges_new_slots() -> None:
         parse_job_ids={"petition": "job-p", "cover_page": "job-c"},
         layouts_by_slot={"cover_page": {1: {"words": [{"t": "IN"}]}}},
     )
-    parsed, order, pages, jobs, layouts = load_parse_artifact(dumped)
+    parsed, order, pages, jobs, layouts, structures = load_parse_artifact(dumped)
     assert parsed == ["petition", "cover_page"]
     assert order == ["petition", "cover_page"]
     assert pages["petition"][1] == "p1"
     assert jobs["cover_page"] == "job-c"
     assert layouts["cover_page"][1]["words"][0]["t"] == "IN"
+    assert structures["cover_page"] == {}
     merged = dump_parse_artifact(
         parsed_slots=["petition", "cover_page", "index"],
         document_order=["petition", "index", "cover_page"],
@@ -3011,7 +3065,9 @@ def test_parse_artifact_round_trip_merges_new_slots() -> None:
         parse_job_ids={**jobs, "index": "job-i"},
         layouts_by_slot=layouts,
     )
-    _parsed, new_order, merged_pages, _jobs, _layouts = load_parse_artifact(merged)
+    _parsed, new_order, merged_pages, _jobs, _layouts, _structures = (
+        load_parse_artifact(merged)
+    )
     assert new_order == ["petition", "index", "cover_page"]
     assert merged_pages["index"][1] == "index page"
     markdown, parts = stitch_parsed_parts_in_order(
@@ -3192,8 +3248,11 @@ def test_slice_bundle_pdf_numbered_annexures_no_duplicates() -> None:
 
     assert len(slices) == 3
     assert [s.slot_id for s in slices] == ["petition", "annexure_p1", "annexure_p2"]
-    assert [s.label for s in slices] == ["Main Petition", "Annexure P-1", "Annexure P-2"]
+    assert [s.label for s in slices] == [
+        "Main Petition",
+        "Annexure P-1",
+        "Annexure P-2",
+    ]
     assert all(s.duplicate is False for s in slices)
     assert [s.start_page for s in slices] == [1, 3, 5]
     assert [s.end_page for s in slices] == [2, 4, 6]
-

@@ -51,6 +51,7 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_CONCURRENCY = 4
+DEFAULT_VISION_RENDER_CONCURRENCY = 1
 DEFAULT_VISION_MAX_TOKENS = 2800
 DEFAULT_VISION_REQUEST_TIMEOUT_S = 120.0
 ADVOCATE_LABELS = re.compile(
@@ -834,6 +835,10 @@ async def detect_visual_marks(
 
     dpi = preview_dpi(os.getenv("VISION_PREVIEW_DPI"))
     concurrency = max(1, _int_env("VISION_CONCURRENCY", DEFAULT_VISION_CONCURRENCY))
+    render_concurrency = max(
+        1,
+        _int_env("VISION_RENDER_CONCURRENCY", DEFAULT_VISION_RENDER_CONCURRENCY),
+    )
     timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
     vision_timeout = vision_request_timeout_s()
     references = load_reference_assets()
@@ -888,7 +893,13 @@ async def detect_visual_marks(
                     f"Visual download failed slot={slot}: {exc}",
                 )
 
-        semaphore = asyncio.Semaphore(concurrency)
+        # PyMuPDF performs rendering in native code. Rendering every target in
+        # parallel can crash the whole worker (SIGSEGV) and also keeps every
+        # rendered JPEG resident while the model requests wait. Bound the
+        # complete render-and-analyse operation, and serialize rendering by
+        # default, while still allowing model requests to overlap.
+        request_semaphore = asyncio.Semaphore(concurrency)
+        render_semaphore = asyncio.Semaphore(render_concurrency)
 
         async def run_one(target: VisualPageTarget) -> _PageVisionResult:
             pdf_bytes = pdf_by_slot.get(target.slot_id)
@@ -897,23 +908,27 @@ async def detect_visual_marks(
                     target.slot_id, ("missing_pdf", "PDF not loaded")
                 )
                 return _PageVisionResult(marks=[], reason=reason, detail=detail)
-            try:
-                image = await asyncio.to_thread(
-                    render_page_jpeg, pdf_bytes, target.local_page, dpi=dpi
-                )
-            except (ValueError, OSError, RuntimeError) as exc:
-                logger.warning(
-                    "Could not render page %s (local %s) for vision",
-                    target.page,
-                    target.local_page,
-                    exc_info=True,
-                )
-                return _PageVisionResult(
-                    marks=[],
-                    reason="render_failed",
-                    detail=str(exc)[:300],
-                )
-            async with semaphore:
+            async with request_semaphore:
+                try:
+                    async with render_semaphore:
+                        image = await asyncio.to_thread(
+                            render_page_jpeg,
+                            pdf_bytes,
+                            target.local_page,
+                            dpi=dpi,
+                        )
+                except (ValueError, OSError, RuntimeError) as exc:
+                    logger.warning(
+                        "Could not render page %s (local %s) for vision",
+                        target.page,
+                        target.local_page,
+                        exc_info=True,
+                    )
+                    return _PageVisionResult(
+                        marks=[],
+                        reason="render_failed",
+                        detail=str(exc)[:300],
+                    )
                 try:
                     found, vision_error, usage = await asyncio.wait_for(
                         _analyze_with_fallback(
@@ -935,9 +950,7 @@ async def detect_visual_marks(
                         vision_timeout,
                     )
                     return _PageVisionResult(
-                        marks=[],
-                        reason="vision_timeout",
-                        detail=detail,
+                        marks=[], reason="vision_timeout", detail=detail
                     )
             if vision_error is not None:
                 return _PageVisionResult(

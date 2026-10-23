@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from extraction_review.api import JOBS, app
+from extraction_review.api import JOBS, DocumentIn, app
 from extraction_review.config import JUBEEX_FILING_TYPES, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.process_file import BundlePrepared
 
@@ -53,6 +53,15 @@ def test_health(client: TestClient) -> None:
     response = client.get("/v1/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_document_input_preserves_compiled_page_span() -> None:
+    document = DocumentIn(
+        name="Index.pdf",
+        document_id="document-1",
+        page_span=[{"start": 2, "end": 4}],
+    )
+    assert document.page_span == [{"start": 2, "end": 4}]
 
 
 def test_catalog(client: TestClient) -> None:

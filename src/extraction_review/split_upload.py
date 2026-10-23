@@ -210,6 +210,7 @@ class SplitPartInput:
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 @lru_cache(maxsize=1)
@@ -332,7 +333,9 @@ def _repeatable_ui_slot(
             "repeat_group": "annexures",
             "series": letter,
             "series_label": (
-                "Petitioner" if letter == "P" else ("Respondent" if letter == "R" else letter)
+                "Petitioner"
+                if letter == "P"
+                else ("Respondent" if letter == "R" else letter)
             ),
         }
     return {
@@ -439,9 +442,7 @@ def validate_parts(
     if require_all_slots and missing:
         raise SplitUploadError("Missing required documents: " + ", ".join(missing))
     if not parsed:
-        raise SplitUploadError(
-            "No labeled documents were sliced from the compiled PDF"
-        )
+        raise SplitUploadError("No labeled documents were sliced from the compiled PDF")
     return catalog, parsed
 
 
@@ -492,11 +493,10 @@ def ordered_parts(
 def bundle_file_hash(
     parts: Sequence[SplitPartInput], *, preserve_order: bool = False
 ) -> str:
-    ordered = list(parts) if preserve_order else sorted(parts, key=lambda item: item.slot_id)
-    payload = [
-        [item.slot_id, item.file_hash or item.file_id]
-        for item in ordered
-    ]
+    ordered = (
+        list(parts) if preserve_order else sorted(parts, key=lambda item: item.slot_id)
+    )
+    payload = [[item.slot_id, item.file_hash or item.file_id] for item in ordered]
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -537,8 +537,50 @@ def stitch_parsed_parts(
     pages_by_slot: Mapping[str, Mapping[int, str]],
 ) -> tuple[dict[int, str], dict[int, list[str]]]:
     """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
-    return stitch_parsed_parts_in_order(
-        ordered_parts(catalog, parts), pages_by_slot
+    return stitch_parsed_parts_in_order(ordered_parts(catalog, parts), pages_by_slot)
+
+
+def stitch_structured_pages_in_order(
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]],
+    *,
+    omit_empty: bool = False,
+) -> dict[int, dict[str, Any]]:
+    """Mirror Markdown stitching while preserving local structured page data."""
+
+    stitched: dict[int, dict[str, Any]] = {}
+    next_page = 1
+    for item in parts:
+        local_markdown = pages_by_slot.get(item.slot_id) or {}
+        local_numbers = sorted(int(page) for page in local_markdown)
+        if not local_numbers:
+            if omit_empty:
+                continue
+            next_page += 1
+            continue
+        local_structured = structured_pages_by_slot.get(item.slot_id) or {}
+        for local_page in local_numbers:
+            raw = local_structured.get(local_page)
+            if isinstance(raw, Mapping):
+                page = dict(raw)
+                page["page_number"] = next_page
+                page["global_page"] = next_page
+                page["local_page"] = local_page
+                page["slot_id"] = item.slot_id
+                stitched[next_page] = page
+            next_page += 1
+    return stitched
+
+
+def stitch_structured_pages(
+    catalog: UploadTypeCatalog,
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]],
+) -> dict[int, dict[str, Any]]:
+    return stitch_structured_pages_in_order(
+        ordered_parts(catalog, parts), pages_by_slot, structured_pages_by_slot
     )
 
 
@@ -574,9 +616,7 @@ def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
     pack. They are still parsed for scrutiny.
     """
     names = {
-        part
-        for spec in catalog.extract_field_sources.values()
-        for part in spec.fill
+        part for spec in catalog.extract_field_sources.values() for part in spec.fill
     }
     return names - {part for part in names if _excluded_from_extract_pack(part)}
 
@@ -640,14 +680,10 @@ PRECISE_PARSE_SLOT_IDS = frozenset(
         "office_report_on_limitation",
     }
 )
-FAST_PARSE_SLOT_IDS = frozenset(
-    {"undefined", "annexures", "applications", "appendix"}
-)
+FAST_PARSE_SLOT_IDS = frozenset({"undefined", "annexures", "applications", "appendix"})
 
 
-def slot_is_extract_source(
-    part: SplitPartInput, catalog: UploadTypeCatalog
-) -> bool:
+def slot_is_extract_source(part: SplitPartInput, catalog: UploadTypeCatalog) -> bool:
     """True when this upload slot is needed to fill LlamaExtract fields."""
     sources = extract_source_parts(catalog)
     names = [name for name in part.document_parts if name]
@@ -700,10 +736,13 @@ def dump_parse_artifact(
     pages_by_slot: Mapping[str, Mapping[int, str]],
     parse_job_ids: Mapping[str, str] | None = None,
     layouts_by_slot: Mapping[str, Mapping[int, Any]] | None = None,
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]]
+    | None = None,
 ) -> dict[str, Any]:
     """Per-slot markdown JSON so a later job can re-stitch in a new send order."""
     job_ids = dict(parse_job_ids or {})
     layouts = layouts_by_slot or {}
+    structured = structured_pages_by_slot or {}
     slot_ids = list(document_order)
     for slot_id in pages_by_slot:
         if slot_id not in slot_ids:
@@ -712,14 +751,12 @@ def dump_parse_artifact(
     for slot_id in slot_ids:
         pages = pages_by_slot.get(slot_id) or {}
         layout = layouts.get(slot_id) or {}
+        structured_pages = structured.get(slot_id) or {}
         slots[slot_id] = {
             "pages": {
                 str(page): str(text or "")
                 for page, text in sorted(
-                    (
-                        (int(number), value)
-                        for number, value in pages.items()
-                    ),
+                    ((int(number), value) for number, value in pages.items()),
                     key=lambda item: item[0],
                 )
             },
@@ -728,6 +765,14 @@ def dump_parse_artifact(
                 str(page): payload
                 for page, payload in sorted(
                     _int_keyed_mapping(layout).items(),
+                    key=lambda item: item[0],
+                )
+                if isinstance(payload, Mapping)
+            },
+            "structured_pages": {
+                str(page): dict(payload)
+                for page, payload in sorted(
+                    _int_keyed_mapping(structured_pages).items(),
                     key=lambda item: item[0],
                 )
                 if isinstance(payload, Mapping)
@@ -748,8 +793,9 @@ def load_parse_artifact(
     dict[str, dict[int, str]],
     dict[str, str],
     dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
 ]:
-    """Restore per-slot markdown, parse job ids, and layouts from S3 JSON."""
+    """Restore per-slot Markdown, parse ids, layouts, and structured pages."""
     data = payload if isinstance(payload, Mapping) else {}
     parsed_slots = [
         str(slot).strip()
@@ -761,10 +807,14 @@ def load_parse_artifact(
         for slot in (data.get("document_order") or [])
         if str(slot).strip()
     ]
-    raw_slots = data.get("slots") if isinstance(data.get("slots"), Mapping) else {}
+    raw_slots_value = data.get("slots")
+    raw_slots: Mapping[Any, Any] = (
+        raw_slots_value if isinstance(raw_slots_value, Mapping) else {}
+    )
     pages_by_slot: dict[str, dict[int, str]] = {}
     parse_job_ids: dict[str, str] = {}
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
     for slot_id, raw in raw_slots.items():
         key = str(slot_id).strip()
         if not key or not isinstance(raw, Mapping):
@@ -783,14 +833,27 @@ def load_parse_artifact(
             if isinstance(payload_page, Mapping):
                 layout_pages[page] = dict(payload_page)
         layouts_by_slot[key] = layout_pages
+        structured_raw = raw.get("structured_pages")
+        structured_pages: dict[int, dict[str, Any]] = {}
+        for page, payload_page in _int_keyed_mapping(
+            structured_raw if isinstance(structured_raw, Mapping) else {}
+        ).items():
+            if isinstance(payload_page, Mapping):
+                structured_pages[page] = dict(payload_page)
+        structured_pages_by_slot[key] = structured_pages
     if not parsed_slots:
         parsed_slots = [slot for slot, pages in pages_by_slot.items() if pages]
-    return parsed_slots, document_order, pages_by_slot, parse_job_ids, layouts_by_slot
+    return (
+        parsed_slots,
+        document_order,
+        pages_by_slot,
+        parse_job_ids,
+        layouts_by_slot,
+        structured_pages_by_slot,
+    )
 
 
-def slot_needs_precise_parse(
-    part: SplitPartInput, source_parts: set[str]
-) -> bool:
+def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:
     """True when LlamaParse should keep the extract-quality (agentic) tier."""
     slot = (part.slot_id or "").strip().lower()
     if slot in FAST_PARSE_SLOT_IDS or _ANNEXURE_SLOT_RE.fullmatch(slot):
@@ -976,12 +1039,13 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     ):
         current = notes.get(part) or ""
         if extra.strip() not in current:
-            notes[part] = (current.rstrip() + extra).strip() if current else extra.strip()
+            notes[part] = (
+                (current.rstrip() + extra).strip() if current else extra.strip()
+            )
     for part in ("Memo of Appearance", "Vakalatnama", "AOR's Certificate"):
         if "Do not copy petitioner or respondent names" not in notes[part]:
             notes[part] = (
-                notes[part].rstrip()
-                + " Do not copy petitioner or respondent names."
+                notes[part].rstrip() + " Do not copy petitioner or respondent names."
             )
     cert_note = notes.get("AOR's Certificate") or ""
     if "cause title" not in cert_note.lower():
@@ -1187,8 +1251,8 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
             "Cover Page And Anr/Ors; those extra people are listed on the Main "
             "Petition starting pages, not on the cover shorthand. "
-            "Party-name raw_text must be: Cause Title: \"Name\"; Main Petition: "
-            "\"Name\". Quote the person's name only: no And Anr/Ors, "
+            'Party-name raw_text must be: Cause Title: "Name"; Main Petition: '
+            '"Name". Quote the person\'s name only: no And Anr/Ors, '
             "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
             "AOR's Certificate as party-name sources. "
             "Also record Impugned Order case number, date, or forum mismatches "

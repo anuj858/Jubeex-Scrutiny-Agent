@@ -29,13 +29,21 @@ def test_resolve_callback_url_ignores_loopback_when_env_is_public(monkeypatch) -
     )
 
 
-def test_resolve_callback_url_keeps_public_request(monkeypatch) -> None:
+def test_resolve_callback_url_uses_approved_worker_endpoint(monkeypatch) -> None:
     monkeypatch.setenv(
         "JUBEEX_CALLBACK_URL", "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
     )
     assert (
         resolve_callback_url("https://api.example.com/api/v1/webhooks/ai-agent")
-        == "https://api.example.com/api/v1/webhooks/ai-agent"
+        == "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    )
+
+
+def test_resolve_callback_url_can_opt_in_to_request_override(monkeypatch) -> None:
+    monkeypatch.setenv("JUBEEX_CALLBACK_URL", "https://backend.example/webhook")
+    monkeypatch.setenv("JUBEEX_CALLBACK_ALLOW_REQUEST_OVERRIDE", "true")
+    assert resolve_callback_url("https://other.example/webhook") == (
+        "https://other.example/webhook"
     )
 
 
@@ -83,7 +91,7 @@ async def test_notify_retries_port_8000_after_404(monkeypatch) -> None:
             return FakeResponse(404, url)
 
     monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
-    await notify_job_finished(
+    delivered = await notify_job_finished(
         callback_url="http://3.111.86.61/api/v1/webhooks/ai-agent",
         job_id="job-9",
         kind="scrutiny",
@@ -100,6 +108,37 @@ async def test_notify_retries_port_8000_after_404(monkeypatch) -> None:
         "http://3.111.86.61/api/v1/webhooks/ai-agent",
         "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
     ]
+    assert delivered is True
+
+
+@pytest.mark.asyncio
+async def test_callback_failure_is_reported_for_sqs_retry(monkeypatch) -> None:
+    class FailingClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            raise httpx.ConnectError("backend unavailable")
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FailingClient)
+    delivered = await notify_job_finished(
+        callback_url="https://backend.example/webhook",
+        job_id="job-1",
+        kind="scrutiny",
+        status="failed",
+        agent_data_id=None,
+        organization_id="org-1",
+        error="scrutiny incomplete",
+        result=None,
+        event_id="evt-1",
+    )
+    assert delivered is False
 
 
 @pytest.mark.asyncio

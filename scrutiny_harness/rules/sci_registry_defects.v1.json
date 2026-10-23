@@ -459,7 +459,6 @@
         "A plain or downloaded copy, or a copy marked only “True copy” by the Advocate, is not a certified copy."
       ],
       "inspect_parts": [
-        "Synopsis",
         "Impugned Order"
       ],
       "how_to_cure": [
@@ -1878,8 +1877,8 @@
         "2. Check the Affidavit filed after the Main Petition for its own date, it must be of the same or a subsequent date of the drafting of petition."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Affidavit"
+        "Affidavit",
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Date of the affidavit:",
@@ -1904,8 +1903,8 @@
         "2. Check the body of the Affidavit for the date, number of paragraphs and number of pages of the petition, and cross-check the paragraph and page count against the Main Petition itself."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Affidavit"
+        "Affidavit",
+        "Main Petition"
       ],
       "how_to_cure": [
         "1. Number of paragraphs and pages of the petition:",
@@ -1933,8 +1932,8 @@
         "Use only the Vakalatnama bearing this matter’s Supreme Court cause title, and compare its date of execution with the date of drafting."
       ],
       "inspect_parts": [
-        "Main Petition",
-        "Vakalatnama"
+        "Vakalatnama",
+        "Main Petition"
       ],
       "context_parts": [
         "Memo of Parties",
@@ -2271,7 +2270,7 @@
         "Option for the User to mark this defect as complete if the case file contains no vernacular document, portion or line, or the translation is already filed at another page of the case file."
       ],
       "applicable_rule": "Order VIII, Rule 2",
-      "location_source": "Page 2, Defect List.pdf\nSCR, 2013, Page 13 of the PDF 2024011691-1.pdf",
+      "location_source": "Page 2, Defect List.pdf\nSCR, 2013, Page 13 of the PDF      2024011691-1.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
@@ -4823,7 +4822,7 @@
         "Option for the User to mark this defect as complete if paragraph 1 of the Petition already states the Court or Tribunal, case number, date and nature of the impugned order."
       ],
       "applicable_rule": "Order XXI, Rule 3(1)(a)",
-      "location_source": "SCR, 2013, Page 30 of the PDF 2024011691-1.pdf\nForm No. 28 Form 28 - SLP.pdf",
+      "location_source": "SCR, 2013, Page 30 of the PDF      2024011691-1.pdf\nForm No. 28  Form 28 - SLP.pdf",
       "notes": null,
       "ivan_comment": null,
       "notes_2": null,
@@ -5297,7 +5296,7 @@
         "Option for the User to mark this defect as complete if paragraph 1A of the Petition already contains this statement."
       ],
       "applicable_rule": "Order XXI, Rule 3(5)",
-      "location_source": "SCR, 2013, Page 31 of the PDF 2024011691-1.pdf",
+      "location_source": "SCR, 2013, Page 31 of the PDF       2024011691-1.pdf",
       "notes": null,
       "ivan_comment": "Ivan's comment:- If you are approaching SC directly from Single bench order of the HC then in Para 1A of the SLP, you have to make such declaration - \n\n1) Whether there is division bench appeal against the impugned order and why have petitioner approached the SC directly",
       "notes_2": null,

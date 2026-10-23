@@ -19,6 +19,8 @@ docs/
 !docs/
 docs/*
 !docs/SPLIT_EVALUATION.md
+!docs/DOCUMENT_SPLITTING_RULES.md
+!docs/ecs-worker-operations.md
 .cursor
 AGENTS.md
 # Local secrets

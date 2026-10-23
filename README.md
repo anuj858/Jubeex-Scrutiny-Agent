@@ -1,6 +1,6 @@
 # Jubeex Scrutiny Agent
 
-A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** for page markdown, LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + page chunks in Pinecone.
+A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** structured page items (with Markdown fallback), LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + provenance-rich semantic chunks in Pinecone.
 
 # Running the application
 
@@ -16,6 +16,7 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
    - `PINECONE_EMBED_MODEL` — integrated embed model (default `llama-text-embed-v2`)
    - `PINECONE_TEXT_FIELD` — record text field mapped for embedding (this index uses `normalized_text`)
    - `PINECONE_NAMESPACE` — namespace for filing vectors (default `jubeex-filings`)
+   - `SCRUTINY_RERANK_ENABLED`, `PINECONE_RERANK_MODEL` — defect-aware Pinecone reranking (defaults `true`, `bge-reranker-v2-m3`)
    - `VECTOR_BACKEND` — `pinecone` to index after extract, or anything else to skip
 3. Run the **production API** (what your other application should call):
 
@@ -84,10 +85,20 @@ not yet been benchmarked.
 enable/disable switch.
 
 Registry defect checks use the dedicated `SCRUTINY_MODEL` setting, which
-defaults to Gemini 3.8 Flash (`gemini-3.8-flash` on Vertex AI and
-`google/gemini-3.8-flash` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+defaults to Gemini 4 Argon (`gemini-4-argon` on Vertex AI and
+`google/gemini-4-argon` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
 `OPENROUTER_VISION_MODEL` remain independent, so changing the scrutiny model
 does not silently change extraction or visual-mark detection.
+For ECS queue, lease, callback, and rollout checks see
+[`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
+Argon must be validated for project access, latency, 429 rate, cost, and defect
+accuracy before a production rollout.
+Checked-in release defaults use the enabled production defects from the DB
+catalogue (`SCRUTINY_CATALOGUE_SOURCE=db`, `SCRUTINY_DEFECTS=all`). The former
+11-code JSON subset is only an explicit test override. SQS workers impose a
+configurable 90-minute workflow deadline by default so a hung job fails with
+a terminal callback rather than remaining in Review indefinitely. This does
+not replace live queue, Vertex-capacity, and backend acceptance testing.
 
 `SPLIT_OUTPUT_DOCUMENTS` controls which sliced PDFs are emitted, without
 changing extraction, classification, reconciliation, or page-level auditing.

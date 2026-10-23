@@ -73,6 +73,7 @@ from .llama_usage import (
 )
 from .logging_utils import safe_url_for_log
 from .s3_artifacts import STEP_SPLIT, upload_step_json
+from .source_url import renew_workspace_s3_url
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
@@ -321,7 +322,10 @@ def front_extract_opening_pages(total: int) -> int:
     30 pages or fewer is read in full. A longer file is read from its first
     30 pages. The last 5 pages are still attached for the closing block.
     """
-    return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
+    if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
+        return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
+    grown = math.ceil(0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total))
+    return min(FRONT_EXTRACT_OPENING_CAP, total, grown)
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
@@ -383,6 +387,8 @@ def first_pages_pdf(
             sliced.close()
     finally:
         source.close()
+
+
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
 FULL_JOB_TYPES = (
     frozenset(
@@ -462,6 +468,7 @@ class FilingPartIn(BaseModel):
     )
     file_id: str | None = None
     file_hash: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
     @field_validator(
         "slot_id",
@@ -977,9 +984,7 @@ class FileEvent(StartEvent):
         mode = intake_mode(self)
         if mode == "extract_front":
             if len(self.documents) != 1:
-                raise ValueError(
-                    "documents[] must contain the one compiled PDF"
-                )
+                raise ValueError("documents[] must contain the one compiled PDF")
             slot_mode = "full"
         elif mode == "verify":
             slot_mode = "split"
@@ -2040,9 +2045,7 @@ def _document_first_page_ownership(
             and follows_previous
             and previous_category
             and family_split_name(previous_category) != ANNEXURE_FAMILY
-            and embedded_annexure_on_continuation(
-                (page_texts or {}).get(pages[0], "")
-            )
+            and embedded_annexure_on_continuation((page_texts or {}).get(pages[0], ""))
         ):
             corrected_category = previous_category
             correction_evidence = "continuous_parent_document_body"
@@ -2183,7 +2186,7 @@ def _require_pdf_bytes(data: bytes, url: str) -> None:
         return
     preview = data[:180].decode("utf-8", errors="replace").replace("\n", " ")
     raise ValueError(
-        f"Downloaded body from {url} is not a PDF "
+        f"Downloaded body from {safe_url_for_log(url)} is not a PDF "
         f"({len(data)} bytes, starts with {preview!r})"
     )
 
@@ -2195,6 +2198,8 @@ async def ingest_remote_file(
     filename: str | None = None,
     external_file_id: str | None = None,
     cache_bytes: bool = False,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> tuple[str, str, str]:
     """Download a remote PDF and upload it to LlamaCloud.
 
@@ -2204,14 +2209,31 @@ async def ingest_remote_file(
     if not url:
         raise ValueError("file_url is empty")
 
+    url = await asyncio.to_thread(
+        renew_workspace_s3_url,
+        url,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
     timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
-        response = await http.get(url)
-        response.raise_for_status()
-        data = response.content
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
+            response = await http.get(url)
+            response.raise_for_status()
+            data = response.content
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"PDF download failed with HTTP {exc.response.status_code} "
+            f"from {safe_url_for_log(url)}"
+        ) from None
+    except httpx.RequestError as exc:
+        raise RuntimeError(
+            f"PDF download failed from {safe_url_for_log(url)} ({type(exc).__name__})"
+        ) from None
 
     if not data:
-        raise ValueError(f"Downloaded empty body from {url}")
+        raise ValueError(f"Downloaded empty body from {safe_url_for_log(url)}")
     _require_pdf_bytes(data, url)
 
     name = _upload_filename((filename or "").strip() or _filename_from_url(url))
@@ -2360,6 +2382,8 @@ async def _verify_one_document(
     catalog: Any,
     split_config: SplitConfig,
     semaphore: asyncio.Semaphore,
+    organization_id: str | None,
+    workspace_id: str | None,
 ) -> VerifiedDocument:
     name = item.filename or item.document_id or item.slot_id
     expected = (item.slot_id or "").strip()
@@ -2373,6 +2397,8 @@ async def _verify_one_document(
                     item.file_url or "",
                     filename=filename,
                     external_file_id=item.document_id or item.file_hash,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
                 )
             page_parts, _job_id, _exchange = await _split_page_parts(
                 client,
@@ -2414,6 +2440,8 @@ async def _run_verify_from_file_event(
                 catalog=catalog,
                 split_config=split_config,
                 semaphore=semaphore,
+                organization_id=event.organization_id,
+                workspace_id=event.workspace_id,
             )
             for item in event.documents
         ]
@@ -2491,6 +2519,7 @@ async def _extract_sliced_parts(
     court: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
     reuse_layouts_by_slot: dict[str, dict[str, Any]] | None = None,
+    reuse_structured_pages_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
     front_text_layer: dict[int, str] | None = None,
 ) -> dict[str, Any]:
@@ -2525,6 +2554,7 @@ async def _extract_sliced_parts(
             court=court,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
+            reuse_structured_pages_by_slot=reuse_structured_pages_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
         )
     )
@@ -2557,6 +2587,7 @@ async def _run_split_from_file_event(
     parsed_slots = [slot for slot in (event.parsed_slots or []) if slot]
     reuse_pages: dict[str, dict[str, str]] = {}
     reuse_layouts: dict[str, dict[str, Any]] = {}
+    reuse_structured: dict[str, dict[str, Any]] = {}
     reuse_jobs: dict[str, str] = {}
     agent_data_id = (event.agent_data_id or "").strip() or None
     if agent_data_id:
@@ -2585,7 +2616,10 @@ async def _run_split_from_file_event(
         ):
             dumped = item.data.model_dump(mode="json")
             data = dumped if isinstance(dumped, dict) else {}
-        meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        meta: dict[str, Any] = {}
+        raw_meta = data.get("metadata")
+        if isinstance(raw_meta, dict):
+            meta = raw_meta
         split_files = meta.get("split_files")
         if isinstance(split_files, dict):
             prior_file_ids = {
@@ -2615,9 +2649,14 @@ async def _run_split_from_file_event(
                 if str(slot).strip()
             ]
         artifact = download_json_object(str(meta.get(PARSE_ARTIFACT_KEY_KEY) or ""))
-        _slots, _order, pages_by_slot, job_ids, layouts_by_slot = load_parse_artifact(
-            artifact
-        )
+        (
+            _slots,
+            _order,
+            pages_by_slot,
+            job_ids,
+            layouts_by_slot,
+            structured_by_slot,
+        ) = load_parse_artifact(artifact)
         reuse_pages = {
             slot: {str(page): text for page, text in pages.items()}
             for slot, pages in pages_by_slot.items()
@@ -2627,6 +2666,10 @@ async def _run_split_from_file_event(
             for slot, layout in layouts_by_slot.items()
         }
         reuse_jobs = dict(job_ids)
+        reuse_structured = {
+            slot: {str(page): payload for page, payload in pages.items()}
+            for slot, pages in structured_by_slot.items()
+        }
         if not parsed_slots:
             parsed_slots = list(_slots)
 
@@ -2671,6 +2714,8 @@ async def _run_split_from_file_event(
                 item.file_url or "",
                 filename=filename,
                 external_file_id=item.document_id or file_hash,
+                organization_id=event.organization_id,
+                workspace_id=event.workspace_id,
             )
             file_hash = verified_content_hash(file_hash, digest)
         split_parts.append(
@@ -2681,6 +2726,7 @@ async def _run_split_from_file_event(
                 file_hash=file_hash,
                 file_url=item.file_url,
                 document_id=item.document_id,
+                page_span=item.page_span,
             )
         )
         source_docs.append(
@@ -2754,6 +2800,7 @@ async def _run_split_from_file_event(
         court=event.court,
         reuse_pages_by_slot=reuse_pages if index_only else {},
         reuse_layouts_by_slot=reuse_layouts if index_only else {},
+        reuse_structured_pages_by_slot=reuse_structured if index_only else {},
         reuse_parse_job_ids=reuse_jobs if index_only else {},
     )
     agent_data_id, report = _split_result_fields(nested_payload)
@@ -2808,6 +2855,8 @@ async def _run_extract_front(
             )
             or file_hash,
             cache_bytes=True,
+            organization_id=event.organization_id,
+            workspace_id=event.workspace_id,
         )
         file_hash = verified_content_hash(file_hash, content_hash)
     if not file_id:
@@ -2954,6 +3003,8 @@ class ProcessFileWorkflow(Workflow):
                     filename=filename,
                     external_file_id=compiled_external or file_hash_hint,
                     cache_bytes=True,
+                    organization_id=event.organization_id,
+                    workspace_id=event.workspace_id,
                 )
             except Exception as exc:
                 logger.exception(

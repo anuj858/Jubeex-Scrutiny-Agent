@@ -18,16 +18,23 @@ from extraction_review.document_parts import (
     select_chunks_for_defect,
 )
 from extraction_review.process_file import _split_page_parts
-from extraction_review.scrutiny.prompts import compose_reasoning, filing_location
+from extraction_review.scrutiny.prompts import (
+    fallback_reasoning,
+    filing_location,
+    validated_reasoning,
+)
 from extraction_review.scrutiny.schema import (
     BoundingBox,
     DefectResponse,
     EvidenceRef,
     FindingEvidence,
+    _display_evidence_quote,
     _one_published_evidence,
+    apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
     apply_manifest_absence_policy,
+    apply_presence_only_policy,
     apply_status_policy,
     apply_visual_conflict_policy,
     manifest_absence_proven,
@@ -730,7 +737,85 @@ def test_positive_visual_mark_routes_ocr_absence_to_review() -> None:
     assert "05 JUN 2026" in gated.gap_detail
 
 
-def test_compose_reasoning_names_the_missing_element_and_its_page() -> None:
+def test_d81_legibility_is_not_published_without_page_quality_evidence() -> None:
+    defect = SimpleNamespace(check_id="D-81")
+    response = DefectResponse(
+        check_id="D-81",
+        status="defect_found",
+        confidence=0.95,
+        summary="Annexure P-5 is dim.",
+        reasoning="The OCR text appears incomplete.",
+        evidence=[EvidenceRef(page=84, quote="Annexure P-5")],
+    )
+
+    gated = apply_evidence_capability_policy(defect, response, {"marks": []})
+
+    assert gated.status == "needs_review"
+    assert gated.confidence < 0.8
+    assert gated.evidence == []
+    assert "no page-quality assessment" in gated.reasoning
+
+
+def test_d93_present_party_section_cannot_be_reported_as_not_filed() -> None:
+    defect = SimpleNamespace(check_id="D-93")
+    response = DefectResponse(
+        check_id="D-93",
+        status="defect_found",
+        confidence=0.95,
+        summary="Memo of parties not filed.",
+        reasoning="The petitioner address is incomplete.",
+        evidence=[EvidenceRef(page=3, quote="Col. Pawan Kumar ... Petitioner")],
+    )
+    chunks = [
+        {
+            "chunk_kind": "page",
+            "page": 3,
+            "document_part": "Main Petition",
+            "text": "IN THE MATTER OF Col. Pawan Kumar ... Petitioner Versus State ... Respondent",
+        }
+    ]
+
+    decided = apply_presence_only_policy(defect, response, chunks, None)
+
+    assert decided.status == "compliant"
+    assert decided.confidence == 0.95
+    assert "assessed separately under D-63" in decided.reasoning
+
+
+def test_defect_reasoning_removes_internal_chunk_and_uses_document_page() -> None:
+    defect = SimpleNamespace(
+        defect="Paper Book does not have one common index or proper pagination",
+        requirement="Paper Book must have one common index with proper pagination",
+        location_source="",
+    )
+
+    reasoning = validated_reasoning(
+        defect,
+        (
+            "The Index was inspected at pages 92–94 (chunk c1). "
+            "Under item 7, the pagination field for Note Sheet is blank"
+        ),
+        "defect_found",
+        evidence_pages=[1],
+        document_parts=["Index"],
+    )
+
+    assert "chunk c1" not in reasoning
+    assert "92" not in reasoning
+    assert reasoning.startswith("Observed:")
+    assert "Required:" in reasoning
+    assert "Conclusion:" in reasoning
+    assert "Index, page 1" in reasoning
+
+
+def test_published_quote_removes_overlap_and_html_noise() -> None:
+    quote = (
+        "Note Sheet | | --- from page 93 --- <table><tr><td>APPENDIX</td></tr></table>"
+    )
+    assert _display_evidence_quote(quote) == "Note Sheet"
+
+
+def test_fallback_reasoning_explains_observed_required_and_conclusion() -> None:
     defect = SimpleNamespace(
         requirement="The AOR code must be stated in the AOR Certificate",
         applicable_rule="",

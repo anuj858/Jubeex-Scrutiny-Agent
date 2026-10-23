@@ -68,6 +68,40 @@ def test_existing_index_contract_must_match_model_and_text_field(
         store.validate_index_contract(invalid)
 
 
+def test_cold_ensure_index_can_initialize_client_without_lock_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = object()
+
+    class Client:
+        def has_index(self, name: str) -> bool:
+            assert name == store.pinecone_index_name
+            return True
+
+        def describe_index(self, name: str) -> dict[str, object]:
+            assert name == store.pinecone_index_name
+            return {
+                "embed": {
+                    "model": "llama-text-embed-v2",
+                    "field_map": {"text": "normalized_text"},
+                }
+            }
+
+        def Index(self, name: str) -> object:
+            assert name == store.pinecone_index_name
+            return marker
+
+    monkeypatch.setattr(store, "pinecone_api_key", "test-key")
+    monkeypatch.setattr(store, "pinecone_embed_model", "llama-text-embed-v2")
+    monkeypatch.setattr(store, "pinecone_text_field", "normalized_text")
+    monkeypatch.setattr(store, "Pinecone", lambda **_kwargs: Client())
+    monkeypatch.setattr(store, "_cached_client", None)
+    monkeypatch.setattr(store, "_cached_index", None)
+    monkeypatch.setattr(store, "_cached_text_field", None)
+
+    assert store.ensure_index() is marker
+
+
 def test_chunking_prefers_paragraph_boundary_and_validates_overlap() -> None:
     text = ("First paragraph sentence. " * 8) + "\n\n" + (
         "Second paragraph sentence. " * 8

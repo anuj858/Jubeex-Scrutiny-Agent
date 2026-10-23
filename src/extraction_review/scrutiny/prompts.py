@@ -246,15 +246,29 @@ def _format_evidence(
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
             part = format_document_parts(chunk.get("document_part"))
-            own = _document_page(chunk, layout)
-            if part and own is not None:
-                place = f"{part}, page {own}"
-            elif part:
-                place = part
-            elif own is not None:
-                place = f"page {own}"
-            else:
-                place = f"Page {page}"
+            loc = f"Page {page}"
+            place = f"{loc} — {part}" if part else loc
+            provenance: list[str] = []
+            original_page = chunk.get("original_page")
+            if original_page not in (None, "", page, str(page)):
+                provenance.append(f"original compiled page {original_page}")
+            printed = chunk.get("printed_page_number")
+            if printed not in (None, "", page, str(page)):
+                provenance.append(f"printed page {printed}")
+            headings = chunk.get("heading_path") or []
+            if isinstance(headings, list) and headings:
+                provenance.append("heading: " + " > ".join(str(v) for v in headings))
+            row_start = chunk.get("table_row_start")
+            row_end = chunk.get("table_row_end")
+            if row_start is not None:
+                rows = (
+                    str(row_start)
+                    if row_end in (None, row_start)
+                    else f"{row_start}-{row_end}"
+                )
+                provenance.append(f"table rows {rows}")
+            if provenance:
+                place += " | " + " | ".join(provenance)
             header = f"[{label} | {place}]" if label else f"[{place}]"
         else:
             header = "[Document excerpt]"
@@ -805,6 +819,79 @@ _WEAK_REASONING = re.compile(
 )
 
 
+def _filing_page_phrase(
+    pages: list[int] | None,
+    evidence_pages: list[int] | None,
+    document_parts: list[str] | None = None,
+) -> str:
+    part = ", ".join(document_parts or [])
+    cited = [p for p in (evidence_pages or []) if p is not None]
+    if cited:
+        unique = sorted(set(cited))
+        prefix = f"{part}, " if part else ""
+        if len(unique) == 1:
+            return f" See {prefix}page {unique[0]}."
+        return f" See {prefix}pages {', '.join(str(p) for p in unique)}."
+    reviewed = [p for p in (pages or []) if p is not None]
+    if reviewed:
+        unique = sorted(set(reviewed))
+        shown = unique[:8]
+        extra = "" if len(unique) <= 8 else ", …"
+        label = "pages" if len(shown) > 1 else "page"
+        return (
+            f" Page missing on the citation. "
+            f"Excerpts were reviewed on {label} "
+            f"{', '.join(str(p) for p in shown)}{extra}."
+        )
+    return " Page missing — no page was identified in the retrieved excerpts."
+
+
+def fallback_reasoning(
+    defect: Defect,
+    status: str,
+    *,
+    pages: list[int] | None = None,
+    evidence_pages: list[int] | None = None,
+    evidence_quote: str | None = None,
+    document_parts: list[str] | None = None,
+) -> str:
+    """Plain-language reason tied to this catalogue row when the model copy is unusable."""
+    requirement = _polish_registry_text(defect.requirement)
+    page_bit = _filing_page_phrase(pages, evidence_pages, document_parts)
+    part = ", ".join(document_parts or []) or "the inspected document part"
+    quote = " ".join((evidence_quote or "").split())
+    if len(quote) > 240:
+        quote = quote[:237].rstrip() + "…"
+    observed = (
+        f'Observed in {part}: "{quote}"'
+        if quote
+        else f"Observed in {part}: no conclusive filing-page value was grounded"
+    )
+    if status == "defect_found":
+        return (
+            f"{observed}. Required: {requirement}. "
+            f"Conclusion: the observed filing content does not meet that requirement."
+            f"{page_bit}"
+        )
+    if status == "compliant":
+        return (
+            f"{observed}. Required: {requirement}. "
+            f"Conclusion: the observed filing content meets that requirement.{page_bit}"
+        )
+    if status == "needs_review":
+        return (
+            f"{observed}. Required: {requirement}. Conclusion: the available "
+            f"evidence does not safely prove compliance or a defect, so human review "
+            f"is required.{page_bit}"
+        )
+    if status == "not_applicable":
+        return (
+            f"This check does not apply to this filing. "
+            f"The catalogue test is: {requirement}"
+        )
+    return f"This check could not be completed. The test is: {requirement}{page_bit}"
+
+
 def _strip_rulebook_noise(text: str) -> str:
     cleaned = _SOURCE_ID.sub("the official circular", text or "")
     cleaned = _RULEBOOK_PAGE.sub("", cleaned)
@@ -824,9 +911,7 @@ def _copy_is_weak(text: str, defect: Defect) -> bool:
     topic = _content_tokens(defect.defect) | _content_tokens(defect.requirement)
     words = _content_tokens(text)
     return bool(
-        topic
-        and words
-        and len(topic & words) / min(len(topic), len(words)) < 0.12
+        topic and words and len(topic & words) / min(len(topic), len(words)) < 0.12
     )
 
 
@@ -1220,6 +1305,32 @@ def location_for_finding(
     return filing_location(reviewed_pages=list(wanted))
 
 
+def _check_specific_guidance(defect: Defect) -> str | None:
+    check_id = re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
+    if check_id == "D81":
+        return (
+            "This is a visual-quality check. OCR text, OCR errors, or retrieval "
+            "results cannot prove that a scan is dim, blurred, clipped, or illegible. "
+            "Return defect_found only when supplied visual-quality evidence identifies "
+            "the exact affected document/page and the filing also lacks the required "
+            "certified typed or written companion copy. Otherwise return needs_review."
+        )
+    if check_id == "D86":
+        return (
+            "Identify the exact Index row and the exact missing or inconsistent "
+            "pagination field. Do not merely say that the Index was inspected or that "
+            "some Index pages were unavailable."
+        )
+    if check_id == "D93":
+        return (
+            "This check tests only whether a Memo of Parties is present. Party "
+            "particulars under the Main Petition heading 'IN THE MATTER OF' count as "
+            "the Memo of Parties. Do not report missing or incomplete addresses under "
+            "this check; address completeness is a separate defect."
+        )
+    return None
+
+
 def _format_parent(defect: Defect) -> str | None:
     if not defect.parent_check_id:
         return None
@@ -1288,6 +1399,9 @@ def build_defect_prompt(
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
         sections.extend(["", "## Note for AI", ai_note.strip()])
+    check_guidance = _check_specific_guidance(defect)
+    if check_guidance:
+        sections.extend(["", "## Decision guardrail", check_guidance])
     sections.extend(
         [
             "",

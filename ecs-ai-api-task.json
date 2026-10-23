@@ -49,7 +49,7 @@
         },
         {
           "name": "OPENROUTER_MODEL",
-          "value": "google/gemini-3.8-flash"
+          "value": "google/gemini-4-argon"
         },
         {
           "name": "OPENROUTER_BASE_URL",
@@ -76,8 +76,12 @@
           "value": "all"
         },
         {
+          "name": "SCRUTINY_CATALOGUE_SOURCE",
+          "value": "db"
+        },
+        {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "6"
+          "value": "8"
         },
         {
           "name": "SCRUTINY_TOP_K",
