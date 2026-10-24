@@ -241,6 +241,21 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 
 Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_page_records`, `gather_filing_evidence_pool`).
 
+### Validate Pinecone workspace data
+
+Run the read-only validator with a workspace UUID. It loads Pinecone settings
+from `.env`, scans the configured namespace, and checks tenant isolation,
+required metadata, text content, record IDs, schema versions, generations, and
+duplicate logical chunks. The command never creates, updates, or deletes data.
+
+```bash
+uv run jubeex-validate-pinecone WORKSPACE_UUID
+uv run jubeex-validate-pinecone WORKSPACE_UUID --json
+```
+
+The command exits `0` when no validation errors are found, `1` when data fails
+validation, and `2` when the validation operation itself cannot run.
+
 ### Workflows
 
 | Workflow | Module | Role |

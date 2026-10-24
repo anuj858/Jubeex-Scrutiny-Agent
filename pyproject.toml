@@ -49,6 +49,7 @@ build-backend = "hatchling.build"
 jubeex-api = "extraction_review.api:main"
 jubeex-sqs-worker = "extraction_review.worker:main"
 jubeex-batch-qa = "extraction_review.batch_qa.cli:main"
+jubeex-validate-pinecone = "extraction_review.pinecone_validator:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/extraction_review"]
