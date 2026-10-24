@@ -322,10 +322,7 @@ def front_extract_opening_pages(total: int) -> int:
     30 pages or fewer is read in full. A longer file is read from its first
     30 pages. The last 5 pages are still attached for the closing block.
     """
-    if total <= FRONT_EXTRACT_SMALL_BOOK_PAGES:
-        return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
-    grown = math.ceil(0.20 * math.sqrt(FRONT_EXTRACT_SMALL_BOOK_PAGES * total))
-    return min(FRONT_EXTRACT_OPENING_CAP, total, grown)
+    return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:

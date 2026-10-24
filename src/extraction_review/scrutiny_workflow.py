@@ -30,7 +30,6 @@ from .document_parts import (
     _is_numbered_annexure,
     _requires_annexure_collection_coverage,
     chunks_cover_part,
-    evidence_seeking_queries_for_defect,
     expand_parts_for_retrieval,
     family_split_name,
     filing_type_label,
@@ -60,7 +59,6 @@ from .llm import (
 )
 from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
-from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
     build_defect_prompt,
@@ -82,11 +80,8 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
-    apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
-    apply_manifest_absence_policy,
-    apply_presence_only_policy,
     apply_retrieval_policy,
     apply_status_policy,
     apply_undetermined_policy,
@@ -102,7 +97,6 @@ from .vector_store import (
     gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
-    scrutiny_top_k,
 )
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
@@ -123,15 +117,6 @@ class ScrutinyAfterIndexError(Exception):
     def __init__(self, agent_data_id: str) -> None:
         super().__init__(SCRUTINY_AFTER_INDEX_ERROR)
         self.agent_data_id = agent_data_id
-
-
-def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
-    """Never report provider/check failures as a completed scrutiny run."""
-    failed = sum(bool(finding.error) for finding in findings)
-    if failed:
-        raise RuntimeError(
-            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
-        )
 
 
 class ScrutinyEvent(StartEvent):
@@ -258,15 +243,11 @@ def _sanitize_response(
         )
     response.check_id = defect.check_id
     response = apply_evidence_pages(response, chunks, defect)
-    response = apply_presence_only_policy(defect, response, chunks, layout)
-    if manifest_absence_proven(defect, layout):
-        return apply_manifest_absence_policy(defect, response, layout)
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
     response = apply_grounded_defect_policy(response)
     response = apply_visual_conflict_policy(defect, response, visual_index)
-    response = apply_evidence_capability_policy(defect, response, visual_index)
     return response
 
 
@@ -309,7 +290,6 @@ async def _run_defect(
         ),
         response_model=DefectResponse,
         model=scrutiny_model(),
-        request_label=defect.check_id,
     )
     response = _sanitize_response(defect, raw, chunks, visual_index)
 
@@ -374,50 +354,7 @@ async def _chunks_for_defect(
             defect, [], layout=layout, max_chunks=page_budget
         )
 
-    reranked = await asyncio.to_thread(rerank_chunks_for_defect, pool, defect)
-    selected = select_chunks_for_defect(reranked, defect, max_chunks=page_budget)
-    missing = missing_required_parts(defect, selected)
-    if missing:
-        # One bounded recall pass is allowed when the first semantic search did
-        # not return a required part. It retains every tenant/generation filter
-        # and searches only the missing part labels with a larger top-k.
-        broader_queries = [
-            *evidence_seeking_queries_for_defect(defect),
-            *missing,
-        ]
-        try:
-            broader = await asyncio.to_thread(
-                gather_filing_evidence,
-                broader_queries,
-                file_hash=file_hash,
-                top_k=min(32, max(16, scrutiny_top_k() * 2)),
-                max_chunks=gather_cap,
-                document_parts=expand_parts_for_retrieval(missing),
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                index_generation=index_generation,
-            )
-        except Exception as exc:  # noqa: BLE001 - bounded external search must fail open
-            logger.warning(
-                "[Scrutiny] Broader retrieval failed for %s: %s",
-                defect.check_id,
-                exc,
-            )
-        else:
-            by_id = {
-                str(chunk.get("record_id")): chunk
-                for chunk in [*pool, *broader]
-                if chunk.get("record_id")
-            }
-            combined = list(by_id.values())
-            reranked = await asyncio.to_thread(
-                rerank_chunks_for_defect, combined, defect
-            )
-            selected = select_chunks_for_defect(
-                reranked,
-                defect,
-                max_chunks=page_budget,
-            )
+    selected = select_chunks_for_defect(pool, defect, max_chunks=page_budget)
     return _add_layout_fallback_chunks(
         defect,
         selected,
@@ -979,11 +916,7 @@ class ScrutinyWorkflow(Workflow):
         vector_organization_id = (
             str(
                 vector_meta.get("organization_id")
-                or (
-                    metadata.get("organization_id")
-                    if isinstance(metadata, dict)
-                    else ""
-                )
+                or (metadata.get("organization_id") if isinstance(metadata, dict) else "")
                 or event.organization_id
                 or ""
             ).strip()
@@ -999,19 +932,13 @@ class ScrutinyWorkflow(Workflow):
             or None
         )
         vector_file_hash = str(vector_meta.get("file_hash") or "").strip()
-        if (
-            index_generation
-            and vector_file_hash
-            and vector_file_hash != str(file_hash or "")
-        ):
+        if index_generation and vector_file_hash and vector_file_hash != str(file_hash or ""):
             raise ValueError(
                 "Active Pinecone generation belongs to a different filing hash; reindex "
                 "this workspace before running scrutiny"
             )
         if event.organization_id and vector_organization_id != event.organization_id:
-            raise ValueError(
-                "Active Pinecone generation belongs to another organization"
-            )
+            raise ValueError("Active Pinecone generation belongs to another organization")
         if event.workspace_id and vector_workspace_id != event.workspace_id:
             raise ValueError("Active Pinecone generation belongs to another workspace")
         filing_type = (
@@ -1312,19 +1239,6 @@ class ScrutinyWorkflow(Workflow):
             organization_id=event.organization_id,
             workspace_id=event.workspace_id,
         )
-
-        failed_checks = sum(bool(finding.error) for finding in findings)
-        if failed_checks:
-            ctx.write_event_to_stream(
-                Status(
-                    level="error",
-                    message=(
-                        f"Scrutiny incomplete: {failed_checks} of {planned} "
-                        "checks failed. Partial results were saved; rerun scrutiny."
-                    ),
-                )
-            )
-            require_successful_checks(findings, planned)
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:

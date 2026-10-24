@@ -866,18 +866,6 @@ def _one_published_evidence(
     return [evidence[chosen]]
 
 
-def _display_evidence_quote(value: str) -> str:
-    """Keep the published citation readable without changing box matching."""
-    text = re.split(r"---\s*from\s+page\s+\d+\s*---", value or "", maxsplit=1)[0]
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\|(?:\s*:?-+:?\s*\|)+", " ", text)
-    text = re.sub(r"\s*\|\s*", " · ", text)
-    text = re.sub(r"\s+", " ", text).strip(" ·")
-    if len(text) > 500:
-        text = text[:497].rstrip() + "…"
-    return text
-
-
 def apply_evidence_pages(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
@@ -1035,97 +1023,31 @@ def apply_visual_conflict_policy(
     )
 
 
-def _normalized_check_id(defect: Defect) -> str:
-    return re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
-
-
-def apply_evidence_capability_policy(
+def missing_parts_in_layout(
     defect: Defect,
-    response: DefectResponse,
-    visual_index: dict[str, Any] | None,
-) -> DefectResponse:
-    """Do not publish checks that need visual evidence we do not produce yet."""
-    if _normalized_check_id(defect) != "D81":
-        return response
-    assessments = (
-        visual_index.get("quality_assessments")
-        if isinstance(visual_index, dict)
-        else None
-    )
-    if isinstance(assessments, list) and assessments:
-        return response
-    if response.status not in ("defect_found", "compliant", "needs_review"):
-        return response
-    response = _move_to_review(
-        response,
-        "This check requires page-image evidence identifying the exact dim, blurred, "
-        "clipped, or illegible document page and verification of whether a certified "
-        "typed or written companion copy is present. The current evidence contains "
-        "OCR text and formality-mark detections, but no page-quality assessment, so "
-        "a legibility defect cannot be safely published.",
-    )
-    response.evidence = []
-    return response
-
-
-def _page_text(page: dict[str, Any]) -> str:
-    direct = str(page.get("text") or page.get("markdown") or "").strip()
-    if direct:
-        return direct
-    words = page.get("words")
-    if not isinstance(words, list):
-        return ""
-    return " ".join(
-        str(word.get("t") or word.get("text") or "").strip()
-        for word in words
-        if isinstance(word, dict)
-    ).strip()
-
-
-def _memo_of_parties_present(
-    chunks: list[dict[str, Any]],
     layout: dict[int, dict[str, Any]] | None,
-) -> bool:
-    pages: list[dict[str, Any]] = [
-        page for page in (layout or {}).values() if isinstance(page, dict)
-    ]
-    pages.extend(chunk for chunk in chunks if chunk.get("chunk_kind") != "summary")
-    for page in pages:
+) -> list[str] | None:
+    """Required parts with no classified page in a complete layout.
+
+    None when absence cannot be proved: there is no layout, or any page is
+    unlabelled. An empty list means every required part has a page.
+    """
+    if not layout:
+        return None
+    pages: list[dict[str, Any]] = []
+    for page in layout.values():
+        if not isinstance(page, dict):
+            return None
         names = parts_on_page(page.get("document_part"))
-        if any(name.casefold() == "memo of parties" for name in names):
-            return True
-        if not any(name.casefold() == "main petition" for name in names):
-            continue
-        text = re.sub(r"\s+", " ", _page_text(page)).casefold()
-        if "in the matter of" in text and (
-            "petitioner" in text or "respondent" in text or "appellant" in text
-        ):
-            return True
-    return False
-
-
-def apply_presence_only_policy(
-    defect: Defect,
-    response: DefectResponse,
-    chunks: list[dict[str, Any]],
-    layout: dict[int, dict[str, Any]] | None,
-) -> DefectResponse:
-    """Keep D-93 separate from the address-completeness check in D-63."""
-    if _normalized_check_id(defect) != "D93" or not _memo_of_parties_present(
-        chunks, layout
-    ):
-        return response
-    response.status = "compliant"
-    response.confidence = max(response.confidence, 0.95)
-    response.summary = "The filing contains a Memo of Parties section."
-    response.reasoning = (
-        "Observed: the filing contains party particulars under the 'IN THE MATTER "
-        "OF' section of the Main Petition or in a separately classified Memo of "
-        "Parties. Required: a Memo of Parties must be filed. Conclusion: the "
-        "presence requirement is met; any missing address particulars must be "
-        "assessed separately under D-63."
-    )
-    return response
+        if not names:
+            return None
+        pages.append({"document_part": names, "chunk_kind": "page"})
+    if not pages:
+        return None
+    required = required_parts_for_defect(defect)
+    if not required:
+        return None
+    return [part for part in required if not chunks_cover_part(pages, part)]
 
 
 def manifest_absence_proven(
@@ -1274,15 +1196,11 @@ def build_finding(
 ) -> DefectFinding:
     catalogue = get_catalogue()
     refs = list(response.evidence)
-    if not refs and chunks and response.status in ("defect_found", "compliant"):
+    if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
     evidence = _one_published_evidence(
         attach_evidence_boxes(refs, layout=layout, chunks=chunks)
     )
-    evidence = [
-        ref.model_copy(update={"quote": _display_evidence_quote(ref.quote)})
-        for ref in evidence
-    ]
     evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     reviewed_local = _local_pages(layout, reviewed_global)
