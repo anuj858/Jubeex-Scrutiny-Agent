@@ -35,6 +35,7 @@ DEFAULT_MODEL = "google/gemini-4-argon"
 DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-4-argon"
 DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-4-argon"
 DEFAULT_TIMEOUT_S = 180.0
+DEFAULT_VERTEX_REQUEST_TIMEOUT_S = 900
 # Hard ceiling sent to the model. It is never raised.
 DEFAULT_MAX_TOKENS = 9000
 # The model is told to finish the whole JSON inside this. The gap up to

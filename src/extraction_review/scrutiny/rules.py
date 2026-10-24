@@ -592,7 +592,9 @@ def _load_file_catalogue() -> Catalogue:
 
 
 def get_catalogue() -> Catalogue:
-    source = (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()
+    source = "file" if _use_json_catalogue() else (
+        (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()
+    )
     if _catalogue_cache.value is None or _catalogue_cache.source != source:
         return refresh_catalogue()
     return _catalogue_cache.value
@@ -607,7 +609,18 @@ def _use_json_catalogue() -> bool:
 
 
 def refresh_catalogue() -> Catalogue:
-    """Load the configured catalogue; DB remains the production default."""
+    """Load the configured catalogue. DB remains the production default.
+
+    CATALOGUE_DATABASE_URL=local reads scrutiny_harness/rules/sci_registry_defects.v1.json
+    and does not open a database connection.
+    """
+    if _use_json_catalogue():
+        catalogue = _load_file_catalogue()
+        _catalogue_cache.value = catalogue
+        _catalogue_cache.source = "file"
+        _catalogue_cache.revision = None
+        return catalogue
+
     source = (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower()
     if source == "json":
         catalogue = _load_file_catalogue()
