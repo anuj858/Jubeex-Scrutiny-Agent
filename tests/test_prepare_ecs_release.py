@@ -32,6 +32,7 @@ def test_prepare_release_pins_images_and_full_db_catalogue(tmp_path: Path) -> No
         assert env["SCRUTINY_CATALOGUE_SOURCE"] == "db"
         assert env["SCRUTINY_DEFECTS"] == "all"
         assert env["JUBEEX_CALLBACK_URL"].startswith("https://")
+        assert env["JUBEEX_REMOTE_FILE_HOSTS"].endswith(".amazonaws.com")
         assert container["image"] == (API_IMAGE if "api" in path.name else WORKER_IMAGE)
 
 

@@ -131,6 +131,7 @@ def rerank_chunks_for_defect(
                 documents=documents,
                 top_n=len(documents),
                 return_documents=False,
+                parameters={"truncate": "END"},
             )
     except Exception as exc:  # noqa: BLE001 - external inference must fail open
         logger.warning("[Scrutiny] Rerank failed for %s: %s", defect.check_id, exc)

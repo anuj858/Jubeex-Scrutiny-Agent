@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 
 import jsonschema
 
 import extraction_review.scrutiny.rules as rules_mod
 from extraction_review.document_parts import (
+    application_subtype_id,
+    canonical_document_part_id,
+    distinctive_trigger_phrases,
     evidence_seeking_queries_for_defect,
     evidence_seeking_query_for_defect,
     pinecone_queries_for_defect,
+    retrieval_plan_for_defect,
+    where_to_look_guidance,
 )
 from extraction_review.scrutiny.prompts import (
     _filing_phrase,
@@ -136,9 +142,9 @@ def test_evidence_query_seeks_filing_values_not_negative_defect_wording() -> Non
 
     query = evidence_seeking_query_for_defect(defect)
 
-    assert query.startswith("Find the respondent table")
-    assert "names and descriptions" in query
-    assert "every respondent" in query
+    assert query.startswith("Document part: Main Petition")
+    assert "names, descriptions" in query
+    assert defect.requirement in query
     assert defect.defect not in query
     assert pinecone_queries_for_defect(defect)[0] == query
 
@@ -156,8 +162,89 @@ def test_all_parties_produces_separate_petitioner_and_respondent_queries() -> No
     queries = evidence_seeking_queries_for_defect(defect)
 
     assert len(queries) == 2
-    assert "every respondent" in queries[0]
-    assert "every petitioner or appellant" in queries[1]
+    assert queries[0].startswith("Document part: Main Petition")
+    assert queries[1].startswith("Document part: Memo of Parties")
+    assert all("addresses for every party" in query for query in queries)
+
+
+def test_query_plan_groups_distinctive_triggers_and_drops_generic_terms() -> None:
+    defect = _defect("D-QUERY", "General/Global").model_copy(
+        update={
+            "inspect_parts": ["Impugned Order"],
+            "trigger_words": "DATES; New Delhi; Application; TRUE COPY; Copying Section",
+        }
+    )
+
+    queries = pinecone_queries_for_defect(defect)
+
+    assert len(queries) == 1
+    assert "TRUE COPY" in queries[0]
+    assert "Copying Section" in queries[0]
+    assert "New Delhi" not in queries[0]
+    assert distinctive_trigger_phrases(defect) == ["TRUE COPY", "Copying Section"]
+
+
+def test_long_requirement_is_preserved_without_mid_sentence_clipping() -> None:
+    requirement = (
+        "The application must identify the impugned order, state the complete "
+        "procedural history, reproduce the material operative direction, and "
+        "include the exact date on which the certified copy was supplied to counsel."
+    )
+    defect = _defect("D-LONG", "General/Global").model_copy(
+        update={"requirement": requirement, "inspect_parts": ["Application"]}
+    )
+
+    query = pinecone_queries_for_defect(defect)[0]
+
+    assert requirement in query
+    assert query.endswith(requirement)
+
+
+def test_negative_where_to_look_is_not_promoted_to_positive_target() -> None:
+    defect = _defect("D-NEGATIVE", "General/Global").model_copy(
+        update={
+            "inspect_parts": [],
+            "context_parts": [],
+            "exclude_parts": None,
+            "where_to_look": [
+                "Check the List of Dates & Events, but do not check the Main Petition or Impugned Order."
+            ],
+        }
+    )
+
+    guidance = where_to_look_guidance(defect)
+    plan = retrieval_plan_for_defect(defect)
+
+    assert guidance.include_parts == ("List of Dates & Events",)
+    assert set(guidance.exclude_parts) == {"Main Petition", "Impugned Order"}
+    assert plan.include_parts == ("List of Dates & Events",)
+    assert all(
+        "Document part: Main Petition" not in query.text for query in plan.queries
+    )
+    assert all(
+        "Document part: Impugned Order" not in query.text for query in plan.queries
+    )
+
+
+def test_application_subtype_requires_distinctive_language() -> None:
+    assert application_subtype_id("Application") is None
+    assert (
+        application_subtype_id("APPLICATION FOR EXEMPTION FROM FILING CERTIFIED COPY")
+        == "application_exemption_certified_copy"
+    )
+    assert canonical_document_part_id("Application 3") == "application"
+
+
+def test_catalogue_query_plan_stays_evidence_focused() -> None:
+    catalogue = rules_mod._load_file_catalogue()
+    counts = [
+        len(retrieval_plan_for_defect(defect).queries) for defect in catalogue.defects
+    ]
+
+    assert len(counts) == 323
+    assert statistics.median(counts) <= 2
+    assert sum(count >= 5 for count in counts) <= 2
+    assert max(counts) <= 6  # D-332 genuinely inspects six distinct document parts.
 
 
 def test_catalogue_has_complete_gemini_decision_inputs() -> None:
@@ -210,9 +297,7 @@ def test_writ_pil_with_application_runs_both_special_overlays(monkeypatch) -> No
 
 
 def test_slp_civil_runs_global_family_and_civil_side() -> None:
-    assert categories_for_filing_type("SLP_CIVIL") == frozenset(
-        {"global", "slp_civil"}
-    )
+    assert categories_for_filing_type("SLP_CIVIL") == frozenset({"global", "slp_civil"})
     filing = "slp_civil"
     assert _applies_to_filing(_defect("D100", "General/Global"), filing)
     assert _applies_to_filing(_defect("D101", "Global/General"), filing)
@@ -431,15 +516,11 @@ def test_review_contempt_and_original_suit_aliases() -> None:
     assert categories_for_filing_type("CURATIVE_PETITION_CRIMINAL") == frozenset(
         {"global", "curative_petition", "curative_petition_criminal"}
     )
-    assert _applies_to_filing(
-        _defect("D400", "Civil Appeal"), "civil_appeal"
-    )
+    assert _applies_to_filing(_defect("D400", "Civil Appeal"), "civil_appeal")
     assert _applies_to_filing(
         _defect("D401", "Miscellaneous Application"), "miscellaneous_application"
     )
-    assert _applies_to_filing(
-        _defect("D404", "Appeals"), "civil_appeal"
-    )
+    assert _applies_to_filing(_defect("D404", "Appeals"), "civil_appeal")
     assert not _applies_to_filing(
         _defect("D402", "Interlocutory Application"), "miscellaneous_application"
     )
@@ -476,8 +557,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     catalogue = rules_mod._load_file_catalogue()
     monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
-    assert catalogue.catalogue_version == "3.0.1"
-    assert len(catalogue.defects) == 321
+    assert catalogue.catalogue_version == "3.2.0"
+    assert len(catalogue.defects) == 323
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
         json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
@@ -510,77 +591,69 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "Form 28 - SLP.pdf" not in d159.location_source
     assert "2024011691-1.pdf" not in d159.location_source
 
-    assert catalogue.defect("D-60").inspect_parts == ["AOR's Certificate"]
-    assert catalogue.defect("D-60").context_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-60").inspect_parts == [
+        "AOR's Certificate",
+        "Vakalatnama",
+    ]
     assert catalogue.defect("D-58").inspect_parts == ["Index"]
     assert catalogue.defect("D-58").context_parts == []
-    assert catalogue.defect("D-88").inspect_parts == ["Main Petition"]
-    assert catalogue.defect("D-89").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-88").inspect_parts == [
+        "Main Petition",
+        "Application",
+        "Affidavit",
+        "Synopsis",
+    ]
+    assert catalogue.defect("D-89").inspect_parts == ["Main Petition", "Synopsis"]
     assert catalogue.defect("D-110").inspect_parts == [
         "Synopsis",
         "List of Dates & Events",
     ]
     assert catalogue.defect("D-52").inspect_parts == ["Application"]
-    assert catalogue.defect("D-52").context_parts == [
-        "Annexures",
-        "Main Petition",
-    ]
-    assert catalogue.defect("D-54").inspect_parts == ["Main Petition"]
+    assert catalogue.defect("D-54").inspect_parts == ["Main Petition", "Vakalatnama"]
     assert catalogue.defect("D-57").inspect_parts == [
         "Vakalatnama",
         "Main Petition",
     ]
     assert catalogue.defect("D-55").inspect_parts == ["Affidavit", "Main Petition"]
     assert catalogue.defect("D-56").inspect_parts == ["Affidavit", "Main Petition"]
-    assert "complete Affidavit" in (catalogue.defect("D-56").ai_note or "")
+    assert "Return needs_review" in (catalogue.defect("D-56").ai_note or "")
     assert "FILED ON" in (catalogue.defect("D-83").ai_note or "")
     assert catalogue.defect("D-102").inspect_parts == ["Application"]
     assert catalogue.defect("D-59").inspect_parts == ["Advocate's Checklist"]
     assert catalogue.defect("D-63").inspect_parts == ["Main Petition"]
-    assert catalogue.defect("D-63").context_parts == ["Memo of Parties"]
     assert catalogue.defect("D-64").inspect_parts == ["Affidavit"]
-    assert catalogue.defect("D-64").context_parts == [
-        "Main Petition",
-        "Application",
-    ]
     assert catalogue.defect("D-68").inspect_parts == ["Annexures"]
-    assert catalogue.defect("D-68").context_parts == ["Index"]
     assert catalogue.defect("D-69").inspect_parts == ["Annexures"]
-    assert catalogue.defect("D-69").context_parts == [
-        "Application",
-        "Affidavit",
-    ]
     assert catalogue.defect("D-74").inspect_parts == ["Memo of Appearance"]
-    assert catalogue.defect("D-74").context_parts == ["Vakalatnama"]
-    assert catalogue.defect("D-72").context_parts == ["Cover Page"]
-    assert catalogue.defect("D-73").inspect_parts == ["Vakalatnama"]
-    assert catalogue.defect("D-94").context_parts == ["Synopsis"]
-    assert catalogue.defect("D-103").inspect_parts == ["Main Petition"]
-    assert catalogue.defect("D-103").context_parts == [
-        "Application",
+    assert catalogue.defect("D-72").inspect_parts == [
+        "Main Petition",
+        "Cover Page",
         "Vakalatnama",
-        "AOR's Certificate",
     ]
-    assert catalogue.defect("D-111").inspect_parts == ["List of Dates & Events"]
-    assert catalogue.defect("D-111").context_parts == [
-        "Synopsis",
+    assert catalogue.defect("D-73").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-94").inspect_parts == ["Main Petition", "Impugned Order"]
+    assert catalogue.defect("D-103").inspect_parts == [
+        "Application",
+        "Main Petition",
+    ]
+    assert catalogue.defect("D-111").inspect_parts == [
+        "List of Dates & Events",
         "Application",
     ]
     assert catalogue.defect("D-114").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-115").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-120").inspect_parts == ["Vakalatnama"]
-    assert catalogue.defect("D-123").inspect_parts == ["Vakalatnama"]
+    assert catalogue.defect("D-123").inspect_parts == ["Vakalatnama", "Annexures"]
     assert catalogue.defect("D-224").inspect_parts == ["Main Petition"]
-    assert catalogue.defect("D-225").context_parts == ["Appendix"]
     assert catalogue.defect("D-264").inspect_parts == [
         "Main Petition",
         "Affidavit",
     ]
-    assert catalogue.defect("D-126").inspect_parts == ["Annexures"]
+    assert catalogue.defect("D-126").inspect_parts == ["Annexures", "Main Petition"]
     assert catalogue.defect("D-127").inspect_parts == [
-        "Index",
-        "List of Dates & Events",
         "Annexures",
+        "List of Dates & Events",
+        "Index",
     ]
     assert catalogue.defect("D-175").inspect_parts == [
         "Appendix",
@@ -598,16 +671,26 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "D-166",
         "D-167",
         "D-168",
-        "D-179",
     ):
         assert catalogue.defect(check_id).inspect_parts == ["Main Petition"]
-    assert catalogue.defect("D-160").context_parts == ["Impugned Order"]
-    assert catalogue.defect("D-163").context_parts == ["Impugned Order"]
-    assert catalogue.defect("D-180").inspect_parts == ["Impugned Order"]
+    assert catalogue.defect("D-179").inspect_parts == [
+        "Main Petition",
+        "Impugned Order",
+    ]
+    assert catalogue.defect("D-180").inspect_parts == [
+        "Impugned Order",
+        "Application",
+    ]
+    d180 = catalogue.defect("D-180")
+    assert "TRUE COPY" in (d180.ai_note or "")
+    assert "both parts of the exemption route" in (d180.ai_note or "")
     assert catalogue.defect("D-194").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-223").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-324").inspect_parts == ["AOR's Certificate"]
-    assert catalogue.defect("D-325").inspect_parts == ["Impugned Order"]
+    assert catalogue.defect("D-325").inspect_parts == [
+        "Impugned Order",
+        "Main Petition",
+    ]
     assert catalogue.defect("D-327").inspect_parts == ["List of Dates & Events"]
     rules_pdf = (
         "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
@@ -619,7 +702,9 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     )
     d73_sources = official_source_locations(catalogue.defect("D-73"), catalogue)
     assert [(item.url, item.page) for item in d73_sources] == [(rules_pdf, 6)]
-    d159_sources = {item.url: item.page for item in official_source_locations(d159, catalogue)}
+    d159_sources = {
+        item.url: item.page for item in official_source_locations(d159, catalogue)
+    }
     assert d159_sources[rules_pdf] == 30
     assert d159_sources[form_pdf] is None
 
@@ -671,7 +756,9 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "## Review comment" not in prompt
     assert "## Standard" in prompt
     with_note = noted.model_copy(update={"ai_note": "Look for the court stamp."})
-    noted_prompt = build_defect_prompt(with_note, record={}, chunks=[], catalogue=catalogue)
+    noted_prompt = build_defect_prompt(
+        with_note, record={}, chunks=[], catalogue=catalogue
+    )
     assert "## Note for AI" in noted_prompt
     assert "Look for the court stamp." in noted_prompt
     assert "This task is in the area" not in prompt
@@ -682,6 +769,46 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         dumped = defect.model_dump()
         assert "serial_no" not in dumped
         assert "category_id" not in dumped
+
+
+def test_legal_reviewed_catalogue_guards_and_corrected_rules() -> None:
+    catalogue = rules_mod._load_file_catalogue()
+
+    unverified = [
+        defect
+        for defect in catalogue.defects
+        if (defect.ai_note or "").startswith("Legal status: Needs legal verification.")
+    ]
+    assert len(unverified) == 112
+    for defect in unverified:
+        assert not defect.requirement.startswith("Needs legal verification:")
+        assert (defect.ai_note or "").startswith(
+            "Legal status: Needs legal verification."
+        )
+        note = defect.ai_note or ""
+        assert "does not prevent a compliant finding" in note
+        assert "Return compliant according to the compliance instruction below" in note
+        assert "convert any otherwise defect_found outcome to needs_review" in note
+
+    d025 = catalogue.defect("D-25")
+    assert "Section 67" in d025.requirement
+    assert "fifty per cent" in d025.requirement
+    assert "must not be applied" in d025.requirement
+
+    d026 = catalogue.defect("D-26")
+    assert "Section 20" in d026.requirement
+    assert "routine application for condonation" in d026.requirement
+
+    assert "one side" in catalogue.defect("D-71").requirement
+    assert "Digital signing is not mandatory" in catalogue.defect("D-91").requirement
+    assert "not create an automatic" in catalogue.defect("D-152").requirement
+    assert (
+        "Do not apply the 12 January 1996 sequence"
+        in catalogue.defect("D-225").requirement
+    )
+
+    for defect in catalogue.defects:
+        assert "not_applicable does not arise" not in (defect.ai_note or "")
 
 
 def test_scrutiny_prompt_distinguishes_layout_context_and_conditional_checks() -> None:
@@ -767,8 +894,7 @@ def test_special_category_null_skips_tagged_defects(monkeypatch) -> None:
     none = [d.check_id for d in defects_for_filing_type("SLP_CIVIL")]
     na = [d.check_id for d in defects_for_filing_type("SLP_CIVIL", "N/A")]
     motor = [
-        d.check_id
-        for d in defects_for_filing_type("SLP_CIVIL", "Motor Vehical Act")
+        d.check_id for d in defects_for_filing_type("SLP_CIVIL", "Motor Vehical Act")
     ]
     assert none == ["D100"]
     assert na == ["D100"]
@@ -798,9 +924,7 @@ def test_miscellaneous_application_overlay_from_special(monkeypatch) -> None:
     slp_refile = [
         d.check_id for d in defects_for_filing_type("SLP_CIVIL", "Re-filing defect")
     ]
-    ma_none = [
-        d.check_id for d in defects_for_filing_type("MISCELLANEOUS_APPLICATION")
-    ]
+    ma_none = [d.check_id for d in defects_for_filing_type("MISCELLANEOUS_APPLICATION")]
     assert slp_none == ["D100"]
     assert slp_ma == ["D100", "D101"]
     assert slp_refile == ["D100", "D102"]
@@ -823,12 +947,10 @@ def test_special_category_respects_case_type_allow_list(monkeypatch) -> None:
     }
     civil_none = {d.check_id for d in defects_for_filing_type("SLP_CIVIL")}
     civil_motor = {
-        d.check_id
-        for d in defects_for_filing_type("SLP_CIVIL", "Motor Vehical Act")
+        d.check_id for d in defects_for_filing_type("SLP_CIVIL", "Motor Vehical Act")
     }
     criminal_motor = {
-        d.check_id
-        for d in defects_for_filing_type("SLP_CRIMINAL", "Motor Vehical Act")
+        d.check_id for d in defects_for_filing_type("SLP_CRIMINAL", "Motor Vehical Act")
     }
     appeal_none = {d.check_id for d in defects_for_filing_type("CIVIL_APPEAL")}
     appeal_armed = {

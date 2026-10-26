@@ -27,7 +27,15 @@ from typing import Any, cast
 
 from pinecone import Pinecone
 
-from .document_parts import _part_match, parts_on_page, pool_search_queries
+from .document_parts import (
+    EvidenceQuery,
+    _part_match,
+    canonical_document_part_id,
+    document_subtype_id as infer_document_subtype_id,
+    family_split_name,
+    parts_on_page,
+    pool_search_queries,
+)
 from .parsed_document import build_semantic_chunks, coerce_structured_pages
 
 logger = logging.getLogger(__name__)
@@ -37,12 +45,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_TEXT_FIELD = "normalized_text"
 MAX_CHUNK_CHARS = 3500
 CHUNK_OVERLAP = 200
-VECTOR_SCHEMA_VERSION = 3
+VECTOR_SCHEMA_VERSION = 4
 EMPTY_PAGE_MARKER = "[No extractable text on this page; visual review required.]"
+LOW_INFORMATION_CHARS = 40
 _PAGE_SEGMENT_RE = re.compile(
     r"^--- page (?P<page>\d+) \((?P<role>primary|overlap)\) ---\n",
     re.MULTILINE,
 )
+_FOLIO_ONLY_RE = re.compile(
+    r"^(?:\d{1,4}|[A-Z](?:[-/]?\d{1,4})?|[IVXLCDM]{1,8})$",
+    re.IGNORECASE,
+)
+_NON_SEMANTIC_HEADINGS = {
+    "SUPREME COURT OF INDIA",
+    "IN THE SUPREME COURT OF INDIA",
+    "IN THE HON BLE SUPREME COURT OF INDIA",
+    "IN THE HONBLE SUPREME COURT OF INDIA",
+    "IN THE HONOURABLE SUPREME COURT OF INDIA",
+}
 
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
 pinecone_index_name = os.getenv("PINECONE_INDEX", "legal-document-knowledge")
@@ -392,6 +412,240 @@ def _labelled_page_segment(page_num: int, snippet: str, *, role: str) -> str:
     return f"--- page {page_num} ({role}) ---\n{snippet}"
 
 
+def _normalized_fragment(text: str) -> str:
+    """Collapse formatting before deciding whether text carries semantics."""
+    return " ".join((text or "").split()).strip()
+
+
+def _folio_marker(text: str) -> str | None:
+    """Return a standalone printed folio, never a sentence containing one."""
+    normalized = _normalized_fragment(text).strip("[](){}.: ")
+    return normalized if _FOLIO_ONLY_RE.fullmatch(normalized) else None
+
+
+def _is_repeated_court_heading(text: str) -> bool:
+    normalized = re.sub(r"[^A-Z ]+", " ", _normalized_fragment(text).upper())
+    return " ".join(normalized.split()) in _NON_SEMANTIC_HEADINGS
+
+
+def is_nonsemantic_vector_text(text: str) -> bool:
+    """True only for standalone noise that must never consume an embedding."""
+    return _folio_marker(text) is not None or _is_repeated_court_heading(text)
+
+
+def _record_primary_page(record: dict[str, Any]) -> int | None:
+    value = (record.get("metadata") or {}).get("primary_page")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_parts(record: dict[str, Any]) -> set[str]:
+    return {
+        name.casefold()
+        for name in parts_on_page((record.get("metadata") or {}).get("document_part"))
+    }
+
+
+def _same_record_part(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_parts = _record_parts(left)
+    right_parts = _record_parts(right)
+    return bool(left_parts) and bool(left_parts & right_parts)
+
+
+def _record_source_pages(record: dict[str, Any]) -> list[int]:
+    metadata = record.get("metadata") or {}
+    values = metadata.get("source_pages") or []
+    if isinstance(values, str):
+        values = [values]
+    pages: set[int] = set()
+    for value in values:
+        try:
+            pages.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    primary = _record_primary_page(record)
+    if primary is not None:
+        pages.add(primary)
+    return sorted(pages)
+
+
+def _can_merge_short_record(target: dict[str, Any], fragment: dict[str, Any]) -> bool:
+    target_meta = target.get("metadata") or {}
+    fragment_meta = fragment.get("metadata") or {}
+    target_tokens = int(target_meta.get("token_count") or 0)
+    fragment_tokens = int(fragment_meta.get("token_count") or 0)
+    if target_tokens and fragment_tokens:
+        return target_tokens + fragment_tokens + 12 <= 900
+    return (
+        len(str(target.get("chunk_text") or ""))
+        + len(str(fragment.get("chunk_text") or ""))
+        + 80
+        <= MAX_CHUNK_CHARS
+    )
+
+
+def _merge_short_record(
+    target: dict[str, Any], fragment: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge a useful short page into adjacent same-part evidence."""
+    merged = {
+        **target,
+        "metadata": dict(target.get("metadata") or {}),
+    }
+    target_meta = merged["metadata"]
+    fragment_meta = fragment.get("metadata") or {}
+    target_page = _record_primary_page(target)
+    fragment_page = _record_primary_page(fragment)
+    target_text = str(target.get("chunk_text") or "").strip()
+    fragment_text = str(fragment.get("chunk_text") or "").strip()
+    if target_page is None or fragment_page is None:
+        return merged
+
+    labelled_target = (
+        target_text
+        if _PAGE_SEGMENT_RE.search(target_text)
+        else _labelled_page_segment(target_page, target_text, role="primary")
+    )
+    labelled_fragment = _labelled_page_segment(
+        fragment_page, fragment_text, role="overlap"
+    )
+    pieces = (
+        [labelled_fragment, labelled_target]
+        if fragment_page < target_page
+        else [labelled_target, labelled_fragment]
+    )
+    combined = "\n\n".join(piece for piece in pieces if piece)
+    pages = sorted(
+        set(_record_source_pages(target)) | set(_record_source_pages(fragment))
+    )
+    merged["chunk_text"] = combined
+    target_meta["source_pages"] = [str(page) for page in pages]
+    target_meta["page_start"] = min(pages)
+    target_meta["page_end"] = max(pages)
+    target_meta["pages"] = (
+        str(pages[0]) if len(pages) == 1 else f"{min(pages)}-{max(pages)}"
+    )
+    target_meta["token_count"] = (
+        int(target_meta.get("token_count") or 0)
+        + int(fragment_meta.get("token_count") or 0)
+        + 12
+    )
+    target_meta["item_types"] = sorted(
+        set(target_meta.get("item_types") or [])
+        | set(fragment_meta.get("item_types") or [])
+    )
+    target_meta["parse_concerns"] = sorted(
+        set(target_meta.get("parse_concerns") or [])
+        | set(fragment_meta.get("parse_concerns") or [])
+    )
+    target_meta["merged_short_pages"] = sorted(
+        set(target_meta.get("merged_short_pages") or []) | {str(fragment_page)}
+    )
+    target_meta["content_hash"] = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    return merged
+
+
+def _clean_page_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove vector noise and merge useful short pages without crossing parts."""
+    page_records = [
+        record
+        for record in records
+        if (record.get("metadata") or {}).get("chunk_kind") == "page"
+    ]
+    substantive = [
+        record
+        for record in page_records
+        if len(_normalized_fragment(str(record.get("chunk_text") or "")))
+        >= LOW_INFORMATION_CHARS
+        and not is_nonsemantic_vector_text(str(record.get("chunk_text") or ""))
+    ]
+    replacements: dict[str, dict[str, Any]] = {}
+    suppressed_ids: set[str] = set()
+
+    for record in page_records:
+        record_id = str(record.get("record_id") or "")
+        text = str(record.get("chunk_text") or "").strip()
+        normalized = _normalized_fragment(text)
+        if not record_id or not normalized:
+            continue
+        page = _record_primary_page(record)
+        if is_nonsemantic_vector_text(text):
+            suppressed_ids.add(record_id)
+            marker = _folio_marker(text)
+            if marker and page is not None:
+                candidates = [
+                    candidate
+                    for candidate in substantive
+                    if _same_record_part(record, candidate)
+                    and _record_primary_page(candidate) is not None
+                ]
+                if candidates:
+                    target = min(
+                        candidates,
+                        key=lambda candidate: abs(
+                            (_record_primary_page(candidate) or page) - page
+                        ),
+                    )
+                    target_id = str(target.get("record_id") or "")
+                    updated = replacements.get(target_id, target)
+                    updated = {
+                        **updated,
+                        "metadata": dict(updated.get("metadata") or {}),
+                    }
+                    metadata = updated["metadata"]
+                    metadata["folio_markers"] = sorted(
+                        set(metadata.get("folio_markers") or []) | {f"{page}:{marker}"}
+                    )
+                    replacements[target_id] = updated
+            continue
+        if len(normalized) >= LOW_INFORMATION_CHARS:
+            continue
+
+        candidates: list[dict[str, Any]] = []
+        for candidate in substantive:
+            candidate_id = str(candidate.get("record_id") or "")
+            current_candidate = replacements.get(candidate_id, candidate)
+            candidate_page = _record_primary_page(current_candidate)
+            if (
+                _same_record_part(record, current_candidate)
+                and candidate_page is not None
+                and page is not None
+                and abs(candidate_page - page) <= 1
+                and _can_merge_short_record(current_candidate, record)
+            ):
+                candidates.append(current_candidate)
+        if not candidates:
+            # A short legal phrase can be material. Retain it when no safe,
+            # adjacent same-part destination exists rather than losing evidence.
+            continue
+        target = min(
+            candidates,
+            key=lambda candidate: (
+                abs((_record_primary_page(candidate) or page) - page),
+                0 if (_record_primary_page(candidate) or page) < page else 1,
+            ),
+        )
+        target_id = str(target.get("record_id") or "")
+        replacements[target_id] = _merge_short_record(
+            replacements.get(target_id, target), record
+        )
+        suppressed_ids.add(record_id)
+
+    cleaned = [
+        replacements.get(str(record.get("record_id") or ""), record)
+        for record in records
+        if str(record.get("record_id") or "") not in suppressed_ids
+    ]
+    if suppressed_ids:
+        logger.info(
+            "[Pinecone] Suppressed or merged %s low-information page chunk(s)",
+            len(suppressed_ids),
+        )
+    return cleaned
+
+
 def _neighbor_margin(
     *,
     page_num: int,
@@ -405,6 +659,8 @@ def _neighbor_margin(
         return ""
     neighbor_text = (page_markdown.get(neighbor) or "").strip()
     if not neighbor_text:
+        return ""
+    if is_nonsemantic_vector_text(neighbor_text):
         return ""
     if not _same_split_part(parts.get(page_num), parts.get(neighbor)):
         return ""
@@ -520,6 +776,23 @@ def build_page_records(
     records: list[dict[str, Any]] = []
     empty_pages = 0
 
+    # Application headings are commonly present only on the first page. Infer
+    # the subtype from the complete classified run and propagate it to its
+    # continuation pages without treating the generic word "Application" as a
+    # subtype.
+    subtype_by_part: dict[str, str] = {}
+    text_by_part: dict[str, list[str]] = {}
+    for page_num, value in parts.items():
+        for part in parts_on_page(value):
+            if family_split_name(part) == "Application":
+                text_by_part.setdefault(part, []).append(
+                    str(page_markdown.get(page_num) or "")
+                )
+    for part, texts in text_by_part.items():
+        subtype = infer_document_subtype_id(part, "\n".join(texts))
+        if subtype:
+            subtype_by_part[part] = subtype
+
     for page_num in sorted(page_markdown.keys()):
         page_text = (page_markdown.get(page_num) or "").strip()
         names = parts_on_page(parts.get(page_num))
@@ -563,6 +836,38 @@ def build_page_records(
                 {
                     "record_id": f"{base_id}:manifest:{page_num}",
                     "chunk_text": EMPTY_PAGE_MARKER,
+                    "metadata": meta,
+                }
+            )
+            continue
+
+        # Do not inflate a folio or repeated court caption with neighbour
+        # overlap. Keep it as a temporary page record so the shared cleanup
+        # pass can suppress it and retain a folio marker on nearby same-part
+        # metadata when possible.
+        if is_nonsemantic_vector_text(page_text):
+            meta = {
+                **base_meta,
+                **_flatten_metadata(per_page.get(page_num)),
+                "chunk_kind": "page",
+                "content_kind": "markdown_fallback",
+                "parser_source": "markdown_fallback",
+                "page_start": page_num,
+                "page_end": page_num,
+                "primary_page": page_num,
+                "source_pages": [str(page_num)],
+                "pages": str(page_num),
+                "chunk_index": 0,
+                "ocr_status": "low_information",
+                "requires_visual_review": False,
+                "vector_schema_version": VECTOR_SCHEMA_VERSION,
+            }
+            if document_part:
+                meta["document_part"] = document_part
+            records.append(
+                {
+                    "record_id": f"{base_id}:page:{page_num}:0",
+                    "chunk_text": page_text,
                     "metadata": meta,
                 }
             )
@@ -637,6 +942,34 @@ def build_page_records(
                 }
             )
 
+    for record in records:
+        record_meta = record.get("metadata") or {}
+        names = parts_on_page(record_meta.get("document_part"))
+        if not names:
+            continue
+        part_ids = list(
+            dict.fromkeys(canonical_document_part_id(name) for name in names)
+        )
+        record_meta["document_part_id"] = part_ids[0]
+        record_meta["document_part_ids"] = part_ids
+        subtype_ids = list(
+            dict.fromkeys(
+                subtype
+                for name in names
+                if (
+                    subtype := subtype_by_part.get(name)
+                    or infer_document_subtype_id(
+                        name, str(record.get("chunk_text") or "")
+                    )
+                )
+            )
+        )
+        if subtype_ids:
+            record_meta["document_subtype_id"] = subtype_ids[0]
+            record_meta["document_subtype_ids"] = subtype_ids
+        record["metadata"] = record_meta
+
+    records = _clean_page_records(records)
     logger.info(
         "[Pinecone] Page records ready: %s chunk(s) from %s page(s) (%s empty)",
         len(records),
@@ -695,10 +1028,20 @@ def upsert_records(items: list[dict[str, Any]], *, batch_size: int = 50) -> int:
         if not chunk_text or not record_id:
             skipped += 1
             continue
+        metadata = item.get("metadata") or {}
+        if metadata.get("chunk_kind") == "page" and is_nonsemantic_vector_text(
+            chunk_text
+        ):
+            skipped += 1
+            logger.warning(
+                "[Pinecone] Skipped non-semantic page record %s before embedding",
+                record_id,
+            )
+            continue
         record: dict[str, Any] = {
             "_id": str(record_id),
             text_field: chunk_text,
-            **_flatten_metadata(item.get("metadata")),
+            **_flatten_metadata(metadata),
         }
         prepared.append(record)
         total_chars += len(chunk_text)
@@ -824,7 +1167,11 @@ def _parse_page_segments(text: str) -> dict[int, str]:
 
 
 def _raw_hits(result: Any) -> list[Any]:
-    hits = getattr(result, "result", result)
+    hits = (
+        result.get("result", result)
+        if isinstance(result, dict)
+        else getattr(result, "result", result)
+    )
     matches = getattr(hits, "hits", None)
     if matches is None and isinstance(hits, dict):
         matches = hits.get("hits", [])
@@ -897,6 +1244,10 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "page_end": page_end,
         "chunk_kind": fields.get("chunk_kind"),
         "document_part": fields.get("document_part"),
+        "document_part_id": fields.get("document_part_id"),
+        "document_part_ids": fields.get("document_part_ids") or [],
+        "document_subtype_id": fields.get("document_subtype_id"),
+        "document_subtype_ids": fields.get("document_subtype_ids") or [],
         "source_pages": fields.get("source_pages") or [],
         "page_texts": _parse_page_segments(text),
         "ocr_status": fields.get("ocr_status"),
@@ -915,6 +1266,7 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "printed_page_number": fields.get("printed_page_number"),
         "original_page": fields.get("original_page"),
         "content_hash": fields.get("content_hash"),
+        "vector_schema_version": fields.get("vector_schema_version"),
     }
 
 
@@ -925,9 +1277,11 @@ def search_filing_chunks(
     top_k: int | None = None,
     chunk_kind: str | None = None,
     document_part: str | None = None,
+    document_subtype_id: str | None = None,
     organization_id: str | None = None,
     workspace_id: str | None = None,
     index_generation: str | None = None,
+    vector_schema_version: int | str | None = VECTOR_SCHEMA_VERSION,
 ) -> list[dict[str, Any]]:
     """Return Pinecone hits for one filing. No LLM packing or score cutoff.
 
@@ -952,50 +1306,105 @@ def search_filing_chunks(
         metadata_filter["workspace_id"] = {"$eq": workspace_id}
     if index_generation:
         metadata_filter["index_generation"] = {"$eq": index_generation}
+    if vector_schema_version is not None:
+        metadata_filter["vector_schema_version"] = {"$eq": int(vector_schema_version)}
     if chunk_kind:
         metadata_filter["chunk_kind"] = {"$eq": chunk_kind}
-    # Do not filter document_part in Pinecone: multi-label pages store an
-    # array and `$eq` misses them. Post-filter with parts_on_page instead.
+    if document_part:
+        metadata_filter["document_part_id"] = {
+            "$eq": canonical_document_part_id(document_part)
+        }
+    if document_subtype_id:
+        metadata_filter["document_subtype_id"] = {"$eq": document_subtype_id}
 
-    with _pinecone_query_gate():
-        result = index.search(
-            namespace=pinecone_namespace,
-            query={
-                "top_k": top_k,
-                "inputs": {"text": query},
-                "filter": metadata_filter,
-            },
-            fields=[
-                text_field,
-                "chunk_kind",
-                "page_start",
-                "page_end",
-                "document_part",
-                "source_pages",
-                "primary_page",
-                "ocr_status",
-                "requires_visual_review",
-                "index_generation",
-                "content_kind",
-                "parser_source",
-                "heading_path",
-                "item_types",
-                "item_start",
-                "item_end",
-                "table_row_start",
-                "table_row_end",
-                "parse_confidence",
-                "parse_concerns",
-                "printed_page_number",
-                "original_page",
-                "content_hash",
-            ],
-        )
+    fields = [
+        text_field,
+        "chunk_kind",
+        "page_start",
+        "page_end",
+        "document_part",
+        "document_part_id",
+        "document_part_ids",
+        "document_subtype_id",
+        "document_subtype_ids",
+        "source_pages",
+        "primary_page",
+        "ocr_status",
+        "requires_visual_review",
+        "index_generation",
+        "content_kind",
+        "parser_source",
+        "heading_path",
+        "item_types",
+        "item_start",
+        "item_end",
+        "table_row_start",
+        "table_row_end",
+        "parse_confidence",
+        "parse_concerns",
+        "printed_page_number",
+        "original_page",
+        "content_hash",
+        "vector_schema_version",
+    ]
 
+    def _search(active_filter: dict[str, Any]) -> Any:
+        with _pinecone_query_gate():
+            return index.search(
+                namespace=pinecone_namespace,
+                query={
+                    "top_k": top_k,
+                    "inputs": {"text": query},
+                    "filter": active_filter,
+                },
+                fields=fields,
+            )
+
+    result = _search(metadata_filter)
     chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
+
+    # Schema-4 records created before canonical part metadata was introduced
+    # remain readable during a controlled reindex. They are never mixed with
+    # schema-3 records, and post-filtering is used only when the canonical
+    # filtered search returned no candidates.
+    if document_part and not chunks:
+        legacy_filter = dict(metadata_filter)
+        legacy_filter.pop("document_part_id", None)
+        legacy_filter.pop("document_subtype_id", None)
+        result = _search(legacy_filter)
+        chunks = [c for c in (_to_chunk(h, text_field) for h in _raw_hits(result)) if c]
+
     if document_part:
         wanted = document_part.strip()
         chunks = [c for c in chunks if _part_match(c, [wanted])]
+    if document_subtype_id:
+        subtype_matches: list[dict[str, Any]] = []
+        for chunk in chunks:
+            stored = chunk.get("document_subtype_id")
+            stored_ids = chunk.get("document_subtype_ids") or []
+            inferred = None
+            if not stored and not stored_ids:
+                names = parts_on_page(chunk.get("document_part"))
+                inferred = next(
+                    (
+                        value
+                        for part in names
+                        if (
+                            value := infer_document_subtype_id(
+                                part, str(chunk.get("text") or "")
+                            )
+                        )
+                    ),
+                    None,
+                )
+            if stored == document_subtype_id or document_subtype_id in stored_ids:
+                subtype_matches.append(chunk)
+            elif inferred == document_subtype_id:
+                annotated = dict(chunk)
+                annotated["document_subtype_id"] = inferred
+                annotated["document_subtype_inferred"] = True
+                subtype_matches.append(annotated)
+        chunks = subtype_matches
     logger.info(
         "[Pinecone] Filing search returned %s chunk(s) for file_hash=%s (top_k=%s)",
         len(chunks),
@@ -1015,6 +1424,8 @@ def gather_filing_evidence(
     organization_id: str | None = None,
     workspace_id: str | None = None,
     index_generation: str | None = None,
+    query_plan: list[EvidenceQuery] | tuple[EvidenceQuery, ...] | None = None,
+    vector_schema_version: int | str | None = VECTOR_SCHEMA_VERSION,
 ) -> list[dict[str, Any]]:
     """Union the results of several queries into one deduped evidence set.
 
@@ -1047,23 +1458,38 @@ def gather_filing_evidence(
         "organization_id": organization_id,
         "workspace_id": workspace_id,
         "index_generation": index_generation,
+        "vector_schema_version": vector_schema_version,
     }
-    for query in queries:
-        if query and query.strip():
-            jobs.append((query.strip(), dict(scope)))
-    for part in document_parts or []:
-        label = (part or "").strip()
-        if label:
-            jobs.append(
-                (
-                    label,
-                    {
-                        **scope,
-                        "chunk_kind": "page",
-                        "document_part": label,
-                    },
+    if query_plan:
+        for planned in query_plan:
+            text = planned.text.strip()
+            if not text:
+                continue
+            kwargs = dict(scope)
+            if planned.document_part:
+                kwargs.update(
+                    chunk_kind="page",
+                    document_part=planned.document_part,
+                    document_subtype_id=planned.document_subtype_id,
                 )
-            )
+            jobs.append((text, kwargs))
+    else:
+        for query in queries:
+            if query and query.strip():
+                jobs.append((query.strip(), dict(scope)))
+        for part in document_parts or []:
+            label = (part or "").strip()
+            if label:
+                jobs.append(
+                    (
+                        label,
+                        {
+                            **scope,
+                            "chunk_kind": "page",
+                            "document_part": label,
+                        },
+                    )
+                )
 
     def _run_one(query: str, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
         try:

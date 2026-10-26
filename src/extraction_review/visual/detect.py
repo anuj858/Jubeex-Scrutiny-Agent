@@ -464,9 +464,13 @@ def _expand_marks_for_parts(
 
 
 async def _download_pdf(url: str, http: httpx.AsyncClient) -> bytes:
-    response = await http.get(url)
-    response.raise_for_status()
-    data = response.content
+    from ..remote_download import download_remote_pdf
+
+    data = await download_remote_pdf(
+        url,
+        timeout_seconds=FILE_DOWNLOAD_TIMEOUT_S,
+        client=http,
+    )
     if not data:
         raise ValueError(f"Downloaded empty body from {url}")
     _require_pdf_bytes(data, url)

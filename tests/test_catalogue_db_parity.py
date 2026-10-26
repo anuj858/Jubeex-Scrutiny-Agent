@@ -116,8 +116,8 @@ def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.Monkey
     get_catalogue.cache_clear()
     catalogue = refresh_catalogue()
     assert catalogue.schema_version != "db"
-    assert catalogue.catalogue_version == "3.0.1"
-    assert len(catalogue.defects) == 321
+    assert catalogue.catalogue_version == "3.2.0"
+    assert len(catalogue.defects) == 323
     assert catalogue.defect("D-179") is not None
     get_catalogue.cache_clear()
 
@@ -248,7 +248,7 @@ def test_database_selection_matches_file_catalogue(monkeypatch: pytest.MonkeyPat
     assert any(
         (defect.special_category or "").lower().startswith("indigent") for defect in indigent
     )
-    assert set(defect.check_id for defect in plain).issubset(
+    assert {defect.check_id for defect in plain}.issubset(
         defect.check_id for defect in indigent
     )
 

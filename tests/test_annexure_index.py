@@ -203,6 +203,7 @@ async def test_describe_annexures_rejects_unknown_id() -> None:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     JOBS.clear()
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
+    monkeypatch.setenv("JUBEEX_ALLOW_UNAUTHENTICATED", "true")
     monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL", raising=False)

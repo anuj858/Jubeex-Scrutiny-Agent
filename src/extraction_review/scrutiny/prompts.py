@@ -97,10 +97,13 @@ measurement, or a font name in OCR as proof of a physical-layout defect.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
 would mark defect_found or compliant but confidence is below 0.8, return \
 needs_review instead.
-7. evidence is a list of exactly one item, {{"chunk_id", "quote"}}. \
+7. evidence is a list of one or more independent items, each with \
+{{"chunk_id", "quote"}}. Use multiple items when the decision combines \
+different clauses, pages, document parts, or contradictory observations. \
 chunk_id is the excerpt label copied exactly, such as c1 from \
-“[c1 | Page 12 — Main Petition]”. Do not invent an id. quote is the one \
-verbatim line that shows this defect. Do not add a second evidence item. \
+“[c1 | Page 12 — Main Petition]”. Do not invent an id. Each quote must be a \
+verbatim passage that supports a distinct part of the decision. Return at most \
+six evidence items and do not repeat overlapping text. \
 If the quote is not in an excerpt, set chunk_id and page to null. Never \
 copy a page number from Authority or location_source — those are \
 official-rulebook locators, not pages of this filing.
@@ -144,7 +147,7 @@ equivalent wording, unless the Standard explicitly says the exact wording is man
 How to decide:
 
 - When a Note for AI is present, its decision paragraph controls the status for this row.
-- Fill elements with one item for each element that Note, or the Requirement, names, such as (a), (b) and (c).
+- Fill elements with one item for each element that the Note or Requirement names, in the same order. Write only the element name; omit source-list labels such as "a.", "b.", "(a)", or "(b)".
 - The excerpts are not the whole filing. If a document or element is not in the excerpts, set gap. Do not say it is absent from the filing.
 
 How to write observed and conclusion:
@@ -778,7 +781,9 @@ def filing_location(
         if label:
             return f"{label} — {phrase}."
         return f"{phrase[:1].upper()}{phrase[1:]}."
-    reviewed = sorted({int(page) for page in (reviewed_pages or []) if page is not None})
+    reviewed = sorted(
+        {int(page) for page in (reviewed_pages or []) if page is not None}
+    )
     if reviewed:
         phrase = _page_phrase(reviewed[:8])
         if len(reviewed) > 8:
@@ -901,6 +906,54 @@ def _strip_rulebook_noise(text: str) -> str:
     return cleaned
 
 
+def validated_reasoning(
+    defect: Defect,
+    text: str,
+    status: str,
+    *,
+    pages: list[int] | None = None,
+    evidence_pages: list[int] | None = None,
+    evidence_quote: str | None = None,
+    document_parts: list[str] | None = None,
+) -> str:
+    """Clean legacy free-form reasoning while retaining source-page context."""
+    cleaned = _strip_rulebook_noise(text)
+    cleaned = re.sub(
+        r"^The\s+.{1,80}?\s+was\s+(?:inspected|examined|reviewed)\s+at\s+"
+        r"pages?\s+\d+(?:\s*[-–]\s*\d+)?\s*(?:\(chunk\s+[\w-]+\))?\.\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\(?\bchunk\s+[a-z0-9_-]+\)?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;.")
+    if _copy_is_weak(cleaned, defect):
+        return fallback_reasoning(
+            defect,
+            status,
+            pages=pages,
+            evidence_pages=evidence_pages,
+            evidence_quote=evidence_quote,
+            document_parts=document_parts,
+        )
+    if status == "defect_found":
+        if not re.match(r"^Observed\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned = f"Observed: {cleaned}."
+        if not re.search(r"\bRequired\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned += f" Required: {_polish_registry_text(defect.requirement)}."
+        if not re.search(r"\bConclusion\s*:", cleaned, flags=re.IGNORECASE):
+            cleaned += (
+                " Conclusion: the cited filing content does not meet this requirement."
+            )
+    if not re.search(r"\bpages?\s+\d+", cleaned, flags=re.IGNORECASE):
+        cleaned = (
+            cleaned.rstrip(".")
+            + "."
+            + _filing_page_phrase(pages, evidence_pages, document_parts)
+        )
+    return cleaned
+
+
 def _copy_is_weak(text: str, defect: Defect) -> bool:
     if not text or len(text) < 40:
         return True
@@ -944,7 +997,9 @@ _RULE_CITE = re.compile(
     re.IGNORECASE,
 )
 _CHUNK_ID = re.compile(r"\bc\d+\b", re.IGNORECASE)
-_PIPELINE_WORD = re.compile(r"\b(?:excerpts?|chunks?|pinecone|retrieval)\b", re.IGNORECASE)
+_PIPELINE_WORD = re.compile(
+    r"\b(?:excerpts?|chunks?|pinecone|retrieval)\b", re.IGNORECASE
+)
 
 
 def _element_bits(response: Any) -> list[Any]:
@@ -985,7 +1040,9 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _layout_pages_for(layout: dict[int, dict[str, Any]] | None, part: str) -> tuple[list[int], list[int]]:
+def _layout_pages_for(
+    layout: dict[int, dict[str, Any]] | None, part: str
+) -> tuple[list[int], list[int]]:
     """Global pages and the document's own pages for one part."""
     global_pages: list[int] = []
     local_pages: list[int] = []
@@ -1069,16 +1126,19 @@ def _evidence_by_part(evidence: list[Any] | None) -> dict[str, list[int]]:
 
 def _inspected(label: str, pages: list[int], *, full: bool = False) -> str:
     name = label or "document"
+    subject = _with_definite_article(name)
     phrase = _page_phrase(pages)
     if full and phrase:
-        return f"The {name} was inspected in full ({phrase})"
+        return f"{subject} was inspected in full ({phrase})"
     if phrase:
-        return f"The {name} was inspected at {phrase}"
-    return f"The {name} was inspected"
+        return f"{subject} was inspected at {phrase}"
+    return f"{subject} was inspected"
 
 
 def _primary_part(defect: Any, groups: dict[str, list[int]]) -> tuple[str, list[int]]:
-    inspect = [part_label(part) for part in (getattr(defect, "inspect_parts", None) or [])]
+    inspect = [
+        part_label(part) for part in (getattr(defect, "inspect_parts", None) or [])
+    ]
     inspect = [part for part in inspect if part]
     for part in inspect:
         for label, pages in groups.items():
@@ -1148,7 +1208,7 @@ def _lacking_phrase(response: Any) -> str:
         return ""
     pieces: list[str] = []
     for item in lacking:
-        name = _element_name(item)
+        name = _unlabel_element_name(_element_name(item))
         detail = _element_detail(item)
         if name and detail:
             pieces.append(f"{name} ({detail})")
@@ -1159,6 +1219,40 @@ def _lacking_phrase(response: Any) -> str:
     if len(pieces) == 1:
         return pieces[0]
     return _english_list(pieces)
+
+
+_ELEMENT_LABEL = re.compile(r"^\s*(?:\(([A-Za-z]|\d+)\)|([A-Za-z]|\d+)[.)])\s*")
+
+
+def _unlabel_element_name(raw_name: str) -> str:
+    """Remove catalogue/prompt labels that have no meaning outside their source list."""
+    match = _ELEMENT_LABEL.match(raw_name)
+    if match:
+        return raw_name[match.end() :].strip().rstrip(" .")
+    return raw_name.strip().rstrip(" .")
+
+
+def _element_list_lines(response: Any) -> list[str]:
+    """Render only missing elements as a fresh, self-contained numbered list."""
+    lacking = [
+        item
+        for item in _element_bits(response)
+        if _element_state(item) in {"missing", "incomplete"}
+    ]
+    lines: list[str] = []
+    for index, item in enumerate(lacking):
+        raw_name = _element_name(item)
+        detail = _element_detail(item).strip().rstrip(" .")
+        name = _unlabel_element_name(raw_name)
+        description = name or detail or "Required element"
+        if name and detail and detail.casefold() != name.casefold():
+            description = f"{name} — {detail}"
+        lines.append(_finish(f"{index + 1}) {description}"))
+    return lines
+
+
+def _finish_reasoning_blocks(blocks: list[str]) -> str:
+    return "\n\n".join(_finish(block) for block in blocks if block.strip())
 
 
 def _english_list(items: list[str]) -> str:
@@ -1173,9 +1267,25 @@ def _finish(text: str) -> str:
     cleaned = re.sub(r"\s{2,}", " ", text).strip()
     cleaned = re.sub(r"\s+([,.;])", r"\1", cleaned)
     cleaned = re.sub(r"\.{2,}", ".", cleaned)
-    if cleaned and cleaned[-1] not in ".!?":
+    if cleaned and cleaned[-1] not in ".!?:":
         cleaned += "."
     return cleaned
+
+
+def _with_definite_article(value: str) -> str:
+    """Prefix a document name with 'The' only when it has no article already."""
+    cleaned = value.strip()
+    if cleaned.casefold().startswith("the "):
+        return f"The {cleaned[4:].strip()}"
+    return f"The {cleaned}"
+
+
+def _as_object_phrase(value: str) -> str:
+    """Return a phrase suitable after a verb, without an intrusive capital 'The'."""
+    cleaned = value.strip()
+    if cleaned.casefold().startswith("the "):
+        cleaned = cleaned[4:].strip()
+    return f"the {cleaned}" if cleaned else "the required portion"
 
 
 def compose_reasoning(
@@ -1188,9 +1298,13 @@ def compose_reasoning(
 ) -> str:
     """Lawyer-style paragraph. Page numbers are the document's own pages."""
     observed = _clean_model_text(str(getattr(response, "observed", "") or ""), defect)
-    conclusion = _clean_model_text(str(getattr(response, "conclusion", "") or ""), defect)
+    conclusion = _clean_model_text(
+        str(getattr(response, "conclusion", "") or ""), defect
+    )
     gap = getattr(response, "gap", None)
-    gap_detail = _clean_model_text(str(getattr(response, "gap_detail", "") or ""), defect)
+    gap_detail = _clean_model_text(
+        str(getattr(response, "gap_detail", "") or ""), defect
+    )
     status = str(getattr(response, "status", "") or "")
     sent = _sent_local_by_part(chunks, layout)
     cited = _evidence_by_part(evidence)
@@ -1198,19 +1312,21 @@ def compose_reasoning(
     full = _fully_reviewed(layout, part, chunks)
 
     if gap == "part_not_in_excerpts":
-        names = [name.strip() for name in gap_detail.split(",") if name.strip()] or [part]
+        names = [name.strip() for name in gap_detail.split(",") if name.strip()] or [
+            part
+        ]
         sentences = []
         for name in names:
             _global, local = _layout_pages_for(layout, name)
             phrase = _page_phrase(local)
             if phrase:
                 sentences.append(
-                    f"The {name} ({phrase}) was not among the pages reviewed; "
+                    f"{_with_definite_article(name)} ({phrase}) was not among the pages reviewed; "
                     "compliance with this requirement could not be verified"
                 )
             else:
                 sentences.append(
-                    f"The {name} was not among the pages reviewed; "
+                    f"{_with_definite_article(name)} was not among the pages reviewed; "
                     "compliance with this requirement could not be verified"
                 )
         return _finish(" ".join(sentences))
@@ -1219,7 +1335,7 @@ def compose_reasoning(
         element = gap_detail or _lacking_phrase(response) or "the required portion"
         place = _inspected(part, pages, full=full and not cited)
         return _finish(
-            f"{place}. The pages reviewed do not include {element}. "
+            f"{place}. The pages reviewed do not include {_as_object_phrase(element)}. "
             f"As the relevant portion of the {part} is not available, "
             f"compliance with {_compliance_with(defect)} cannot be determined"
         )
@@ -1258,15 +1374,19 @@ def compose_reasoning(
 
     if status == "defect_found":
         place = _inspected(part, pages, full=False)
-        lacking = _lacking_phrase(response)
-        if lacking:
-            however = f"However, it does not meet the requirement as to {lacking}"
+        element_lines = _element_list_lines(response)
+        if element_lines:
+            middle = "The following requirement element is not met:"
+            if len(element_lines) > 1:
+                middle = "The following requirement elements are not met:"
         elif observed:
-            however = observed
+            middle = observed
         else:
-            however = "However, the required element is not met"
+            middle = "The required element is not met"
         closing = conclusion or "the requirement has not been complied with"
-        return _finish(f"{place}. {however}. Accordingly, {closing}")
+        return _finish_reasoning_blocks(
+            [place, middle, "\n".join(element_lines), f"Accordingly, {closing}"]
+        )
 
     if status == "compliant":
         place = _inspected(part, pages, full=full)
@@ -1275,7 +1395,9 @@ def compose_reasoning(
 
     if status == "not_applicable":
         body = observed or "The condition for this requirement is not present"
-        return _finish(f"{body}. Accordingly, this requirement does not apply to this filing")
+        return _finish(
+            f"{body}. Accordingly, this requirement does not apply to this filing"
+        )
 
     if observed:
         return _finish(observed)
@@ -1294,11 +1416,11 @@ def location_for_finding(
     if cited:
         return filing_location(pages_by_part=cited)
     wanted = {int(page) for page in (reviewed_pages or []) if page is not None}
-    reviewed_chunks = [
-        chunk
-        for chunk in (chunks or [])
-        if _safe_int(chunk.get("page")) in wanted
-    ] if wanted else list(chunks or [])
+    reviewed_chunks = (
+        [chunk for chunk in (chunks or []) if _safe_int(chunk.get("page")) in wanted]
+        if wanted
+        else list(chunks or [])
+    )
     grouped = _sent_local_by_part(reviewed_chunks, layout)
     if grouped:
         return filing_location(pages_by_part=grouped)
@@ -1423,17 +1545,20 @@ def build_defect_prompt(
                 "element in this filing and this defect only — do not copy the Standard "
                 "paragraph. observed is one or two sentences on what this filing "
                 "shows. elements has one item per element in the Note for AI or "
-                "the Requirement. gap is null unless status is needs_review. "
+                "the Requirement. Start each element name with a plain lettered "
+                "label such as 'a. Court/Tribunal' and never '(a)'. "
+                "gap is null unless status is needs_review. "
                 "conclusion is one sentence and may cite a rule only when the "
                 "Requirement writes that citation. Do not mention excerpt ids, "
                 "page numbers, location_source, SCI_CHECKLIST, handbook PDF pages, "
                 "or check_id in observed or conclusion. "
-                "evidence is a list with exactly one item, "
+                "evidence is a list of one or more non-overlapping items (maximum six), "
                 "{chunk_id, quote}. chunk_id MUST be copied exactly from "
                 "the excerpt label (“[c1 | Main Petition, page 1]” → c1) and is "
                 "not shown to the user. "
-                "Quote the one line in the document part this task inspects. "
-                "Do not return a second quote. Do not quote an Index listing "
+                "Quote each decisive passage in the document parts this task inspects. "
+                "Use multiple quotes when multiple elements or documents must be compared. "
+                "Do not quote an Index listing "
                 "line that merely names that document. If the quote is "
                 "not from an excerpt, set chunk_id and page to null."
             ),

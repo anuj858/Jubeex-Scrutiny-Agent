@@ -19,7 +19,7 @@ from extraction_review.document_parts import (
 )
 from extraction_review.process_file import _split_page_parts
 from extraction_review.scrutiny.prompts import (
-    fallback_reasoning,
+    compose_reasoning,
     filing_location,
     validated_reasoning,
 )
@@ -40,8 +40,12 @@ from extraction_review.scrutiny.schema import (
     manifest_absence_proven,
     missing_document_finding,
     missing_parts_in_layout,
+    review_reason_for_response,
 )
-from extraction_review.scrutiny_workflow import _add_layout_fallback_chunks
+from extraction_review.scrutiny_workflow import (
+    _add_layout_fallback_chunks,
+    _retrieval_evidence_complete,
+)
 from extraction_review.vector_store import build_page_records
 
 
@@ -382,6 +386,42 @@ def test_single_annexure_check_keeps_narrow_budget() -> None:
     assert max_chunks_for_defect(defect, ceiling=12) == 3
 
 
+def test_chronology_check_reads_every_available_list_of_dates_page() -> None:
+    defect = SimpleNamespace(
+        defect="List of dates is not in chronological order",
+        requirement="The List of Dates & Events must be in chronological order",
+        where_to_look=[
+            "List of Dates & Events: inspect every date and event in chronological order."
+        ],
+        inspect_parts=["List of Dates & Events"],
+        context_parts=[],
+        exclude_parts=None,
+        trigger_words="DATES; EVENTS",
+        parent_check_id=None,
+    )
+    pool = [
+        {
+            "record_id": f"dates-{page}",
+            "score": score,
+            "chunk_kind": "page",
+            "page": page,
+            "document_part": "List of Dates & Events",
+            "text": text,
+        }
+        for page, score, text in (
+            (4, 0.99, "DATES EVENTS 01.01.2020 First event"),
+            (5, 0.08, "02.01.2020 Second event"),
+            (6, 0.07, "03.01.2020 Third event"),
+            (7, 0.06, "04.01.2020 Hence the present petition"),
+        )
+    ]
+
+    assert max_chunks_for_defect(defect, ceiling=12) == 12
+    chosen = select_chunks_for_defect(pool, defect, max_chunks=12)
+
+    assert [chunk["page"] for chunk in chosen] == [4, 5, 6, 7]
+
+
 def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it() -> (
     None
 ):
@@ -463,6 +503,149 @@ def test_layout_fallback_reserves_explicit_petition_paragraph_page() -> None:
 
     assert [chunk["page"] for chunk in chunks] == [74, 80, 82]
     assert "no earlier petition filed" in chunks[1]["text"]
+
+
+def test_layout_fallback_reads_paragraph_one_after_showeth_page() -> None:
+    defect = SimpleNamespace(
+        defect="Paragraph 1 omits impugned-order particulars",
+        requirement="Paragraph 1 must identify the order under challenge",
+        inspect_parts=["Main Petition"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=[
+            'Paragraph 1 below "MOST RESPECTFULLY SHOWETH" in the Main Petition.'
+        ],
+    )
+    layout = {
+        page: {
+            "document_part": "Main Petition",
+            "words": [
+                {"t": token, "line": line}
+                for line, token in enumerate(text.split("\n"), start=1)
+            ],
+        }
+        for page, text in (
+            (10, "PETITIONERS\n1. A party named in the cause title"),
+            (11, "MOST RESPECTFULLY SHOWETH"),
+            (
+                12,
+                (
+                    "1. This petition challenges the order dated 01.01.2024 "
+                    "passed by the High Court in W.P. No. 10 of 2024 dismissing the case"
+                ),
+            ),
+            (15, "MAIN PRAYER"),
+        )
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
+
+    assert 12 in {chunk["page"] for chunk in chunks}
+    paragraph = next(chunk for chunk in chunks if chunk["page"] == 12)
+    assert "challenges the order" in paragraph["text"]
+
+
+def test_layout_fallback_reads_all_list_of_dates_pages() -> None:
+    defect = SimpleNamespace(
+        defect="List of dates is not in chronological order",
+        requirement="The List of Dates & Events must be in chronological order",
+        inspect_parts=["List of Dates & Events"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=[
+            "List of Dates & Events: inspect every date and event in chronological order."
+        ],
+    )
+    layout = {
+        page: {
+            "document_part": "List of Dates & Events",
+            "words": [{"t": f"DATE PAGE {page}", "line": 1}],
+        }
+        for page in range(4, 8)
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=12)
+
+    assert [chunk["page"] for chunk in chunks] == [4, 5, 6, 7]
+
+
+def test_exhaustive_check_is_complete_only_after_every_target_page_is_reviewed() -> (
+    None
+):
+    defect = SimpleNamespace(
+        defect="List of dates is not in chronological order",
+        requirement="Every date must be reviewed in chronological order",
+        inspect_parts=["List of Dates & Events"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Inspect every date in the List of Dates & Events."],
+        trigger_words="DATES; EVENTS",
+    )
+    layout = {
+        page: {
+            "document_part": "List of Dates & Events",
+            "words": [{"t": f"DATE {page}", "line": 1}],
+        }
+        for page in (4, 5, 6)
+    }
+    partial = [
+        {
+            "chunk_kind": "page",
+            "page": page,
+            "document_part": "List of Dates & Events",
+            "text": f"DATE {page}",
+        }
+        for page in (4, 6)
+    ]
+    complete = [
+        *partial,
+        {
+            "chunk_kind": "page",
+            "page": 5,
+            "document_part": "List of Dates & Events",
+            "text": "DATE 5",
+        },
+    ]
+
+    assert not _retrieval_evidence_complete(defect, partial, layout)
+    assert _retrieval_evidence_complete(defect, complete, layout)
+
+
+def test_exact_signature_anchor_adds_same_part_neighbors_without_crossing_boundary() -> (
+    None
+):
+    defect = SimpleNamespace(
+        defect="The execution date is missing",
+        requirement="The Vakalatnama must contain the execution date and signature",
+        inspect_parts=["Vakalatnama"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=["Check the signing block at the end of the Vakalatnama."],
+        trigger_words="Dated this; Sd/-",
+    )
+    layout = {
+        10: {
+            "document_part": "Vakalatnama",
+            "words": [{"t": "AUTHORIZATION", "line": 1}],
+        },
+        11: {
+            "document_part": "Vakalatnama",
+            "words": [{"t": "Dated this 9 June 2024", "line": 1}],
+        },
+        12: {
+            "document_part": "Vakalatnama",
+            "words": [{"t": "Sd/- PETITIONER", "line": 1}],
+        },
+        13: {
+            "document_part": "Filing Memo",
+            "words": [{"t": "Dated this 10 June 2024", "line": 1}],
+        },
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=3)
+
+    assert [chunk["page"] for chunk in chunks] == [10, 11, 12]
+    assert all(chunk["document_part"] == ["Vakalatnama"] for chunk in chunks)
 
 
 def test_layout_fallback_reserves_main_prayer_page() -> None:
@@ -663,6 +846,29 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     )
     gated = apply_status_policy(weak)
     assert gated.status == "needs_review"
+    assert gated.gap == "low_confidence"
+    assert review_reason_for_response(gated) == (
+        "The evidence confidence is 40%, below the 80% threshold required to "
+        "classify this as a confirmed defect or compliance result."
+    )
+
+
+def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
+    response = DefectResponse(
+        check_id="D077",
+        status="needs_review",
+        confidence=0.9,
+        summary="The evidence requires manual review.",
+        observed="The relevant affidavit page was not available.",
+        gap="low_confidence",
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason is not None
+    assert "below the 80% threshold" not in reason
+    assert "confidence in sending this finding for manual review" in reason
 
 
 def test_confident_defect_stays_defect_found() -> None:
@@ -1042,8 +1248,18 @@ def test_needs_review_names_the_unshown_paragraph_without_excerpt_ids() -> None:
         elements=[],
     )
     chunks = [
-        {"chunk_kind": "page", "page": 12, "document_part": "Main Petition", "text": "heading"},
-        {"chunk_kind": "page", "page": 19, "document_part": "Main Petition", "text": "prayer"},
+        {
+            "chunk_kind": "page",
+            "page": 12,
+            "document_part": "Main Petition",
+            "text": "heading",
+        },
+        {
+            "chunk_kind": "page",
+            "page": 19,
+            "document_part": "Main Petition",
+            "text": "prayer",
+        },
     ]
     layout = {
         12: {"document_part": "Main Petition", "local_page": 1},
@@ -1057,6 +1273,43 @@ def test_needs_review_names_the_unshown_paragraph_without_excerpt_ids() -> None:
     assert "Order XXI Rule 3(5)" in reasoning
     assert "cannot be determined" in reasoning
     assert not re.search(r"\bc\d+\b", reasoning)
+
+
+def test_missing_part_reasoning_does_not_repeat_the_article() -> None:
+    defect = _scrutiny_row(inspect_parts=["Affidavit"])
+    response = SimpleNamespace(
+        status="needs_review",
+        observed="",
+        conclusion="",
+        gap="part_not_in_excerpts",
+        gap_detail="The Affidavit accompanying the Special Leave Petition",
+        elements=[],
+    )
+
+    reasoning = compose_reasoning(defect, response)
+
+    assert reasoning.startswith(
+        "The Affidavit accompanying the Special Leave Petition was not among"
+    )
+    assert "The The" not in reasoning
+
+
+def test_inspected_reasoning_normalizes_leading_articles() -> None:
+    defect = _scrutiny_row(inspect_parts=["The Affidavit"])
+    response = SimpleNamespace(
+        status="needs_review",
+        observed="",
+        conclusion="",
+        gap="element_page_not_in_excerpts",
+        gap_detail="The signing block",
+        elements=[],
+    )
+
+    reasoning = compose_reasoning(defect, response)
+
+    assert reasoning.startswith("The Affidavit was inspected")
+    assert "include the signing block" in reasoning
+    assert "The The" not in reasoning
 
 
 def test_defect_found_lists_the_missing_provisions() -> None:
@@ -1088,6 +1341,76 @@ def test_defect_found_lists_the_missing_provisions() -> None:
     assert "Section 2" in reasoning
     assert "incomplete" in reasoning
     assert "Order XXI" not in reasoning
+
+
+def test_defect_reasoning_renumbers_internal_element_labels_for_display() -> None:
+    defect = _scrutiny_row(
+        defect="Party addresses are incomplete",
+        requirement="Every party must have a complete residential or office address.",
+        inspect_parts=["Main Petition"],
+    )
+    response = SimpleNamespace(
+        status="defect_found",
+        observed="The parties are listed in the Main Petition.",
+        conclusion="the party addresses are incomplete",
+        gap=None,
+        gap_detail="",
+        elements=[
+            SimpleNamespace(
+                name="(b) complete residential or office address for each party",
+                state="incomplete",
+                detail="The PIN code is missing from the listed addresses.",
+            ),
+            SimpleNamespace(
+                name="(c) email address",
+                state="missing",
+                detail="No email address is stated.",
+            ),
+        ],
+    )
+    evidence = [
+        SimpleNamespace(page=1, document_part="Main Petition", quote="Petitioner")
+    ]
+
+    reasoning = compose_reasoning(defect, response, evidence=evidence)
+
+    assert "requirement as to" not in reasoning
+    assert "(b)" not in reasoning
+    assert "(c)" not in reasoning
+    assert "not met:." not in reasoning
+    assert (
+        "not met:\n\n1) complete residential or office address for each party"
+        in reasoning
+    )
+    assert "\n2) email address" in reasoning
+
+
+def test_single_unmet_element_starts_at_one_not_its_internal_label() -> None:
+    defect = _scrutiny_row(
+        defect="Party address is incomplete",
+        requirement="Every party must have a complete address.",
+        inspect_parts=["Main Petition"],
+    )
+    response = SimpleNamespace(
+        status="defect_found",
+        observed="",
+        conclusion="the party address is incomplete",
+        gap=None,
+        gap_detail="",
+        elements=[
+            SimpleNamespace(
+                name="b. complete residential or office address for each party",
+                state="incomplete",
+                detail="The PIN code is missing.",
+            )
+        ],
+    )
+
+    reasoning = compose_reasoning(defect, response)
+
+    assert "not met:." not in reasoning
+    assert "not met:\n\n1) complete residential or office address" in reasoning
+    assert "\nb." not in reasoning
 
 
 def test_full_range_is_used_only_when_every_page_was_sent() -> None:
@@ -1143,7 +1466,9 @@ def test_missing_appendix_skips_the_model_wording() -> None:
 
 def test_numbered_annexures_and_application_count_as_present() -> None:
     annexures = _scrutiny_row(check_id="D-68", inspect_parts=["Annexures"])
-    labelled = {index: {"document_part": f"Annexure P-{index}"} for index in range(1, 7)}
+    labelled = {
+        index: {"document_part": f"Annexure P-{index}"} for index in range(1, 7)
+    }
     assert missing_parts_in_layout(annexures, labelled) == []
 
     application = _scrutiny_row(

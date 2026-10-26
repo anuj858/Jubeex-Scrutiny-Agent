@@ -37,6 +37,16 @@ from extraction_review.process_file import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_test_download_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep URL-ingestion tests deterministic; security checks have dedicated tests."""
+
+    async def allow(url: str) -> str:
+        return url
+
+    monkeypatch.setattr("extraction_review.remote_download.validate_remote_url", allow)
+
+
 def test_safe_url_for_log_removes_credentials_and_query() -> None:
     safe = safe_url_for_log(
         "https://user:secret@s3.example.com/file.pdf?X-Amz-Credential=secret#part"
@@ -408,7 +418,9 @@ def test_upload_separate_documents_payload() -> None:
 
 
 def test_compiled_uses_requested_type_when_classified_unknown() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
+    filing_type, catalog = resolve_compiled_filing_type(
+        "NOT_A_FILING_TYPE", "SLP_CIVIL"
+    )
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -649,7 +661,9 @@ async def test_ingest_remote_file_uses_refreshed_workspace_url(
     refreshed = "https://s3.example/new.pdf?X-Amz-Signature=new"
     seen: list[str] = []
 
-    def renew(url: str, *, organization_id: str | None, workspace_id: str | None) -> str:
+    def renew(
+        url: str, *, organization_id: str | None, workspace_id: str | None
+    ) -> str:
         assert (url, organization_id, workspace_id) == (original, "org", "workspace")
         return refreshed
 
@@ -667,9 +681,7 @@ async def test_ingest_remote_file_uses_refreshed_workspace_url(
             seen.append(url)
             return httpx.Response(403, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(
-        "extraction_review.process_file.renew_workspace_s3_url", renew
-    )
+    monkeypatch.setattr("extraction_review.process_file.renew_workspace_s3_url", renew)
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     with pytest.raises(RuntimeError, match="HTTP 403") as error:

@@ -197,7 +197,8 @@ class DefectResponse(BaseModel):
         default_factory=list,
         description=(
             "One item for each element the Note for AI or the Requirement "
-            "names, such as (a), (b) and (c)."
+            "names, in the same order. Element names must omit source-list "
+            "labels such as 'a.', 'b.', '(a)', or '(b)'."
         ),
     )
     gap: GapKind | None = Field(
@@ -227,6 +228,13 @@ class DefectResponse(BaseModel):
     )
     evidence: list[EvidenceRef]
 
+    @property
+    def reasoning(self) -> str:
+        """Backward-compatible view of the structured observation/conclusion."""
+        return " ".join(
+            part for part in (self.observed, self.conclusion) if part
+        ).strip()
+
     @model_validator(mode="before")
     @classmethod
     def _legacy_reasoning(cls, data: Any) -> Any:
@@ -248,6 +256,9 @@ class Coverage(BaseModel):
     pages_reviewed: list[int] = Field(default_factory=list)
     structured_record_available: bool = False
     evidence_complete: bool = False
+    visual_required: bool = False
+    visual_complete: bool = False
+    visual_pages_reviewed: list[int] = Field(default_factory=list)
 
 
 class LlmUsage(BaseModel):
@@ -442,6 +453,14 @@ class DefectFinding(BaseModel):
     status: ResultState
     summary: str
     confidence: float
+    review_reason_code: GapKind | None = None
+    review_reason: str | None = Field(
+        default=None,
+        description=(
+            "Plain-language explanation of why a needs_review finding was not "
+            "published as a confirmed defect or compliance result."
+        ),
+    )
     reasoning: str
     evidence: list[FindingEvidence] = Field(default_factory=list)
     how_to_cure: HowToCure = Field(default_factory=HowToCure)
@@ -485,6 +504,51 @@ def review_confidence_threshold() -> float:
     except ValueError:
         value = DEFAULT_REVIEW_CONFIDENCE
     return min(1.0, max(0.0, value))
+
+
+def review_reason_for_response(
+    response: DefectResponse,
+    coverage: Coverage | None = None,
+) -> str | None:
+    """Explain a review outcome without exposing internal prompt terminology."""
+    if response.status != "needs_review":
+        return None
+
+    detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
+    if response.gap == "low_confidence":
+        score = round(response.confidence * 100)
+        threshold = round(review_confidence_threshold() * 100)
+        if response.confidence < review_confidence_threshold():
+            reason = (
+                f"The evidence confidence is {score}%, below the {threshold}% threshold "
+                "required to classify this as a confirmed defect or compliance result."
+            )
+        else:
+            reason = (
+                f"The evidence was not conclusive enough for a confirmed outcome. "
+                f"The {score}% score reflects confidence in sending this finding for "
+                "manual review, not confidence that the defect exists."
+            )
+    elif response.gap == "part_not_in_excerpts":
+        reason = "The required document was not available in the pages reviewed."
+    elif response.gap == "element_page_not_in_excerpts":
+        reason = "The specific page, clause, or field needed for this check was not available."
+    elif response.gap == "unreadable":
+        reason = "The relevant text or visual field could not be read reliably."
+    elif response.gap == "ambiguous":
+        reason = (
+            "The available evidence supports more than one reasonable interpretation."
+        )
+    elif response.gap == "conflict":
+        reason = "The extracted text and the visible document evidence do not agree."
+    else:
+        reason = "The available evidence is insufficient for a confirmed outcome."
+
+    if detail and response.gap != "low_confidence":
+        reason = f"{reason} Detail: {detail}."
+    if coverage and coverage.visual_required and not coverage.visual_complete:
+        reason += " The required visual inspection was not completed."
+    return reason
 
 
 def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
@@ -866,6 +930,18 @@ def _one_published_evidence(
     return [evidence[chosen]]
 
 
+def _display_evidence_quote(value: str) -> str:
+    """Remove retrieval overlap and markup noise from a displayed citation."""
+    text = re.split(r"---\s*from\s+page\s+\d+\s*---", value or "", maxsplit=1)[0]
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\|(?:\s*:?-+:?\s*\|)+", " ", text)
+    text = re.sub(r"\s*\|\s*", " · ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ·")
+    if len(text) > 500:
+        text = text[:497].rstrip() + "…"
+    return text
+
+
 def apply_evidence_pages(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
@@ -975,7 +1051,7 @@ def apply_visual_conflict_policy(
     visual_index: dict[str, Any] | None,
 ) -> DefectResponse:
     """Route text/vision conflicts to review instead of asserting absence."""
-    if response.status != "defect_found" or not isinstance(visual_index, dict):
+    if response.status not in ("defect_found", "compliant"):
         return response
     wording = f"{defect.defect} {defect.requirement}".casefold()
     relevant_types: set[str] = set()
@@ -987,15 +1063,20 @@ def apply_visual_conflict_policy(
                 "executant_signature",
             }
         )
-    if any(
-        term in wording
-        for term in ("stamp", "seal", "notary", "sworn", "date", "blank")
+    if any(term in wording for term in ("stamp", "seal", "notary", "sworn")) or (
+        "date" in wording and "blank" in wording
     ):
         relevant_types.update(
             {"notary_seal", "stamp", "handwritten_field_value", "date_field_value"}
         )
     if not relevant_types:
         return response
+    if not isinstance(visual_index, dict):
+        return _move_to_review(
+            response,
+            gap="unreadable",
+            detail="Required visual evidence was not inspected.",
+        )
     targets = {part.casefold() for part in defect.inspect_parts}
     conflicts: list[str] = []
     for mark in visual_index.get("marks") or []:
@@ -1015,12 +1096,108 @@ def apply_visual_conflict_policy(
         detail = visible or label or marking_type.replace("_", " ")
         conflicts.append(f"{document_type or 'target document'}: {detail}")
     if not conflicts:
+        status = str(visual_index.get("status") or "").casefold()
+        pages = visual_index.get("pages") or []
+        failures = visual_index.get("failures") or []
+        if status != "ok" or not pages or failures:
+            return _move_to_review(
+                response,
+                gap="unreadable",
+                detail="Required visual evidence has incomplete page coverage.",
+            )
         return response
     return _move_to_review(
         response,
         gap="conflict",
         detail="; ".join(conflicts[:3]),
     )
+
+
+def _normalized_check_id(defect: Defect) -> str:
+    return re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
+
+
+def apply_evidence_capability_policy(
+    defect: Defect,
+    response: DefectResponse,
+    visual_index: dict[str, Any] | None,
+) -> DefectResponse:
+    """Do not publish legibility findings without page-quality evidence."""
+    if _normalized_check_id(defect) != "D81":
+        return response
+    assessments = (
+        visual_index.get("quality_assessments")
+        if isinstance(visual_index, dict)
+        else None
+    )
+    if isinstance(assessments, list) and assessments:
+        return response
+    if response.status not in ("defect_found", "compliant", "needs_review"):
+        return response
+    response = _move_to_review(
+        response,
+        gap="unreadable",
+        detail="No page-quality assessment is available for this visual check.",
+    )
+    response.observed = (
+        "The current evidence contains no page-quality assessment for the alleged "
+        "dim, blurred, clipped, or illegible page."
+    )
+    response.evidence = []
+    return response
+
+
+def _page_text(page: dict[str, Any]) -> str:
+    direct = str(page.get("text") or page.get("markdown") or "").strip()
+    if direct:
+        return direct
+    words = page.get("words")
+    if not isinstance(words, list):
+        return ""
+    return " ".join(
+        str(word.get("t") or word.get("text") or "").strip()
+        for word in words
+        if isinstance(word, dict)
+    ).strip()
+
+
+def _memo_of_parties_present(
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    pages = [page for page in (layout or {}).values() if isinstance(page, dict)]
+    pages.extend(chunk for chunk in chunks if chunk.get("chunk_kind") != "summary")
+    for page in pages:
+        names = parts_on_page(page.get("document_part"))
+        if any(name.casefold() == "memo of parties" for name in names):
+            return True
+        if not any(name.casefold() == "main petition" for name in names):
+            continue
+        text = re.sub(r"\s+", " ", _page_text(page)).casefold()
+        if "in the matter of" in text and any(
+            role in text for role in ("petitioner", "respondent", "appellant")
+        ):
+            return True
+    return False
+
+
+def apply_presence_only_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> DefectResponse:
+    """Keep D-93 presence separate from D-63 address completeness."""
+    if _normalized_check_id(defect) != "D93" or not _memo_of_parties_present(
+        chunks, layout
+    ):
+        return response
+    response.status = "compliant"
+    response.confidence = max(response.confidence, 0.95)
+    response.summary = "The filing contains a Memo of Parties section."
+    response.observed = "The filing contains party particulars in the Main Petition or a separately classified Memo of Parties."
+    response.conclusion = "The presence requirement is met; missing address particulars are assessed separately under D-63."
+    return response
 
 
 def missing_parts_in_layout(
@@ -1067,7 +1244,9 @@ def missing_document_sentence(parts: list[str]) -> str:
     label = _english_join([part for part in parts if part])
     if not label:
         label = "required document"
-    plural = len([part for part in parts if part]) > 1 or label.casefold() == "annexures"
+    plural = (
+        len([part for part in parts if part]) > 1 or label.casefold() == "annexures"
+    )
     verb = "are missing" if plural else "is missing"
     return f"The {label} {verb} from the case file."
 
@@ -1155,6 +1334,9 @@ class ScrutinyReport(BaseModel):
     file_hash: str | None = None
     petition_type: str | None = None
     model: str | None = None
+    index_generation: str | None = None
+    vector_schema_version: str | None = None
+    prompt_version: str = "scrutiny-v2-multi-evidence"
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     disclaimer: str | None = None
     findings: list[DefectFinding] = Field(default_factory=list)
@@ -1162,6 +1344,25 @@ class ScrutinyReport(BaseModel):
     usage: UsageSummary | None = None
     planned_checks: int | None = None
     stopped_early: bool = False
+
+
+def scrutiny_report_is_current(
+    report: dict[str, Any] | ScrutinyReport,
+    *,
+    file_hash: str | None,
+    index_generation: str | None,
+) -> bool:
+    """Return whether a stored report belongs to the active source/index run."""
+    data = (
+        report.model_dump(mode="json") if isinstance(report, ScrutinyReport) else report
+    )
+    if not isinstance(data, dict):
+        return False
+    if file_hash and str(data.get("file_hash") or "") != file_hash:
+        return False
+    if index_generation:
+        return str(data.get("index_generation") or "") == index_generation
+    return True
 
 
 def _pages_from_chunks(chunks: list[dict[str, Any]] | None) -> list[int]:
@@ -1198,9 +1399,7 @@ def build_finding(
     refs = list(response.evidence)
     if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
-    evidence = _one_published_evidence(
-        attach_evidence_boxes(refs, layout=layout, chunks=chunks)
-    )
+    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
     evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     reviewed_local = _local_pages(layout, reviewed_global)
@@ -1235,6 +1434,8 @@ def build_finding(
             evidence_pages=evidence_pages,
         ),
         confidence=response.confidence,
+        review_reason_code=response.gap if response.status == "needs_review" else None,
+        review_reason=review_reason_for_response(response, coverage),
         reasoning=compose_reasoning(
             defect,
             response,

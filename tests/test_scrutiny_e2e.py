@@ -26,8 +26,8 @@ def test_scrutiny_allows_pending_review_and_blocks_rejected() -> None:
 @pytest.mark.asyncio
 async def test_all_defects_are_catalogue_sized() -> None:
     catalogue = _load_file_catalogue()
-    assert catalogue.catalogue_version == "3.0.1"
-    assert len(catalogue.defects) == 321
+    assert catalogue.catalogue_version == "3.2.0"
+    assert len(catalogue.defects) == 323
     assert catalogue.defect("D-1").check_id == "D-1"
     assert catalogue.defect("D-323").check_id == "D-323"
 

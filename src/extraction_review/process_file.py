@@ -72,6 +72,7 @@ from .llama_usage import (
     usage_status_message,
 )
 from .logging_utils import safe_url_for_log
+from .remote_download import download_remote_pdf
 from .s3_artifacts import STEP_SPLIT, upload_step_json
 from .source_url import renew_workspace_s3_url
 from .split_upload import (
@@ -2213,12 +2214,8 @@ async def ingest_remote_file(
         workspace_id=workspace_id,
     )
 
-    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
-            response = await http.get(url)
-            response.raise_for_status()
-            data = response.content
+        data = await download_remote_pdf(url, timeout_seconds=FILE_DOWNLOAD_TIMEOUT_S)
     except httpx.HTTPStatusError as exc:
         raise RuntimeError(
             f"PDF download failed with HTTP {exc.response.status_code} "

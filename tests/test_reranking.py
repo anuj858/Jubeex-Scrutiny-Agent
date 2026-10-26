@@ -25,11 +25,13 @@ def _defect() -> Defect:
 
 
 def test_reranker_annotates_candidates_and_selector_uses_score(monkeypatch) -> None:
+    monkeypatch.setenv("SCRUTINY_RERANK_ENABLED", "true")
     class Inference:
         def rerank(self, **kwargs):
             assert kwargs["model"] == "bge-reranker-v2-m3"
             assert "execution date" in kwargs["query"]
             assert kwargs["return_documents"] is False
+            assert kwargs["parameters"] == {"truncate": "END"}
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(index=1, score=0.98),
@@ -68,6 +70,7 @@ def test_reranker_annotates_candidates_and_selector_uses_score(monkeypatch) -> N
 
 
 def test_reranking_fails_open(monkeypatch) -> None:
+    monkeypatch.setenv("SCRUTINY_RERANK_ENABLED", "true")
     class Inference:
         def rerank(self, **_kwargs):
             raise RuntimeError("temporary inference failure")

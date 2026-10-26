@@ -85,7 +85,9 @@ def prepare(
             if env.get("LLM_PROVIDER", "vertex") != "vertex":
                 raise ValueError(f"{filename}: worker must use Vertex")
             if env.get("VERTEX_SHARED_RATE_LIMIT", "").lower() != "true":
-                raise ValueError(f"{filename}: shared Vertex rate limit must be enabled")
+                raise ValueError(
+                    f"{filename}: shared Vertex rate limit must be enabled"
+                )
             try:
                 vertex_rpm = int(env.get("VERTEX_REQUESTS_PER_MINUTE", ""))
             except ValueError as exc:
@@ -97,7 +99,19 @@ def prepare(
                     f"{filename}: LLM_REQUESTS_PER_MINUTE overrides the Vertex limit"
                 )
             if not (env.get("AWS_S3_BUCKET") or env.get("JUBEEX_ARTIFACT_BUCKET")):
-                raise ValueError(f"{filename}: shared Vertex limiter requires an S3 bucket")
+                raise ValueError(
+                    f"{filename}: shared Vertex limiter requires an S3 bucket"
+                )
+        bucket = env.get("AWS_S3_BUCKET") or env.get("JUBEEX_ARTIFACT_BUCKET")
+        if bucket:
+            region = env.get("AWS_REGION") or "ap-south-1"
+            _set_environment(
+                container,
+                "JUBEEX_REMOTE_FILE_HOSTS",
+                f"{bucket}.s3.{region}.amazonaws.com",
+            )
+        if role == "api" and "JUBEEX_API_KEY" not in secrets:
+            raise ValueError(f"{filename}: missing JUBEEX_API_KEY secret")
         container["image"] = api_image if role == "api" else worker_image
         _set_environment(container, "JUBEEX_CALLBACK_URL", callback_url)
         rendered.append((filename, task))

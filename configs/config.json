@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.35",
+  "config_version": "1.0.36",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -9,11 +9,11 @@
     },
     "extract": {
       "schema_version": "1.0",
-      "config_version": "1.0.1"
+      "config_version": "1.0.2"
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.35"
+      "config_version": "1.0.36"
     }
   },
   "classify": {
@@ -939,6 +939,7 @@
       "type": "object"
     },
     "tier": "agentic",
+    "version": "latest",
     "extraction_target": "per_doc",
     "system_prompt": null,
     "cite_sources": true,
@@ -959,6 +960,7 @@
   "split": {
     "product_type": "split_v1",
     "configuration_id": null,
+    "version": "latest",
     "categories": [
       {
         "name": "Advocate's Checklist",

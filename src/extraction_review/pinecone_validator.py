@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import sys
@@ -144,6 +145,7 @@ def _validate_record(
             record_id=record_id,
         )
 
+    kind = fields.get("chunk_kind")
     text = store._text_from_fields(fields, text_field)
     if not text:
         _issue(
@@ -153,8 +155,34 @@ def _validate_record(
             f"No non-empty text found in {text_field!r}",
             record_id=record_id,
         )
+    elif fields.get("content_hash"):
+        actual_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if str(fields["content_hash"]) != actual_hash:
+            _issue(
+                issues,
+                "error",
+                "content_hash_mismatch",
+                "Stored content_hash does not match the embedded text field",
+                record_id=record_id,
+            )
+    if kind == "page" and text:
+        if store.is_nonsemantic_vector_text(text):
+            _issue(
+                issues,
+                "error",
+                "nonsemantic_page_chunk",
+                "Standalone folio or repeated court heading was embedded as a page chunk",
+                record_id=record_id,
+            )
+        elif len(" ".join(text.split())) < store.LOW_INFORMATION_CHARS:
+            _issue(
+                issues,
+                "warning",
+                "low_information_chunk",
+                "Short page chunk could not be safely merged with same-part context",
+                record_id=record_id,
+            )
 
-    kind = fields.get("chunk_kind")
     if kind not in {"summary", "page", "page_manifest"}:
         _issue(
             issues,
@@ -186,6 +214,27 @@ def _validate_record(
                 "error",
                 "schema_version_mismatch",
                 f"Expected vector schema {store.VECTOR_SCHEMA_VERSION}, got {fields.get('vector_schema_version')!r}",
+                record_id=record_id,
+            )
+    if schema_version == store.VECTOR_SCHEMA_VERSION and kind in {
+        "page",
+        "page_manifest",
+    }:
+        part_id = str(fields.get("document_part_id") or "").strip()
+        if not part_id:
+            _issue(
+                issues,
+                "error",
+                "missing_canonical_part",
+                "Current-schema page record has no canonical document_part_id",
+                record_id=record_id,
+            )
+        elif part_id == "unknown":
+            _issue(
+                issues,
+                "warning",
+                "unknown_canonical_part",
+                "Page record could not be assigned to a filterable document part",
                 record_id=record_id,
             )
 
@@ -303,6 +352,8 @@ def validate_workspace(
             )
 
         logical_keys: Counter[tuple[Any, ...]] = Counter()
+        content_hashes: dict[str, list[str]] = defaultdict(list)
+        covered_pages: set[int] = set()
         for _, fields in generation_records:
             if fields.get("chunk_kind") in {"page", "page_manifest"}:
                 logical_keys[
@@ -312,6 +363,18 @@ def validate_workspace(
                         fields.get("chunk_index"),
                     )
                 ] += 1
+                try:
+                    covered_pages.add(
+                        int(fields.get("primary_page", fields.get("page_start")))
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if fields.get("chunk_kind") == "page":
+                digest = str(fields.get("content_hash") or "").strip()
+                if digest:
+                    content_hashes[digest].append(
+                        str(fields.get("primary_page") or "?")
+                    )
         for key, count in logical_keys.items():
             if count > 1:
                 _issue(
@@ -319,6 +382,25 @@ def validate_workspace(
                     "error",
                     "duplicate_logical_chunk",
                     f"Generation {generation} contains {count} records for chunk {key}",
+                )
+        for digest, pages in content_hashes.items():
+            if len(pages) > 1:
+                _issue(
+                    issues,
+                    "warning",
+                    "duplicate_content",
+                    f"Generation {generation} repeats content hash {digest[:12]} on pages {', '.join(pages)}",
+                )
+        if covered_pages:
+            gaps = sorted(
+                set(range(min(covered_pages), max(covered_pages) + 1)) - covered_pages
+            )
+            if gaps:
+                _issue(
+                    issues,
+                    "warning",
+                    "page_coverage_gap",
+                    f"Generation {generation} has no page or manifest record for pages {gaps[:20]}",
                 )
 
     if not records:
@@ -357,6 +439,16 @@ def validate_workspace(
                     str(fields.get("file_hash"))
                     for _, fields in generation_records
                     if fields.get("file_hash")
+                }
+            ),
+            "pages": sorted(
+                {
+                    int(fields.get("primary_page", fields.get("page_start")))
+                    for _, fields in generation_records
+                    if fields.get("chunk_kind") in {"page", "page_manifest"}
+                    and str(
+                        fields.get("primary_page", fields.get("page_start")) or ""
+                    ).isdigit()
                 }
             ),
         }

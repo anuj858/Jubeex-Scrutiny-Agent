@@ -47,8 +47,8 @@ def test_explicit_applicability_matches_legacy_selector() -> None:
 
 def test_seed_covers_every_defect_and_source() -> None:
     seed = build_seed()
-    assert len(seed["defects"]) == 321
-    assert len(seed["sources"]) == 21
+    assert len(seed["defects"]) == 323
+    assert len(seed["sources"]) == 24
     assert len(seed["petition_types"]) == len(JUBEEX_FILING_TYPES)
     codes = [row["code"] for row in seed["defects"]]
     assert len(codes) == len(set(codes))

@@ -4,8 +4,9 @@ Run:
 
     uv run uvicorn extraction_review.api:app --host 0.0.0.0 --port 8000
 
-If ``JUBEEX_API_KEY`` is set, protected routes require
-``Authorization: Bearer <key>`` or ``X-API-Key: <key>``.
+Protected routes require ``JUBEEX_API_KEY`` and either
+``Authorization: Bearer <key>`` or ``X-API-Key: <key>``. An explicit
+``JUBEEX_ALLOW_UNAUTHENTICATED=true`` override is available for isolated local use.
 """
 
 from __future__ import annotations
@@ -809,7 +810,16 @@ def require_api_key(
 ) -> None:
     expected = (os.getenv("JUBEEX_API_KEY") or "").strip()
     if not expected:
-        return
+        if (os.getenv("JUBEEX_ALLOW_UNAUTHENTICATED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API authentication is not configured",
+        )
     token = (x_api_key or "").strip()
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
@@ -1028,7 +1038,36 @@ def _as_data_dict(data: Any) -> dict[str, Any]:
     return {}
 
 
-async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
+def _assert_filing_scope(
+    data: dict[str, Any],
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> None:
+    raw_metadata = data.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_vector = metadata.get("vector_index")
+    vector: dict[str, Any] = raw_vector if isinstance(raw_vector, dict) else {}
+    for label, requested in (
+        ("organization_id", organization_id),
+        ("workspace_id", workspace_id),
+    ):
+        if not requested:
+            continue
+        stored = str(vector.get(label) or metadata.get(label) or data.get(label) or "")
+        if not stored or stored != requested:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Filing does not belong to the requested {label}",
+            )
+
+
+async def prepare_extracted_filing_for_scrutiny(
+    agent_data_id: str,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
     """Move LlamaExtract job status off the review-status field before the worker runs."""
     client = get_llama_cloud_client()
     try:
@@ -1040,6 +1079,9 @@ async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
         )
         return
     data = _as_data_dict(getattr(item, "data", None))
+    _assert_filing_scope(
+        data, organization_id=organization_id, workspace_id=workspace_id
+    )
     current = str(data.get("status") or "").strip().lower()
     if current == "rejected":
         raise HTTPException(
@@ -1078,6 +1120,23 @@ async def _require_scrutiny_before_annexure_index(agent_data_id: str) -> None:
 
 
 def _filing_out(agent_data_id: str, item: Any, data: Any) -> dict[str, Any]:
+    data = _as_data_dict(data)
+    metadata = dict(data.get("metadata") or {})
+    report = metadata.get("scrutiny_report")
+    vector = metadata.get("vector_index") or {}
+    if report:
+        from .scrutiny.schema import scrutiny_report_is_current
+
+        metadata["scrutiny_report_status"] = (
+            "current"
+            if scrutiny_report_is_current(
+                report,
+                file_hash=str(data.get("file_hash") or "") or None,
+                index_generation=str(vector.get("generation") or "") or None,
+            )
+            else "stale"
+        )
+        data["metadata"] = metadata
     return {
         "id": getattr(item, "id", agent_data_id),
         "collection": FILING_COLLECTION,
@@ -1103,8 +1162,18 @@ async def _load_filing_item(agent_data_id: str) -> Any:
         ) from exc
 
 
-async def _require_filing_for_index(agent_data_id: str) -> None:
-    await _load_filing_item(agent_data_id)
+async def _require_filing_for_index(
+    agent_data_id: str,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
+    item = await _load_filing_item(agent_data_id)
+    _assert_filing_scope(
+        _as_data_dict(getattr(item, "data", None)),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
 
 
 @app.patch(
@@ -1211,6 +1280,11 @@ async def index_filing(
     Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
     ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
     """
+    await _require_filing_for_index(
+        agent_data_id,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+    )
     return _accept_index_filing(agent_data_id, body, background_tasks)
 
 
@@ -1237,6 +1311,11 @@ async def reindex_filing(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="workspace_id is required",
         )
+    await _require_filing_for_index(
+        agent_data_id,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+    )
     event = _index_event(agent_data_id, body)
     return _accept_process_file(
         event,
@@ -1259,7 +1338,11 @@ async def create_scrutiny(
     body: CreateScrutinyRequest | None = None,
 ) -> JobAccepted:
     """Defects-only scrutiny (vectors already indexed)."""
-    await prepare_extracted_filing_for_scrutiny(agent_data_id)
+    await prepare_extracted_filing_for_scrutiny(
+        agent_data_id,
+        organization_id=(body.organization_id if body else None),
+        workspace_id=(body.workspace_id if body else None),
+    )
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
         file_hash=(body.file_hash if body else None),

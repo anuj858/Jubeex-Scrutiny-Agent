@@ -38,10 +38,40 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
 )
 
 PINECONE_QUERY_MAX_CHARS = 110
-EVIDENCE_QUERY_MAX_CHARS = 240
 
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
+
+
+@dataclass(frozen=True)
+class WhereToLookGuidance:
+    """Structured retrieval meaning extracted from catalogue location guidance."""
+
+    include_parts: tuple[str, ...]
+    exclude_parts: tuple[str, ...]
+    ambiguous_clauses: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EvidenceQuery:
+    """One deterministic search intent and the part filter it requires."""
+
+    text: str
+    document_part: str | None = None
+    document_subtype_id: str | None = None
+    purpose: str = "semantic"
+
+
+@dataclass(frozen=True)
+class RetrievalPlan:
+    """Retrieval-only inputs kept separate from final validation instructions."""
+
+    queries: tuple[EvidenceQuery, ...]
+    include_parts: tuple[str, ...]
+    exclude_parts: tuple[str, ...]
+    strategy: str
+    ambiguous_guidance: tuple[str, ...] = ()
+
 
 # Split label for the Form 28 body only. Slot id stays `petition`.
 # "Petition" / "Matter" in product language means the full filing PDF.
@@ -488,6 +518,87 @@ def filing_type_label(filing_type: str | None) -> str:
 
 ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
+
+
+def canonical_document_part_id(name: str | None) -> str:
+    """Stable scalar id used for pre-top-k Pinecone metadata filtering."""
+
+    normalized = normalize_part_name(name)
+    if not normalized:
+        return "unknown"
+    family = family_split_name(normalized)
+    token = re.sub(r"[^a-z0-9]+", "_", family.casefold()).strip("_")
+    return token or "unknown"
+
+
+_APPLICATION_SUBTYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "application_exemption_certified_copy",
+        re.compile(
+            r"(?:exemption|dispens(?:e|ing))[^\n]{0,100}(?:certified\s+copy|"
+            r"filing\s+(?:a\s+)?certified)|certified\s+copy[^\n]{0,100}exemption",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_condonation_delay",
+        re.compile(r"condonation\s+of\s+delay|condone\s+the\s+delay", re.IGNORECASE),
+    ),
+    (
+        "application_permission_slp",
+        re.compile(
+            r"permission\s+to\s+file[^\n]{0,80}(?:special\s+leave|s\.?l\.?p\.?)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_exemption_translation",
+        re.compile(
+            r"exemption[^\n]{0,100}(?:official\s+translation|translated\s+copy)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_interim_relief",
+        re.compile(
+            r"interim\s+(?:relief|stay)|application\s+for\s+stay", re.IGNORECASE
+        ),
+    ),
+    (
+        "application_impleadment",
+        re.compile(r"implead(?:ment|ing)|addition\s+of\s+part(?:y|ies)", re.IGNORECASE),
+    ),
+    (
+        "application_substitution",
+        re.compile(
+            r"substitution|bring(?:ing)?\s+legal\s+representatives", re.IGNORECASE
+        ),
+    ),
+)
+
+
+def application_subtype_id(text: str | None) -> str | None:
+    """Return a conservative semantic subtype only for a distinctive heading."""
+
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return None
+    for subtype, pattern in _APPLICATION_SUBTYPE_PATTERNS:
+        if pattern.search(value):
+            return subtype
+    return None
+
+
+def document_subtype_id(part: str | None, text: str | None) -> str | None:
+    """Subtype is separate from the canonical part family."""
+
+    normalized = normalize_part_name(part)
+    if family_split_name(normalized) == APPLICATION_FAMILY:
+        return application_subtype_id(text)
+    slot = numbered_part_slot_id(normalized)
+    if slot and slot not in {"applications", "annexures"}:
+        return slot
+    return None
 
 
 @dataclass(frozen=True)
@@ -1790,14 +1901,74 @@ def catalogue_exclude_parts(defect: Defect) -> list[str] | None:
     return _normalize_part_list(raw)
 
 
+_NEGATIVE_LOCATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|not\s+in|exclude|excluding|except|other\s+than|"
+    r"instead\s+of|must\s+not|should\s+not)\b",
+    re.IGNORECASE,
+)
+_GUIDANCE_SPLIT_RE = re.compile(
+    r"(?<=[.;])\s+|\s*,\s*(?=(?:but\s+)?(?:do\s+not|not\s+in|exclude|except))|"
+    r"\s+\bbut\b\s+|\s+\band\b\s+(?=(?:do\s+not|not\s+in|exclude|except)\b)",
+    re.IGNORECASE,
+)
+
+
+def where_to_look_guidance(defect: Defect) -> WhereToLookGuidance:
+    """Resolve positive and negative locations without promoting exclusions.
+
+    Authored ``inspect_parts`` / ``context_parts`` / ``exclude_parts`` are the
+    source of truth. Negative clauses are still honored when they narrow those
+    structured fields. Ambiguous negative prose is retained for the validation
+    prompt but contributes no positive retrieval target.
+    """
+
+    inspect = catalogue_inspect_parts(defect)
+    context = catalogue_context_parts(defect)
+    explicit_exclude = catalogue_exclude_parts(defect)
+    parsed_include: list[str] = []
+    parsed_exclude: list[str] = []
+    ambiguous: list[str] = []
+    for step in list(getattr(defect, "where_to_look", None) or []):
+        clauses = [
+            clause.strip(" ,")
+            for clause in _GUIDANCE_SPLIT_RE.split(_strip_landmark_clauses(step))
+            if clause.strip(" ,")
+        ]
+        for clause in clauses:
+            named = parts_named_in_text(clause)
+            if not named:
+                if _NEGATIVE_LOCATION_RE.search(clause):
+                    ambiguous.append(clause)
+                continue
+            destination = (
+                parsed_exclude
+                if _NEGATIVE_LOCATION_RE.search(clause)
+                else parsed_include
+            )
+            for part in named:
+                if part not in destination:
+                    destination.append(part)
+
+    excluded = list(explicit_exclude or [])
+    for part in parsed_exclude:
+        if part not in excluded:
+            excluded.append(part)
+    if inspect or context or explicit_exclude is not None:
+        included = list(inspect)
+        for part in context:
+            if part not in included:
+                included.append(part)
+    else:
+        included = parsed_include
+    included = [part for part in included if part not in excluded]
+    return WhereToLookGuidance(
+        tuple(included), tuple(excluded), tuple(dict.fromkeys(ambiguous))
+    )
+
+
 def _parts_parsed_from_where_to_look(defect: Defect) -> list[str]:
     """Fallback: parse Split names from where_to_look, ignoring landmarks."""
-    found: list[str] = []
-    for step in defect.where_to_look:
-        for name in parts_named_in_text(_strip_landmark_clauses(step)):
-            if name not in found:
-                found.append(name)
-    return found
+    return list(where_to_look_guidance(defect).include_parts)
 
 
 def parts_named_in_where_to_look(defect: Defect) -> list[str]:
@@ -1806,15 +1977,7 @@ def parts_named_in_where_to_look(defect: Defect) -> list[str]:
     Prefers catalogue inspect_parts + context_parts. Falls back to parsing
     where_to_look when those fields are empty (legacy rows).
     """
-    inspect = catalogue_inspect_parts(defect)
-    context = catalogue_context_parts(defect)
-    if inspect or context:
-        parts = list(inspect)
-        for name in context:
-            if name not in parts:
-                parts.append(name)
-        return parts
-    return _parts_parsed_from_where_to_look(defect)
+    return list(where_to_look_guidance(defect).include_parts)
 
 
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
@@ -1860,7 +2023,13 @@ _PRESENCE_QUERY_HINTS: tuple[tuple[str, str], ...] = (
 
 def _presence_queries_for_defect(defect: Defect) -> list[str]:
     """Extra Pinecone queries so stamps, seals and layout marks are retrieved."""
-    blob = " ".join([defect.defect, defect.requirement, *defect.where_to_look]).lower()
+    blob = " ".join(
+        [
+            str(getattr(defect, "defect", "") or ""),
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    ).lower()
     queries: list[str] = []
     for needle, query in _PRESENCE_QUERY_HINTS:
         if re.search(rf"\b{re.escape(needle)}\b", blob):
@@ -1873,9 +2042,8 @@ def _evidence_payload_hint(defect: Defect) -> str:
 
     wording = " ".join(
         [
-            defect.requirement,
-            *defect.where_to_look,
-            str(getattr(defect, "ai_note", None) or ""),
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).casefold()
     if any(
@@ -1895,47 +2063,169 @@ def _evidence_payload_hint(defect: Defect) -> str:
     return "the actual clause, field value, omission, or blank and its surrounding text"
 
 
-def evidence_seeking_queries_for_defect(defect: Defect) -> list[str]:
-    """Build concise positive queries for candidate evidence.
+_GENERIC_RETRIEVAL_TERMS = frozenset(
+    {
+        "application",
+        "dates",
+        "date",
+        "events",
+        "new delhi",
+        "supreme court",
+        "petition",
+        "document",
+        "page",
+        "filed",
+    }
+)
 
-    The defect statement is intentionally excluded: a negative objection such
-    as "particulars are missing" tends to retrieve other negative legal prose.
-    Pinecone only locates candidate text; the later Gemini check decides whether
-    that evidence proves compliance, a defect, or neither.
-    """
 
-    parts = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
-    location = ", ".join(parts[:4]) or "the filing"
+def distinctive_trigger_phrases(defect: Defect) -> list[str]:
+    """Keep useful recognition cues without issuing one search per token."""
+
+    phrases: list[str] = []
+    for raw in re.split(r"[;|]", str(getattr(defect, "trigger_words", "") or "")):
+        phrase = re.sub(r"\s+", " ", raw).strip(" ,.;")
+        folded = phrase.casefold()
+        if not phrase or folded in _GENERIC_RETRIEVAL_TERMS:
+            continue
+        if len(phrase) < 4:
+            continue
+        if phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def retrieval_strategy_for_defect(defect: Defect) -> str:
+    """Choose the minimum evidence scope that can support the legal check."""
+
     wording = " ".join(
         [
-            defect.requirement,
-            *defect.where_to_look,
-            str(getattr(defect, "ai_note", None) or ""),
+            str(getattr(defect, "defect", "") or ""),
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).casefold()
-    roles: list[str] = []
-    if re.search(r"\bpart(?:y|ies)\b", wording):
-        roles = ["respondent", "petitioner or appellant"]
-    else:
-        if re.search(r"\brespondents?\b", wording):
-            roles.append("respondent")
-        if re.search(r"\b(?:petitioners?|appellants?)\b", wording):
-            roles.append("petitioner or appellant")
-    if roles:
-        return [
-            _clip_query(
-                f"Find the {role} table. Retrieve the names and descriptions of "
-                f"every {role}, their designations, addresses, and any required "
-                "particulars. Include surrounding table rows.",
-                limit=EVIDENCE_QUERY_MAX_CHARS,
-            )
-            for role in roles
-        ]
-    query = (
-        f"Find evidence in {location}. Retrieve {_evidence_payload_hint(defect)}. "
-        f"Verify this requirement: {defect.requirement}"
+    if re.search(
+        r"chronological\s+order|inspect\s+every|each\s+(?:page|entry|date|party)|"
+        r"every\s+(?:page|entry|date|party)|all\s+(?:pages|entries|dates|parties)|"
+        r"complete\s+(?:list|particulars|addresses)|entire\s+(?:part|section)",
+        wording,
+    ):
+        return "exhaustive_part"
+    if re.search(
+        r"signature|signed|execution\s+date|below\s+the\s+prayer|true\s+cop|"
+        r"certif(?:ied|ication)|stamp|seal|last\s+page|end\s+of",
+        wording,
+    ):
+        return "boundary_and_neighbors"
+    return "semantic"
+
+
+def _query_text_for_part(
+    defect: Defect,
+    *,
+    part: str | None,
+    phrases: list[str],
+) -> str:
+    location = part or "the filing"
+    requirement = re.sub(
+        r"\s+", " ", str(getattr(defect, "requirement", "") or "")
+    ).strip()
+    sections = [
+        f"Document part: {location}.",
+        f"Evidence sought: {_evidence_payload_hint(defect)}.",
+        f"Legal requirement: {requirement}",
+    ]
+    if phrases:
+        rendered = "; ".join(f'"{phrase}"' for phrase in phrases)
+        sections.append(f"Distinctive text or equivalent wording: {rendered}.")
+    return " ".join(sections)
+
+
+def retrieval_plan_for_defect(defect: Defect) -> RetrievalPlan:
+    """Build a small, deterministic plan of evidence-oriented searches.
+
+    Requirements are preserved in full. ``ai_note`` and final decision
+    instructions are intentionally excluded because they guide adjudication,
+    not candidate retrieval.
+    """
+
+    guidance = where_to_look_guidance(defect)
+    parts = list(guidance.include_parts) or preferred_parts_for_defect(defect)
+    excluded = set(guidance.exclude_parts)
+    parts = [part for part in parts if part not in excluded]
+    phrases = distinctive_trigger_phrases(defect)
+    presence = _presence_queries_for_defect(defect)
+    grouped_phrases = _unique_terms([*phrases, *presence])
+    subtype = application_subtype_id(
+        " ".join(
+            [
+                str(getattr(defect, "defect", "") or ""),
+                str(getattr(defect, "requirement", "") or ""),
+                *list(getattr(defect, "where_to_look", None) or []),
+            ]
+        )
     )
-    return [_clip_query(query, limit=EVIDENCE_QUERY_MAX_CHARS)]
+
+    queries: list[EvidenceQuery] = []
+    targets: list[str | None] = parts or [None]
+    for part in targets:
+        part_subtype = (
+            subtype if part and family_split_name(part) == APPLICATION_FAMILY else None
+        )
+        queries.append(
+            EvidenceQuery(
+                text=_query_text_for_part(defect, part=part, phrases=grouped_phrases),
+                document_part=part,
+                document_subtype_id=part_subtype,
+                purpose="semantic_and_exact" if grouped_phrases else "semantic",
+            )
+        )
+
+    # Legacy rows may have no structured part but a short, positive form
+    # heading. Keep one such locator; never promote a negative/ambiguous clause.
+    if not parts:
+        for step in list(getattr(defect, "where_to_look", None) or []):
+            if _NEGATIVE_LOCATION_RE.search(step):
+                continue
+            heading = _heading_from_where_to_look(step)
+            if heading and heading.casefold() not in _GENERIC_RETRIEVAL_TERMS:
+                queries.append(
+                    EvidenceQuery(
+                        text=(
+                            f"Form or heading: {heading}. Legal requirement: "
+                            f"{getattr(defect, 'requirement', '') or ''}"
+                        ),
+                        purpose="heading",
+                    )
+                )
+                break
+
+    deduped: list[EvidenceQuery] = []
+    seen: set[tuple[str, str | None, str | None]] = set()
+    for query in queries:
+        key = (
+            re.sub(r"\s+", " ", query.text).strip().casefold(),
+            query.document_part,
+            query.document_subtype_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(query)
+    return RetrievalPlan(
+        queries=tuple(deduped),
+        include_parts=tuple(parts),
+        exclude_parts=guidance.exclude_parts,
+        strategy=retrieval_strategy_for_defect(defect),
+        ambiguous_guidance=guidance.ambiguous_clauses,
+    )
+
+
+def evidence_seeking_queries_for_defect(defect: Defect) -> list[str]:
+    """Compatibility wrapper returning the plan's exact Pinecone text."""
+
+    return [query.text for query in retrieval_plan_for_defect(defect).queries]
 
 
 def evidence_seeking_query_for_defect(defect: Defect) -> str:
@@ -1945,33 +2235,15 @@ def evidence_seeking_query_for_defect(defect: Defect) -> str:
 
 
 def pinecone_queries_for_defect(defect: Defect) -> list[str]:
-    """Queries sent to Pinecone: target part names, short headings, and cues.
+    """Exact text inputs sent to Pinecone for this defect."""
 
-    Long where-to-look sentences are not sent — they mention landmarks
-    ("before the Cover Page") and pull the wrong pages.
-    """
-    queries: list[str] = list(evidence_seeking_queries_for_defect(defect))
-    if defect.trigger_words:
-        queries.extend(
-            p.strip() for p in re.split(r"[;|]", defect.trigger_words) if p.strip()
-        )
-    queries.extend(parts_named_in_where_to_look(defect))
-    queries.extend(_presence_queries_for_defect(defect))
-    for step in defect.where_to_look:
-        heading = _heading_from_where_to_look(step)
-        if heading:
-            queries.append(heading)
-        clipped = _clip_query(_bare_where_to_look(_strip_landmark_clauses(step)))
-        if clipped and len(clipped) <= 80:
-            queries.append(clipped)
-    if not queries:
-        queries.extend(preferred_parts_for_defect(defect))
-    return _unique_terms(queries)
+    return evidence_seeking_queries_for_defect(defect)
 
 
 def match_terms_for_defect(defect: Defect) -> list[str]:
     """Phrases to score an in-memory chunk against this defect."""
-    terms = list(pinecone_queries_for_defect(defect))
+    terms = distinctive_trigger_phrases(defect)
+    terms.extend(_presence_queries_for_defect(defect))
     terms.extend(preferred_parts_for_defect(defect))
     return _unique_terms(terms)
 
@@ -2075,9 +2347,11 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
     targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
-    if _requires_annexure_collection_coverage(
-        defect
-    ) or _requires_index_collection_coverage(defect):
+    if (
+        _requires_annexure_collection_coverage(defect)
+        or _requires_index_collection_coverage(defect)
+        or _requires_complete_part_coverage(defect)
+    ):
         return max(1, ceiling)
     budget = ceiling
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
@@ -2124,6 +2398,12 @@ def _requires_index_collection_coverage(defect: Defect) -> bool:
     return "common index" in wording and bool(
         re.search(r"\b(?:running|complete|continuous)?\s*pagination\b", wording)
     )
+
+
+def _requires_complete_part_coverage(defect: Defect) -> bool:
+    """Whether a semantic sample cannot support the required conclusion."""
+
+    return retrieval_strategy_for_defect(defect) == "exhaustive_part"
 
 
 def _chunk_score(chunk: dict[str, Any]) -> float:
@@ -2390,6 +2670,25 @@ def select_chunks_for_defect(
             if record_id in used or page in covered_pages:
                 continue
             if not _part_match(chunk, ["Index"]):
+                continue
+            chosen.append(chunk)
+            covered_pages.add(page)
+            if record_id:
+                used.add(record_id)
+
+    if _requires_complete_part_coverage(defect):
+        covered_pages = {chunk.get("page") for chunk in chosen}
+        target_parts = look_parts or preferred
+        for chunk in sorted(
+            ranked, key=lambda item: (item.get("page") is None, item.get("page") or 0)
+        ):
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            page = chunk.get("page")
+            if record_id in used or page in covered_pages:
+                continue
+            if not _part_match(chunk, target_parts):
                 continue
             chosen.append(chunk)
             covered_pages.add(page)

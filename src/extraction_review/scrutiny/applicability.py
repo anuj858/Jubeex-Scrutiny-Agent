@@ -84,6 +84,11 @@ PART_DOCUMENT_TYPES: dict[str, dict[str, str]] = {
         "name": "AOR's Certificate",
         "split_label": "AOR's Certificate",
     },
+    "AOR's Declaration": {
+        "code": "aor-s-declaration",
+        "name": "AOR's Declaration",
+        "split_label": "AOR's Declaration",
+    },
     "Index": {"code": "index", "name": "Index", "split_label": "Index"},
     "Office Report on Limitation": {
         "code": "office-report-on-limitation",
@@ -146,6 +151,11 @@ PART_DOCUMENT_TYPES: dict[str, dict[str, str]] = {
         "code": "proof-of-court-fees",
         "name": "Proof of Court Fees",
         "split_label": "Court Fees",
+    },
+    "Custody Certificate": {
+        "code": "custody-certificate",
+        "name": "Custody Certificate",
+        "split_label": "Custody Certificate",
     },
     "Application": {
         "code": "applications",

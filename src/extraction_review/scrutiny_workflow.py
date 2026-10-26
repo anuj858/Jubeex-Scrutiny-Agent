@@ -15,7 +15,6 @@ import re
 import time
 from typing import Annotated, Any, Literal
 
-import httpx
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
@@ -29,7 +28,9 @@ from .document_parts import (
     APPLICATION_FAMILY,
     _is_numbered_annexure,
     _requires_annexure_collection_coverage,
+    _requires_complete_part_coverage,
     chunks_cover_part,
+    distinctive_trigger_phrases,
     expand_parts_for_retrieval,
     family_split_name,
     filing_type_label,
@@ -39,6 +40,7 @@ from .document_parts import (
     parts_on_page,
     preferred_parts_for_defect,
     required_parts_for_defect,
+    retrieval_plan_for_defect,
     select_chunks_for_defect,
     slice_record_for_defect,
 )
@@ -59,10 +61,11 @@ from .llm import (
 )
 from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from .remote_download import download_remote_pdf
+from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
     build_defect_prompt,
-    build_evidence_queries,
     build_system_prompt,
 )
 from .scrutiny.rules import (
@@ -80,23 +83,27 @@ from .scrutiny.schema import (
     DefectFinding,
     DefectResponse,
     ScrutinyReport,
+    apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
+    apply_presence_only_policy,
     apply_retrieval_policy,
     apply_status_policy,
     apply_undetermined_policy,
     apply_visual_conflict_policy,
     build_finding,
     failed_finding,
+    manifest_absence_proven,
     missing_document_finding,
-    missing_parts_in_layout,
     summarize,
     summarize_usage,
 )
 from .vector_store import (
+    VECTOR_SCHEMA_VERSION,
     gather_filing_evidence,
     pinecone_enabled,
     scrutiny_max_chunks,
+    scrutiny_top_k,
 )
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
@@ -109,6 +116,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONCURRENCY = 8
 DEFAULT_PERSIST_EVERY = 10
 SCRUTINY_AFTER_INDEX_ERROR = "Unable to run scrutiny defects. Try after some time."
+_VISUAL_TERMS = (
+    "signature",
+    "signed",
+    "stamp",
+    "seal",
+    "notary",
+    "handwritten",
+    "blank date",
+    "legible",
+    "illegible",
+    "dim",
+    "blurred",
+    "margin",
+    "font size",
+    "paper size",
+    "spacing",
+)
 
 
 class ScrutinyAfterIndexError(Exception):
@@ -117,6 +141,15 @@ class ScrutinyAfterIndexError(Exception):
     def __init__(self, agent_data_id: str) -> None:
         super().__init__(SCRUTINY_AFTER_INDEX_ERROR)
         self.agent_data_id = agent_data_id
+
+
+def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
+    """Reject a nominally complete run when any individual check failed."""
+    failed = sum(bool(finding.error) for finding in findings)
+    if failed:
+        raise RuntimeError(
+            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
+        )
 
 
 class ScrutinyEvent(StartEvent):
@@ -217,11 +250,7 @@ async def _sha256_from_url(file_url: str) -> str:
     url = (file_url or "").strip()
     if not url:
         raise ValueError("file_url is empty")
-    timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as http:
-        response = await http.get(url)
-        response.raise_for_status()
-        data = response.content
+    data = await download_remote_pdf(url, timeout_seconds=FILE_DOWNLOAD_TIMEOUT_S)
     if not data:
         raise ValueError(f"Downloaded empty body from {url}")
     _require_pdf_bytes(data, url)
@@ -233,6 +262,7 @@ def _sanitize_response(
     response: DefectResponse,
     chunks: list[dict[str, Any]],
     visual_index: dict[str, Any] | None = None,
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
@@ -243,12 +273,59 @@ def _sanitize_response(
         )
     response.check_id = defect.check_id
     response = apply_evidence_pages(response, chunks, defect)
+    response = apply_presence_only_policy(defect, response, chunks, layout)
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
     response = apply_grounded_defect_policy(response)
     response = apply_visual_conflict_policy(defect, response, visual_index)
+    response = apply_evidence_capability_policy(defect, response, visual_index)
     return response
+
+
+def _retrieval_evidence_complete(
+    defect: Defect,
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    """Do not equate a successful semantic sample with exhaustive inspection."""
+
+    if not chunks or missing_required_parts(defect, chunks):
+        return False
+    strategy = retrieval_plan_for_defect(defect).strategy
+    if strategy == "semantic":
+        return True
+    if not layout:
+        return False
+
+    reviewed = {int(chunk["page"]) for chunk in chunks if chunk.get("page") is not None}
+    for part in required_parts_for_defect(defect):
+        part_pages = [
+            page_number
+            for page_number, page in sorted(layout.items())
+            if isinstance(page, dict)
+            and chunks_cover_part(
+                [
+                    {
+                        "document_part": _layout_document_parts(
+                            page.get("document_part")
+                        ),
+                        "chunk_kind": "page",
+                    }
+                ],
+                part,
+            )
+        ]
+        if not part_pages:
+            return False
+        required_pages = (
+            set(part_pages)
+            if strategy == "exhaustive_part"
+            else {part_pages[0], part_pages[-1]}
+        )
+        if not required_pages.issubset(reviewed):
+            return False
+    return True
 
 
 async def _run_defect(
@@ -261,21 +338,40 @@ async def _run_defect(
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
 ) -> DefectFinding:
-    absent = missing_parts_in_layout(defect, layout)
-    if absent:
+    if manifest_absence_proven(defect, layout):
         return missing_document_finding(
             defect,
-            absent,
+            required_parts_for_defect(defect),
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
 
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
+    visual_required = any(
+        term
+        in f"{defect.defect} {defect.requirement} {defect.ai_note or ''}".casefold()
+        for term in _VISUAL_TERMS
+    )
+    visual_pages = (
+        [int(page) for page in visual_index.get("pages") or []]
+        if isinstance(visual_index, dict)
+        else []
+    )
+    visual_complete = bool(
+        visual_required
+        and isinstance(visual_index, dict)
+        and visual_index.get("status") == "ok"
+        and visual_pages
+        and not visual_index.get("failures")
+    )
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=bool(record) and not missing_required_parts(defect, chunks),
+        evidence_complete=_retrieval_evidence_complete(defect, chunks, layout),
+        visual_required=visual_required,
+        visual_complete=visual_complete,
+        visual_pages_reviewed=visual_pages,
     )
 
     raw, usage = await call_structured(
@@ -291,7 +387,7 @@ async def _run_defect(
         response_model=DefectResponse,
         model=scrutiny_model(),
     )
-    response = _sanitize_response(defect, raw, chunks, visual_index)
+    response = _sanitize_response(defect, raw, chunks, visual_index, layout)
 
     return build_finding(
         defect,
@@ -318,13 +414,51 @@ async def _chunks_for_defect(
     layout: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
+    retrieval_plan = retrieval_plan_for_defect(defect)
+    logger.info(
+        "[Scrutiny] Retrieval plan check=%s strategy=%s queries=%s parts=%s",
+        defect.check_id,
+        retrieval_plan.strategy,
+        len(retrieval_plan.queries),
+        list(retrieval_plan.include_parts),
+    )
+    for planned_query in retrieval_plan.queries:
+        logger.debug(
+            "[Scrutiny] Retrieval query check=%s part=%s subtype=%s text=%s",
+            defect.check_id,
+            planned_query.document_part,
+            planned_query.document_subtype_id,
+            planned_query.text,
+        )
     page_budget = max_chunks_for_defect(defect, ceiling=max_chunks)
+    if retrieval_plan.strategy == "exhaustive_part" and layout:
+        required = required_parts_for_defect(defect)
+        exhaustive_pages = {
+            page_number
+            for page_number, page in layout.items()
+            if isinstance(page, dict)
+            and any(
+                chunks_cover_part(
+                    [
+                        {
+                            "document_part": _layout_document_parts(
+                                page.get("document_part")
+                            ),
+                            "chunk_kind": "page",
+                        }
+                    ],
+                    part,
+                )
+                for part in required
+            )
+        }
+        page_budget = max(page_budget, len(exhaustive_pages))
     if not use_pinecone or not file_hash:
         return _add_layout_fallback_chunks(
             defect, [], layout=layout, max_chunks=page_budget
         )
 
-    queries = build_evidence_queries(defect)
+    queries = [query.text for query in retrieval_plan.queries]
     targets = expand_parts_for_retrieval(
         parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     )
@@ -343,6 +477,8 @@ async def _chunks_for_defect(
             organization_id=organization_id,
             workspace_id=workspace_id,
             index_generation=index_generation,
+            query_plan=retrieval_plan.queries,
+            vector_schema_version=VECTOR_SCHEMA_VERSION,
         )
     except Exception as e:
         logger.warning(
@@ -354,6 +490,33 @@ async def _chunks_for_defect(
             defect, [], layout=layout, max_chunks=page_budget
         )
 
+    missing = missing_required_parts(defect, pool)
+    if missing:
+        missing_plan = tuple(
+            query
+            for query in retrieval_plan.queries
+            if query.document_part is None or query.document_part in missing
+        )
+        broader = await asyncio.to_thread(
+            gather_filing_evidence,
+            queries,
+            file_hash=file_hash,
+            top_k=max(scrutiny_top_k() * 2, page_budget),
+            max_chunks=gather_cap,
+            document_parts=missing,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            index_generation=index_generation,
+            query_plan=missing_plan,
+            vector_schema_version=VECTOR_SCHEMA_VERSION,
+        )
+        by_id = {
+            str(chunk.get("record_id")): chunk
+            for chunk in [*pool, *broader]
+            if chunk.get("record_id")
+        }
+        pool = list(by_id.values())
+    pool = await asyncio.to_thread(rerank_chunks_for_defect, pool, defect)
     selected = select_chunks_for_defect(pool, defect, max_chunks=page_budget)
     return _add_layout_fallback_chunks(
         defect,
@@ -430,6 +593,9 @@ def _layout_anchor_phrases(defect: Defect) -> list[str]:
     for quoted in quoted_heading.findall(wording):
         add(quoted)
 
+    for phrase in distinctive_trigger_phrases(defect):
+        add(phrase)
+
     for number in re.findall(r"\bparagraph\s+(\d+[A-Z]?)\b", wording, re.IGNORECASE):
         add(f"{number}.")
 
@@ -454,6 +620,29 @@ def _layout_anchor_phrases(defect: Defect) -> list[str]:
 def _anchor_score(text: str, anchors: list[str]) -> int:
     folded = re.sub(r"\s+", " ", text).casefold()
     return sum(1 for anchor in anchors if anchor.casefold() in folded)
+
+
+def _paragraph_numbers_for_defect(defect: Defect) -> list[str]:
+    wording = " ".join(
+        [
+            str(getattr(defect, "requirement", "") or ""),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    )
+    return list(
+        dict.fromkeys(
+            re.findall(r"\bparagraph\s+(\d+[A-Z]?)\b", wording, re.IGNORECASE)
+        )
+    )
+
+
+def _has_paragraph_marker(text: str, number: str) -> bool:
+    return bool(
+        re.search(
+            rf"(?im)^\s*{re.escape(number)}\s*[.)]\s+\S",
+            text,
+        )
+    )
 
 
 def _add_layout_fallback_chunks(
@@ -559,6 +748,43 @@ def _add_layout_fallback_chunks(
             if len(chosen) >= capacity:
                 break
             options = candidates.get(part) or []
+            # Form 28's opening numbered paragraph can begin on the page after
+            # "MOST RESPECTFULLY SHOWETH".  Prefer that paragraph page over a
+            # party-list page that happens to contain the same number.
+            paragraph_numbers = _paragraph_numbers_for_defect(defect)
+            if part == "Main Petition" and paragraph_numbers:
+                showeth_positions = [
+                    index
+                    for index, option in enumerate(options)
+                    if "most respectfully showeth"
+                    in str(option.get("text") or "").casefold()
+                ]
+                paragraph_page = None
+                for start in showeth_positions:
+                    for option in options[start : start + 3]:
+                        if any(
+                            _has_paragraph_marker(str(option.get("text") or ""), number)
+                            for number in paragraph_numbers
+                        ):
+                            paragraph_page = option
+                            break
+                    if paragraph_page is not None:
+                        break
+                if paragraph_page is not None:
+                    candidate = next(
+                        (
+                            chunk
+                            for chunk in target_pages
+                            if chunk.get("page") == paragraph_page.get("page")
+                            and chunks_cover_part([chunk], part)
+                        ),
+                        paragraph_page,
+                    )
+                    if not any(
+                        chunk.get("page") == candidate.get("page") for chunk in chosen
+                    ):
+                        chosen.append(candidate)
+                    continue
             ranked_anchors = sorted(
                 (
                     (_anchor_score(str(option.get("text") or ""), anchors), option)
@@ -581,6 +807,49 @@ def _add_layout_fallback_chunks(
             if not any(chunk.get("page") == candidate.get("page") for chunk in chosen):
                 chosen.append(candidate)
 
+    # Exact stamps, signatures and closing clauses frequently split across a
+    # page boundary. Expand only to immediate neighbors carrying the same
+    # classified part; never cross into another document merely because its
+    # page number is adjacent.
+    if retrieval_plan_for_defect(defect).strategy == "boundary_and_neighbors":
+        anchors_chosen = list(chosen)
+        for anchor in anchors_chosen:
+            if len(chosen) >= capacity:
+                break
+            anchor_page = int(anchor.get("page") or 0)
+            anchor_parts = _layout_document_parts(anchor.get("document_part"))
+            for part in required:
+                if part not in anchor_parts and not chunks_cover_part([anchor], part):
+                    continue
+                options = candidates.get(part) or []
+                for neighbor_page in (anchor_page - 1, anchor_page + 1):
+                    fallback = next(
+                        (
+                            option
+                            for option in options
+                            if int(option.get("page") or 0) == neighbor_page
+                        ),
+                        None,
+                    )
+                    if fallback is None or any(
+                        chunk.get("page") == neighbor_page
+                        and chunks_cover_part([chunk], part)
+                        for chunk in chosen
+                    ):
+                        continue
+                    candidate = next(
+                        (
+                            chunk
+                            for chunk in target_pages
+                            if chunk.get("page") == neighbor_page
+                            and chunks_cover_part([chunk], part)
+                        ),
+                        fallback,
+                    )
+                    chosen.append(candidate)
+                    if len(chosen) >= capacity:
+                        break
+
     wording = " ".join(
         [
             str(getattr(defect, "defect", "") or ""),
@@ -596,6 +865,27 @@ def _add_layout_fallback_chunks(
         )
     )
     boundaries = ("last", "first") if last_first else ("first", "last")
+
+    if _requires_complete_part_coverage(defect):
+        for part in required:
+            for fallback in candidates.get(part) or []:
+                if len(chosen) >= capacity:
+                    break
+                candidate = next(
+                    (
+                        chunk
+                        for chunk in target_pages
+                        if chunk.get("page") == fallback.get("page")
+                        and chunks_cover_part([chunk], part)
+                    ),
+                    fallback,
+                )
+                if not any(
+                    chunk.get("page") == candidate.get("page")
+                    and chunks_cover_part([chunk], part)
+                    for chunk in chosen
+                ):
+                    chosen.append(candidate)
 
     # Collection-wide Annexure checks cannot rely on semantic ranking alone.
     # For example, a "TRUE COPY" search ranks compliant pages above the
@@ -916,7 +1206,11 @@ class ScrutinyWorkflow(Workflow):
         vector_organization_id = (
             str(
                 vector_meta.get("organization_id")
-                or (metadata.get("organization_id") if isinstance(metadata, dict) else "")
+                or (
+                    metadata.get("organization_id")
+                    if isinstance(metadata, dict)
+                    else ""
+                )
                 or event.organization_id
                 or ""
             ).strip()
@@ -932,13 +1226,19 @@ class ScrutinyWorkflow(Workflow):
             or None
         )
         vector_file_hash = str(vector_meta.get("file_hash") or "").strip()
-        if index_generation and vector_file_hash and vector_file_hash != str(file_hash or ""):
+        if (
+            index_generation
+            and vector_file_hash
+            and vector_file_hash != str(file_hash or "")
+        ):
             raise ValueError(
                 "Active Pinecone generation belongs to a different filing hash; reindex "
                 "this workspace before running scrutiny"
             )
         if event.organization_id and vector_organization_id != event.organization_id:
-            raise ValueError("Active Pinecone generation belongs to another organization")
+            raise ValueError(
+                "Active Pinecone generation belongs to another organization"
+            )
         if event.workspace_id and vector_workspace_id != event.workspace_id:
             raise ValueError("Active Pinecone generation belongs to another workspace")
         filing_type = (
@@ -1027,6 +1327,18 @@ class ScrutinyWorkflow(Workflow):
         max_chunks = scrutiny_max_chunks()
         use_pinecone = pinecone_enabled() and bool(file_hash)
 
+        active_schema = vector_meta.get("schema_version")
+        if (
+            use_pinecone
+            and index_generation
+            and str(active_schema) != str(VECTOR_SCHEMA_VERSION)
+        ):
+            raise ValueError(
+                "Active Pinecone generation uses vector schema "
+                f"{active_schema or 'unknown'}; schema {VECTOR_SCHEMA_VERSION} is "
+                "required. Reindex this filing before running scrutiny."
+            )
+
         if not pinecone_enabled():
             ctx.write_event_to_stream(
                 Status(
@@ -1089,6 +1401,8 @@ class ScrutinyWorkflow(Workflow):
                 file_hash=file_hash,
                 petition_type=filing_type,
                 model=scrutiny_model(),
+                index_generation=index_generation,
+                vector_schema_version=str(VECTOR_SCHEMA_VERSION),
                 disclaimer=catalogue.disclaimer,
                 findings=snapshot,
                 summary=summarize(snapshot),
@@ -1239,6 +1553,7 @@ class ScrutinyWorkflow(Workflow):
             organization_id=event.organization_id,
             workspace_id=event.workspace_id,
         )
+        require_successful_checks(findings, planned)
 
         cost_note = ""
         if report.usage and report.usage.cost_usd is not None:
@@ -1294,6 +1609,7 @@ class ScrutinyWorkflow(Workflow):
         updated = dict(payload)
         metadata = dict(updated.get("metadata") or {})
         metadata["scrutiny_report"] = report.model_dump(mode="json")
+        metadata["scrutiny_report_status"] = "current"
         updated["metadata"] = metadata
 
         try:

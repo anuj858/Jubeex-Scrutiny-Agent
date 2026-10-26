@@ -27,11 +27,12 @@ class ImmediateHandler:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     JOBS.clear()
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
+    monkeypatch.setenv("JUBEEX_ALLOW_UNAUTHENTICATED", "true")
     monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL", raising=False)
 
-    async def _skip_prepare(_agent_data_id: str) -> None:
+    async def _skip_prepare(_agent_data_id: str, **_scope: object) -> None:
         return None
 
     monkeypatch.setattr(
@@ -39,7 +40,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         _skip_prepare,
     )
 
-    async def _existing_filing(_agent_data_id: str) -> None:
+    async def _existing_filing(_agent_data_id: str, **_scope: object) -> None:
         return None
 
     monkeypatch.setattr(
@@ -82,8 +83,8 @@ def test_catalog(client: TestClient) -> None:
     assert "TRANSFER_PETITION_CIVIL" in body["split_upload_types"]
     assert body["config"]["config_id"] == "jubeex_parse"
     assert body["config"]["classify"]["config_version"] == "1.0.0"
-    assert body["config"]["extract"]["config_version"] == "1.0.1"
-    assert body["config"]["split"]["config_version"] == "1.0.35"
+    assert body["config"]["extract"]["config_version"] == "1.0.2"
+    assert body["config"]["split"]["config_version"] == "1.0.36"
 
 
 def test_create_filing_rejects_empty_body(client: TestClient) -> None:
@@ -241,6 +242,7 @@ def test_unknown_job_is_404(client: TestClient) -> None:
 def test_api_key_required(monkeypatch: pytest.MonkeyPatch) -> None:
     JOBS.clear()
     monkeypatch.setenv("JUBEEX_API_KEY", "secret-key")
+    monkeypatch.delenv("JUBEEX_ALLOW_UNAUTHENTICATED", raising=False)
     guarded = TestClient(app)
     denied = guarded.get("/v1/catalog")
     assert denied.status_code == 401

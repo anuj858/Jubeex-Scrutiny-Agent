@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 import os
 import uuid
@@ -134,7 +133,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARSE_CONCURRENCY = 8
 DEFAULT_INGEST_CONCURRENCY = 8
-DEFAULT_FAST_PARSE_TIER = "fast"
+# OCRia-1 is selected by LlamaParse v2 through the agentic tier with the
+# configured "latest" version. Keep FAST_PARSE_TIER as the environment key for
+# backwards compatibility, but default secondary document parts to OCRia-1 as
+# well instead of downgrading them to the non-AI fast tier.
+DEFAULT_FAST_PARSE_TIER = "agentic"
 PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
 VECTOR_INDEX_METADATA_KEY = "vector_index"
 
@@ -810,9 +813,12 @@ class ProcessSplitFilesWorkflow(Workflow):
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
         try:
+            job_payload = job.model_dump(mode="json")
             logger.info(
-                "Extracted split-upload data: %s",
-                json.dumps(job.model_dump(mode="json"), indent=2, default=str),
+                "Extracted split-upload job id=%s status=%s top_level_fields=%s",
+                state.extract_job_id,
+                job_payload.get("status"),
+                sorted(job_payload),
             )
             data = ExtractedData.from_extract_job(
                 job=job,
@@ -1465,6 +1471,8 @@ async def _activate_vector_generation(
         data["metadata"] = metadata
     previous = _active_vector_generation(metadata)
     metadata[VECTOR_INDEX_METADATA_KEY] = vector_index
+    if metadata.get("scrutiny_report"):
+        metadata["scrutiny_report_status"] = "stale"
     try:
         await client.beta.agent_data.update(item_id, data=data)
     except Exception:

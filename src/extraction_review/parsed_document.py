@@ -464,4 +464,50 @@ def build_semantic_chunks(
         ):
             flush()
     flush(keep_overlap=False)
-    return [chunk for chunk in chunks if chunk.get("text")]
+    chunks = [chunk for chunk in chunks if chunk.get("text")]
+
+    # Consecutive parser headings and isolated folio-like fragments create
+    # poor embeddings. Merge them with adjacent content on the same source
+    # page; no text or provenance is discarded and page boundaries are never
+    # crossed because this function operates on one page at a time.
+    merged: list[dict[str, Any]] = []
+    for chunk in chunks:
+        text = str(chunk.get("text") or "").strip()
+        low_information = len(text) < 40 or (
+            set(chunk.get("item_types") or []) <= {"heading", "text"}
+            and _token_count(text) < 10
+        )
+        if low_information and merged:
+            previous = merged[-1]
+            combined = f"{previous['text']}\n\n{text}".strip()
+            if _token_count(combined) <= max_tokens:
+                previous["text"] = combined
+                previous["item_end"] = max(previous["item_end"], chunk["item_end"])
+                previous["item_types"] = sorted(
+                    set(previous.get("item_types") or [])
+                    | set(chunk.get("item_types") or [])
+                )
+                previous["parse_concerns"] = sorted(
+                    set(previous.get("parse_concerns") or [])
+                    | set(chunk.get("parse_concerns") or [])
+                )
+                previous["token_count"] = _token_count(combined)
+                continue
+        merged.append(dict(chunk))
+
+    if len(merged) > 1:
+        first = merged[0]
+        first_text = str(first.get("text") or "").strip()
+        if (
+            len(first_text) < 40
+            and _token_count(f"{first_text}\n\n{merged[1]['text']}") <= max_tokens
+        ):
+            second = merged[1]
+            second["text"] = f"{first_text}\n\n{second['text']}".strip()
+            second["item_start"] = min(first["item_start"], second["item_start"])
+            second["item_types"] = sorted(
+                set(first.get("item_types") or []) | set(second.get("item_types") or [])
+            )
+            second["token_count"] = _token_count(second["text"])
+            merged.pop(0)
+    return merged

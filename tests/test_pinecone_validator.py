@@ -53,8 +53,8 @@ def _record(record_id, *, workspace_id=WORKSPACE_ID, kind="summary", **overrides
         "file_hash": "a" * 64,
         "index_generation": "generation-1",
         "chunk_kind": kind,
-        "vector_schema_version": 3,
-        "normalized_text": "valid searchable text",
+        "vector_schema_version": validator.store.VECTOR_SCHEMA_VERSION,
+        "normalized_text": "valid searchable text with enough legal context for reliable retrieval",
     }
     if kind in {"page", "page_manifest"}:
         fields.update(
@@ -65,6 +65,9 @@ def _record(record_id, *, workspace_id=WORKSPACE_ID, kind="summary", **overrides
                 "source_pages": ["1"],
                 "chunk_index": 0,
                 "ocr_status": "text",
+                "document_part": "Main Petition",
+                "document_part_id": "main_petition",
+                "document_part_ids": ["main_petition"],
             }
         )
     fields.update(overrides)
@@ -141,6 +144,28 @@ def test_missing_workspace_is_failure(monkeypatch):
 
     assert report["status"] == "fail"
     assert report["issues"][0]["code"] == "workspace_not_found"
+
+
+def test_nonsemantic_page_chunk_is_a_validation_error(monkeypatch):
+    base = _base_id()
+    record_id = f"{base}:page:1:0"
+    records = {
+        f"{base}:summary": _record(f"{base}:summary"),
+        record_id: _record(
+            record_id,
+            kind="page",
+            normalized_text="IN THE SUPREME COURT OF INDIA",
+        ),
+    }
+    index = FakeIndex(records)
+    monkeypatch.setattr(
+        validator.store, "get_pinecone_client", lambda: FakeClient(index)
+    )
+
+    report = validator.validate_workspace(WORKSPACE_ID)
+
+    assert report["status"] == "fail"
+    assert {issue["code"] for issue in report["issues"]} == {"nonsemantic_page_chunk"}
 
 
 def test_main_rejects_non_uuid_workspace_id(capsys):

@@ -1,4 +1,9 @@
-"""Pytest configuration: install the LlamaCloud fake server when compatible."""
+"""Pytest configuration: install the LlamaCloud fake server when compatible.
+
+The latest published fake (0.1.1) still imports SDK models removed in
+llama-cloud 2.19. Keep non-fake tests collectable and skip only tests that use
+the ``fake`` fixture until the fake package publishes compatible models.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ logging.basicConfig(
 def _install_llama_cloud_compat(server: object) -> None:
     """llama-cloud-fake 0.1.x still mocks the older files/split URLs.
 
-    llama-cloud 2.14 retrieve is GET /api/v1/beta/files/{id} and split is
+    Modern llama-cloud retrieve is GET /api/v1/beta/files/{id} and split is
     /api/v1/split/jobs with file_input instead of document_input.
     """
     from llama_cloud_fake import FakeLlamaCloudServer

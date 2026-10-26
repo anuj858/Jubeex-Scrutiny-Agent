@@ -1,10 +1,10 @@
 from importlib.metadata import version
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from llama_cloud import NotFoundError
-from llama_cloud_fake import FakeLlamaCloudServer
 from workflows.events import StartEvent
 
 from extraction_review.config import (
@@ -37,7 +37,7 @@ def _agent_data_not_found(item_id: str) -> NotFoundError:
 @pytest.mark.asyncio
 async def test_process_file_workflow(
     monkeypatch: pytest.MonkeyPatch,
-    fake: FakeLlamaCloudServer,
+    fake: Any,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
 
@@ -70,7 +70,7 @@ async def test_process_file_workflow(
 )
 async def test_classify_v2_assigns_filing_type(
     monkeypatch: pytest.MonkeyPatch,
-    fake: FakeLlamaCloudServer,
+    fake: Any,
 ) -> None:
     """process_file reports a concrete SEC filing type from classify v2."""
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
@@ -110,7 +110,7 @@ async def test_classify_v2_assigns_filing_type(
 )
 async def test_upload_compiled_classifies_instead_of_trusting_provided_type(
     monkeypatch: pytest.MonkeyPatch,
-    fake: FakeLlamaCloudServer,
+    fake: Any,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
     file_id = fake.files.preload(path="tests/files/test.pdf")
@@ -157,17 +157,17 @@ async def test_metadata_workflow() -> None:
     ]
     assert "court_fees" not in criminal_ids
     assert result.config["config_id"] == "jubeex_parse"
-    assert result.config["config_version"] == "1.0.35"
+    assert result.config["config_version"] == "1.0.36"
     assert result.config["classify"]["config_version"] == "1.0.0"
-    assert result.config["extract"]["config_version"] == "1.0.1"
-    assert result.config["split"]["config_version"] == "1.0.35"
+    assert result.config["extract"]["config_version"] == "1.0.2"
+    assert result.config["split"]["config_version"] == "1.0.36"
     assert result.upload_sliced_slot_pdfs is False
 
 
 @pytest.mark.asyncio
 async def test_split_petition_skips_classify(
     monkeypatch: pytest.MonkeyPatch,
-    fake: FakeLlamaCloudServer,
+    fake: Any,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
     monkeypatch.setattr(
@@ -201,7 +201,7 @@ async def test_split_petition_skips_classify(
 @pytest.mark.asyncio
 async def test_extract_only_skips_index_and_limits_parse_scope(
     monkeypatch: pytest.MonkeyPatch,
-    fake: FakeLlamaCloudServer,
+    fake: Any,
 ) -> None:
     monkeypatch.setenv("LLAMA_CLOUD_API_KEY", "fake-api-key")
     captured: dict[str, object] = {}

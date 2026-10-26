@@ -44,6 +44,14 @@ from extraction_review.visual.store import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_visual_test_download_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def allow(url: str) -> str:
+        return url
+
+    monkeypatch.setattr("extraction_review.remote_download.validate_remote_url", allow)
+
+
 def _part(
     slot_id: str,
     names: list[str],
