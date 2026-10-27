@@ -53,8 +53,10 @@ from .split_repair import (
     _outer_anchor_label,
     _restore_early_record_of_proceedings,
     _restore_front_impugned_judgment,
+    _restore_explicit_master_index_pages,
     _restore_index_bridge_pages,
     _restore_master_volume_sections,
+    _restore_model_bracketed_annexure_continuations,
     repair_compiled_split,
 )
 
@@ -116,6 +118,7 @@ class PageUnit:
     ocr_text: str = ""
     extraction_method: str = "native"
     text_quality: str = "usable"
+    parse_confidence: float | None = None
     headings: tuple[str, ...] = ()
     paragraph_starts: tuple[str, ...] = ()
     sentence_continues_previous: bool = False
@@ -127,6 +130,95 @@ class PageUnit:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^:?-{2,}:?$")
+_MARKDOWN_INDEX_SPAN_RE = re.compile(
+    r"^(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2})"
+    r"(?:\s*(?:-|–|—|to)\s*(?:\d{1,4}[A-Za-z]?|[A-Za-z]{1,2}|A\d{1,2}))?$",
+    re.IGNORECASE,
+)
+
+
+def _plain_markdown_cell(value: str) -> str:
+    text = re.sub(r"(?i)<br\s*/?>", " ", value or "")
+    text = re.sub(r"(?i)</?[^>]+>", "", text)
+    text = text.replace("**", "").replace("__", "").replace(r"\.", ".")
+    return " ".join(text.strip().split())
+
+
+def _llamaparse_index_rows(markdown: str) -> list[str]:
+    """Convert LlamaParse Markdown table rows into verified tabbed Index rows.
+
+    Continuation sheets commonly omit the word INDEX.  Restrict recognition to
+    rows that contain a serial, non-empty particulars, and a dedicated folio
+    cell so dates/case numbers in ordinary prose cannot become Index ranges.
+    """
+    rows: list[str] = []
+    last_serial = 0
+
+    def serial_values(value: str) -> list[int]:
+        plain = re.sub(r"(?i)<br\s*/?>", " ", value or "")
+        plain = re.sub(r"(?i)</?[^>]+>", "", plain)
+        if re.sub(r"\d{1,3}|[.()\s]", "", plain):
+            return []
+        return [int(item) for item in re.findall(r"\d{1,3}", plain)]
+
+    for line in (markdown or "").splitlines():
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            continue
+        raw_cells = stripped[1:-1].split("|")
+        cells = [_plain_markdown_cell(cell) for cell in raw_cells]
+        if not cells or all(
+            not cell or _MARKDOWN_TABLE_SEPARATOR_RE.fullmatch(cell) for cell in cells
+        ):
+            continue
+        serial_index = next(
+            (index for index, cell in enumerate(raw_cells[:2]) if serial_values(cell)),
+            None,
+        )
+        if serial_index is None or serial_index + 1 >= len(cells):
+            continue
+        serials = serial_values(raw_cells[serial_index])
+        raw_particulars = raw_cells[serial_index + 1]
+        raw_span = next(
+            (
+                cell
+                for cell in raw_cells[serial_index + 2 :]
+                if any(
+                    _MARKDOWN_INDEX_SPAN_RE.fullmatch(_plain_markdown_cell(piece))
+                    for piece in re.split(r"(?i)<br\s*/?>", cell)
+                )
+            ),
+            "",
+        )
+        spans = [
+            value
+            for piece in re.split(r"(?i)<br\s*/?>", raw_span)
+            if (value := _plain_markdown_cell(piece))
+            and _MARKDOWN_INDEX_SPAN_RE.fullmatch(value)
+        ]
+        particulars = [
+            _plain_markdown_cell(piece)
+            for piece in re.split(
+                r"(?i)(?=(?:annexure|annx\.?)\s*[A-Za-z]?\s*[-/]?\s*\d+\b)",
+                raw_particulars,
+            )
+            if _plain_markdown_cell(piece)
+        ]
+        if len(serials) == len(spans) == len(particulars) and serials:
+            candidates = zip(serials, particulars, spans)
+        elif len(serials) == 1 and spans:
+            candidates = [(serials[0], _plain_markdown_cell(raw_particulars), spans[0])]
+        else:
+            continue
+        for serial, particulars_text, span in candidates:
+            if serial <= last_serial or not particulars_text:
+                continue
+            rows.append(f"{serial}.\t{particulars_text}\t{span}")
+            last_serial = serial
+    return rows
 
 
 @dataclass(frozen=True)
@@ -354,8 +446,7 @@ def _assignment_run_ranges(
         labels = tuple(parts_on_page(page_parts.get(start)))
         end = start
         while (
-            end < page_count
-            and tuple(parts_on_page(page_parts.get(end + 1))) == labels
+            end < page_count and tuple(parts_on_page(page_parts.get(end + 1))) == labels
         ):
             end += 1
         for page in range(start, end + 1):
@@ -389,9 +480,7 @@ def _trace_assignment_stage(
                 "stage": stage,
                 "status": status,
                 "reason": reason,
-                "evidence": list(
-                    (evidence_by_page or {}).get(page, evidence)
-                ),
+                "evidence": list((evidence_by_page or {}).get(page, evidence)),
                 "from_labels": old_labels,
                 "to_labels": new_labels,
                 "from_range": old_ranges[page],
@@ -405,8 +494,19 @@ def extract_page_units(
     *,
     source_pdf: str = "bundle.pdf",
     page_texts: Mapping[int, str] | None = None,
+    page_folios: Mapping[int, str] | None = None,
+    page_confidences: Mapping[int, float] | None = None,
+    use_local_ocr: bool = True,
+    supplied_text_source: str = "supplied",
 ) -> list[PageUnit]:
-    """Extract immutable page units. Prefer supplied texts; enrich via PyMuPDF."""
+    """Extract immutable page units from one authoritative page-text source.
+
+    ``page_texts`` is used by the parse-first split flow to inject LlamaParse's
+    per-page markdown.  In that flow ``use_local_ocr`` is false: mixing a
+    second OCR engine into the same page representation can change headings,
+    table reading order, and therefore document boundaries.  The legacy local
+    OCR switch remains only for controlled rollback and focused unit tests.
+    """
     if not pdf_bytes:
         return []
     reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -421,29 +521,67 @@ def extract_page_units(
         )
         < _OCR_TEXT_MIN
     }
-    image_pages = pages_with_large_images(pdf_bytes)
-    ocr_pages = sorted(sparse_pages | image_pages)
-    ocr_texts = ocr_sparse_pages(pdf_bytes, ocr_pages)
+    image_pages = pages_with_large_images(pdf_bytes) if use_local_ocr else set()
+    ocr_pages = sorted(sparse_pages | image_pages) if use_local_ocr else []
+    ocr_texts = ocr_sparse_pages(pdf_bytes, ocr_pages) if use_local_ocr else {}
     units: list[PageUnit] = []
+    parsed_index_active = False
     for number in range(1, total + 1):
         text = layout.get(number, ("", None, None))[0]
-        if page_texts is not None and number in page_texts:
+        supplied = page_texts is not None and number in page_texts
+        parse_authoritative = supplied and not use_local_ocr
+        if supplied:
             text = page_texts.get(number) or ""
-        if not (text or "").strip():
+            if supplied_text_source == "llamaparse":
+                # Parse table rows before converting <br> cells into physical
+                # line breaks. Once expanded, only the first row of a wrapped
+                # Markdown table remains syntactically complete.
+                index_rows = _llamaparse_index_rows(text)
+                # Repair/audit rules operate on OCR-like plain text. Preserve
+                # table pipes and page ordering while removing presentation
+                # markup that otherwise hides headings such as
+                # ``## <u>LIST OF DATES</u>`` from anchored detectors.
+                text = re.sub(r"(?im)^\s{0,3}#{1,6}\s+", "", text)
+                text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+                text = re.sub(
+                    r"(?i)</?(?:u|b|i|strong|em|sup|sub|mark)\b[^>]*>",
+                    "",
+                    text,
+                )
+                text = re.sub(r"(?i)<hr\s*/?>", "", text)
+                text = text.replace("**", "").replace("__", "")
+                explicit_master_index = bool(
+                    re.search(r"(?i)\bindex\s+of\s+papers\b", text[:1200])
+                    or (
+                        re.search(r"(?mi)^\s*index\s*$", text[:1200])
+                        and re.search(r"(?i)particulars\s+of\s+documents", text[:1800])
+                    )
+                )
+                if index_rows and (parsed_index_active or explicit_master_index):
+                    text = "INDEX\nS.No. Particulars Page No.\n" + "\n".join(index_rows)
+                    parsed_index_active = True
+                else:
+                    parsed_index_active = False
+        if not parse_authoritative and not (text or "").strip():
             try:
                 text = reader.pages[number - 1].extract_text() or ""
             except Exception:
                 text = ""
-        alt, index_table, folio = layout.get(number, ("", None, None))
+        alt, index_table, native_folio = layout.get(number, ("", None, None))
+        supplied_folio = str((page_folios or {}).get(number) or "").strip()
+        folio = supplied_folio or native_folio
         # Some PDFs use a broken character map for digits.  The upstream text
         # can then be longer than the layout extraction but contain C0 control
         # bytes where the visible date is printed (for example
         # ``Dated:\x15\x14.\x13\x14.202\x19``).  Prefer the clean layout text in
         # that case; length alone would preserve the corrupt/wrong date.
-        if len(alt.strip()) > len((text or "").strip()) or (
-            _SUSPICIOUS_CONTROL_RE.search(text or "")
-            and not _SUSPICIOUS_CONTROL_RE.search(alt)
-            and len(alt.strip()) >= len((text or "").strip()) * 0.5
+        if not parse_authoritative and (
+            len(alt.strip()) > len((text or "").strip())
+            or (
+                _SUSPICIOUS_CONTROL_RE.search(text or "")
+                and not _SUSPICIOUS_CONTROL_RE.search(alt)
+                and len(alt.strip()) >= len((text or "").strip()) * 0.5
+            )
         ):
             text = alt
         native_text = (text or "").strip()
@@ -481,16 +619,22 @@ def extract_page_units(
                 # Preserve exact born-digital text while making a heading that
                 # exists only inside the inserted scan visible to repair.
                 text = ocr_text + "\n" + text.lstrip()
-        if index_table:
+        if index_table and not parse_authoritative:
             text = index_table
-        elif folio and text.rstrip().splitlines()[-1:] != [folio]:
+        elif (
+            folio
+            and (supplied_folio or not parse_authoritative)
+            and text.rstrip().splitlines()[-1:] != [folio]
+        ):
             # Put the geometrically verified margin folio last for repair's
             # text-only reader; stamps and body text keep their full content.
             text = text.rstrip() + "\n" + folio
         stripped = (text or "").strip()
         requires_ocr = len(stripped) < _OCR_TEXT_MIN
         extraction_method = (
-            "native+ocr"
+            supplied_text_source
+            if supplied and not use_local_ocr
+            else "native+ocr"
             if native_text and ocr_text
             else "ocr"
             if ocr_text
@@ -501,6 +645,13 @@ def extract_page_units(
         text_quality = (
             "empty" if not stripped else "sparse" if requires_ocr else "usable"
         )
+        parse_confidence = (page_confidences or {}).get(number)
+        if (
+            text_quality == "usable"
+            and parse_confidence is not None
+            and parse_confidence < 0.5
+        ):
+            text_quality = "low_confidence"
         lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
         header = "\n".join(lines[:3])
         footer = "\n".join(lines[-2:]) if len(lines) > 3 else ""
@@ -564,6 +715,7 @@ def extract_page_units(
                 ocr_text=ocr_text,
                 extraction_method=extraction_method,
                 text_quality=text_quality,
+                parse_confidence=parse_confidence,
                 headings=headings,
                 paragraph_starts=paragraph_starts,
                 sentence_continues_previous=bool(
@@ -1019,7 +1171,9 @@ _STRONG_RECONCILIATION_SIGNALS = frozenset(
         "application_start",
     }
 )
-_UNIDENTIFIED_LABELS = frozenset({"Undefined", "Unidentified", "uncategorized", "other"})
+_UNIDENTIFIED_LABELS = frozenset(
+    {"Undefined", "Unidentified", "uncategorized", "other"}
+)
 
 
 def _copy_page_parts(
@@ -1129,9 +1283,7 @@ def _stabilize_document_continuity(
 
         if previous_page is None or page != previous_page + 1:
             active_labels = labels
-            active_has_opening = _classification_opens_labels(
-                by_page.get(page), labels
-            )
+            active_has_opening = _classification_opens_labels(by_page.get(page), labels)
             previous_page = page
             continue
 
@@ -1173,9 +1325,7 @@ def _stabilize_document_continuity(
             # has a verified heading, retain Llama's proposal and leave it for
             # audit/review rather than inventing continuity.
             active_labels = labels
-            active_has_opening = (
-                candidate_has_opening or structurally_distinct_opening
-            )
+            active_has_opening = candidate_has_opening or structurally_distinct_opening
         else:
             # The current document has a verified opening, while the proposed
             # new label has only page-body similarity.  Keep the page with the
@@ -1955,7 +2105,11 @@ def _restore_annexed_lower_court_petitions(
 
         preceding = parts_on_page(updated.get(start - 1))
         annexure = next(
-            (label for label in preceding if family_split_name(label) == ANNEXURE_FAMILY),
+            (
+                label
+                for label in preceding
+                if family_split_name(label) == ANNEXURE_FAMILY
+            ),
             None,
         )
         following = parts_on_page(updated.get(end + 1))
@@ -1971,9 +2125,7 @@ def _restore_annexed_lower_court_petitions(
             and opening_folio[1] == prior_folio[1] + 1
         )
         owner = (
-            annexure
-            if annexure and (next_annexure or folio_continues)
-            else "Undefined"
+            annexure if annexure and (next_annexure or folio_continues) else "Undefined"
         )
         evidence = ["leading_lower_court_caption", "not_sci_main_petition"]
         if owner != "Undefined":
@@ -2216,7 +2368,10 @@ def structure_aware_split(
                 decision_log=blocked_outer_decisions,
             ),
             reason="explicit_outer_heading_outside_established_annexure_continuation",
-            evidence=("outer_document_heading", "boundary_start_or_non_annexure_context"),
+            evidence=(
+                "outer_document_heading",
+                "boundary_start_or_non_annexure_context",
+            ),
         )
         for decision in blocked_outer_decisions:
             assignment_events.setdefault(decision["source_page"], []).append(decision)
@@ -2266,6 +2421,35 @@ def structure_aware_split(
             lower_court_map,
             reason="lower_court_petition_cannot_be_sci_main_petition",
             evidence_by_page=lower_court_evidence,
+        )
+        # Handwriting OCR can confuse an Annexure identifier with an adjacent
+        # folio (for example A/16 at folio 118 becomes A/10 or A-118). The
+        # complete master-Index range plus a strongly supported physical/folio
+        # offset is more reliable than that single-page reading. Reassert this
+        # guarded invariant after stamp-based nesting so the bad OCR label
+        # cannot reclaim the first page of the correct indexed Annexure.
+        apply_map(
+            "final_indexed_annexure_ranges",
+            _apply_indexed_annexure_ranges(page_parts, texts, len(units)),
+            reason="master_index_and_folio_override_conflicting_handwritten_stamp",
+            evidence=("master_index_range", "printed_folio_offset"),
+        )
+        apply_map(
+            "final_explicit_master_index_pages",
+            _restore_explicit_master_index_pages(page_parts, texts),
+            reason="explicit_master_index_heading_overrides_row_content",
+            evidence=("index_heading", "master_index_columns"),
+        )
+        apply_map(
+            "model_bracketed_annexure_continuations",
+            _restore_model_bracketed_annexure_continuations(
+                page_parts,
+                llama_page_parts or {},
+                texts,
+                len(units),
+            ),
+            reason="consecutive_annexure_boundaries_and_stable_folio_offset",
+            evidence=("model_annexure_boundaries", "printed_folio_offset"),
         )
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the

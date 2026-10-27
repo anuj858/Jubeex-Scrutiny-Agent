@@ -72,5 +72,6 @@ def test_workers_use_shared_vertex_pacing(definition_name: str) -> None:
     assert environment["AWS_S3_BUCKET"]
     assert environment["VERTEX_MAX_ATTEMPTS"] == "6"
     assert environment["SCRUTINY_CONCURRENCY"] == "8"
-    assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "db"
+    assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "json"
     assert environment["SCRUTINY_DEFECTS"] == "all"
+    assert environment["OPENROUTER_VISION_ENABLED"] == "true"

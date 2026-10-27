@@ -21,7 +21,13 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 import pymupdf
-from llama_cloud import AsyncLlamaCloud, BadRequestError, NotFoundError
+from llama_cloud import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncLlamaCloud,
+    BadRequestError,
+    NotFoundError,
+)
 from llama_cloud.types.beta.extracted_data import ExtractedData
 from pydantic import (
     AliasChoices,
@@ -45,6 +51,7 @@ from .bundle_slicer import (
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
+    ParseConfig,
     SplitConfig,
     dump_api_configuration,
     with_config_identity,
@@ -68,6 +75,7 @@ from .job_timing import (
 )
 from .llama_usage import (
     collect_optional_usage,
+    collect_parse_usage,
     summarize_llamacloud_usage,
     usage_status_message,
 )
@@ -1116,6 +1124,7 @@ class BundlePrepared(StopEvent):
     timing: dict[str, Any] | None = None
     usage: dict[str, Any] | None = None
     llama_split: dict[str, Any] | None = None
+    split_parse_job_id: str | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     match: bool | None = None
     verified_documents: list[VerifiedDocument] = Field(default_factory=list)
@@ -2119,16 +2128,52 @@ def _document_first_page_ownership(
 
 
 def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
-    """Build page_number -> markdown map from a ParsingGetResponse."""
+    """Build a complete page_number -> text map from a parse response.
+
+    LlamaParse deliberately separates repeated/header-region text from the
+    markdown body.  Paper-book folios and handwritten outer Annexure stamps
+    frequently live in that header field, so dropping it removes the strongest
+    available boundary evidence.  Merge distinct header/body/footer regions in
+    physical reading order while avoiding exact duplicate regions.
+    """
+
+    def joined_regions(*values: object) -> str:
+        regions: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            key = re.sub(r"\s+", " ", text).casefold()
+            if not text or not key or key in seen:
+                continue
+            seen.add(key)
+            regions.append(text)
+        return "\n".join(regions)
+
     pages: dict[int, str] = {}
     markdown = getattr(parse_result, "markdown", None)
     md_pages = getattr(markdown, "pages", None) if markdown else None
     if md_pages:
         for page in md_pages:
             page_number = getattr(page, "page_number", None)
-            text = getattr(page, "markdown", None) or ""
-            if page_number is not None and text:
+            text = joined_regions(
+                getattr(page, "header", None),
+                getattr(page, "markdown", None),
+                getattr(page, "footer", None),
+            )
+            if page_number is not None:
                 pages[int(page_number)] = str(text)
+
+    # A page can be absent from markdown while still being present in the text
+    # expansion. Merge both instead of silently losing a physical page.
+    text_result = getattr(parse_result, "text", None)
+    text_pages = getattr(text_result, "pages", None) if text_result else None
+    if text_pages:
+        for page in text_pages:
+            page_number = getattr(page, "page_number", None)
+            text = getattr(page, "text", None) or ""
+            if page_number is not None and int(page_number) not in pages:
+                pages[int(page_number)] = str(text)
+    if pages:
         return pages
 
     # Fallback: single blob if only markdown_full/text_full is available
@@ -2138,6 +2183,130 @@ def _extract_page_markdown(parse_result: Any) -> dict[int, str]:
     if full:
         pages[1] = str(full)
     return pages
+
+
+def _extract_parse_page_metadata(
+    parse_result: Any,
+) -> tuple[dict[int, str], dict[int, float]]:
+    """Return LlamaParse's spatial folio and confidence evidence per page."""
+    folios: dict[int, str] = {}
+    confidences: dict[int, float] = {}
+    metadata = getattr(parse_result, "metadata", None)
+    for page in getattr(metadata, "pages", None) or ():
+        page_number = getattr(page, "page_number", None)
+        if page_number is None:
+            continue
+        number = int(page_number)
+        printed = str(getattr(page, "printed_page_number", None) or "").strip()
+        if printed:
+            folios[number] = printed
+        confidence = getattr(page, "confidence", None)
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            confidences[number] = max(0.0, min(float(confidence), 1.0))
+    return folios, confidences
+
+
+def _split_parse_create_kwargs(
+    parse_config: ParseConfig,
+    *,
+    file_id: str,
+) -> dict[str, Any]:
+    """Create a strict, layout-aware parse request used as Split's input."""
+    if parse_config.configuration_id:
+        return {
+            "file_id": file_id,
+            "configuration_id": parse_config.configuration_id,
+            "tier": parse_config.tier,
+            "version": parse_config.version,
+            "project_id": project_id,
+        }
+
+    configuration = dump_api_configuration(parse_config)
+    output = dict(configuration.get("output_options") or {})
+    output["granular_bboxes"] = sorted(
+        set(output.get("granular_bboxes") or ()) | {"word", "line", "cell"}
+    )
+    output["extract_printed_page_number"] = True
+    spatial = dict(output.get("spatial_text") or {})
+    spatial.update(
+        {
+            "preserve_layout_alignment_across_pages": True,
+            "preserve_very_small_text": True,
+            "do_not_unroll_columns": True,
+        }
+    )
+    output["spatial_text"] = spatial
+    markdown = dict(output.get("markdown") or {})
+    tables = dict(markdown.get("tables") or {})
+    tables.update(
+        {
+            "output_tables_as_markdown": True,
+            # Boundaries are page-local; cross-page table merging obscures the
+            # first heading after an Index continuation.
+            "merge_continued_tables": False,
+        }
+    )
+    markdown["tables"] = tables
+    output["markdown"] = markdown
+    configuration["output_options"] = output
+
+    processing = dict(configuration.get("processing_options") or {})
+    processing["aggressive_table_extraction"] = True
+    ocr = dict(processing.get("ocr_parameters") or {})
+    ocr.setdefault("languages", ["en"])
+    processing["ocr_parameters"] = ocr
+    configuration["processing_options"] = processing
+
+    control = dict(configuration.get("processing_control") or {})
+    failures = dict(control.get("job_failure_conditions") or {})
+    failures.update(
+        {
+            # API requires a value greater than zero. This is below one page
+            # for any supported filing size; explicit page coverage validation
+            # below still enforces zero missing pages.
+            "allowed_page_failure_ratio": 0.0001,
+            "fail_on_image_ocr_error": True,
+            "fail_on_markdown_reconstruction_error": True,
+        }
+    )
+    control["job_failure_conditions"] = failures
+    configuration["processing_control"] = control
+    # Unlike classify/split, ParsingResource.create accepts configuration
+    # fields directly rather than under a ``configuration`` wrapper.
+    return {"file_id": file_id, "project_id": project_id, **configuration}
+
+
+async def _parse_bundle_for_split(
+    client: AsyncLlamaCloud,
+    *,
+    parse_config: ParseConfig,
+    file_id: str,
+    page_count: int,
+) -> tuple[str, dict[int, str], Any, dict[str, Any]]:
+    """Parse once, validate page coverage, then reuse that job in Split."""
+    parse_job = await client.parsing.create(
+        **_split_parse_create_kwargs(parse_config, file_id=file_id)
+    )
+    parse_job_id = str(parse_job.id)
+    await _wait_for_parse(client, parse_job_id)
+    parse_result = await client.parsing.get(
+        parse_job_id,
+        expand=["markdown", "text", "metadata", "usage"],
+        project_id=project_id,
+    )
+    page_texts = _extract_page_markdown(parse_result)
+    expected = set(range(1, page_count + 1))
+    missing = sorted(expected - set(page_texts))
+    unexpected = sorted(set(page_texts) - expected)
+    if missing or unexpected:
+        raise RuntimeError(
+            "LlamaParse page coverage does not match the source PDF: "
+            f"missing={missing}, unexpected={unexpected}, expected={page_count}"
+        )
+    usage = await collect_parse_usage(
+        client, parse_job_id, payload=parse_result, pages=page_count
+    )
+    return parse_job_id, page_texts, parse_result, usage
 
 
 def _filename_from_url(url: str) -> str:
@@ -2318,15 +2487,54 @@ async def _upload_slot_pdf(
     name = _upload_filename(filename)
     external = (external_file_id or "").strip() or None
 
-    create_kwargs: dict[str, Any] = {
-        "file": (name, io.BytesIO(pdf_bytes), "application/pdf"),
-        "purpose": "extract",
-        "project_id": project_id,
-    }
-    if external:
-        create_kwargs["external_file_id"] = external
+    def create_kwargs(external_id: str | None) -> dict[str, Any]:
+        # Multipart streams are consumed by an attempted request. Always build
+        # a fresh stream so a retry uploads the complete PDF rather than an
+        # empty/truncated remainder.
+        kwargs: dict[str, Any] = {
+            "file": (name, io.BytesIO(pdf_bytes), "application/pdf"),
+            "purpose": "extract",
+            "project_id": project_id,
+        }
+        if external_id:
+            kwargs["external_file_id"] = external_id
+        return kwargs
+
+    def transient_upload_error(exc: BaseException) -> bool:
+        if isinstance(exc, APIConnectionError):
+            return True
+        if not isinstance(exc, APIStatusError):
+            return False
+        status = getattr(exc, "status_code", None)
+        return status in {408, 409, 425, 429, 499} or bool(status and status >= 500)
+
+    async def upload_with_retry(external_id: str | None) -> Any:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await client.files.create(**create_kwargs(external_id))
+            except (APIConnectionError, APIStatusError) as exc:
+                if not transient_upload_error(exc) or attempt >= max_attempts:
+                    raise
+                status = getattr(exc, "status_code", None)
+                request_id = getattr(exc, "request_id", None)
+                delay = float(2 ** (attempt - 1))
+                logger.warning(
+                    "LlamaCloud upload interrupted for %s bytes=%s "
+                    "status=%s request_id=%s attempt=%s/%s; retrying in %.0fs",
+                    name,
+                    len(pdf_bytes),
+                    status,
+                    request_id,
+                    attempt,
+                    max_attempts,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable upload retry state")
+
     try:
-        uploaded = await client.files.create(**create_kwargs)
+        uploaded = await upload_with_retry(external)
     except BadRequestError:
         if not external:
             raise
@@ -2334,11 +2542,7 @@ async def _upload_slot_pdf(
             "LlamaCloud rejected upload with external_file_id=%s; retrying without it",
             external,
         )
-        uploaded = await client.files.create(
-            file=(name, io.BytesIO(pdf_bytes), "application/pdf"),
-            purpose="extract",
-            project_id=project_id,
-        )
+        uploaded = await upload_with_retry(None)
     file_id = getattr(uploaded, "id", None)
     if not file_id:
         raise RuntimeError(f"Upload of {name} did not return a file id")
@@ -3197,6 +3401,15 @@ class ProcessFileWorkflow(Workflow):
                 description="LlamaSplit categories for petition bundle parts",
             ),
         ],
+        parse_config: Annotated[
+            ParseConfig,
+            ResourceConfig(
+                config_file="configs/config.json",
+                path_selector="parse",
+                label="Split OCR and Layout Parse",
+                description="Agentic LlamaParse configuration used before splitting",
+            ),
+        ],
     ) -> BundlePrepared:
         state = await ctx.store.get_state()
         if not state.file_id or not state.filename:
@@ -3214,40 +3427,90 @@ class ProcessFileWorkflow(Workflow):
         output_selection = split_output_selection()
         use_python_rules = split_mode != "llama_only"
         logger.info("[SplitMode] mode=%s file=%s", split_mode, state.filename)
+        split_input_id = state.file_id
 
         async def run_llama_split(
             *, api_configuration: dict[str, Any] | None = None
         ) -> tuple[dict[int, list[str]], str, dict[str, Any]]:
             return await _split_page_parts(
                 llama_cloud_client,
-                file_id=state.file_id,
+                file_id=split_input_id,
                 split_config=split_config,
                 filename=state.filename,
                 api_configuration=api_configuration,
             )
 
-        async def load_and_prepare_pdf() -> tuple[bytes, list[PageUnit], float]:
+        async def load_and_prepare_pdf() -> tuple[
+            bytes,
+            list[PageUnit],
+            int,
+            str,
+            dict[str, Any],
+            float,
+        ]:
             pdf_bytes = await _load_bundle_pdf(
                 llama_cloud_client,
                 file_id=state.file_id,
                 source_documents=state.source_documents,
             )
-            # Parsing and OCR are mandatory for every accepted result, including
-            # the explicit legacy mode. That mode disables local repair only.
+            with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
+                page_count = pdf.page_count
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message="Running agentic OCR and layout parsing for every source page",
+                )
+            )
+            parse_started = start_timer()
+            (
+                parse_job_id,
+                page_texts,
+                parse_result,
+                parse_usage,
+            ) = await _parse_bundle_for_split(
+                llama_cloud_client,
+                parse_config=parse_config,
+                file_id=state.file_id,
+                page_count=page_count,
+            )
+            page_folios, page_confidences = _extract_parse_page_metadata(parse_result)
+            # LlamaParse is the sole OCR authority. The local stage still
+            # computes immutable page geometry/folios, but never runs Tesseract
+            # or substitutes a second OCR reading.
             from .structure_split import extract_page_units
 
-            local_started = start_timer()
             units = await asyncio.to_thread(
                 extract_page_units,
                 pdf_bytes,
                 source_pdf=state.filename,
+                page_texts=page_texts,
+                page_folios=page_folios,
+                page_confidences=page_confidences,
+                use_local_ocr=False,
+                supplied_text_source="llamaparse",
             )
-            return pdf_bytes, units, elapsed_seconds(local_started) or 0.0
+            return (
+                pdf_bytes,
+                units,
+                page_count,
+                parse_job_id,
+                parse_usage,
+                elapsed_seconds(parse_started) or 0.0,
+            )
 
         # Establish the immutable physical-page map before either model pass.
-        pdf_bytes, page_units, local_read_seconds = await load_and_prepare_pdf()
-        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-            pdf_page_count = pdf.page_count
+        (
+            pdf_bytes,
+            page_units,
+            pdf_page_count,
+            split_parse_job_id,
+            split_parse_usage,
+            parse_seconds,
+        ) = await load_and_prepare_pdf()
+        # The stable Split API accepts a completed Parse job id as file_input.
+        # Both model passes therefore see exactly the OCR/layout representation
+        # that feeds local deterministic validation.
+        split_input_id = split_parse_job_id
         boundary_started = start_timer()
         boundary_config = _boundary_detection_configuration(
             page_units, page_count=pdf_page_count
@@ -3311,11 +3574,11 @@ class ProcessFileWorkflow(Workflow):
         classification_seconds = elapsed_seconds(classification_started) or 0.0
         logger.info(
             "[SplitTiming] mode=%s boundary=%.1fs classification=%.1fs "
-            "local_page_read=%.1fs pages=%s",
+            "source_parse=%.1fs pages=%s",
             split_mode,
             boundary_seconds,
             classification_seconds,
-            local_read_seconds,
+            parse_seconds,
             pdf_page_count,
         )
         boundary_usage = await collect_optional_usage(
@@ -3326,7 +3589,12 @@ class ProcessFileWorkflow(Workflow):
             product="split",
             job_id=split_job_id,
         )
-        usage_jobs = [*(state.llamacloud_jobs or []), boundary_usage, split_usage]
+        usage_jobs = [
+            *(state.llamacloud_jobs or []),
+            split_parse_usage,
+            boundary_usage,
+            split_usage,
+        ]
         usage_summary = summarize_llamacloud_usage(usage_jobs)
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
@@ -3347,6 +3615,14 @@ class ProcessFileWorkflow(Workflow):
             "document_spans": [],
             "flags": [],
             "flag_counts": {"error": 0, "warning": 0, "total": 0},
+            "source_parse": {
+                "job_id": split_parse_job_id,
+                "input_file_id": state.file_id,
+                "page_count": pdf_page_count,
+                "seconds": round(parse_seconds, 3),
+                "ocr_authority": "llamaparse",
+                "local_ocr_used": False,
+            },
             "llama_boundary_detection": {
                 "job_id": boundary_job_id,
                 "proposals": boundary_proposals,
@@ -3422,6 +3698,14 @@ class ProcessFileWorkflow(Workflow):
             "evidence_page_count": len(page_units),
             "evidence_complete": "Page cues are sampled"
             not in boundary_config["splitting_strategy"]["custom_instructions"],
+        }
+        split_audit["source_parse"] = {
+            "job_id": split_parse_job_id,
+            "input_file_id": state.file_id,
+            "page_count": pdf_page_count,
+            "seconds": round(parse_seconds, 3),
+            "ocr_authority": "llamaparse",
+            "local_ocr_used": False,
         }
         split_audit["llama_segment_classification"] = {
             "job_id": split_job_id,
@@ -3930,6 +4214,7 @@ class ProcessFileWorkflow(Workflow):
             timing=timing,
             usage={"llamacloud": usage_summary},
             llama_split=llama_split,
+            split_parse_job_id=split_parse_job_id,
         )
 
 

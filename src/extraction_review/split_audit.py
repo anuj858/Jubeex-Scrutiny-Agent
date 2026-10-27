@@ -242,16 +242,15 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
 
     if "fresh case" in text and "report" in text:
         return None
-    if "office report on limitation" in text or "o/r on limitation" in text or (
-        "limitation" in text and "report" in text
+    if (
+        "office report on limitation" in text
+        or "o/r on limitation" in text
+        or ("limitation" in text and "report" in text)
     ):
         return "Office Report on Limitation"
     if "listing" in text and ("proforma" in text or "performa" in text):
         return "Listing Proforma"
-    if (
-        "proforma for first listing" in text
-        or "performa for first listing" in text
-    ):
+    if "proforma for first listing" in text or "performa for first listing" in text:
         return "Listing Proforma"
     if "synopsis" in text and ("list of date" in text or "dates" in text):
         # Combined row — prefer Synopsis as primary; LOD checked via siblings.
@@ -260,7 +259,9 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Synopsis"
     if "list of date" in text or "list of dates" in text:
         return "List of Dates & Events"
-    if "impugned" in text and ("order" in text or "judgment" in text or "judgement" in text):
+    if "impugned" in text and (
+        "order" in text or "judgment" in text or "judgement" in text
+    ):
         return "Impugned Order"
     if re.search(r"\b(?:criminal|civil)\s+appeal\b", text):
         # The Index names an appeal pleading directly (often "Criminal Appeal
@@ -289,9 +290,13 @@ def map_index_particulars_to_part(particulars: str) -> str | None:
         return "Memo of Appearance"
     if "memo of parties" in text or "memorandum of parties" in text:
         return "Memo of Parties"
-    if "declaration" in text and ("aor" in text or "defect" in text or "refiling" in text):
+    if "declaration" in text and (
+        "aor" in text or "defect" in text or "refiling" in text
+    ):
         return "AOR's Declaration"
-    if "certificate" in text and ("aor" in text or "advocate" in text or "confined" in text):
+    if "certificate" in text and (
+        "aor" in text or "advocate" in text or "confined" in text
+    ):
         return "AOR's Certificate"
     if "advocate" in text and "check" in text:
         return "Advocate's Checklist"
@@ -364,9 +369,7 @@ def parse_index_rows(index_text: str) -> list[IndexRow]:
         start_raw = match.group("start")
         if not start_raw:
             # Try to pull a trailing page span out of the body (OCR glue).
-            trailing = re.search(
-                r"(\d{1,4})(?:\s*[-–—/]\s*(\d{1,4}))?\s*$", body
-            )
+            trailing = re.search(r"(\d{1,4})(?:\s*[-–—/]\s*(\d{1,4}))?\s*$", body)
             # In scanned tables OCR commonly reads across the page-number
             # column and then resumes the wrapped particulars, for example
             # ``Annexure P-1: 24-46 A copy of order ...``.
@@ -547,9 +550,7 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
     lost their page numbers, from the bottom, and only when the counts match.
     """
     tabbed_lines = [
-        line
-        for line in index_text.splitlines()
-        if re.match(r"^\d+[.),]\t", line)
+        line for line in index_text.splitlines() if re.match(r"^\d+[.),]\t", line)
     ]
     if tabbed_lines:
         result: list[IndexPrintedRow] = []
@@ -710,8 +711,7 @@ def index_rows_with_printed_pages(index_text: str) -> list[IndexPrintedRow]:
             )
         )
     seen = {
-        (_fold(row.particulars), row.start, row.end, row.mapped_part)
-        for row in aligned
+        (_fold(row.particulars), row.start, row.end, row.mapped_part) for row in aligned
     }
     for row in direct_rows:
         if row.start_page <= 0:
@@ -762,9 +762,7 @@ def aligned_index_printed_rows(
     # mixed tabular/plain continuations. One numeric gap can contain several
     # documents: P-1=26, P-2/P-3 blank, P-4=31 does not prove P-2=27-30.
     # An unnumbered application row before an annexure is equally material.
-    serial_starts = list(
-        re.finditer(r"(?m)^\s*\d{1,3}[.),](?:\s+|$)", index_text)
-    )
+    serial_starts = list(re.finditer(r"(?m)^\s*\d{1,3}[.),](?:\s+|$)", index_text))
     inventory: list[IndexRow] = []
     for index, match in enumerate(serial_starts):
         stop = (
@@ -787,11 +785,13 @@ def aligned_index_printed_rows(
         previous: IndexPrintedRow, following: IndexPrintedRow, label: str
     ) -> bool:
         prior_positions = [
-            index for index, item in enumerate(inventory)
+            index
+            for index, item in enumerate(inventory)
             if matches_explicit_row(item, previous)
         ]
         later_positions = [
-            index for index, item in enumerate(inventory)
+            index
+            for index, item in enumerate(inventory)
             if matches_explicit_row(item, following)
         ]
         if len(prior_positions) != 1 or len(later_positions) != 1:
@@ -800,7 +800,8 @@ def aligned_index_printed_rows(
         if stop <= start:
             return False
         unresolved = [
-            item for item in inventory[start + 1 : stop]
+            item
+            for item in inventory[start + 1 : stop]
             if not any(matches_explicit_row(item, row) for row in rows)
         ]
         return len(unresolved) == 1 and unresolved[0].mapped_part == label
@@ -874,8 +875,15 @@ def aligned_index_printed_rows(
         # range only when it is visible after that title and before the next
         # Annexure title; the neighbouring rows must also leave that precise
         # range. This does not infer an omitted document from numbering alone.
-        next_label = re.search(r"\bANNEXURE\s+[A-Z]\s*[-/]\s*\d+\b", index_text[explicit.end():], re.IGNORECASE)
-        title_region = index_text[explicit.end(): explicit.end() + (next_label.start() if next_label else 250)]
+        next_label = re.search(
+            r"\bANNEXURE\s+[A-Z]\s*[-/]\s*\d+\b",
+            index_text[explicit.end() :],
+            re.IGNORECASE,
+        )
+        title_region = index_text[
+            explicit.end() : explicit.end()
+            + (next_label.start() if next_label else 250)
+        ]
         exact_printed_range = bool(
             re.search(rf"(?<!\d){start}\s*[-–—]\s*{end}(?!\d)", title_region[:250])
         )
@@ -937,9 +945,7 @@ def aligned_index_printed_rows(
     # one bounded numeric gap before the next Annexure or filing-back-matter
     # row. This fixes P-9 637-646 without inventing omitted exhibits.
     annexure_keys = {
-        key
-        for row in unique.values()
-        if (key := annexure_key(row)) is not None
+        key for row in unique.values() if (key := annexure_key(row)) is not None
     }
     explicit_keys = {
         ((match.group(1) or "P").upper(), int(match.group(2)))
@@ -999,7 +1005,9 @@ def aligned_index_printed_rows(
             standalone_title
             and re.search(
                 r"(?m)^\s*\d{1,3}[.)]\s*$",
-                index_text[max(0, standalone_title.start() - 45):standalone_title.start()],
+                index_text[
+                    max(0, standalone_title.start() - 45) : standalone_title.start()
+                ],
             )
         )
         if following is None or not (
@@ -1013,9 +1021,7 @@ def aligned_index_printed_rows(
                 row.end,
             )
             for row in unique.values()
-            if row.kind == "number"
-            and row.start > previous.end
-            and row.start < upper
+            if row.kind == "number" and row.start > previous.end and row.start < upper
         )
         gaps: list[tuple[int, int]] = []
         cursor = previous.end + 1
@@ -1046,10 +1052,7 @@ def aligned_index_printed_rows(
         for position, item in enumerate(inventory)
         if item.start_page > 0 and item.end_page >= item.start_page
     ]
-    folios_by_page = {
-        page: printed_folio(text)
-        for page, text in page_text.items()
-    }
+    folios_by_page = {page: printed_folio(text) for page, text in page_text.items()}
 
     def opening_matches(item: IndexRow, text: str) -> bool:
         head = text[:1600]
@@ -1083,9 +1086,7 @@ def aligned_index_printed_rows(
                     head,
                     re.IGNORECASE,
                 )
-                and not re.search(
-                    r"\bsupreme\s+court\b", head[:500], re.IGNORECASE
-                )
+                and not re.search(r"\bsupreme\s+court\b", head[:500], re.IGNORECASE)
             )
             return bool(
                 row_case
@@ -1097,21 +1098,27 @@ def aligned_index_printed_rows(
 
     for (left_pos, left), (right_pos, right) in pairwise(numbered_inventory):
         missing = inventory[left_pos + 1 : right_pos]
-        if not missing or any(item.start_page or not item.mapped_part for item in missing):
+        if not missing or any(
+            item.start_page or not item.mapped_part for item in missing
+        ):
             continue
         gap_start, gap_end = left.end_page + 1, right.start_page - 1
         if gap_end < gap_start or gap_end - gap_start + 1 > 100:
             continue
         left_pages = [
-            page for page, folio in folios_by_page.items()
+            page
+            for page, folio in folios_by_page.items()
             if folio == ("number", left.end_page, "")
         ]
         right_pages = [
-            page for page, folio in folios_by_page.items()
+            page
+            for page, folio in folios_by_page.items()
             if folio == ("number", right.start_page, "")
         ]
         pairs = [
-            (start, stop) for start in left_pages for stop in right_pages
+            (start, stop)
+            for start in left_pages
+            for stop in right_pages
             if stop - start - 1 == gap_end - gap_start + 1
         ]
         if len(pairs) != 1:
@@ -1205,9 +1212,7 @@ def collect_index_annexure_entries(
     # serial row. Remove them for free-text inventory parsing; they remain
     # available to the separate, page-column parser.
     explicit_text = "\n".join(
-        line
-        for line in index_text.splitlines()
-        if not re.match(r"^\d+[.)]\t", line)
+        line for line in index_text.splitlines() if not re.match(r"^\d+[.)]\t", line)
     )
     headings = list(
         re.finditer(
@@ -1221,9 +1226,7 @@ def collect_index_annexure_entries(
         seen_explicit: set[str] = set()
         for i, heading in enumerate(headings):
             end = (
-                headings[i + 1].start()
-                if i + 1 < len(headings)
-                else len(explicit_text)
+                headings[i + 1].start() if i + 1 < len(headings) else len(explicit_text)
             )
             labels = annexure_labels_from_text(heading.group())
             if len(labels) != 1:
@@ -1231,12 +1234,10 @@ def collect_index_annexure_entries(
             label = next(iter(labels))
             if label in seen_explicit:
                 continue
-            particulars = explicit_text[heading.start():end].strip()
+            particulars = explicit_text[heading.start() : end].strip()
             # The final exhibit may be followed by applications and
             # filing-list rows, which are not its particulars.
-            following_row = re.search(
-                r"\n\s*\d{1,3}[.)]\s*(?:\n|[A-Z])", particulars
-            )
+            following_row = re.search(r"\n\s*\d{1,3}[.)]\s*(?:\n|[A-Z])", particulars)
             if following_row:
                 particulars = particulars[: following_row.start()].strip()
             explicit.append((label, particulars))
@@ -1261,7 +1262,9 @@ def collect_index_annexure_entries(
 
     if not entries:
         # Free-text Index without parseable rows — keep number order.
-        for label in sorted(annexure_labels_from_text(index_text), key=_annexure_sort_key):
+        for label in sorted(
+            annexure_labels_from_text(index_text), key=_annexure_sort_key
+        ):
             entries.append((10_000, _annexure_sort_key(label), label, ""))
 
     entries.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -1323,9 +1326,7 @@ def attached_annexures(page_parts: PagePartMap) -> set[str]:
 
 def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> str:
     labeled_pages = {
-        page
-        for page, names in page_parts.items()
-        if "Index" in parts_on_page(names)
+        page for page, names in page_parts.items() if "Index" in parts_on_page(names)
     }
     # Every geometry-rebuilt master-Index continuation repeats the synthetic
     # ``INDEX / S.No. / Particulars / Page No.`` header.  Always union those
@@ -1337,10 +1338,7 @@ def _index_pages_text(page_parts: PagePartMap, page_text: Mapping[int, str]) -> 
         for page, text in page_text.items()
         if "index" in _fold(text[:400])
         and ("particulars" in _fold(text[:800]) or "page no" in _fold(text[:800]))
-        and (
-            "\t" in text
-            or len(re.findall(r"(?m)^\s*\d{1,3}[.),]\s+", text)) >= 2
-        )
+        and ("\t" in text or len(re.findall(r"(?m)^\s*\d{1,3}[.),]\s+", text)) >= 2)
     }
     pages = sorted(labeled_pages | detected_pages)
     if not pages:
@@ -1650,9 +1648,7 @@ def check_index_consistency(
         if part in {
             "Synopsis + List of Dates & Events",
             "Synopsis & List of Dates & Events",
-        } and (
-            "Synopsis" in mentioned or "List of Dates & Events" in mentioned
-        ):
+        } and ("Synopsis" in mentioned or "List of Dates & Events" in mentioned):
             continue
         if part == "Memo of Appearance + Vakalatnama" and (
             "Vakalatnama" in mentioned or "Memo of Appearance" in mentioned
@@ -1824,19 +1820,12 @@ def audit_compiled_split(
     index_text = _index_pages_text(page_parts, page_text)
     rows = parse_index_rows(index_text) if index_text.strip() else []
     index_source_pages = sorted(
-        {
-            page
-            for page, names in page_parts.items()
-            if "Index" in parts_on_page(names)
-        }
+        {page for page, names in page_parts.items() if "Index" in parts_on_page(names)}
         | {
             page
             for page, text in page_text.items()
             if "index" in _fold(text[:400])
-            and (
-                "particulars" in _fold(text[:800])
-                or "page no" in _fold(text[:800])
-            )
+            and ("particulars" in _fold(text[:800]) or "page no" in _fold(text[:800]))
         }
     )
 
@@ -1975,7 +1964,9 @@ def audit_compiled_split(
                 starts.append(current)
         ends.append(unlabeled[-1])
         for start, end in zip(starts, ends, strict=True):
-            excerpt = "\n".join(page_text.get(page, "") for page in range(start, end + 1))
+            excerpt = "\n".join(
+                page_text.get(page, "") for page in range(start, end + 1)
+            )
             if re.search(r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", excerpt) and re.search(
                 r"(?i)\b(?:high\s+court|district\s+court|tribunal|writ\s+petition)\b",
                 excerpt,
@@ -2029,9 +2020,7 @@ def audit_compiled_split(
                     else None
                 ),
                 "reconciliation": (
-                    change.as_dict()
-                    if change and hasattr(change, "as_dict")
-                    else None
+                    change.as_dict() if change and hasattr(change, "as_dict") else None
                 ),
                 "text_excerpt": compact_text[:320],
             }
@@ -2099,6 +2088,12 @@ def audit_compiled_split(
             reasons.append("low_classification_confidence")
         if unit and getattr(unit, "text_quality", "") == "empty":
             reasons.append("text_unavailable")
+        if (
+            unit
+            and getattr(unit, "parse_confidence", None) is not None
+            and float(unit.parse_confidence) < 0.5
+        ):
+            reasons.append("low_parse_confidence")
         if any(
             flag.severity in {"error", "warning"} and flag.part in labels
             for flag in flags
@@ -2219,9 +2214,9 @@ def audit_compiled_split(
             {
                 "source_document_id": source_document_id,
                 "segment_id": segment_ids[page],
-                "effective_owner": labels[0] if len(labels) == 1 else (
-                    "Unidentified" if not labels else None
-                ),
+                "effective_owner": labels[0]
+                if len(labels) == 1
+                else ("Unidentified" if not labels else None),
                 "boundary_before": (
                     boundary.as_dict()
                     if boundary and hasattr(boundary, "as_dict")
@@ -2237,18 +2232,23 @@ def audit_compiled_split(
                     {
                         "method": getattr(unit, "extraction_method", None),
                         "quality": getattr(unit, "text_quality", None),
-                        "native_text_chars": len(getattr(unit, "native_text", "") or ""),
-                        "ocr_text_chars": len(getattr(unit, "ocr_text", "") or ""),
-                        "native_excerpt": str(
+                        "parse_confidence": getattr(unit, "parse_confidence", None),
+                        "native_text_chars": len(
                             getattr(unit, "native_text", "") or ""
-                        )[:1000],
+                        ),
+                        "ocr_text_chars": len(getattr(unit, "ocr_text", "") or ""),
+                        "native_excerpt": str(getattr(unit, "native_text", "") or "")[
+                            :1000
+                        ],
                         "native_excerpt_truncated": len(
                             getattr(unit, "native_text", "") or ""
-                        ) > 1000,
+                        )
+                        > 1000,
                         "ocr_excerpt": str(getattr(unit, "ocr_text", "") or "")[:1000],
                         "ocr_excerpt_truncated": len(
                             getattr(unit, "ocr_text", "") or ""
-                        ) > 1000,
+                        )
+                        > 1000,
                         "ocr_needed": bool(getattr(unit, "requires_ocr", False)),
                         "headings": list(getattr(unit, "headings", ()) or ()),
                         "paragraph_starts": list(

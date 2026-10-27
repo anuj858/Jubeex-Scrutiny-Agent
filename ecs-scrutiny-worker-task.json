@@ -125,7 +125,11 @@
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "db"
+          "value": "json"
+        },
+        {
+          "name": "OPENROUTER_VISION_ENABLED",
+          "value": "true"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",
@@ -182,6 +186,10 @@
         {
           "name": "AWS_S3_BUCKET",
           "value": "jubeex-893338224943-ap-south-1-an"
+        },
+        {
+          "name": "JUBEEX_REMOTE_FILE_HOSTS",
+          "value": "jubeex-893338224943-ap-south-1-an.s3.ap-south-1.amazonaws.com,s3.ap-south-1.amazonaws.com"
         }
       ],
       "secrets": [
