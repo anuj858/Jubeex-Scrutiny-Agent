@@ -146,7 +146,11 @@
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "db"
+          "value": "json"
+        },
+        {
+          "name": "OPENROUTER_VISION_ENABLED",
+          "value": "true"
         },
         {
           "name": "SCRUTINY_TOP_K",
@@ -183,6 +187,10 @@
         {
           "name": "PINECONE_TEXT_FIELD",
           "value": "normalized_text"
+        },
+        {
+          "name": "JUBEEX_REMOTE_FILE_HOSTS",
+          "value": "jubeex-893338224943-ap-south-1-an.s3.ap-south-1.amazonaws.com,s3.ap-south-1.amazonaws.com"
         }
       ],
       "mountPoints": [],

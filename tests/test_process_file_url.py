@@ -17,6 +17,7 @@ from extraction_review.process_file import (
     _load_bundle_pdf,
     _split_output_matches,
     _upload_filename,
+    _upload_slot_pdf,
     _upload_sliced_slots,
     clear_file_bytes_cache,
     compiled_catalog_override,
@@ -737,6 +738,41 @@ async def test_ingest_retries_upload_without_external_id(
     assert file_id == "dfl-retry-1"
     assert client.files.create.await_count == 2
     assert "external_file_id" not in client.files.create.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_large_upload_retries_client_closed_request_with_fresh_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llama_cloud import APIStatusError
+
+    response = MagicMock(status_code=499, headers={})
+    error = APIStatusError(
+        "Client Closed Request",
+        response=response,
+        body={"detail": "Client Closed Request"},
+    )
+    client = MagicMock()
+    client.files.create = AsyncMock(
+        side_effect=[error, SimpleNamespace(id="dfl-large-upload")]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="Defect file 002.pdf",
+        pdf_bytes=b"%PDF-1.7 large filing",
+        external_file_id="backend-doc-002",
+    )
+
+    assert file_id == "dfl-large-upload"
+    assert client.files.create.await_count == 2
+    first = client.files.create.await_args_list[0].kwargs["file"][1]
+    second = client.files.create.await_args_list[1].kwargs["file"][1]
+    assert first is not second
+    assert first.getvalue() == second.getvalue() == b"%PDF-1.7 large filing"
+    sleep.assert_awaited_once_with(1.0)
 
 
 def test_positive_int_env_and_slot_upload_concurrency(

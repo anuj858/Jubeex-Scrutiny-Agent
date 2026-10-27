@@ -795,6 +795,24 @@ def _looks_like_lower_court_exhibit_list(text: str) -> bool:
     )
 
 
+_BANK_TRANSFER_FORM_CUES = (
+    r"\btransaction reference\b",
+    r"\bmessage type\b",
+    r"\bbeneficiar(?:y|ies)\b",
+    r"\bremitter\b",
+    r"\bcredit (?:status|confirmed|date|time)\b",
+    r"\brtgs\b|\bneft\b",
+)
+
+
+def _looks_like_bank_transfer_form(text: str) -> bool:
+    """Return true when a bare P08-like token is a bank field, not a stamp."""
+    window = (text or "")[:5000]
+    return (
+        sum(bool(re.search(cue, window, re.I)) for cue in _BANK_TRANSFER_FORM_CUES) >= 2
+    )
+
+
 def _annexure_mark_from_title_or_stamp(
     text: str, *, require_series: bool = False
 ) -> AnnexureMark | None:
@@ -803,6 +821,7 @@ def _annexure_mark_from_title_or_stamp(
     if not lines:
         return None
     nested_exhibits = _looks_like_lower_court_exhibit_list(text)
+    bank_transfer_form = _looks_like_bank_transfer_form(text)
     # An outer paper-book stamp can sit above an enclosed tribunal document's
     # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
     # the Supreme Court paper-book Index and must not hide the A-n boundary.
@@ -840,7 +859,9 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match or _INDEX_ROW_ANNEXURE_RE.match(line):
             continue
-        if nested_exhibits and match.groupdict().get("bare_num"):
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
             continue
         remainder = line[match.end() :].strip(" .;:-~_|")
         if remainder:
@@ -869,7 +890,9 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_HEADING_RE.search(line)
         if not match or len(line) > 80:
             continue
-        if nested_exhibits and match.groupdict().get("bare_num"):
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
             continue
         # A real first-line stamp begins at the left margin (allowing only a
         # few OCR-noise characters such as ``i so ANNEXURE-P-11``).  Petition
@@ -923,7 +946,9 @@ def _annexure_mark_from_title_or_stamp(
         match = _ANNEXURE_TITLE_LINE_RE.match(line)
         if not match:
             return None
-        if nested_exhibits and match.groupdict().get("bare_num"):
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
             return None
         if require_series and re.match(
             r"(?i)^\s*(?:\d{1,4}\s+)?annexure\s*(?:no\.?\s*)\d+\b",
@@ -1201,6 +1226,13 @@ def _is_sci_application_start(text: str) -> bool:
         r"\bp\s*a\s*p\s*e\s*r\s*b\s*o\s*o\s*k\b",
         text[:2200] or "",
         re.IGNORECASE,
+    ):
+        return False
+    # A disposed Supreme Court order commonly ends with “Pending
+    # interlocutory application(s), if any, is/are disposed of.” That body
+    # sentence is not an Application heading.
+    if re.search(r"(?mi)^\s*o\s*r\s*d\s*e\s*r\s*$", text[:2000] or "") and re.search(
+        r"(?i)pending\s+interlocutory\s+application", text[:2000] or ""
     ):
         return False
     return bool(

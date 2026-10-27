@@ -7,9 +7,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        nodejs \
-       npm \
-       tesseract-ocr \
-       tesseract-ocr-eng \
+       npm
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /app/

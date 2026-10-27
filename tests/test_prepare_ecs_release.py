@@ -17,7 +17,7 @@ API_IMAGE = "registry.example/api@sha256:" + "a" * 64
 WORKER_IMAGE = "registry.example/worker@sha256:" + "b" * 64
 
 
-def test_prepare_release_pins_images_and_full_db_catalogue(tmp_path: Path) -> None:
+def test_prepare_release_pins_images_and_full_json_catalogue(tmp_path: Path) -> None:
     paths = prepare(
         api_image=API_IMAGE,
         worker_image=WORKER_IMAGE,
@@ -29,10 +29,14 @@ def test_prepare_release_pins_images_and_full_db_catalogue(tmp_path: Path) -> No
         task = json.loads(path.read_text())
         container = task["containerDefinitions"][0]
         env = {item["name"]: item["value"] for item in container["environment"]}
-        assert env["SCRUTINY_CATALOGUE_SOURCE"] == "db"
+        assert env["SCRUTINY_CATALOGUE_SOURCE"] == "json"
         assert env["SCRUTINY_DEFECTS"] == "all"
+        assert env["OPENROUTER_VISION_ENABLED"] == "true"
         assert env["JUBEEX_CALLBACK_URL"].startswith("https://")
-        assert env["JUBEEX_REMOTE_FILE_HOSTS"].endswith(".amazonaws.com")
+        assert env["JUBEEX_REMOTE_FILE_HOSTS"] == (
+            "jubeex-893338224943-ap-south-1-an.s3.ap-south-1.amazonaws.com,"
+            "s3.ap-south-1.amazonaws.com"
+        )
         assert container["image"] == (API_IMAGE if "api" in path.name else WORKER_IMAGE)
 
 
@@ -140,5 +144,6 @@ def test_checked_in_task_catalogue_is_not_test_subset(filename: str) -> None:
         item["name"]: item["value"]
         for item in task["containerDefinitions"][0]["environment"]
     }
-    assert env["SCRUTINY_CATALOGUE_SOURCE"] == "db"
+    assert env["SCRUTINY_CATALOGUE_SOURCE"] == "json"
     assert env["SCRUTINY_DEFECTS"] == "all"
+    assert env["OPENROUTER_VISION_ENABLED"] == "true"

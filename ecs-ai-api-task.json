@@ -77,7 +77,11 @@
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "db"
+          "value": "json"
+        },
+        {
+          "name": "OPENROUTER_VISION_ENABLED",
+          "value": "true"
         },
         {
           "name": "SCRUTINY_CONCURRENCY",

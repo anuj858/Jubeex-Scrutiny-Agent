@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.36",
+  "config_version": "1.0.37",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -13,7 +13,7 @@
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.36"
+      "config_version": "1.0.37"
     }
   },
   "classify": {
@@ -953,8 +953,36 @@
     "output_options": {
       "granular_bboxes": [
         "word",
-        "line"
-      ]
+        "line",
+        "cell"
+      ],
+      "extract_printed_page_number": true,
+      "spatial_text": {
+        "preserve_layout_alignment_across_pages": true,
+        "preserve_very_small_text": true,
+        "do_not_unroll_columns": true
+      },
+      "markdown": {
+        "tables": {
+          "output_tables_as_markdown": true,
+          "merge_continued_tables": false
+        }
+      }
+    },
+    "processing_options": {
+      "aggressive_table_extraction": true,
+      "ocr_parameters": {
+        "languages": [
+          "en"
+        ]
+      }
+    },
+    "processing_control": {
+      "job_failure_conditions": {
+        "allowed_page_failure_ratio": 0.0001,
+        "fail_on_image_ocr_error": true,
+        "fail_on_markdown_reconstruction_error": true
+      }
     }
   },
   "split": {

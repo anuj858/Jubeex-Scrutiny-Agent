@@ -67,10 +67,12 @@ def prepare(
             raise ValueError(f"{filename}: expected exactly one container")
         container = containers[0]
         env = _environment(container)
-        if env.get("SCRUTINY_CATALOGUE_SOURCE") != "db":
-            raise ValueError(f"{filename}: production requires the DB catalogue")
+        if env.get("SCRUTINY_CATALOGUE_SOURCE") != "json":
+            raise ValueError(f"{filename}: release requires the JSON catalogue")
         if env.get("SCRUTINY_DEFECTS", "").lower() != "all":
             raise ValueError(f"{filename}: production cannot use a defect allowlist")
+        if env.get("OPENROUTER_VISION_ENABLED", "").lower() != "true":
+            raise ValueError(f"{filename}: visual checks must be enabled")
         if env.get("JUBEEX_SQS_ENABLED", "").lower() != "true":
             raise ValueError(f"{filename}: SQS must be enabled")
         secrets = {item["name"] for item in container.get("secrets") or []}
@@ -108,7 +110,10 @@ def prepare(
             _set_environment(
                 container,
                 "JUBEEX_REMOTE_FILE_HOSTS",
-                f"{bucket}.s3.{region}.amazonaws.com",
+                (
+                    f"{bucket}.s3.{region}.amazonaws.com,"
+                    f"s3.{region}.amazonaws.com"
+                ),
             )
         if role == "api" and "JUBEEX_API_KEY" not in secrets:
             raise ValueError(f"{filename}: missing JUBEEX_API_KEY secret")

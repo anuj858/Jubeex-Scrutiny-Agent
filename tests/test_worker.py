@@ -23,16 +23,6 @@ def test_worker_deadline_is_bounded_and_configurable(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_requires_tesseract_runtime() -> None:
-    with (
-        patch("extraction_review.worker.sqs_enabled", return_value=True),
-        patch("extraction_review.worker.shutil.which", return_value=None),
-        pytest.raises(RuntimeError, match="install tesseract-ocr"),
-    ):
-        await run_worker(once=True)
-
-
-@pytest.mark.asyncio
 async def test_worker_rejects_malformed_sqs_job() -> None:
     with pytest.raises(ValueError, match="requires job_id and event"):
         await process_message({"kind": "scrutiny"})
@@ -159,9 +149,6 @@ async def test_shutdown_cancels_active_job_and_releases_visibility() -> None:
 
     with (
         patch("extraction_review.worker.sqs_enabled", return_value=True),
-        patch(
-            "extraction_review.worker.shutil.which", return_value="/usr/bin/tesseract"
-        ),
         patch("extraction_review.worker.worker_kinds", return_value=("scrutiny",)),
         patch("extraction_review.worker.receive_jobs", return_value=[message]),
         patch("extraction_review.worker.process_message", side_effect=active_job),

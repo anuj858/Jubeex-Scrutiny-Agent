@@ -44,7 +44,27 @@ def _config() -> Config:
 
 def _client(segments: list[dict]) -> SimpleNamespace:
     payload = {"id": "spl-raw", "status": "COMPLETED", "result": {"segments": segments}}
+    parse_payload = {
+        "job": {"status": "COMPLETED", "tier": "agentic"},
+        "usage": {"credits": 1.0},
+    }
+    parse_result = SimpleNamespace(
+        job=SimpleNamespace(status="COMPLETED", tier="agentic"),
+        markdown=SimpleNamespace(
+            pages=[
+                SimpleNamespace(page_number=page, markdown=f"parsed page {page}")
+                for page in range(1, 7)
+            ]
+        ),
+        text=None,
+        usage={"credits": 1.0},
+        model_dump=lambda **_kwargs: parse_payload,
+    )
     return SimpleNamespace(
+        parsing=SimpleNamespace(
+            create=AsyncMock(return_value=SimpleNamespace(id="parse-job")),
+            get=AsyncMock(return_value=parse_result),
+        ),
         split=SimpleNamespace(
             create=AsyncMock(return_value=SimpleNamespace(id="spl-raw")),
             get=AsyncMock(
@@ -95,7 +115,9 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     )
     monkeypatch.setattr(
         "extraction_review.structure_split.extract_page_units",
-        Mock(return_value=[PageUnit(pdf_page=i, text=f"page {i}") for i in range(1, 7)]),
+        Mock(
+            return_value=[PageUnit(pdf_page=i, text=f"page {i}") for i in range(1, 7)]
+        ),
     )
     monkeypatch.setattr(
         process_file, "collect_optional_usage", AsyncMock(return_value={})
@@ -122,6 +144,7 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
             ctx,
             client,
             _config().split,
+            _config().parse,
         )
     assert result.slot_pages == {
         "petition": [{"start": 1, "end": 2}],
@@ -133,7 +156,9 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
     assert all(bool(part.file_id) == upload_slots for part in result.parts)
     assert client.files.create.await_count == (4 if upload_slots else 0)
     assert "[SplitTiming] mode=llama_only" in caplog.text
-    assert any("mandatory page and ownership audit" in event.message for event in events)
+    assert any(
+        "mandatory page and ownership audit" in event.message for event in events
+    )
     assert artifact.call_args.args[1]["duplicate_parts"] == []
     assert any(
         flag["code"] == "index_missing"
@@ -143,7 +168,10 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
         artifact.call_args.args[1]["split_audit"]["reconciliation_mode"] == "llama_only"
     )
     assert artifact.call_args.args[1]["split_audit"]["review_status"] == "needs_review"
-    assert artifact.call_args.args[1]["split_audit"]["semantic_validation"]["status"] == "not_assessed_legacy_mode"
+    assert (
+        artifact.call_args.args[1]["split_audit"]["semantic_validation"]["status"]
+        == "not_assessed_legacy_mode"
+    )
     assert client.split.create.await_count == 2
     # Same response fields, including compatibility fields; no added API format.
     assert "llama_split" in result.model_dump()
@@ -231,6 +259,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     )
 
     execution_order: list[str] = []
+
     def read_local_pages(*_args, **_kwargs):
         # An in-flight job must not switch mode between OCR and repair/audit.
         execution_order.append("extract_original_pages")
@@ -287,17 +316,38 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
             ctx,
             client,
             _config().split,
+            _config().parse,
         )
     assert execution_order == [
         "extract_original_pages",
         "llama_split_proposals",
         "llama_split_proposals",
     ]
-    assert split_requests[0]["configuration"]["categories"][0]["name"] == "Document Segment"
+    assert (
+        split_requests[0]["configuration"]["categories"][0]["name"]
+        == "Document Segment"
+    )
     assert split_requests[1]["configuration"]["categories"]
-    assert split_requests[1]["configuration"]["categories"][0]["name"] != "Document Segment"
-    assert "boundary-1=[1, 2, 3, 4, 5, 6]" in split_requests[1]["configuration"]["splitting_strategy"]["custom_instructions"]
-    read.assert_called_once_with(pdf_bytes, source_pdf="source.pdf")
+    assert (
+        split_requests[1]["configuration"]["categories"][0]["name"]
+        != "Document Segment"
+    )
+    assert (
+        "boundary-1=[1, 2, 3, 4, 5, 6]"
+        in split_requests[1]["configuration"]["splitting_strategy"][
+            "custom_instructions"
+        ]
+    )
+    read.assert_called_once_with(
+        pdf_bytes,
+        source_pdf="source.pdf",
+        page_texts={page: f"parsed page {page}" for page in range(1, 7)},
+        page_folios={},
+        page_confidences={},
+        use_local_ocr=False,
+        supplied_text_source="llamaparse",
+    )
+    assert all(request["file_input"] == "parse-job" for request in split_requests)
     # This test stubs structure_aware_split; the wrapper's repair mock is only
     # asserted for the initial local extraction path.
     repair.assert_called_once()
@@ -397,6 +447,7 @@ async def test_reconciled_workflow_preserves_adjacent_remote_documents(
         ctx,
         _client(segments),
         _config().split,
+        _config().parse,
     )
     expected_slots = {
         "index": [{"start": 1, "end": 1}],
@@ -423,7 +474,7 @@ async def test_reconciled_workflow_preserves_adjacent_remote_documents(
 
 
 @pytest.mark.asyncio
-async def test_enabled_flag_reaches_ocr_and_real_repair_and_audit(monkeypatch):
+async def test_enabled_flag_uses_parse_text_without_local_ocr(monkeypatch):
     from extraction_review import split_audit, structure_split
 
     monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", "true")
@@ -459,12 +510,12 @@ async def test_enabled_flag_reaches_ocr_and_real_repair_and_audit(monkeypatch):
         ctx,
         _client([{"category": "Main Petition", "pages": [1, 2, 3, 4, 5, 6]}]),
         _config().split,
+        _config().parse,
     )
-    ocr.assert_called_once()
-    assert ocr.call_args.args[1]  # Sparse pages were selected for OCR.
-    # The real targeted flow makes an initial proposal and one fresh global
-    # reassessment after accepted mutations.
-    assert repair.call_count == 2
+    ocr.assert_not_called()
+    # Deterministic reconciliation still runs, but it consumes the single
+    # LlamaParse page representation and may stop after the first clear pass.
+    assert repair.call_count >= 1
     audit.assert_called_once()
     assert result.parts
     assert "structure" in artifact.call_args.args[1]["split_audit"]
