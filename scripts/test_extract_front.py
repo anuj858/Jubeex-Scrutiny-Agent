@@ -328,6 +328,8 @@ def write_human_summary_card(
                 if p.get("city") or p.get("state") or p.get("pin_code"):
                     loc = ", ".join(filter(None, [p.get("city"), p.get("state"), p.get("pin_code")]))
                     f.write(f"      Location  : {loc}\n")
+                if p.get("age"):
+                    f.write(f"      Age       : {p.get('age')}\n")
                 if p.get("occupation"):
                     f.write(f"      Occupation: {p.get('occupation')}\n")
                 if p.get("email") or p.get("mobile"):
@@ -352,6 +354,8 @@ def write_human_summary_card(
                 if r.get("city") or r.get("state") or r.get("pin_code"):
                     loc = ", ".join(filter(None, [r.get("city"), r.get("state"), r.get("pin_code")]))
                     f.write(f"      Location  : {loc}\n")
+                if r.get("age"):
+                    f.write(f"      Age       : {r.get('age')}\n")
                 if r.get("occupation"):
                     f.write(f"      Occupation: {r.get('occupation')}\n")
                 if r.get("email") or r.get("mobile"):
