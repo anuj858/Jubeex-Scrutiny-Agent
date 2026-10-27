@@ -863,6 +863,23 @@ def _edit_distance_at_most(left: str, right: str, limit: int = 2) -> bool:
     return previous[-1] <= limit
 
 
+_HONORIFIC_TOKEN = re.compile(
+    r"^(?:shri|sri|smt|sh|mr|mrs|ms|dr|km|kumari|master)\.?$",
+    re.IGNORECASE,
+)
+
+
+def _given_name_tokens(name: str | None) -> list[str]:
+    """Drop Shri / Mr / Smt so two brothers are not the same person."""
+    tokens: list[str] = []
+    for token in (name or "").split():
+        bare = token.strip(".,")
+        if not bare or _HONORIFIC_TOKEN.fullmatch(bare):
+            continue
+        tokens.append(bare)
+    return tokens
+
+
 def _same_party_person(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     """Rajiv Lakhanpal S/o Naranjan Dass and Rajeev Lakhanpal are one person."""
     if _names_match(_party_name(left), _party_name(right)):
@@ -871,8 +888,8 @@ def _same_party_person(left: Mapping[str, Any], right: Mapping[str, Any]) -> boo
     right_guard = re.sub(r"\s+", " ", str(right.get("guardian") or "")).strip()
     if not left_guard or not right_guard or not _names_match(left_guard, right_guard):
         return False
-    left_tokens = (_party_name(left) or "").split()
-    right_tokens = (_party_name(right) or "").split()
+    left_tokens = _given_name_tokens(_party_name(left))
+    right_tokens = _given_name_tokens(_party_name(right))
     if len(left_tokens) < 2 or len(right_tokens) < 2:
         return False
     if left_tokens[-1].casefold() != right_tokens[-1].casefold():
@@ -881,15 +898,186 @@ def _same_party_person(left: Mapping[str, Any], right: Mapping[str, Any]) -> boo
 
 
 def _clean_party_address(address: str | None) -> str | None:
-    text = (address or "").replace("&x26;", "&").replace("&amp;", "&")
+    if not address:
+        return None
+    text = address.replace("&x26;", "&").replace("&amp;", "&")
+    # Clean trailing petition/appeal boilerplate and the next column's role.
     text = re.sub(
-        r"\s+(?:THE\s+HON['’]?BLE|THE\s+CONSTITUTION\s+OF\s+INDIA|SPECIAL\s+LEAVE\s+PETITION)\b.*",
+        r"\s+(?:THE\s+HON['’]?BLE|HON['’]?BLE\s+THE|THE\s+CONSTITUTION\s+OF\s+INDIA|SPECIAL\s+LEAVE\s+PETITION|THE\s+HUMBLE\s+(?:APPEAL|PETITION)|THE\s+APPEAL\s+OF|THE\s+PETITION\s+OF|MOST\s+RESPECTFULLY\s+SHOWETH|WRIT\s+PETITION|CRIMINAL\s+APPEAL|DEFECTO|DEFACTO|DE\s+FACTO)\b.*",
         "",
         text,
         flags=re.IGNORECASE,
     )
+    # Clean trailing role tags like ... P R, ... R P, .... Petitioner No. 1, ... Respondent No. 1
+    text = re.sub(
+        r"(?:\.\.\.|\b)(?:petitioners?|respondents?|appellants?|accused)(?:\s*(?:no|number)\.?)?\s*[.\s]*\d*.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s*(?:\.\.\.|\b)[PR]\s*[RP]?\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\\{2,}.*$", "", text)
+    text = re.sub(r"\s*\bN\.A\.\s*\.{2,}\s*$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip(" ,.;")
+    text = _strip_address_labels(text)
     return text or None
+
+
+_ADDRESS_PLACE = re.compile(
+    r"\b(?:police\s+station|p\.?\s*s\.?|r/o|resident(?:\s+of)?|residing(?:\s+at)?|"
+    r"registered\s+address|gut\s+no|plot(?:\s+no)?|village|dist(?:rict)?\.?)\b",
+    re.IGNORECASE,
+)
+_THROUGH_LABEL = re.compile(
+    r"^(?:through|represented\s+by|rep\.?\s+by)$",
+    re.IGNORECASE,
+)
+_THROUGH_BODY = re.compile(
+    r"^(?:through|represented\s+by|rep\.?\s+by)\s+(.+)$",
+    re.IGNORECASE,
+)
+_ADDRESS_CONTINUATION = re.compile(
+    r"^(?:presently\s+at|second\s+address|also\s+at)\b",
+    re.IGNORECASE,
+)
+_RELATION_MARK = re.compile(
+    r"\b([SDW]/o\.?)\s+(.+)$",
+    re.IGNORECASE,
+)
+_PLACE_MARK = re.compile(
+    r"\b(?:r/o\.?|resident(?:\s+of)?|residing(?:\s+at)?|presently\s+at|second\s+address|"
+    r"also\s+at|south|north|east|west|gut\s+no|plot|village|vpo)\b",
+    re.IGNORECASE,
+)
+_SCHEDULE_ROLE_TOKEN = (
+    r"(?:not\s+a\s+party(?:\s+proforma)?|proforma(?:\s+respondents?)?|dead|"
+    r"(?:appellants?|petitioners?|respondents?)\s*(?:no\.?|number)?\s*[\d/]*)"
+)
+_ROLE_NUMBER_LINE = re.compile(r"^(?:no\.?|number)\s*[\d/]+$", re.IGNORECASE)
+_SCHEDULE_ROLE_LINE = re.compile(
+    rf"^(?:{_SCHEDULE_ROLE_TOKEN})(?:\s+{_SCHEDULE_ROLE_TOKEN})*$",
+    re.IGNORECASE,
+)
+_BARE_LIST_NUMBER = re.compile(r"^[(\[]?\s*\d+\s*[.)\]]$")
+
+
+def _normalize_relation(token: str) -> str:
+    return f"{token[0].upper()}/o"
+
+
+def _split_relation_tail(rest: str) -> tuple[str, str | None]:
+    """The S/o name stops at R/o, Presently at, or Second Address."""
+    place = _PLACE_MARK.search(rest)
+    if not place:
+        guardian = rest.strip(" ,.")
+        return guardian, None
+    guardian = rest[: place.start()].strip(" ,.")
+    return guardian, rest[place.start() :].strip(" ,.")
+
+
+def _is_schedule_role_line(line: str) -> bool:
+    text = line.strip()
+    return (
+        _SCHEDULE_ROLE_LINE.fullmatch(text) is not None
+        or _ROLE_NUMBER_LINE.fullmatch(text) is not None
+    )
+
+
+def _join_open_parentheses(lines: list[str]) -> list[str]:
+    """A name wrapped inside parentheses stays one party, not an address."""
+    joined: list[str] = []
+    buffer = ""
+    for line in lines:
+        if buffer:
+            buffer = f"{buffer} {line}"
+            if buffer.count("(") <= buffer.count(")"):
+                joined.append(buffer)
+                buffer = ""
+            continue
+        if line.count("(") > line.count(")"):
+            buffer = line
+            continue
+        joined.append(line)
+    if buffer:
+        joined.append(buffer)
+    return joined
+
+
+def _join_through_tails(lines: list[str]) -> list[str]:
+    """'through his' / 'through' at the end of a line belongs with 'LR's'."""
+    joined: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        nxt = lines[index + 1] if index + 1 < len(lines) else ""
+        if (
+            nxt
+            and re.search(r"\bthrough(?:\s+(?:his|her|its))?$", line, re.IGNORECASE)
+            and len(nxt.split()) <= 4
+            and not re.match(r"^\d", nxt)
+            and not _is_schedule_role_line(nxt)
+        ):
+            joined.append(f"{line} {nxt}")
+            index += 2
+            continue
+        joined.append(line)
+        index += 1
+    return joined
+
+
+def _join_bare_list_numbers(lines: list[str]) -> list[str]:
+    """'1.' on its own line belongs to the name printed underneath."""
+    joined: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _BARE_LIST_NUMBER.fullmatch(line) and index + 1 < len(lines):
+            joined.append(f"{line} {lines[index + 1]}")
+            index += 2
+            continue
+        joined.append(line)
+        index += 1
+    return joined
+
+
+def _split_through_and_place(text: str) -> tuple[str, str]:
+    """'SHO, P.S- Motihari' is the representative and the police-station place."""
+    cleaned = re.sub(
+        r"\s+(?:petitioners?|respondents?|applicants?|accused)\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip(" ,.")
+    place = _ADDRESS_PLACE.search(cleaned)
+    if place and place.start() > 0:
+        return cleaned[: place.start()].strip(" ,."), cleaned[place.start() :].strip(" ,.")
+    return cleaned, ""
+
+
+def _strip_address_labels(text: str) -> str:
+    """Keep the place. R/o and Through name the place and the representative."""
+    lead = re.match(
+        r"^(?:through|represented\s+by|rep\.?\s+by)\s+(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    if lead:
+        rest = lead.group(1).strip()
+        place = _ADDRESS_PLACE.search(rest)
+        text = rest[place.start():].strip() if place else ""
+    text = re.sub(
+        r"\s+\b(?:through|represented\s+by)\s+.+$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^(?:r/o|resident(?:\s+of)?|residing(?:\s+at)?|registered\s+address(?:\s+at)?)\s*[-:]?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", text).strip(" ,.;")
 
 
 def _party_richness(party: Mapping[str, Any]) -> int:
@@ -913,7 +1101,16 @@ def _collapse_same_parties(parties: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         preferred = party if _party_richness(party) > _party_richness(match) else match
         other = match if preferred is party else party
-        for field in ("address", "relation", "guardian", "acting_through", "mobile", "email"):
+        for field in (
+            "address",
+            "relation",
+            "guardian",
+            "occupation",
+            "age",
+            "acting_through",
+            "mobile",
+            "email",
+        ):
             if not preferred.get(field) and other.get(field):
                 preferred[field] = other[field]
         if preferred is party:
@@ -976,6 +1173,7 @@ def normalize_compared_name(text: str | None) -> str:
 
 def _core_person_name(text: str | None) -> str:
     cleaned = _TITLE_TOKEN.sub(" ", normalize_compared_name(text))
+    cleaned = re.sub(r"\([^)]*\)", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -1462,6 +1660,35 @@ def _normalize_parties(payload: dict[str, Any]) -> None:
                 cause["formatted_title"] = stripped
 
 
+def _drop_resolved_acting_through_notes(payload: dict[str, Any]) -> None:
+    """Drop a 'no acting_through' note once that party has a representative."""
+    blob = payload.get("inconsistencies")
+    if not isinstance(blob, dict) or not isinstance(blob.get("items"), list):
+        return
+    filled = {
+        _party_name(party).casefold()
+        for key in ("petitioners", "respondents")
+        for party in payload.get(key) or []
+        if isinstance(party, dict)
+        and _party_name(party)
+        and str(party.get("acting_through") or "").strip()
+    }
+    if not filled:
+        return
+    kept = []
+    for item in blob["items"]:
+        raw = str(item.get("raw_text") or "") if isinstance(item, dict) else ""
+        folded = raw.casefold()
+        stale = (
+            re.search(r"acting[-_ ]through", folded) is not None
+            and re.search(r"\b(?:no|without|missing)\b", folded) is not None
+            and any(name in folded for name in filled)
+        )
+        if not stale:
+            kept.append(item)
+    blob["items"] = kept
+
+
 def _append_missing_acting_through(payload: dict[str, Any]) -> None:
     missing: list[str] = []
     pages: list[int] = []
@@ -1721,7 +1948,6 @@ _NOT_A_PARTY_NAME = re.compile(
     r"|tax matters"
     r"|special category"
     r"|vehicle number"
-    r"|land acquisition"
     r"|pending applications"
     r"|order be communicated"
     r"|it is made clear"
@@ -1736,7 +1962,8 @@ def _clean_front_party_name(name: str | None) -> str:
     """Drop LlamaParse markdown and a leading list number from a party name."""
     text = re.sub(r"\*+", "", name or "")
     text = _LIST_SERIAL.sub("", text)
-    text = strip_anr_ors_suffix(text) or strip_party_role_label(text)
+    text = strip_party_role_label(text)
+    text = strip_anr_ors_suffix(text) or text
     return re.sub(r"\s+", " ", text).strip(" ,.;")
 
 
@@ -1752,6 +1979,22 @@ def _looks_like_party_name(name: str | None) -> bool:
         return False
     if re.match(r"^(?:occupation|age|years)\b", text, re.IGNORECASE):
         return False
+    if re.match(r"^the\s+humble\s+petition\b", text, re.IGNORECASE):
+        return False
+    if re.match(r"^signature\b", text, re.IGNORECASE):
+        return False
+    if re.match(
+        r"^(?:presently\s+at|second\s+address|also\s+at|not\s+a\s+party|dead)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.fullmatch(r"(?:and\s+)?(?:anrs?|ors)\.?", text, re.IGNORECASE):
+        return False
+    if re.search(r"\bwrit(?:\s*-\s*[a-z])?\b", text, re.IGNORECASE) and re.search(r"\d", text):
+        return False
+    if re.match(r"^[A-Za-z]?\s*/\s*\d+\s*/\s*\d{4}\b", text):
+        return False
     if re.fullmatch(r"[\d\s\-_.,/()]+", text):
         return False
     if re.match(
@@ -1761,7 +2004,8 @@ def _looks_like_party_name(name: str | None) -> bool:
     ):
         return False
     words = text.split()
-    if len(words) > 12 or len(text) > 120:
+    word_limit = 24 if "(" in text or re.search(r"\bthrough\b", text, re.IGNORECASE) else 12
+    if len(words) > word_limit or len(text) > 180:
         return False
     if _NOT_A_PARTY_NAME.search(text):
         return False
@@ -1788,6 +2032,7 @@ def _party_record(
     relation: str | None = None,
     guardian: str | None = None,
     occupation: str | None = None,
+    age: str | None = None,
     acting_through: str | None = None,
     address: str | None = None,
     source_part: str = "Opening pages",
@@ -1810,6 +2055,7 @@ def _party_record(
         "relation": relation,
         "guardian": guardian,
         "occupation": occupation,
+        "age": age,
         "acting_through": acting_through,
         "address": address,
         "source_part": source_part,
@@ -1859,7 +2105,11 @@ def _is_party_role_or_header(line: str) -> bool:
         return True
     if re.match(r"^(?:the\s+)?petitioners?\s+above[- ]named\b", l):
         return True
+    if re.match(r"^the\s+humble\s+petition\b", l):
+        return True
     if re.match(r"^between\b", l):
+        return True
+    if re.match(r"^(?:defacto|defecto|de\s*facto)\b", l):
         return True
     if re.match(r"^to\s*,?\s*$", l):
         return True
@@ -1889,7 +2139,7 @@ def _parse_party_section(
 ) -> list[dict[str, Any]]:
     parties: list[dict[str, Any]] = []
     stop_regex = re.compile(
-        r"^(?:most\s+respectfully\s+showeth|1\.\s+that\b|synopsis\b|grounds\b|prayer\b|prayers\b|questions\s+of\s+law\b|verification\b|affidavit\b|index\s+of\b)",
+        r"^(?:most\s+respectfully\s+sh[eo]weth|the\s+humble\s+petition\b|note\s*:|1\.\s+that\b|synopsis\b|grounds\b|prayer\b|prayers\b|questions\s+of\s+law\b|verification\b|affidavit\b|index\s+of\b)",
         re.IGNORECASE,
     )
     idx = 0
@@ -1950,17 +2200,13 @@ def _parse_party_section(
         acting_through = None
         addr_parts: list[str] = []
 
-        rel_m = re.search(
-            r"\b([SDW]/o)\s+([A-Za-z\s.\x27\x60’]+?)(?:\s+(South|North|East|West|R/o|Presently|Residing|Address|House|Flat|Plot|Village|VPO|[A-Z][a-z]+.*))?$",
-            raw_cand,
-            re.IGNORECASE,
-        )
+        rel_m = _RELATION_MARK.search(raw_cand)
         if rel_m:
-            party_name = raw_cand[: rel_m.start()].strip()
-            relation = rel_m.group(1)
-            guardian = rel_m.group(2).strip()
-            if rel_m.group(3):
-                addr_parts.append(rel_m.group(3).strip())
+            party_name = raw_cand[: rel_m.start()].strip(" ,")
+            relation = _normalize_relation(rel_m.group(1))
+            guardian, leftover = _split_relation_tail(rel_m.group(2))
+            if leftover:
+                addr_parts.append(leftover)
         else:
             addr_m = re.match(
                 r"^(.+?),\s*([A-Za-z0-9\s,.-]+(?:Police station|District|Tamil\s*nadu|State|Court|Road|Nadu).*)$",
@@ -1977,7 +2223,13 @@ def _parse_party_section(
             re.IGNORECASE,
         )
         if rep_m:
-            acting_through = rep_m.group(1).strip()
+            acting_through = rep_m.group(1).strip(" ,.'")
+            if re.match(
+                r"through\s+(?:his|her|its)\b",
+                party_name[rep_m.start() :],
+                re.IGNORECASE,
+            ):
+                party_name = party_name[: rep_m.start()].strip(" ,.")
 
         cursor = idx + 1
         while cursor < len(lines):
@@ -1988,6 +2240,15 @@ def _parse_party_section(
                 break
             if re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", c_line):
                 break
+            if _BARE_LIST_NUMBER.fullmatch(c_line):
+                break
+            if _is_schedule_role_line(c_line):
+                cursor += 1
+                continue
+            if _ADDRESS_CONTINUATION.match(c_line):
+                addr_parts.append(c_line)
+                cursor += 1
+                continue
             if re.match(
                 r"^(?:special\s+leave\s+petition|the\s+constitution|the\s+humble\s+petition)\b",
                 c_line,
@@ -2015,19 +2276,42 @@ def _parse_party_section(
             if _is_party_role_or_header(c_line):
                 cursor += 1
                 continue
-            c_rel = re.match(r"^([SDW]/o)\s+(.+)$", c_line, re.IGNORECASE)
+            c_rel = _RELATION_MARK.match(c_line)
             if c_rel and not relation:
-                relation = c_rel.group(1)
-                guardian = re.sub(r"[.\s\d]+$", "", c_rel.group(2)).strip()
+                relation = _normalize_relation(c_rel.group(1))
+                guardian, leftover = _split_relation_tail(c_rel.group(2))
+                if leftover:
+                    addr_parts.append(leftover)
                 cursor += 1
                 continue
-            c_rep = re.match(
-                r"^(?:through|represented\s+by)\s+(.+)$", c_line, re.IGNORECASE
-            )
-            if c_rep and not acting_through:
-                acting_through = c_rep.group(1).strip()
-                addr_parts.append(c_line)
+            through_body = None
+            if _THROUGH_LABEL.fullmatch(c_line):
                 cursor += 1
+                body_bits: list[str] = []
+                while cursor < len(lines):
+                    nxt = lines[cursor]
+                    if (
+                        stop_regex.search(nxt)
+                        or _is_party_role_or_header(nxt)
+                        or re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", nxt, re.IGNORECASE)
+                        or re.match(r"^[(\[]?\s*[0-9lI|]+\s*[.)\]]\s*[A-Za-z]", nxt)
+                    ):
+                        break
+                    body_bits.append(nxt)
+                    cursor += 1
+                through_body = " ".join(body_bits)
+            else:
+                c_rep = _THROUGH_BODY.match(c_line)
+                if c_rep:
+                    through_body = c_rep.group(1).strip()
+                    cursor += 1
+            if through_body is not None:
+                if not acting_through:
+                    representative, place = _split_through_and_place(through_body)
+                    if representative:
+                        acting_through = representative
+                    if place:
+                        addr_parts.append(place)
                 continue
             addr_parts.append(c_line)
             cursor += 1
@@ -2098,6 +2382,12 @@ def _is_name_fragment(line: str) -> bool:
         re.IGNORECASE,
     ):
         return False
+    if re.match(
+        r"^(?:petitioners?|respondents?|applicants?|accused|complainants?)\b",
+        stripped,
+        re.IGNORECASE,
+    ):
+        return False
     if re.search(
         r"\b(?:road|hotel|floor|place|delhi|nagar|house|district|village|street|lane)\b",
         stripped,
@@ -2133,16 +2423,34 @@ def _parse_memo_of_parties(
     page: int | None = None,
     pages: Sequence[int] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    clean_lines = _join_wrapped_party_lines(_clean_markdown_to_lines(text))
+    clean_lines = _join_through_tails(
+        _join_open_parentheses(
+            _join_bare_list_numbers(
+                _join_wrapped_party_lines(_clean_markdown_to_lines(text))
+            )
+        )
+    )
     clean_lines = [
         line
         for line in clean_lines
         if not re.search(r"in the matter of.*versus", line, re.IGNORECASE)
+        and not _is_schedule_role_line(line)
     ]
     source_pages = list(pages) if pages else ([page] if page else [])
 
+    heading_at = None
+    for idx, line in enumerate(clean_lines):
+        if re.search(
+            r"\b(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\b",
+            line,
+            re.IGNORECASE,
+        ):
+            heading_at = idx
+    search_from = heading_at + 1 if heading_at is not None else 0
     divider_idx = None
     for idx, line in enumerate(clean_lines):
+        if idx < search_from:
+            continue
         if re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", line, re.IGNORECASE):
             prev_is_role = idx > 0 and _is_party_role_or_header(clean_lines[idx - 1])
             next_is_role = idx + 1 < len(clean_lines) and _is_party_role_or_header(clean_lines[idx + 1])
@@ -2161,7 +2469,7 @@ def _parse_memo_of_parties(
                 break
 
     if divider_idx is not None:
-        pet_lines = clean_lines[:divider_idx]
+        pet_lines = clean_lines[search_from:divider_idx]
         resp_lines = clean_lines[divider_idx:]
         if resp_lines and re.match(r"^(?:versus|vs\.?|v/s|versuu)\b", resp_lines[0], re.IGNORECASE):
             resp_lines = resp_lines[1:]
@@ -2183,7 +2491,7 @@ _COLUMN_ROLE = re.compile(
     re.IGNORECASE,
 )
 _COLUMN_STOP = re.compile(
-    r"^(?:most\s+respectfully\s+showeth|questions?\s+of\s+law|to\s*,|1\.\s+that\b)",
+    r"^(?:most\s+respectfully\s+sh[eo]weth|questions?\s+of\s+law|to\s*,|1\.\s+that\b)",
     re.IGNORECASE,
 )
 _SCHEDULE_NUMBERED_LINE = re.compile(r"^\d+\s*[.)]\s*\S")
@@ -2217,12 +2525,53 @@ def _split_at_numbered_party(lines: list[str]) -> tuple[list[str], list[str]]:
 
 
 def _is_paper_folio(line: str, previous: str) -> bool:
-    """A bare paper-book page number, not the second half of a pin code."""
+    """A bare paper-book page number, not the second half of a pin code or an age."""
     if not re.fullmatch(r"\d{1,3}", line):
         return False
     if previous and re.search(r"[–-]\s*\d+\s*$", previous):
         return False
+    if previous and re.search(r"\bage[d]?$", previous, re.IGNORECASE):
+        return False
     return int(line) < 200
+
+
+def _printed_age(blob: str) -> str | None:
+    """'age 52 years' and 'aged 56 years' become '52 years'."""
+    match = re.search(r"\bage[d]?\s+(\d+)\s+years?\b", blob, re.IGNORECASE)
+    if not match:
+        return None
+    return f"{match.group(1)} years"
+
+
+def _trailing_occupation(blob: str) -> str | None:
+    """A short descriptor with no place line, such as 'Indian Jew'."""
+    text = blob
+    text = re.sub(
+        r"\b(?:[sdw]/o|[sdw]\.o)\s+.+?(?=,|$)",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bage[d]?\s+\d+\s+years?\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\boccupation\s+[A-Za-z]+\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:r/o|gut\s+no\.?|having\s+office\s+at|office\s+at|through)\b.*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"[^A-Za-z\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or not re.fullmatch(r"[A-Za-z]+(?:\s+[A-Za-z]+){0,3}", text):
+        return None
+    if re.search(
+        r"\b(?:district|aurangabad|mumbai|mantralaya|road|plot|nagar|delhi|"
+        r"village|petitioner|respondent|court|society|housing|farms|secretary|chairman)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+    return text
 
 
 def _schedule_party_record(
@@ -2289,6 +2638,9 @@ def _schedule_party_record(
         guardian = " ".join(word for word in guardian_words if word)
     occupation_match = re.search(r"\boccupation\s+([A-Za-z]+)", blob, re.IGNORECASE)
     occupation = occupation_match.group(1).strip() if occupation_match else None
+    if not occupation:
+        occupation = _trailing_occupation(blob)
+    age = _printed_age(blob)
     acting_through = None
     address = None
     place_match = re.search(
@@ -2335,6 +2687,7 @@ def _schedule_party_record(
         relation=relation,
         guardian=guardian or None,
         occupation=occupation,
+        age=age,
         acting_through=acting_through,
         address=_clean_party_address(address) if address else None,
     )
@@ -2404,6 +2757,63 @@ def _parse_court_column_schedule(
     return {"petitioners": petitioners, "respondents": respondents, "_replace": True}
 
 
+_PARTY_SCHEDULE_HEADING = re.compile(
+    r"\b(?:memo\s*of|posit[io1lt]{2,6}n?\s*of)\s*(?:the\s*)?parties\b",
+    re.IGNORECASE,
+)
+
+
+def _is_explicit_party_schedule(text: str) -> bool:
+    """A position-of-parties or memo-of-parties page, not an annexure cover."""
+    if not text or not _PARTY_SCHEDULE_HEADING.search(text):
+        return False
+    head = "\n".join(text.splitlines()[:12])
+    return re.search(r"\bannexure\b", head, re.IGNORECASE) is None
+
+
+_SCHEDULE_END = re.compile(
+    r"most\s+respectfully\s+sh[eo]weth|the\s+humble\s+petition",
+    re.IGNORECASE,
+)
+
+
+def _schedule_follow_pages(
+    layer: Mapping[int, str],
+    start: int,
+    *,
+    skip: set[int] | None = None,
+) -> dict[int, str]:
+    """The schedule page and the next pages, through the prayer."""
+    pages: dict[int, str] = {}
+    blocked = skip or set()
+    for follow in range(start, start + 4):
+        if follow in blocked:
+            break
+        follow_text = layer.get(follow)
+        if follow_text is None:
+            break
+        pages[follow] = follow_text
+        if follow != start and _SCHEDULE_END.search(follow_text):
+            break
+    return pages
+
+
+def supplemental_front_party_pages(
+    full_text: Mapping[int, str],
+    included_pages: set[int],
+) -> dict[int, str]:
+    """Party pages that sit past the opening slice and before the closing pages."""
+    pages: dict[int, str] = {}
+    layer = {int(page): text or "" for page, text in full_text.items()}
+    for number, text in sorted(layer.items()):
+        if number in included_pages or number in pages:
+            continue
+        if not _is_explicit_party_schedule(text):
+            continue
+        pages.update(_schedule_follow_pages(layer, number, skip=included_pages))
+    return pages
+
+
 def merge_dropped_party_schedule(
     page_markdown: Mapping[int, str],
     text_layer: Mapping[int, str] | None,
@@ -2418,7 +2828,16 @@ def merge_dropped_party_schedule(
         return merged
     layer = {int(page): text or "" for page, text in text_layer.items()}
     for page in sorted(layer):
-        if not _has_court_columns(layer[page]):
+        page_text = layer[page]
+        if not _has_court_columns(page_text):
+            if _is_explicit_party_schedule(page_text):
+                for follow, follow_text in _schedule_follow_pages(layer, page).items():
+                    current = merged.get(follow) or ""
+                    if follow == page and _is_explicit_party_schedule(current):
+                        continue
+                    if follow != page and current.strip():
+                        continue
+                    merged[follow] = follow_text
             continue
         for follow in range(page, page + 4):
             follow_text = layer.get(follow)
@@ -2429,7 +2848,7 @@ def merge_dropped_party_schedule(
             # until that schedule has already been read.
             if not _has_court_columns(current):
                 merged[follow] = follow_text
-            if re.search(r"most\s+respectfully\s+showeth", follow_text, re.IGNORECASE):
+            if re.search(r"most\s+respectfully\s+sh[eo]weth", follow_text, re.IGNORECASE):
                 break
     return merged
 
@@ -2448,7 +2867,7 @@ def _court_column_parties(
         for next_page in range(page + 1, min(page + 4, max(sorted_pages) + 1)):
             pages_to_check.append(next_page)
             next_text = page_markdown.get(next_page) or ""
-            if re.search(r"most\s+respectfully\s+showeth", next_text, re.IGNORECASE):
+            if re.search(r"most\s+respectfully\s+sh[eo]weth", next_text, re.IGNORECASE):
                 break
         combined = "\n".join(page_markdown.get(item, "") for item in pages_to_check)
         parsed = _parse_court_column_schedule(combined, pages_to_check)
@@ -2481,6 +2900,12 @@ def _parties_from_memo(
 
         has_heading = False
         is_explicit_memo_heading = False
+        collapsed = re.sub(r"<[^>]+>", " ", text)
+        collapsed = re.sub(r"[*_`#]+", "", collapsed)
+        collapsed = re.sub(r"\s+", " ", collapsed)
+        if _PARTY_SCHEDULE_HEADING.search(collapsed):
+            has_heading = True
+            is_explicit_memo_heading = True
         for line in text.splitlines():
             line_clean = re.sub(r"<[^>]+>", " ", line)
             line_clean = re.sub(r"[*_`#]+", "", line_clean).strip()
@@ -2519,7 +2944,7 @@ def _parties_from_memo(
             n_text = page_markdown.get(next_p) or ""
             pages_to_check.append(next_p)
             if re.search(
-                r"(?:most\s+respectfully\s+showeth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice|1\.\s+that\s+the)",
+                r"(?:most\s+respectfully\s+sh[eo]weth|to\s*,\s*the\s+hon[\x27\x60’]?ble\s+chief\s+justice|1\.\s+that\s+the)",
                 n_text,
                 re.IGNORECASE,
             ):
@@ -2562,6 +2987,12 @@ def _parties_from_memo(
         if any(party.get("address") for party in [*pets, *resps]):
             score += 10
 
+        if pets and resps and (
+            is_explicit_memo_heading
+            or any(party.get("address") for party in [*pets, *resps])
+        ):
+            parsed = dict(parsed)
+            parsed["_replace"] = True
         if score > best_score:
             best_score = score
             best_candidate = parsed
@@ -2607,7 +3038,14 @@ def _merge_memo_parties(
         if matched is not None:
             if memo_p.get("name"):
                 matched["name"] = memo_p["name"]
-            for field in ("address", "relation", "guardian", "occupation", "acting_through"):
+            for field in (
+                "address",
+                "relation",
+                "guardian",
+                "occupation",
+                "age",
+                "acting_through",
+            ):
                 if memo_p.get(field):
                     matched[field] = memo_p[field]
             if memo_p.get("source_part"):
@@ -2656,6 +3094,7 @@ def repair_front_parties(
     if respondents:
         cause["main_respondent"] = _party_name(respondents[0])
     _normalize_parties(payload)
+    _drop_resolved_acting_through_notes(payload)
 
 
 def finalize_front_extract(

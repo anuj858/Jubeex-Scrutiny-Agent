@@ -1583,16 +1583,47 @@ def extract_configuration(
 
 def build_front_extract_system_prompt() -> str:
     """Prompt for the opening-page extract. Split labels are not known yet."""
-    return (
-        _window_extract_system_prompt()
-        + "\n"
-        + "\n".join(
-            [
-                "- special_category: the printed matter subtype, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
-                "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
-                "- documents stays empty.",
-            ]
-        )
+    from .config import (
+        FRONT_ACTING_THROUGH_DESCRIPTION,
+        FRONT_ADDRESS_DESCRIPTION,
+        FRONT_AGE_DESCRIPTION,
+        FRONT_GUARDIAN_DESCRIPTION,
+        FRONT_OCCUPATION_DESCRIPTION,
+        FRONT_PETITIONERS_DESCRIPTION,
+        FRONT_RELATION_DESCRIPTION,
+        FRONT_RESPONDENTS_DESCRIPTION,
+    )
+
+    return "\n".join(
+        [
+            "You are extracting a compiled court filing before it has been split.",
+            "The pack is labelled only as Opening pages and Closing pages.",
+            f"Opening pages are the first {OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter.",
+            f"Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
+            "A field may be on any opening page. Copy printed text only. If it is not printed, write N/A.",
+            "source_part is Opening pages or Closing pages. source_pages are the heading page numbers.",
+            "",
+            "- court: the court heading, from whichever opening page prints it.",
+            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever opening page prints it.",
+            "- cause_title: the caption from whichever opening page prints the fullest party list. Main names come from that list, without And Anr or And Ors.",
+            f"- petitioners: {FRONT_PETITIONERS_DESCRIPTION}",
+            f"- respondents: {FRONT_RESPONDENTS_DESCRIPTION}",
+            f"- address: {FRONT_ADDRESS_DESCRIPTION}",
+            f"- occupation: {FRONT_OCCUPATION_DESCRIPTION}",
+            f"- age: {FRONT_AGE_DESCRIPTION}",
+            f"- relation: {FRONT_RELATION_DESCRIPTION}",
+            f"- guardian: {FRONT_GUARDIAN_DESCRIPTION}",
+            f"- acting_through: {FRONT_ACTING_THROUGH_DESCRIPTION}",
+            "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
+            "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
+            "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
+            "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
+            "- confidence: percentage strings such as 95% or 65%.",
+            "- special_category: the printed matter subtype, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
+            "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
+            "- documents stays empty.",
+        ]
     ).strip()
 
 
@@ -1608,7 +1639,13 @@ def build_front_extract_pack_markdown(
         body = (page_markdown.get(page) or "").strip()
         if not body or body.startswith(_PARSE_STUB_PREFIX):
             continue
-        label = CLOSING_PAGES_SOURCE if page > opening_pages else OPENING_PAGES_SOURCE
+        # The sliced closing block is renumbered to 31–35. A party schedule
+        # inserted from the middle of the book keeps its original page number.
+        closing_last = opening_pages + CLOSING_PAGE_LIMIT
+        if opening_pages < page <= closing_last:
+            label = CLOSING_PAGES_SOURCE
+        else:
+            label = OPENING_PAGES_SOURCE
         sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
     packed = "\n\n".join(sections).strip()
     if not packed:

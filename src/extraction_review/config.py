@@ -223,6 +223,83 @@ class Party(BaseModel):
         return value
 
 
+FRONT_PETITIONERS_DESCRIPTION = (
+    "Every numbered petitioner printed near IN THE MATTER OF, BETWEEN, VERSUS, "
+    "POSITION OF THE PARTIES, or MEMO OF PARTIES, including the lines under the name "
+    "and the same list continued on the next page. "
+    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the "
+    "following lines. Do not stop at a page break and do not skip a printed number. "
+    "A party may be only a name and a place; no S/o and no Through is still a party. "
+    "Presently at, Second Address, and Also at are more place lines of the party above, "
+    "not another party. R/o marks the place; do not put R/o or the S/o name into the party name. "
+    "A caption that only says '& Anr.' or '& Ors.' is a count, not a party. "
+    "When one page has two columns (Before High Court beside Before Supreme Court, or "
+    "Trial Court / High Court / In this Court), copy only the current-court column. "
+    "Not a Party and Dead are column roles, not people. A case number is not a party. "
+    "Do not stop after the first name. Record source_pages."
+)
+FRONT_RESPONDENTS_DESCRIPTION = (
+    "Every numbered respondent printed on the other side of VERSUS, or under RESPONDENT, "
+    "in the same block as the petitioners (IN THE MATTER OF, BETWEEN, POSITION OF THE PARTIES, "
+    "or MEMO OF PARTIES), including the lines under the name and the same list continued on the next page. "
+    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the following lines. "
+    "Do not stop at a page break and do not skip a printed number. "
+    "A party may be only a name and a place, such as Land Acquisition Collector. "
+    "No S/o and no Through is still a party. "
+    "Presently at, Second Address, and Also at are more place lines of the party above, "
+    "not another respondent. R/o marks the place; do not put R/o or the S/o name into the party name. "
+    "'& Ors.' is not a party. "
+    "When one page has two columns (Before High Court beside Before Supreme Court, or "
+    "Trial Court / High Court / In this Court), copy only the current-court column. "
+    "Not a Party and Dead are column roles, not people. A case number is not a party. "
+    "Do not stop after the first name. Record source_pages."
+)
+FRONT_ADDRESS_DESCRIPTION = (
+    "The place lines printed under this party's number, including a continuation on the next page. "
+    "Look for: R/o, resident of, residing at, presently at, second address, also at, Gut No., "
+    "registered address, having office at, Plot No., city, district, and PIN. "
+    "Join those lines into one address. Presently at and Second Address belong to this party. "
+    "Keep the place and do not keep a leading R/o. Leave null when that block prints no place. "
+    "Do not copy an advocate's chamber. Do not continue into THE HUMBLE APPEAL OF, "
+    "MOST RESPECTFULLY SHOWETH, or the prayer."
+)
+FRONT_OCCUPATION_DESCRIPTION = (
+    "The occupation printed under this party's name. "
+    "Look for: the word occupation, or a short descriptor with no place line, such as Indian Jew. "
+    "Leave null when neither is printed."
+)
+FRONT_AGE_DESCRIPTION = (
+    "The age printed under this party's name. "
+    "Look for: 'age 52 years' or 'aged 56 years'. Copy the number and the word years, "
+    "for example 52 years. Leave null when no age is printed."
+)
+FRONT_RELATION_DESCRIPTION = (
+    "The relation prefix printed under this party's name. "
+    "Look for: S/o, D/o, or W/o. Leave null when not printed."
+)
+FRONT_GUARDIAN_DESCRIPTION = (
+    "The related person's name printed after S/o, D/o, or W/o. "
+    "Look for: the name on that same line, such as Gopinath Sharma after S/o. "
+    "Leave null when not printed. Do not include the occupation or the address."
+)
+FRONT_ACTING_THROUGH_DESCRIPTION = (
+    "The person this party acts through, printed under the name. "
+    "Look for: through, represented by, or rep by, such as through its Chairman "
+    "or rep by inspector of police. Leave null when those words are not printed."
+)
+
+
+class FrontParty(Party):
+    """One numbered party from the opening pages. Not used by /v1/filings/extract."""
+
+    acting_through: str | None = Field(default=None, description=FRONT_ACTING_THROUGH_DESCRIPTION)
+    relation: str | None = Field(default=None, description=FRONT_RELATION_DESCRIPTION)
+    guardian: str | None = Field(default=None, description=FRONT_GUARDIAN_DESCRIPTION)
+    occupation: str | None = Field(default=None, description=FRONT_OCCUPATION_DESCRIPTION)
+    age: str | None = Field(default=None, description=FRONT_AGE_DESCRIPTION)
+    address: str | None = Field(default=None, description=FRONT_ADDRESS_DESCRIPTION)
+
+
 class AdvocateOnRecord(BaseModel):
     """Printed AOR footer only. Leave null if not printed. Do not invent."""
     name: str | None = Field(
@@ -506,25 +583,13 @@ class FrontExtractRecord(LegalExtractRecord):
             "Also extract main_petitioner and main_respondent."
         ),
     )
-    petitioners: list[Party] = Field(
+    petitioners: list[FrontParty] = Field(
         default_factory=list,
-        description=(
-            "Every numbered petitioner from the petition opening. Copy the "
-            "relation, guardian, age, occupation, and address printed under the "
-            "name. When the schedule has a lower-court column and a current-court "
-            "column, use only the current-court column. '& Anr.' or '& Ors.' is not "
-            "a party. Do not copy a lower-court memo of parties. Record source_pages."
-        ),
+        description=FRONT_PETITIONERS_DESCRIPTION,
     )
-    respondents: list[Party] = Field(
+    respondents: list[FrontParty] = Field(
         default_factory=list,
-        description=(
-            "Every numbered respondent from the petition opening, including the "
-            "address printed under the name. When the schedule has a lower-court "
-            "column and a current-court column, use only the current-court column. "
-            "'& Ors.' is not a party. Do not copy a lower-court memo of parties. "
-            "Record source_pages."
-        ),
+        description=FRONT_RESPONDENTS_DESCRIPTION,
     )
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,

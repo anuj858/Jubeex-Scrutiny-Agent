@@ -324,6 +324,16 @@ FRONT_EXTRACT_PAGE_LIMIT = 30
 FRONT_EXTRACT_END_PAGE_LIMIT = 5
 
 
+def front_extract_included_pages(total: int) -> set[int]:
+    """Original page numbers kept in the opening slice and the closing slice."""
+    opening = front_extract_opening_pages(total)
+    included = set(range(1, opening + 1))
+    end_start = max(opening, total - FRONT_EXTRACT_END_PAGE_LIMIT)
+    if end_start < total:
+        included.update(range(end_start + 1, total + 1))
+    return included
+
+
 def front_extract_opening_pages(total: int) -> int:
     """How many opening pages to parse from a compiled PDF.
 
@@ -352,6 +362,25 @@ def _pdf_text_layer(pdf_bytes: bytes) -> dict[int, str]:
         }
     finally:
         document.close()
+
+
+def _front_extract_text_layer(pdf_bytes: bytes, sliced: bytes) -> dict[int, str]:
+    """Sliced pages, plus a party schedule that sits outside that slice.
+
+    Closing pages are renumbered inside the slice. A schedule on an original
+    page such as 37 is added under that original page number.
+    """
+    from .extract_record import supplemental_front_party_pages
+
+    layer = _pdf_text_layer(sliced)
+    full = _pdf_text_layer(pdf_bytes)
+    for page, text in supplemental_front_party_pages(
+        full, front_extract_included_pages(len(full))
+    ).items():
+        # Closing pages are renumbered to 31…35. Do not overwrite those keys.
+        if page not in layer:
+            layer[page] = text
+    return layer
 
 
 def first_pages_pdf(
@@ -3106,7 +3135,7 @@ async def _run_extract_front(
         stitch_in_request_order=True,
         front_extract=True,
         front_opening_pages=opening_pages,
-        front_text_layer=_pdf_text_layer(sliced),
+        front_text_layer=_front_extract_text_layer(pdf_bytes, sliced),
         special_category=None,
         court=None,
     )

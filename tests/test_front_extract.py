@@ -11,6 +11,7 @@ from extraction_review.config import ExtractConfig, FrontExtractRecord, LegalExt
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
+    supplemental_front_party_pages,
 )
 from extraction_review.process_file import (
     FRONT_EXTRACT_END_PAGE_LIMIT,
@@ -120,8 +121,18 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "Opening pages" in prompt
     assert "petition_date" in prompt
     assert "special_category" in prompt
+    assert "Look for:" in prompt
+    assert "IN THE MATTER OF" in prompt
+    assert "Main Petition" not in prompt
     assert "stay null" not in prompt
     assert "configuration_id" not in front
+    legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
+    front_party = front["data_schema"]["$defs"]["FrontParty"]["properties"]
+    assert "age" not in legal_party
+    assert "age" in front_party
+    assert front["data_schema"]["properties"]["petitioners"]["items"]["$ref"].endswith(
+        "/FrontParty"
+    )
 
 
 def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
@@ -230,7 +241,7 @@ def test_front_parties_extracted_from_multipage_position_of_parties_table() -> N
     """
     p28 = """
     <table><tr><td>1. The state rep by inspector of police, Eruvadi Police station, Tirunelveli District Tamilnadu state Crime No.156/2012</td><td>Complainant</td><td>1<sup>st</sup> respondent</td><td>Contesting respondent No.2</td></tr>
-    <tr><td>2. Chandra W/o Ramar South Mavadi Mavadi Post Tirunelveli District</td><td>Defecto Complainant</td><td>Appellant</td><td>Contesting Respondent No.1</td></tr></table>
+    <tr><td>2. Chandra W/o Ramar South Mavadi Mavadi Post Tirunelveli District Defecto THE HUMBLE APPEAL OF</td><td>Defecto Complainant</td><td>Appellant</td><td>Contesting Respondent No.1</td></tr></table>
     **TO,**
     **THE HON'BLE CHIEF JUSTICE OF INDIA**
     **MOST RESPECTFULLY SHOWETH:**
@@ -262,6 +273,8 @@ def test_front_parties_extracted_from_multipage_position_of_parties_table() -> N
     assert r2["relation"] == "W/o"
     assert r2["guardian"] == "Ramar"
     assert "South Mavadi" in r2["address"]
+    assert r2["address"].rstrip(" .").endswith("Tirunelveli District")
+    assert "HUMBLE" not in r2["address"]
     assert done["cause_title"]["formatted_title"] == "Sathish VS The state rep by inspector of police and Anr."
 
 
@@ -345,6 +358,7 @@ def test_wrapped_party_block_keeps_the_second_petitioner_and_the_address() -> No
     assert 20 in done["petitioners"][1]["source_pages"]
     assert "Rajeev" not in done["petitioners"][0]["address"]
     assert "Nehru Place" in done["respondents"][0]["address"]
+    assert "110019" in done["respondents"][0]["address"]
     assert 20 in done["respondents"][0]["source_pages"]
 
 
@@ -516,10 +530,17 @@ def test_defect_file_001_parties_come_from_the_current_court_column() -> None:
     assert [party["name"] for party in petitioners] == ["Col. Pawan Kumar Gopinath Sharma"]
     assert petitioners[0]["relation"] == "S/o"
     assert petitioners[0]["guardian"] == "Gopinath Sharma"
+    assert petitioners[0]["occupation"] == "Indian Jew"
+    assert petitioners[0]["address"] is None
+    assert "Plot" not in str(petitioners[0].get("address"))
     assert len(respondents) == 10
     names = [party["name"] for party in respondents]
     assert names[0].startswith("K.D.R. Farms")
     assert "Rajendra Madhukarrao Kulkarni" in names[1]
+    assert respondents[1]["occupation"] == "Business"
+    assert respondents[1]["age"] == "52 years"
+    assert "K.D.R. Farms" in respondents[1]["address"]
+    assert not respondents[1]["address"].lower().startswith("r/o")
     assert "State of Maharashtra" in names[2]
     assert "Minister" in names[3]
     assert "Divisional Joint Registrar" in names[4]
@@ -533,6 +554,8 @@ def test_defect_file_001_parties_come_from_the_current_court_column() -> None:
     assert respondents[6]["relation"] == "S/o"
     assert respondents[6]["guardian"] == "Mithuji Mohade"
     assert respondents[6]["occupation"] == "Retired"
+    assert respondents[6]["age"] == "68 years"
+    assert respondents[7]["age"] == "55 years"
     assert "Plot" in respondents[6]["address"]
     assert "431" in respondents[9]["address"]
     assert all(15 in party["source_pages"] for party in [*petitioners, *respondents])
@@ -557,3 +580,313 @@ def test_defect_file_001_parties_come_from_the_current_court_column() -> None:
     assert len(restored["petitioners"]) == 1
     assert len(restored["respondents"]) == 10
     assert restored["petitioners"][0]["name"] == "Col. Pawan Kumar Gopinath Sharma"
+
+
+def test_humble_petition_heading_is_not_a_second_respondent() -> None:
+    """The salutation after the party table is not another respondent."""
+    page = """
+    Position of parties
+    <table><tr><th></th><th>Before Hon’ble High Court</th><th>Before this Hon’ble Court</th></tr>
+    <tr><td><strong>Mubarak Ali</strong><br /><strong>S/o Athar Hussain</strong><br /><strong>R/o Mahuadih</strong><br /><strong>Police Station-Shankargarh</strong><br /><strong>District-Balrampur-Ramanujganj</strong><br /><strong>Chhattisgarh</strong></td><td><strong>Petitioner</strong></td><td><strong>Petitioner</strong></td></tr>
+    <tr><td><strong>Versus</strong></td><td></td><td></td></tr>
+    <tr><td><strong>State of Chhattisgarh</strong><br /><strong>Through Station House Officer</strong><br /><strong>Police Station Shankargarh</strong><br /><strong>District-Balrampur-Ramanujganj</strong><br /><strong>Chhattisgarh</strong></td><td><strong>Respondent</strong></td><td><strong>Respondent</strong></td></tr></table>
+    To,
+    Hon’ble the Chief Justice of India
+    and his Hon’ble Companion Justices
+    of The Hon’ble Supreme Court of India
+    The humble Petition of the Petitioner above named:
+    """
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CRIMINAL)",
+            "cause_title": {
+                "formatted_title": "Mubarak Ali VS State of Chhattisgarh and Anr."
+            },
+            "petitioners": [
+                {
+                    "name": "Mubarak Ali",
+                    "address": (
+                        "R/o Mahuadih Police Station-Shankargarh "
+                        "District-Balrampur-Ramanujganj Chhattisgarh"
+                    ),
+                }
+            ],
+            "respondents": [
+                {
+                    "name": "State of Chhattisgarh",
+                    "address": (
+                        "Through Station House Officer Police Station Shankargarh "
+                        "District-Balrampur-Ramanujganj Chhattisgarh Hon’ble the"
+                    ),
+                },
+                {"name": "The humble Petition of the"},
+            ],
+        },
+        page_markdown={22: page},
+    )
+    assert [party["name"] for party in done["petitioners"]] == ["Mubarak Ali"]
+    petitioner_address = done["petitioners"][0]["address"]
+    assert petitioner_address.startswith("Mahuadih")
+    assert not petitioner_address.lower().startswith("r/o")
+    assert [party["name"] for party in done["respondents"]] == ["State of Chhattisgarh"]
+    address = done["respondents"][0]["address"]
+    assert address.startswith("Police Station Shankargarh")
+    assert "Chhattisgarh" in address
+    assert "through" not in address.lower()
+    assert "Hon" not in address
+    assert done["respondents"][0]["acting_through"] == "Station House Officer"
+    assert done["cause_title"]["formatted_title"] == (
+        "Mubarak Ali VS State of Chhattisgarh"
+    )
+
+
+def test_parvez_party_page_has_one_petitioner_and_one_respondent() -> None:
+    """Page 37 is the current-court column. A signature line is not a respondent."""
+    page = """
+    IN THE SUPREME COURT OF INDIA
+    CRIMINAL APPELLATE JURISDICTION
+    SPECIAL LEAVE PETITION (CRL.) NO. OF 2026
+    IN THE MATTER OF:
+    BETWEEN
+    POSITION OF THE PARTIES
+    In the Ld. Sessions Court
+    In the Hon'ble High Court
+    In this Hon'ble Court
+    Parwej Alam @ Parwej Alam
+    S/o Nizamuddin Ansari
+    R/o VPO Tikaita, PS Turkaulia, Purba Champaran, Bihar
+    Applicant
+    Petitioner
+    Petitioner
+    Versus
+    STATE OF BIHAR
+    Through
+    SHO, P.S- Motihari Cyber, Dist. East Champaran, Bihar
+    Respondent Respondent
+    Respondent
+    TO,
+    HONBLE THE CHIEF JUSTICE OF INDIA
+    AND HIS COMPANION JUDGES OF THE
+    HON'BLE SUPREME COURT OF INDIA
+    THE SPECIAL LEAVE PETITION OF
+    """
+    merged = merge_dropped_party_schedule({1: "cover"}, {37: page})
+    assert "POSITION OF THE PARTIES" in merged[37]
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CRL)",
+            "cause_title": {
+                "formatted_title": "PARWEJ ALAM @ PARWEZ ALAM VS STATE OF BIHAR and Ors.",
+                "main_petitioner": "PARWEJ ALAM @ PARWEZ ALAM",
+                "main_respondent": "STATE OF BIHAR",
+            },
+            "petitioners": [{"name": "PARWEJ ALAM @ PARWEZ ALAM", "address": None}],
+            "respondents": [
+                {"name": "STATE OF BIHAR"},
+                {"name": "signature: AOR for the", "address": "AOR for the"},
+                {"name": "PARWEJ ALAM @ PARWEZ ALAM"},
+            ],
+            "inconsistencies": {
+                "items": [
+                    {
+                        "id": "1",
+                        "label": "Missing acting through",
+                        "raw_text": "ORGANIZATION respondent 'STATE OF BIHAR' has no acting_through.",
+                    }
+                ]
+            },
+        },
+        page_markdown=merged,
+    )
+    assert [party["name"] for party in done["petitioners"]] == ["Parwej Alam @ Parwej Alam"]
+    petitioner = done["petitioners"][0]
+    assert petitioner["relation"] == "S/o"
+    assert petitioner["guardian"] == "Nizamuddin Ansari"
+    assert petitioner["address"] == "VPO Tikaita, PS Turkaulia, Purba Champaran, Bihar"
+    assert not petitioner["address"].lower().startswith("r/o")
+    assert [party["name"] for party in done["respondents"]] == ["STATE OF BIHAR"]
+    respondent = done["respondents"][0]
+    assert respondent["acting_through"] == "SHO"
+    assert respondent["address"] == "P.S- Motihari Cyber, Dist. East Champaran, Bihar"
+    assert "through" not in respondent["address"].lower()
+    assert done["cause_title"]["formatted_title"] == "Parwej Alam @ Parwej Alam VS STATE OF BIHAR"
+    assert done["inconsistencies"]["items"] == []
+
+
+def test_review_memo_keeps_every_numbered_respondent_and_the_second_address() -> None:
+    """Presently at and Second Address stay with the party. No number is skipped."""
+    page_18 = """
+    IN THE SUPREME COURT OF INDIA
+    IN THE MATTER OF:
+    1. Sh. Anang Pal Singh, S/o Shri Ram Narain,
+    R/o. A-19, New Police Lines, Kingsway Camp,
+    Delhi-110009.
+    Presently at:
+    H.No.175, Third Floor, Sharda Niketan
+    Pitampura, Delhi-110034.
+    2. Shri Rajinder Singh, S/o. Shri Ram Narain,
+    R/o. B-1, Tehsil Road,
+    Najafgarh, New Delhi-110043.
+    3. Smt. Shakuntala,
+    W/o. Shri Anang Pal Singh,
+    R/o. A-19, New Police Lines,
+    Kingsway Camp, Delhi-110034.
+    Presently at:
+    H.No.175, Third Floor, Sharda Niketan, Pitampura, Delhi119934.
+    Versus
+    1. Union of India,
+    Through its Secretary,
+    Ministry of Urban Development, New Delhi.
+    """
+    page_19 = """
+    2. Govt. of N.C.T. Delhi,
+    Through its Secretary,
+    Land Building Department, Vikas Bhawan, New Delhi.
+    3. Land Acquisition Collector,
+    Delhi, Saraswati Vihar, Kanjhawala, Delhi.
+    4. Director of Education, Govt. of NCT, Old secretariat, Delhi.
+    5. General Manager, Indian Oil Corporation, World Trade Centre, Babar Road, New Delhi.
+    6. Secretary, Ministry of Petroleum & Natural Gas, Government of India, New Delhi.
+    7. Sh. K.S.Mahra, Commissioner of MCD, Town Hall, Chandi Chowk, Delhi-110006
+    8. Master Azad Singh, Counsellor, MCD, S/o Sh. Meer Singh,
+    R/o House No.N.S.23, Ground Floor, Mianwali Nagar, Delhi-110087;
+    Second Address:
+    R/o House No. 555, Vilage & Post Office Mundka, Delhi-110041
+    """
+    done = finalize_front_extract(
+        {
+            "petition_type": "REVIEW PETITION (CIVIL)",
+            "cause_title": {"formatted_title": "Anang Pal Singh and Ors. VS Union of India and Ors."},
+            "petitioners": [{"name": "Sh. Anang Pal Singh"}],
+            "respondents": [
+                {"name": "Union of India"},
+                {"name": "Second Address:"},
+            ],
+        },
+        page_markdown={18: page_18, 19: page_19},
+    )
+    assert [party["name"] for party in done["petitioners"]] == [
+        "Sh. Anang Pal Singh",
+        "Shri Rajinder Singh",
+        "Smt. Shakuntala",
+    ]
+    first = done["petitioners"][0]
+    assert first["relation"] == "S/o"
+    assert first["guardian"] == "Shri Ram Narain"
+    assert first["address"].startswith("A-19")
+    assert "Presently at" in first["address"]
+    assert not first["address"].lower().startswith("r/o")
+    assert done["petitioners"][2]["relation"] == "W/o"
+    assert done["petitioners"][2]["guardian"] == "Shri Anang Pal Singh"
+    names = [party["name"] for party in done["respondents"]]
+    assert names[2] == "Land Acquisition Collector"
+    assert "Saraswati" in done["respondents"][2]["address"]
+    assert "Second Address" not in names
+    azad = done["respondents"][-1]
+    assert "Azad Singh" in azad["name"]
+    assert "N.S.23" in azad["address"]
+    assert "555" in azad["address"]
+
+
+def test_position_of_parties_on_later_pages_keeps_both_columns_current_court() -> None:
+    """The caption versus is not the list. Column roles and the case number are not parties."""
+    page_40 = """
+    [Against the Impugned Order in I.A/12/2023 in WRIT-B No. 450 of 1986]
+    IN THE MATTER OF:
+    Suraj Singh and Ors.
+    VERSUS
+    Deputy Director of Consolidation, Faizabad and Ors.
+    POSITION OF PARTIES
+    In the Hon'ble High Court
+    In this Hon'ble Court
+    1. Mr. Suraj Singh
+    Not a Party Appellant No.1
+    """
+    page_41 = """
+    2. Mr. Rameshwar Dutt Singh
+    R/o House No. 15, Rampur, Kharahata, P.S. Vazirganj, Tehsil Tarabganj, District Gonda-271124
+    Not a Party Appellant No.2
+    3. Mr. Sushil Dutt Singh
+    R/o House No. 15, Rampur, Kharahata, District Gonda-271124
+    Not a Party Appellant No.3
+    4. Mr. Akshay Singh
+    R/o House No. 15, Rampur, Kharahata, District Gonda-271124
+    Not a Party Appellant No.4
+    5. Ms. Beauty Singh
+    R/o House No. 15, Rampur, Kharahata, District Gonda-271124
+    Not a Party Appellant No.5
+    6. Mrs. Krishna Kumari
+    Not a Party Appellant No. 6
+    R/o House No. 15, Rampur, Kharahata, District Gonda-271124
+    """
+    page_42 = """
+    VERSUS
+    1.
+    Deputy Director of Consolidation, Faizabad
+    (now known as Deputy Director of Consolidation, Ayodhya)
+    Collectorate Compound, Civil Lines, Ayodhya -224001
+    Respondent No.1 Respondent No.1
+    2. Mr. Bhagwan Singh (Deceased) through his
+    LR's
+    Respondent No. 2 Dead
+    3. Mr. Vikram Singh (Deceased) through his LR's
+    Respondent No. 3 Dead
+    4. Mr. Balram Singh (Deceased) through his LR's
+    Respondent No. 4 Dead
+    5. Mr. Harish Dutt Singh (Deceased) through his LR's
+    Petitioner No. 1/2 Dead
+    6. Mr. Krishan Dev Singh (Son of Late Mr. Devendra Pratap Singh and missing since last fifteen years)
+    Not a Party Proforma Respondent
+    """
+    done = finalize_front_extract(
+        {
+            "petition_type": "S.L.P. (CIVIL)",
+            "cause_title": {"formatted_title": "A/12/2023 in WRIT-B No. 450 of 1986]"},
+            "petitioners": [{"name": "A/12/2023 in WRIT-B No. 450 of 1986]", "address": "Suraj Singh and Ors."}],
+            "respondents": [{"name": "and Ors", "address": "Not a Party"}, {"name": "Mr. Suraj Singh"}],
+        },
+        page_markdown={40: page_40, 41: page_41, 42: page_42},
+    )
+    petitioners = done["petitioners"]
+    respondents = done["respondents"]
+    assert [party["name"] for party in petitioners] == [
+        "Mr. Suraj Singh",
+        "Mr. Rameshwar Dutt Singh",
+        "Mr. Sushil Dutt Singh",
+        "Mr. Akshay Singh",
+        "Ms. Beauty Singh",
+        "Mrs. Krishna Kumari",
+    ]
+    assert petitioners[0]["address"] is None
+    assert "271124" in petitioners[1]["address"]
+    assert "Not a Party" not in petitioners[1]["address"]
+    assert len(respondents) == 6
+    assert respondents[0]["name"] == "Deputy Director of Consolidation, Faizabad"
+    assert "Ayodhya" in respondents[0]["address"]
+    assert "224001" in respondents[0]["address"]
+    assert "Bhagwan Singh" in respondents[1]["name"]
+    assert "LR" in respondents[1]["acting_through"]
+    assert "Krishan Dev Singh" in respondents[5]["name"]
+    names = [party["name"] for party in [*petitioners, *respondents]]
+    assert not any("A/12/2023" in name or name == "and Ors" or "Not a Party" in name for name in names)
+
+
+def test_a_middle_party_schedule_is_labelled_opening_pages() -> None:
+    pages = supplemental_front_party_pages(
+        {
+            40: "POSITION OF PARTIES\n1. A\nVERSUS\n1. B",
+            41: "2. C",
+            42: "3. D",
+            43: "MOST RESPECTFULLY SHOWETH",
+            44: "later narrative",
+        },
+        set(range(1, 31)),
+    )
+    assert sorted(pages) == [40, 41, 42, 43]
+    packed = build_front_extract_pack_markdown(
+        {1: "opening", 32: "closing vakalatnama", 40: pages[40]},
+        opening_pages=30,
+    )
+    assert "[Opening pages] (p. 40)" in packed
+    assert "[Closing pages] (p. 32)" in packed
+    assert "[Opening pages] (p. 1)" in packed
