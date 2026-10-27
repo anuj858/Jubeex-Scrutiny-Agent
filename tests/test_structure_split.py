@@ -10,6 +10,7 @@ from extraction_review.structure_split import (
     classify_complete_segments,
     classify_page,
     detect_boundaries,
+    extract_page_units,
     reconcile_compiled_split,
     structure_aware_split,
 )
@@ -111,6 +112,39 @@ def test_classify_page_uses_llama_on_ocr_needed_empty_page() -> None:
     assert result.document_type == "Main Petition"
     assert "llama_hint" in result.signals
     assert result.confidence < 0.7
+
+
+def test_llamaparse_letter_spaced_index_activates_markdown_continuations() -> None:
+    pages = {
+        1: (
+            "I N D E X\n"
+            "| S.No. | PARTICULARS | Page No. of part to which it belongs |\n"
+            "| --- | --- | --- |\n"
+            "| 1. | Office Report on Limitation | A |\n"
+            "| 2. | Listing Proforma | A1-A2 |\n"
+            "| 3. | Cover Page | A3 |"
+        ),
+        2: (
+            "| 11. | APPENDIX statutory provisions | 23A-23D |\n"
+            "| --- | --- | --- |\n"
+            "| 12. | ANNEXURE-P/1 Circular | 24-54 |\n"
+            "| 13. | ANNEXURE-P/2 Order | 55-62 |"
+        ),
+        3: "OFFICE REPORT ON LIMITATION\nThe petition is within time.",
+    }
+
+    units = extract_page_units(
+        _blank_pdf(3),
+        page_texts=pages,
+        use_local_ocr=False,
+        supplied_text_source="llamaparse",
+    )
+
+    assert units[0].text.startswith("INDEX\nS.No. Particulars Page No.")
+    assert units[1].text.startswith("INDEX\nS.No. Particulars Page No.")
+    assert classify_page(units[0]).document_type == "Index"
+    assert classify_page(units[1]).document_type == "Index"
+    assert classify_page(units[2]).document_type == "Office Report on Limitation"
 
 
 def test_targeted_reconciliation_preserves_supported_llama_segment() -> None:

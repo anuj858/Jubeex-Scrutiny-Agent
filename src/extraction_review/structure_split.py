@@ -27,6 +27,7 @@ from .document_parts import (
     ANNEXURE_FAMILY,
     MAIN_PETITION_PART,
     PagePartMap,
+    _is_index_heading_line,
     annexure_label_from_text,
     family_split_name,
     normalize_part_name,
@@ -52,8 +53,8 @@ from .split_repair import (
     _looks_like_sci_main_petition,
     _outer_anchor_label,
     _restore_early_record_of_proceedings,
-    _restore_front_impugned_judgment,
     _restore_explicit_master_index_pages,
+    _restore_front_impugned_judgment,
     _restore_index_bridge_pages,
     _restore_master_volume_sections,
     _restore_model_bracketed_annexure_continuations,
@@ -550,11 +551,20 @@ def extract_page_units(
                 )
                 text = re.sub(r"(?i)<hr\s*/?>", "", text)
                 text = text.replace("**", "").replace("__", "")
+                has_explicit_index_heading = any(
+                    _is_index_heading_line(line)
+                    for line in text[:1200].splitlines()[:12]
+                )
                 explicit_master_index = bool(
                     re.search(r"(?i)\bindex\s+of\s+papers\b", text[:1200])
                     or (
-                        re.search(r"(?mi)^\s*index\s*$", text[:1200])
+                        has_explicit_index_heading
                         and re.search(r"(?i)particulars\s+of\s+documents", text[:1800])
+                    )
+                    or (
+                        has_explicit_index_heading
+                        and re.search(r"(?i)\bparticulars\b", text[:1800])
+                        and re.search(r"(?i)\bpage\s+no\.?\b", text[:1800])
                     )
                 )
                 if index_rows and (parsed_index_active or explicit_master_index):

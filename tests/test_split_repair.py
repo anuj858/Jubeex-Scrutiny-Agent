@@ -136,6 +136,58 @@ def test_defect_008_master_index_rows_do_not_become_office_report() -> None:
     assert repaired[7] == ["Office Report on Limitation"]
 
 
+def test_defect_001_letter_spaced_index_and_continuations_override_cover() -> None:
+    """The server's I N D E X must not become an Office Report row or Cover."""
+    from extraction_review.split_repair import _outer_anchor_label
+
+    texts = {
+        1: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "PAPER BOOK\n{COVER PAGE}\n(FOR INDEX PLEASE SEE INSIDE)"
+        ),
+        2: (
+            "I N D E X\n"
+            "| S.No. | PARTICULARS | Page No. of part to which it belongs |\n"
+            "| 1. | Office Report on Limitation | A |\n"
+            "| 2. | Listing Proforma | A1-A2 |\n"
+            "| 3. | Cover Page of Paper-Book | A3 |\n"
+            "| 9. | Impugned final order | 1-12 |\n"
+            "| 10. | Special Leave Petition with Affidavit | 13-23 |"
+        ),
+        3: (
+            "11.\tAPPENDIX - statutory provisions\t23A-23D\n"
+            "12.\tANNEXURE-P/1 Circular dated 01.01.1993\t24-54\n"
+            "13.\tANNEXURE-P/2 Order dated 31.01.2011\t55-62\n"
+            "14.\tANNEXURE-P/3 Order dated 23.11.2015\t63-71"
+        ),
+        4: (
+            "15.\tANNEXURE-P/4 Writ Petition\t72-95\n"
+            "16.\tANNEXURE-P/5 Order dated 09.08.2023\t96-98\n"
+            "17.\tI.A. Application for certified copy exemption\t99-100\n"
+            "18.\tI.A. Application for translation exemption\t101-102\n"
+            "19.\tF/M\t103\n20.\tV/A\t104"
+        ),
+        5: (
+            "IN THE SUPREME COURT OF INDIA\nOFFICE REPORT ON LIMITATION\n"
+            "1. The Petition is within time."
+        ),
+    }
+    initial = {
+        1: ["Cover Page"],
+        2: ["Cover Page"],
+        3: ["Cover Page"],
+        4: ["Cover Page"],
+        5: ["Office Report on Limitation"],
+    }
+
+    assert _outer_anchor_label(texts[2]) == "Index"
+    assert _outer_anchor_label(texts[5]) == "Office Report on Limitation"
+    repaired, _duplicates = repair_compiled_split(initial, texts, page_count=5)
+    assert repaired[1] == ["Cover Page"]
+    assert all(repaired[page] == ["Index"] for page in (2, 3, 4))
+    assert repaired[5] == ["Office Report on Limitation"]
+
+
 def test_defect_011_outer_a_series_owns_nested_p1_and_a3_tail() -> None:
     from extraction_review.split_repair import (
         _annexure_run_bounds,

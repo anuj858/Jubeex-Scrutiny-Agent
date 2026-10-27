@@ -1281,6 +1281,23 @@ _CARRY_BLOCKING_PARTS = frozenset(
 )
 
 
+def _is_index_heading_line(value: str) -> bool:
+    """Recognize a standalone Index heading, including letter-spaced scans.
+
+    PDF text layers and OCR commonly preserve typographic tracking as
+    ``I N D E X``.  Normal whitespace folding intentionally keeps those
+    spaces, so heading recognition must compact this one short line without
+    removing spaces from ordinary prose or table cells.
+    """
+    plain = re.sub(r"<[^>]+>", " ", value or "")
+    plain = re.sub(r"[#*_`|]+", " ", plain)
+    plain = plain.strip()
+    if not plain or len(plain) > 48:
+        return False
+    compact = re.sub(r"[^a-z]", "", plain.casefold())
+    return compact in {"index", "indexofpaper", "indexofpapers"}
+
+
 def _is_real_split_label(name: str) -> bool:
     folded = _fold(name)
     return bool(folded) and folded not in _UNCATEGORIZED_LABELS
@@ -1289,8 +1306,11 @@ def _is_real_split_label(name: str) -> bool:
 def _looks_like_index_table(text: str) -> bool:
     head_text = text[:1400]
     head = _fold(head_text)
+    has_index_heading = any(
+        _is_index_heading_line(line) for line in head_text.splitlines()[:12]
+    )
     if not (
-        "index" in head
+        ("index" in head or has_index_heading)
         and ("particulars" in head or "page no" in head or "part i" in head)
     ):
         return False
@@ -1318,7 +1338,7 @@ def _looks_like_index_table(text: str) -> bool:
     ):
         return False
 
-    return "index" in head and (
+    return ("index" in head or has_index_heading) and (
         "particulars" in head or "page no" in head or "part i" in head
     )
 

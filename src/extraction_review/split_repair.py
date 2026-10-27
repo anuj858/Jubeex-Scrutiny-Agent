@@ -22,6 +22,7 @@ from .document_parts import (
     PagePartMap,
     _contiguous_groups,
     _heading_window,
+    _is_index_heading_line,
     _is_real_split_label,
     _is_sci_application_start,
     _looks_like_index_table,
@@ -607,7 +608,7 @@ def _looks_like_master_paperbook_index(text: str) -> bool:
         lines.append(plain)
         if len(lines) >= 12:
             break
-    if not lines or not re.fullmatch(r"index(?:\s+of\s+papers?)?", lines[0]):
+    if not lines or not _is_index_heading_line(lines[0]):
         return False
     if (
         _looks_like_rop_index_form(text)
@@ -1584,7 +1585,9 @@ def _outer_anchor_label(text: str) -> str | None:
         return MAIN_PETITION_PART
     # Likewise, a misspelled scanned heading such as LIMITAION is still an
     # Office Report boundary, not a numbered continuation of the prior Index.
-    if _OFFICE_REPORT_RE.search(text[:2000]) and not _is_lower_court_caption(text):
+    if _OFFICE_REPORT_HEADING_RE.search(
+        _heading_window(text, lines=24)
+    ) and not _is_lower_court_caption(text):
         return "Office Report on Limitation"
     if _looks_like_index_continuation(text):
         return "Index"
@@ -1619,7 +1622,7 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Filing Memo"
     # A lower-court report reproduced in an exhibit is not the Supreme Court
     # paper-book's Office Report on Limitation.
-    if _OFFICE_REPORT_RE.search(text[:2000]):
+    if _OFFICE_REPORT_HEADING_RE.search(_heading_window(text, lines=24)):
         if _is_lower_court_caption(text):
             return None
         return "Office Report on Limitation"
