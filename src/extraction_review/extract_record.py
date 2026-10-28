@@ -1561,6 +1561,66 @@ def _next_inconsistency_id(items: list[Any]) -> str:
     return str(next_id)
 
 
+_AOR_PHONE = re.compile(
+    r"\b(?:ph|phone|tel|telephone|mob|mobile)\.?\s*[:.]?\s*"
+    r"(\+?\d[\d\s()./-]{6,}\d)",
+    re.IGNORECASE,
+)
+
+
+def _printed_phone(text: str) -> str | None:
+    """The number after Ph., Tel., or Mobile. A PIN or chamber number is not a phone."""
+    match = _AOR_PHONE.search(text or "")
+    if not match:
+        return None
+    number = re.sub(r"\s+", " ", match.group(1)).strip(" .,-")
+    digits = re.sub(r"\D", "", number)
+    if not 8 <= len(digits) <= 15:
+        return None
+    return number
+
+
+def _phone_after_chamber(address: str, pages: Mapping[int, str] | None) -> str | None:
+    """The phone printed on the same chamber line when the address field omitted it."""
+    place = re.sub(r"^\s*chamber\s*:\s*", "", address or "", flags=re.IGNORECASE)
+    place = re.sub(r"\s+", " ", place).strip(" ,;")
+    if len(place) < 12 or not pages:
+        return None
+    needle = place[:48].casefold()
+    for text in pages.values():
+        folded = re.sub(r"\s+", " ", text or "")
+        at = folded.casefold().find(needle)
+        if at < 0:
+            continue
+        phone = _printed_phone(folded[at : at + len(place) + 48])
+        if phone:
+            return phone
+    return None
+
+
+def _fill_aor_phones(
+    payload: dict[str, Any],
+    page_markdown: Mapping[int, str] | None = None,
+) -> None:
+    """Put Ph. / Tel. / Mobile from the chamber line into the advocate phone field."""
+    for aor in payload.get("advocates_on_record") or []:
+        if not isinstance(aor, dict):
+            continue
+        address = aor.get("office_address") if isinstance(aor.get("office_address"), str) else ""
+        raw = aor.get("raw_text") if isinstance(aor.get("raw_text"), str) else ""
+        phone = _printed_phone(address) or _printed_phone(raw)
+        if phone and address:
+            cleaned = _AOR_PHONE.sub(" ", address)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;")
+            aor["office_address"] = cleaned or None
+        if str(aor.get("mobile") or "").strip():
+            continue
+        if not phone:
+            phone = _phone_after_chamber(address, page_markdown)
+        if phone:
+            aor["mobile"] = phone
+
+
 def _normalize_legacy_keys(payload: dict[str, Any]) -> None:
     if not payload.get("relief_sort"):
         relief = payload.get("relief")
@@ -1583,6 +1643,7 @@ def _normalize_legacy_keys(payload: dict[str, Any]) -> None:
     for aor in payload.get("advocates_on_record") or []:
         if isinstance(aor, dict) and not aor.get("office_address") and aor.get("office"):
             aor["office_address"] = aor.get("office")
+    _fill_aor_phones(payload)
     for order in payload.get("impugned_orders") or []:
         if not isinstance(order, dict):
             continue
@@ -3103,6 +3164,7 @@ def finalize_front_extract(
 ) -> dict[str, Any]:
     """Keep the extract keys, put special_category beside petition_type, and clear later-page fields."""
     repair_front_parties(payload, page_markdown)
+    _fill_aor_phones(payload, page_markdown)
     category = _printed_special_category(payload.get("special_category"))
     ordered: dict[str, Any] = {}
     for key, value in payload.items():

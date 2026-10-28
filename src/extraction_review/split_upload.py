@@ -72,7 +72,8 @@ AOR_EXTRACT_RULES = (
     "The footer may be on any opening page or on the closing pages. Use the block "
     "that prints Advocate-on-Record, Vakalatnama, Memo of Appearance, or "
     "Drawn By / Filed on / DRAWN & FILED BY, with the chamber lines under that name. "
-    "Record source_pages for the page that printed it."
+    "A Ph., Phone, Tel., or Mobile number on the chamber line, including after the PIN, "
+    "goes in mobile. Record source_pages for the page that printed it."
 )
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
@@ -1517,6 +1518,7 @@ def _window_extract_system_prompt() -> str:
             "- cause_title: the caption from whichever opening page prints it. Main names come from the fullest party list, without And Anr or And Ors.",
             "- petitioners and respondents: every numbered party in the petition opening, with the relation, guardian, age, occupation, and address printed under that name. When one schedule has a lower-court column and a current-court column, use only the current-court column. '& Anr.' or '& Ors.' is not a party. Do not copy a memo of parties headed as the lower court's memo. Do not stop after the first name.",
             "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
             "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
             "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
@@ -1615,6 +1617,7 @@ def build_front_extract_system_prompt() -> str:
             f"- guardian: {FRONT_GUARDIAN_DESCRIPTION}",
             f"- acting_through: {FRONT_ACTING_THROUGH_DESCRIPTION}",
             "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
             "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
             "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",

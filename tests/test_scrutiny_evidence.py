@@ -26,6 +26,7 @@ from extraction_review.scrutiny.prompts import (
 from extraction_review.scrutiny.schema import (
     BoundingBox,
     DefectResponse,
+    ElementFinding,
     EvidenceRef,
     FindingEvidence,
     _display_evidence_quote,
@@ -36,6 +37,7 @@ from extraction_review.scrutiny.schema import (
     apply_manifest_absence_policy,
     apply_presence_only_policy,
     apply_status_policy,
+    apply_supported_evidence_policy,
     apply_visual_conflict_policy,
     manifest_absence_proven,
     missing_document_finding,
@@ -1535,6 +1537,106 @@ def test_unlabelled_page_does_not_prove_a_document_is_missing() -> None:
         2: {"document_part": None},
     }
     assert missing_parts_in_layout(defect, layout) is None
+
+
+def test_address_rows_are_not_quoted_as_a_missing_address() -> None:
+    defect = _scrutiny_row(
+        check_id="D-63",
+        defect=(
+            "The Petition, etc., does not contain the complete residential/"
+            " office addresses of the parties."
+        ),
+        requirement=(
+            "The Main Petition must give the complete residential or office "
+            "address of every party in its array of parties."
+        ),
+        ai_note="",
+    )
+    kept = (
+        "Column 1: 1.Col. Pawan Kumar Gopinath Sharma, s/o Gopinath Sharma, "
+        "Indian Jew\nColumn 2: Respondent No.\nColumn 3: Petitioner"
+    )
+    response = DefectResponse(
+        check_id="D-63",
+        status="defect_found",
+        confidence=0.95,
+        summary="Respondents No. 1 to 9 omit the PIN code.",
+        observed="Respondents No. 1 to 9 omit the PIN code.",
+        conclusion=(
+            "The Main Petition lacks complete address elements such as "
+            "locality, state, and PIN codes for the Respondents."
+        ),
+        elements=[
+            ElementFinding(
+                name="for each, a complete residential or office address",
+                state="missing",
+                detail=(
+                    "The Petitioner's entry omits the entire address; "
+                    "Respondent No. 10's entry omits house, street, locality, "
+                    "and state; and Respondents No. 1 to 9 omit the PIN code."
+                ),
+            )
+        ],
+        evidence=[
+            EvidenceRef(quote=kept, page=1),
+            EvidenceRef(
+                quote=(
+                    "Column 1: 1. K.D.R. Farms Co. op Housing Society Ltd., "
+                    "Gut No. 79, Sharnaur, Aurangabad, District Aurangabad, "
+                    "through its Chairman\nColumn 2: Petitioner No.\n"
+                    "Column 3: Respondent No.\n\n"
+                    "Column 1: 2. Rajendra Madhukarrao Kulkarni, age 52 years, "
+                    "occupation Business, r/o K.D.R. Farms Co. op. Housing "
+                    "Society Ltd. Gut No. 79, Sharnuar, Aurangabad"
+                ),
+                page=1,
+            ),
+            EvidenceRef(
+                quote=(
+                    "Column 1: 6. The Taluka Registrar, Cooperative Societies, "
+                    "Aurangabad, Taluka and District Aurangabad\n"
+                    "Column 2: Dy.\nColumn 3: Respondent No.\n"
+                    "Column 4: Respondent No."
+                ),
+                page=2,
+            ),
+            EvidenceRef(quote="Column 1: Aurangabad – 431\n210", page=4),
+        ],
+    )
+
+    original = list(response.evidence)
+    decided = apply_supported_evidence_policy(defect, response)
+
+    assert [item.quote for item in decided.evidence] == [kept]
+    assert "Pawan Kumar Gopinath Sharma" in decided.evidence[0].quote
+    assert "PIN" not in decided.conclusion
+    assert "PIN" not in decided.elements[0].detail
+    assert decided.status == "defect_found"
+
+    address_only = DefectResponse(
+        check_id="D-63",
+        status="defect_found",
+        confidence=0.95,
+        summary="Respondents No. 1 to 9 omit the PIN code.",
+        observed="Respondents No. 1 to 9 omit the PIN code.",
+        conclusion="The respondents omit the PIN code.",
+        elements=[
+            ElementFinding(
+                name="for each, a complete residential or office address",
+                state="missing",
+                detail="Respondents No. 1 to 9 omit the PIN code.",
+            )
+        ],
+        evidence=[
+            EvidenceRef(quote=item.quote, page=item.page)
+            for item in original
+            if "Pawan Kumar" not in (item.quote or "")
+        ],
+    )
+    dropped = apply_supported_evidence_policy(defect, address_only)
+    reviewed = apply_grounded_defect_policy(dropped)
+    assert dropped.evidence == []
+    assert reviewed.status == "needs_review"
 
 
 def test_reasoning_drops_a_citation_the_requirement_does_not_contain() -> None:

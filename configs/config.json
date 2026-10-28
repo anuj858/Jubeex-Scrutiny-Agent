@@ -155,7 +155,7 @@
                 }
               ],
               "default": null,
-              "description": "AOR mobile ONLY if printed. Leave null otherwise. Do not invent. Ph. on the Chamber line may stay in office_address.",
+              "description": "The phone number printed for this advocate. Look for Ph., Phone, Tel., or Mobile on the chamber line, including a number after the PIN such as Ph.: 23386175. Copy that number here. Leave null only when no phone is printed. Do not invent one.",
               "title": "Mobile"
             },
             "firm": {
@@ -181,7 +181,7 @@
                 }
               ],
               "default": null,
-              "description": "Printed Chamber/office lines under the AOR name. Copy exactly. Often labelled Chamber: not Address. Include PIN if printed. Leave null if those lines are not printed. Never invent a chamber number, block, or PIN. Never use a party's address. The chamber may be on any opening page or on the closing pages, under the advocate name after Drawn By / Filed on / DRAWN & FILED BY.",
+              "description": "Printed Chamber/office lines under the AOR name. Copy the place. Often labelled Chamber: not Address. Include PIN if printed. Stop before Ph., Phone, Tel., or Mobile; that number belongs in mobile. Leave null if those lines are not printed. Never invent a chamber number, block, or PIN. Never use a party's address. The chamber may be on any opening page or on the closing pages, under the advocate name after Drawn By / Filed on / DRAWN & FILED BY.",
               "title": "Office Address"
             },
             "source_part": {
