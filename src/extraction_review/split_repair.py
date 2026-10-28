@@ -5956,10 +5956,26 @@ def _apply_indexed_annexure_ranges(
             continue
         preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
         offset_locked_by_outer_documents = False
+        projected_outer_pages = (
+            range(
+                row.start + outer_paperbook_offset,
+                row.end + outer_paperbook_offset + 1,
+            )
+            if outer_paperbook_offset is not None
+            else ()
+        )
+        projected_specific_conflict = any(
+            family_split_name(name) == ANNEXURE_FAMILY
+            and name not in {ANNEXURE_FAMILY, "Annexure", label}
+            for page in projected_outer_pages
+            if 1 <= page <= page_count
+            for name in parts_on_page(page_parts.get(page))
+        )
         if (
             preferred_offset is None
             and outer_paperbook_offset is not None
             and family_split_name(label) == ANNEXURE_FAMILY
+            and not projected_specific_conflict
         ):
             preferred_offset = outer_paperbook_offset
             offset_locked_by_outer_documents = True
