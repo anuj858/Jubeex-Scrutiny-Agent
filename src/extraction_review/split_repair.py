@@ -2960,7 +2960,13 @@ def _restore_split_preface(
         if _is_near_blank_page(text) or _looks_like_garbled_scan_ocr(text):
             continue
         names = parts_on_page(updated.get(page))
-        if not names or "Impugned Order" in names:
+        # A page-level model can restart ``Cover Page`` on ordinary prose in
+        # the middle of a verified Synopsis / List-of-Dates run. Cover is a
+        # weak label here unless the page itself has a cover anchor (handled
+        # above). Let the explicit preface heading carry across only that
+        # false island; all other filing-part labels keep their existing
+        # precedence and stop conditions.
+        if not names or "Impugned Order" in names or names == ["Cover Page"]:
             updated[page] = [preface]
 
     for page in range(2, page_count + 1):

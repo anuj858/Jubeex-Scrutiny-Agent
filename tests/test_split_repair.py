@@ -4689,6 +4689,33 @@ def test_defect_002_narrative_lod_pages_are_not_listing_proforma() -> None:
     assert all(repaired[page] == ["List of Dates & Events"] for page in range(1, 6))
 
 
+def test_defect_002_narrative_lod_pages_are_not_cover_pages() -> None:
+    repeated = (
+        "It is respectfully submitted that the Petitioner and Respondent Nos. 3 "
+        "and 4 acted upon the settlement. The Hon'ble High Court passed the "
+        "impugned order, and the present Special Leave Petition challenges that "
+        "decision. "
+    )
+    texts = {
+        9: "B\nLIST OF DATES, EVENTS AND FACTS OF THE CASE\n" + repeated * 4,
+        10: "C\n" + repeated * 6,
+        11: "D\n" + repeated * 6,
+        12: repeated * 6,
+    }
+    labels = {
+        9: ["List of Dates & Events"],
+        10: ["Cover Page"],
+        11: ["Cover Page"],
+        12: ["Cover Page"],
+    }
+
+    repaired, _duplicates = repair_compiled_split(labels, texts, page_count=12)
+
+    assert all(
+        repaired[page] == ["List of Dates & Events"] for page in range(9, 13)
+    )
+
+
 def test_defect_002_bank_message_p08_is_not_an_annexure_stamp() -> None:
     from extraction_review.document_parts import annexure_label_from_text
 
