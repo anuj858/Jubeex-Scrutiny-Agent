@@ -121,9 +121,9 @@ def test_compact_normalizes_pdf_points_to_unit_square() -> None:
     assert word["h"] == 0.028
 
 
-def test_merge_granular_bboxes_adds_word_and_line() -> None:
+def test_merge_granular_bboxes_adds_word_line_and_cell() -> None:
     kwargs = merge_granular_bboxes({"file_id": "abc", "tier": "agentic"})
-    assert kwargs["output_options"]["granular_bboxes"] == ["word", "line"]
+    assert kwargs["output_options"]["granular_bboxes"] == ["word", "line", "cell"]
 
 
 def test_merge_granular_bboxes_skips_hosted_configuration() -> None:
@@ -285,9 +285,7 @@ def test_apply_evidence_pages_still_snaps_page_from_chunk() -> None:
         confidence=0.9,
         summary="Checklist is present.",
         reasoning="The Advocate's Check List is on the excerpt page.",
-        evidence=[
-            EvidenceRef(page=99, quote="ADVOCATE'S CHECK LIST", chunk_id="c1")
-        ],
+        evidence=[EvidenceRef(page=99, quote="ADVOCATE'S CHECK LIST", chunk_id="c1")],
     )
     grounded = apply_evidence_pages(
         response,
@@ -311,7 +309,10 @@ def test_apply_evidence_pages_still_snaps_page_from_chunk() -> None:
 
 def _sentence_layout(page: int, text: str, slot_id: str = "affidavit") -> dict:
     tokens = text.split()
-    row = [(token, 0.08 + index * 0.03, 0.62, 0.028, 0.018) for index, token in enumerate(tokens)]
+    row = [
+        (token, 0.08 + index * 0.03, 0.62, 0.028, 0.018)
+        for index, token in enumerate(tokens)
+    ]
     compact = compact_sidecar_pages([_rows_to_sidecar([row])], slot_id=slot_id)
     payload = compact[1]
     payload["slot_id"] = slot_id
@@ -462,7 +463,9 @@ async def test_load_layout_index_falls_back_to_s3_key(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_load_layout_index_uses_key_when_url_fails(monkeypatch) -> None:
     dumped = dump_layout_index(
-        _sentence_layout(12, "hereby undertakes that the facts stated", slot_id="vakalatnama")
+        _sentence_layout(
+            12, "hereby undertakes that the facts stated", slot_id="vakalatnama"
+        )
     )
 
     class FakeResponse:
@@ -636,3 +639,245 @@ def test_overlap_quote_stays_on_the_chunk_page() -> None:
     assert attached[0].document_part == "Annexure P-4"
     assert attached[0].bounding_boxes == []
     assert attached[0].boxes_status == "page_only"
+
+
+def _bare_layout(words: list[dict]) -> dict:
+    return {1: {"words": words, "width": 1.0, "height": 1.0, "local_page": 1}}
+
+
+def test_markdown_and_curly_quotes_match_plain_words() -> None:
+    layout = _sentence_layout(3, "Form 28 Yes ANNEXURE court's order is filed")
+    quotes = (
+        "| Form 28 | Yes |\n|---|---|",
+        "**ANNEXURE**",
+        "court’s order",
+    )
+    for quote in quotes:
+        boxes, status = boxes_for_quote(quote, 3, layout)
+        assert status == "matched", quote
+        assert boxes, quote
+
+
+def test_ellipsis_matches_both_sides_and_skips_the_middle() -> None:
+    layout = _bare_layout(
+        [
+            {"t": "the", "x": 0.10, "y": 0.20, "w": 0.05, "h": 0.02, "line": 0},
+            {"t": "petitioner", "x": 0.16, "y": 0.20, "w": 0.14, "h": 0.02, "line": 0},
+            {"t": "hereby", "x": 0.10, "y": 0.55, "w": 0.10, "h": 0.02, "line": 1},
+            {"t": "undertakes", "x": 0.32, "y": 0.20, "w": 0.14, "h": 0.02, "line": 0},
+        ]
+    )
+    boxes, status = boxes_for_quote("the petitioner ... undertakes", 1, layout)
+    assert status == "matched"
+    assert boxes
+    assert all(box["y"] + box["h"] < 0.40 for box in boxes)
+
+
+def test_same_baseline_columns_do_not_share_one_box() -> None:
+    layout = _bare_layout(
+        [
+            {"t": "left", "x": 0.05, "y": 0.40, "w": 0.12, "h": 0.02, "line": 0},
+            {"t": "column", "x": 0.18, "y": 0.40, "w": 0.12, "h": 0.02, "line": 0},
+            {"t": "right", "x": 0.70, "y": 0.402, "w": 0.10, "h": 0.02, "line": 0},
+            {"t": "side", "x": 0.81, "y": 0.402, "w": 0.10, "h": 0.02, "line": 0},
+        ]
+    )
+    boxes, status = boxes_for_quote("left column right side", 1, layout)
+    assert status == "matched"
+    assert len(boxes) == 2
+    assert boxes[0]["x"] + boxes[0]["w"] < 0.50
+    assert boxes[1]["x"] >= 0.70
+
+
+def test_vertical_jitter_joins_and_tight_lines_stay_apart() -> None:
+    layout = _bare_layout(
+        [
+            {"t": "alpha", "x": 0.10, "y": 0.200, "w": 0.08, "h": 0.020, "line": 0},
+            {"t": "beta", "x": 0.20, "y": 0.205, "w": 0.08, "h": 0.020, "line": 1},
+            {"t": "gamma", "x": 0.10, "y": 0.600, "w": 0.08, "h": 0.004, "line": 2},
+            {"t": "delta", "x": 0.20, "y": 0.605, "w": 0.08, "h": 0.004, "line": 3},
+        ]
+    )
+    boxes, status = boxes_for_quote("alpha beta gamma delta", 1, layout)
+    assert status == "matched"
+    assert len(boxes) == 3
+    assert boxes[0]["w"] == round(0.28 - 0.10, 6)
+    assert boxes[1]["y"] == 0.6
+    assert boxes[1]["w"] == 0.08
+    assert boxes[2]["y"] == 0.605
+    assert boxes[2]["w"] == 0.08
+
+
+def _table_sidecar(*, with_cells: bool) -> dict:
+    md = "| Form 28 | Yes |"
+    raw = md.encode("utf-8")
+    form_at = raw.find(b"Form")
+    number_at = raw.find(b"28")
+    grounding: dict = {"source": "md"}
+    if with_cells:
+        grounding["rows"] = [
+            [
+                {
+                    "bbox": [{"x": 10.0, "y": 20.0, "w": 30.0, "h": 12.0}],
+                    "lines": [
+                        {
+                            "span": [form_at, number_at + 2],
+                            "bbox": {"x": 10.0, "y": 20.0, "w": 30.0, "h": 12.0},
+                            "words": [
+                                {
+                                    "span": [form_at, form_at + 4],
+                                    "bbox": {
+                                        "x": 10.0,
+                                        "y": 20.0,
+                                        "w": 12.0,
+                                        "h": 12.0,
+                                    },
+                                },
+                                {
+                                    "span": [number_at, number_at + 2],
+                                    "bbox": {
+                                        "x": 24.0,
+                                        "y": 20.0,
+                                        "w": 10.0,
+                                        "h": 12.0,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+                {"bbox": [{"x": 50.0, "y": 20.0, "w": 16.0, "h": 12.0}]},
+            ]
+        ]
+    return {
+        "page_number": 1,
+        "page_width": 100.0,
+        "page_height": 100.0,
+        "success": True,
+        "items": [
+            {
+                "type": "table",
+                "md": md,
+                "rows": [["Form 28", "Yes"]],
+                "bbox": [{"x": 10.0, "y": 20.0, "w": 80.0, "h": 40.0}],
+                "grounding": grounding,
+            }
+        ],
+    }
+
+
+def test_table_cell_quote_is_cell_sized() -> None:
+    layout = compact_sidecar_pages([_table_sidecar(with_cells=True)])
+    assert [word["t"] for word in layout[1]["words"]] == ["Form", "28", "Yes"]
+    boxes, status = boxes_for_quote("| Form 28 | Yes |", 1, layout)
+    assert status == "matched"
+    assert boxes
+    assert all(box["w"] < 0.5 for box in boxes)
+    assert (
+        max(box["x"] + box["w"] for box in boxes) - min(box["x"] for box in boxes) < 0.7
+    )
+
+
+def test_table_without_cell_boxes_stays_page_only() -> None:
+    layout = compact_sidecar_pages([_table_sidecar(with_cells=False)])
+    assert layout[1]["words"] == []
+    boxes, status = boxes_for_quote("Form 28 Yes", 1, layout)
+    assert boxes == []
+    assert status == "page_only"
+
+
+def test_utf8_byte_spans_keep_the_following_word() -> None:
+    md = "“Hello” world"
+    raw = md.encode("utf-8")
+    hello_at = raw.find(b"Hello")
+    world_at = raw.find(b"world")
+    layout = compact_sidecar_pages(
+        [
+            {
+                "page_number": 1,
+                "page_width": 100.0,
+                "page_height": 100.0,
+                "success": True,
+                "items": [
+                    {
+                        "type": "text",
+                        "md": md,
+                        "grounding": {
+                            "source": "md",
+                            "lines": [
+                                {
+                                    "span": [0, len(raw)],
+                                    "bbox": {"x": 10.0, "y": 20.0, "w": 40.0, "h": 4.0},
+                                    "words": [
+                                        {
+                                            "span": [
+                                                hello_at,
+                                                hello_at + len(b"Hello"),
+                                            ],
+                                            "bbox": {
+                                                "x": 10.0,
+                                                "y": 20.0,
+                                                "w": 15.0,
+                                                "h": 4.0,
+                                            },
+                                        },
+                                        {
+                                            "span": [
+                                                world_at,
+                                                world_at + len(b"world"),
+                                            ],
+                                            "bbox": {
+                                                "x": 28.0,
+                                                "y": 20.0,
+                                                "w": 15.0,
+                                                "h": 4.0,
+                                            },
+                                        },
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "type": "list",
+                        "items": [
+                            {
+                                "type": "text",
+                                "md": "nested",
+                                "grounding": {
+                                    "source": "md",
+                                    "lines": [
+                                        {
+                                            "span": [0, 6],
+                                            "bbox": {
+                                                "x": 10.0,
+                                                "y": 40.0,
+                                                "w": 20.0,
+                                                "h": 4.0,
+                                            },
+                                            "words": [
+                                                {
+                                                    "span": [0, 6],
+                                                    "bbox": {
+                                                        "x": 10.0,
+                                                        "y": 40.0,
+                                                        "w": 20.0,
+                                                        "h": 4.0,
+                                                    },
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    )
+    assert [word["t"] for word in layout[1]["words"]] == ["Hello", "world", "nested"]
+    boxes, status = boxes_for_quote("Hello", 1, layout)
+    assert status == "matched"
+    assert boxes[0]["x"] == 0.1
+    assert boxes[0]["w"] == 0.15

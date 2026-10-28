@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from typing import Any
 
 import httpx
@@ -25,11 +26,47 @@ logger = logging.getLogger(__name__)
 LAYOUT_SCHEMA = "layout_index_v1"
 LAYOUT_ARTIFACT_URL_KEY = "layout_artifact_url"
 LAYOUT_ARTIFACT_KEY_KEY = "layout_artifact_key"
-GRANULAR_BBOXES = ("word", "line")
-LINE_Y_EPSILON = 0.012
+GRANULAR_BBOXES = ("word", "line", "cell")
+# A gap wider than this, and wider than a few normal word spaces, is a
+# column gutter rather than a space inside the quote.
+_COLUMN_GAP = 0.045
+_GAP_MULTIPLE = 4
+_LINE_OVERLAP = 0.5
 
 _WS = re.compile(r"\s+")
 _PUNCT = re.compile(r"[^\w./-]+")
+_HTML = re.compile(r"<[^>]+>")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_MARK = re.compile(r"(\*\*|__|~~|`)")
+_ELLIPSIS = re.compile(r"\[\s*(?:\.{3,}|…+)\s*\]|\(\s*(?:\.{3,}|…+)\s*\)|\.{3,}|…+")
+_TABLE_RULE = re.compile(r"(?:\|?\s*:?-{3,}:?\s*)+")
+_FOLD = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u2032": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u00ab": '"',
+        "\u00bb": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u00a0": " ",
+        "\u2007": " ",
+        "\u2009": " ",
+        "\u202f": " ",
+        "\ufeff": "",
+    }
+)
+# Survives punctuation stripping so an ellipsis can split the quote into
+# ordered segments. The skipped middle is not part of either segment.
+_GAP_TOKEN = "qxellipsisgapqx"
 
 PageLayout = dict[str, Any]
 LayoutIndex = dict[int, PageLayout]
@@ -38,12 +75,18 @@ LayoutIndex = dict[int, PageLayout]
 _ORDINAL = re.compile(r"^(\d{1,2})(st|nd|rd|th)$")
 _SLASH_DATE = re.compile(r"^\d{1,4}([./-]\d{1,4}){1,2}$")
 _MIN_TOKEN_RUN = 5
-_MAX_NEEDLE_TOKENS = 48
 
 
 def _norm_text(text: str) -> str:
-    collapsed = _WS.sub(" ", (text or "").replace("…", " ").replace("...", " "))
-    collapsed = _PUNCT.sub(" ", collapsed.lower())
+    """Plain words, with an ellipsis left as a gap token."""
+    raw = (text or "").translate(_FOLD)
+    raw = _HTML.sub(" ", raw)
+    raw = _MD_LINK.sub(r"\1", raw)
+    raw = _ELLIPSIS.sub(f" {_GAP_TOKEN} ", raw)
+    raw = _MD_MARK.sub(" ", raw)
+    raw = raw.replace("_", " ")
+    raw = _TABLE_RULE.sub(" ", raw)
+    collapsed = _PUNCT.sub(" ", raw.lower())
     return _WS.sub(" ", collapsed).strip()
 
 
@@ -80,7 +123,7 @@ def _output_options_dict(value: Any) -> dict[str, Any]:
 
 
 def merge_granular_bboxes(create_kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Ensure the existing parse job requests word and line grounding."""
+    """Ensure the existing parse job requests word, line, and cell grounding."""
     if create_kwargs.get("configuration_id"):
         return create_kwargs
     options = _output_options_dict(create_kwargs.get("output_options"))
@@ -156,6 +199,253 @@ def _bbox_dict(raw: Any) -> dict[str, Any] | None:
     return dict(mapping)
 
 
+def _bbox_list(raw: Any) -> list[dict[str, Any]]:
+    """A word box is one object. A cell box is a list of objects."""
+    if isinstance(raw, Mapping):
+        box = _bbox_dict(raw)
+        return [box] if box is not None else []
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        boxes: list[dict[str, Any]] = []
+        for item in raw:
+            box = _bbox_dict(item)
+            if box is not None:
+                boxes.append(box)
+        return boxes
+    return []
+
+
+def _box_edges(box: Mapping[str, Any]) -> tuple[float, float, float, float]:
+    x = float(box.get("x") or 0)
+    y = float(box.get("y") or 0)
+    width = float(box.get("w", box.get("width")) or 0)
+    height = float(box.get("h", box.get("height")) or 0)
+    return x, y, width, height
+
+
+def _union_bbox(boxes: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    edges: list[tuple[float, float, float, float]] = []
+    for box in boxes:
+        try:
+            edges.append(_box_edges(box))
+        except (TypeError, ValueError):
+            continue
+    if not edges:
+        return None
+    x = min(item[0] for item in edges)
+    y = min(item[1] for item in edges)
+    right = max(item[0] + item[2] for item in edges)
+    bottom = max(item[1] + item[3] for item in edges)
+    return {"x": x, "y": y, "w": right - x, "h": bottom - y}
+
+
+def _span_bounds(span: Any) -> tuple[int, int]:
+    try:
+        start, end = int(span[0]), int(span[1])
+    except (TypeError, ValueError, IndexError):
+        return 0, 0
+    if start < 0 or end <= start:
+        return 0, 0
+    return start, end
+
+
+def _utf8_slice(source: str, span: Any) -> str:
+    """Sidecar spans are UTF-8 byte offsets, not Python character indexes."""
+    start, end = _span_bounds(span)
+    if not source or end <= start:
+        return ""
+    raw = source.encode("utf-8")
+    if start >= len(raw) or end > len(raw):
+        return ""
+    return raw[start:end].decode("utf-8", errors="replace").strip()
+
+
+def _text_from_span(span: Any, *sources: str) -> str:
+    for source in sources:
+        token = _utf8_slice(source, span)
+        if token:
+            return token
+    return ""
+
+
+def _append_word(
+    words: list[dict[str, Any]],
+    token: str,
+    box: Mapping[str, Any] | None,
+    width: float,
+    height: float,
+    line_id: int,
+) -> bool:
+    text = str(token or "").strip()
+    if not text or box is None:
+        return False
+    try:
+        x, y, box_w, box_h = _box_edges(box)
+    except (TypeError, ValueError):
+        return False
+    words.append(
+        {
+            "t": text,
+            "x": round(_norm_coord(x, width), 6),
+            "y": round(_norm_coord(y, height), 6),
+            "w": round(_norm_coord(box_w, width), 6),
+            "h": round(_norm_coord(box_h, height), 6),
+            "line": line_id,
+        }
+    )
+    return True
+
+
+def _emit_lines(
+    words: list[dict[str, Any]],
+    lines: Sequence[Any],
+    width: float,
+    height: float,
+    line_id: int,
+    *sources: str,
+) -> int:
+    for line in lines:
+        if not isinstance(line, Mapping):
+            continue
+        emitted = 0
+        for word in line.get("words") or []:
+            if not isinstance(word, Mapping):
+                continue
+            box = _union_bbox(_bbox_list(word.get("bbox")))
+            token = _text_from_span(word.get("span"), *sources) or str(
+                word.get("t") or ""
+            )
+            if _append_word(words, token, box, width, height, line_id):
+                emitted += 1
+        if not emitted:
+            token = _text_from_span(line.get("span"), *sources)
+            box = _union_bbox(_bbox_list(line.get("bbox")))
+            if _append_word(words, token, box, width, height, line_id):
+                emitted = 1
+        line_id += 1
+    return line_id
+
+
+def _cell_plain_text(text: str) -> str:
+    return _WS.sub(" ", _HTML.sub(" ", text or "")).strip()
+
+
+def _emit_cell(
+    words: list[dict[str, Any]],
+    cell: Mapping[str, Any],
+    cell_text: str,
+    source: str,
+    width: float,
+    height: float,
+    line_id: int,
+) -> int:
+    lines = cell.get("lines") or []
+    if isinstance(lines, Sequence) and not isinstance(lines, (str, bytes)) and lines:
+        before = len(words)
+        line_id = _emit_lines(words, lines, width, height, line_id, source, cell_text)
+        if len(words) > before:
+            return line_id
+    box = _union_bbox(_bbox_list(cell.get("bbox")))
+    plain = _cell_plain_text(cell_text)
+    if box is None or not plain:
+        return line_id
+    emitted = False
+    for token in plain.split():
+        if _append_word(words, token, box, width, height, line_id):
+            emitted = True
+    if emitted:
+        line_id += 1
+    return line_id
+
+
+def _row_text(rows: Any, row_index: int, col_index: int) -> str:
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return ""
+    if row_index >= len(rows) or not isinstance(rows[row_index], Sequence):
+        return ""
+    if isinstance(rows[row_index], (str, bytes)) or col_index >= len(rows[row_index]):
+        return ""
+    return str(rows[row_index][col_index] or "")
+
+
+def _emit_table(
+    words: list[dict[str, Any]],
+    item: Mapping[str, Any],
+    grounding: Mapping[str, Any],
+    source: str,
+    width: float,
+    height: float,
+    line_id: int,
+) -> int:
+    rows = grounding.get("rows") or []
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return line_id
+    text_rows = item.get("rows")
+    for row_index, row in enumerate(rows):
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+            continue
+        for col_index, cell in enumerate(row):
+            if not isinstance(cell, Mapping):
+                continue
+            line_id = _emit_cell(
+                words,
+                cell,
+                _row_text(text_rows, row_index, col_index),
+                source,
+                width,
+                height,
+                line_id,
+            )
+    return line_id
+
+
+def _grounding_source_text(
+    item: Mapping[str, Any], grounding: Mapping[str, Any]
+) -> str:
+    if grounding.get("source") == "caption":
+        return str(item.get("caption") or item.get("md") or "")
+    return str(item.get("md") or item.get("value") or "")
+
+
+def _emit_grounding(
+    words: list[dict[str, Any]],
+    item: Mapping[str, Any],
+    grounding: Mapping[str, Any],
+    width: float,
+    height: float,
+    line_id: int,
+) -> int:
+    source = _grounding_source_text(item, grounding)
+    rows = grounding.get("rows")
+    if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes)) and rows:
+        return _emit_table(words, item, grounding, source, width, height, line_id)
+    # An item-level table rectangle is the whole table. Without cell geometry
+    # there is nothing honest to highlight, so the quote stays page-only.
+    if grounding.get("source") not in (None, "md", "caption"):
+        return line_id
+    lines = grounding.get("lines") or []
+    if not isinstance(lines, Sequence) or isinstance(lines, (str, bytes)):
+        return line_id
+    return _emit_lines(words, lines, width, height, line_id, source)
+
+
+def _words_from_item(
+    item: Any,
+    width: float,
+    height: float,
+    line_id: int,
+) -> tuple[list[dict[str, Any]], int]:
+    if not isinstance(item, Mapping):
+        return [], line_id
+    words: list[dict[str, Any]] = []
+    grounding = item.get("grounding")
+    if isinstance(grounding, Mapping):
+        line_id = _emit_grounding(words, item, grounding, width, height, line_id)
+    for child in item.get("items") or []:
+        child_words, line_id = _words_from_item(child, width, height, line_id)
+        words.extend(child_words)
+    return words, line_id
+
+
 def compact_sidecar_pages(
     sidecar_pages: Sequence[Mapping[str, Any]],
     *,
@@ -178,81 +468,8 @@ def compact_sidecar_pages(
         words: list[dict[str, Any]] = []
         line_id = 0
         for item in row.get("items") or []:
-            if not isinstance(item, Mapping):
-                continue
-            md = str(item.get("md") or "")
-            grounding = item.get("grounding")
-            if not isinstance(grounding, Mapping):
-                continue
-            if grounding.get("source") not in (None, "md", "caption"):
-                continue
-            for line in grounding.get("lines") or []:
-                if not isinstance(line, Mapping):
-                    continue
-                line_words = line.get("words") or []
-                emitted = 0
-                for word in line_words:
-                    if not isinstance(word, Mapping):
-                        continue
-                    box = _bbox_dict(word.get("bbox"))
-                    if box is None:
-                        continue
-                    span = word.get("span") or [0, 0]
-                    try:
-                        start, end = int(span[0]), int(span[1])
-                    except (TypeError, ValueError, IndexError):
-                        start, end = 0, 0
-                    token = (
-                        md[start:end]
-                        if md and end > start
-                        else str(word.get("t") or "")
-                    )
-                    token = token.strip()
-                    if not token:
-                        continue
-                    words.append(
-                        {
-                            "t": token,
-                            "x": round(_norm_coord(box.get("x"), width), 6),
-                            "y": round(_norm_coord(box.get("y"), height), 6),
-                            "w": round(
-                                _norm_coord(box.get("w", box.get("width")), width), 6
-                            ),
-                            "h": round(
-                                _norm_coord(box.get("h", box.get("height")), height), 6
-                            ),
-                            "line": line_id,
-                        }
-                    )
-                    emitted += 1
-                if not emitted:
-                    box = _bbox_dict(line.get("bbox"))
-                    span = line.get("span") or [0, 0]
-                    try:
-                        start, end = int(span[0]), int(span[1])
-                    except (TypeError, ValueError, IndexError):
-                        start, end = 0, 0
-                    token = md[start:end].strip() if md and end > start else ""
-                    if box is not None and token:
-                        words.append(
-                            {
-                                "t": token,
-                                "x": round(_norm_coord(box.get("x"), width), 6),
-                                "y": round(_norm_coord(box.get("y"), height), 6),
-                                "w": round(
-                                    _norm_coord(box.get("w", box.get("width")), width),
-                                    6,
-                                ),
-                                "h": round(
-                                    _norm_coord(
-                                        box.get("h", box.get("height")), height
-                                    ),
-                                    6,
-                                ),
-                                "line": line_id,
-                            }
-                        )
-                line_id += 1
+            item_words, line_id = _words_from_item(item, width, height, line_id)
+            words.extend(item_words)
         page: PageLayout = {
             "width": width,
             "height": height,
@@ -291,7 +508,9 @@ def stitch_slot_layouts(
     """Remap slot-local layout pages onto the same global pages as markdown."""
     stitched: LayoutIndex = {}
     next_page = 1
-    sequence = list(part_order) if part_order is not None else ordered_parts(catalog, parts)
+    sequence = (
+        list(part_order) if part_order is not None else ordered_parts(catalog, parts)
+    )
     for item in sequence:
         local = pages_by_slot.get(item.slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
@@ -418,88 +637,209 @@ def _span_from_tokens(
     return starts[hay_at], starts[last] + len(haystack_tokens[last])
 
 
+def _required_run(nlen: int) -> int:
+    """Short quotes must match in full. A partial window is at least 5 tokens."""
+    if nlen < _MIN_TOKEN_RUN:
+        return nlen
+    return _MIN_TOKEN_RUN
+
+
+def _longest_token_run(
+    needle_canon: Sequence[str],
+    haystack_canon: Sequence[str],
+    *,
+    min_run: int,
+) -> tuple[int, int] | None:
+    """Earliest longest contiguous token run, as (haystack index, length)."""
+    if min_run < 1 or not needle_canon or not haystack_canon:
+        return None
+    prev = [0] * (len(haystack_canon) + 1)
+    best_run = 0
+    best_hay = 0
+    for needle_token in needle_canon:
+        current = [0] * (len(haystack_canon) + 1)
+        for index, hay_token in enumerate(haystack_canon, start=1):
+            if needle_token != hay_token:
+                continue
+            length = prev[index - 1] + 1
+            current[index] = length
+            if length > best_run:
+                best_run = length
+                best_hay = index - length
+        prev = current
+    if best_run < min_run:
+        return None
+    return best_hay, best_run
+
+
 def _token_run_span(needle: str, haystack: str) -> tuple[int, int] | None:
-    needle_tokens = needle.split()[:_MAX_NEEDLE_TOKENS]
+    needle_tokens = needle.split()
     haystack_tokens = haystack.split()
     if not needle_tokens or not haystack_tokens:
         return None
-    needle_canon = [_canon_token(token) for token in needle_tokens]
-    haystack_canon = [_canon_token(token) for token in haystack_tokens]
-    starts = _token_starts(haystack_tokens)
-    nlen = len(needle_canon)
-    hlen = len(haystack_canon)
-    if nlen >= 2 and hlen >= nlen:
-        for hay_at in range(hlen - nlen + 1):
-            if haystack_canon[hay_at : hay_at + nlen] == needle_canon:
-                return _span_from_tokens(haystack_tokens, starts, hay_at, nlen)
-    min_run = min(_MIN_TOKEN_RUN, nlen) if nlen >= 3 else nlen
-    if min_run < 2:
+    found = _longest_token_run(
+        [_canon_token(token) for token in needle_tokens],
+        [_canon_token(token) for token in haystack_tokens],
+        min_run=_required_run(len(needle_tokens)),
+    )
+    if found is None:
         return None
-    for run in range(nlen - 1, min_run - 1, -1):
-        for needle_at in range(nlen - run + 1):
-            window = needle_canon[needle_at : needle_at + run]
-            for hay_at in range(hlen - run + 1):
-                if haystack_canon[hay_at : hay_at + run] != window:
-                    continue
-                return _span_from_tokens(haystack_tokens, starts, hay_at, run)
-    return None
+    hay_at, run = found
+    return _span_from_tokens(
+        haystack_tokens, _token_starts(haystack_tokens), hay_at, run
+    )
+
+
+def _match_segment(segment: str, haystack: str, cursor: int) -> tuple[int, int] | None:
+    suffix = haystack[cursor:]
+    lead = len(suffix) - len(suffix.lstrip(" "))
+    suffix = suffix[lead:]
+    found = _token_run_span(segment, suffix)
+    if found is None:
+        return None
+    start, end = found
+    base = cursor + lead
+    return base + start, base + end
+
+
+def _quote_segments(needle: str) -> list[str]:
+    return [part.strip() for part in needle.split(_GAP_TOKEN) if part.strip()]
+
+
+def _match_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
+    """Character spans of each ellipsis segment. Empty when any segment misses."""
+    if not needle or not haystack:
+        return []
+    segments = _quote_segments(needle)
+    if not segments:
+        return []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for segment in segments:
+        found = _match_segment(segment, haystack, cursor)
+        if found is None:
+            return []
+        spans.append(found)
+        cursor = found[1]
+    return spans
 
 
 def _match_span(needle: str, haystack: str) -> tuple[int, int] | None:
-    if not needle or not haystack:
+    spans = _match_spans(needle, haystack)
+    if not spans:
         return None
-    at = haystack.find(needle)
-    if at >= 0:
-        return at, at + len(needle)
-    snippet = needle[:80].strip()
-    if len(snippet) >= 12:
-        at = haystack.find(snippet)
-        if at >= 0:
-            return at, at + len(snippet)
-    return _token_run_span(needle, haystack)
+    return spans[0]
 
 
-def _group_line_key(word: Mapping[str, Any]) -> tuple[int, float]:
-    line = word.get("line")
+def _num(value: Any) -> float:
     try:
-        return (0, float(int(line)))
+        return float(value or 0)
     except (TypeError, ValueError):
-        try:
-            return (1, round(float(word.get("y") or 0) / LINE_Y_EPSILON))
-        except (TypeError, ValueError):
-            return (1, 0.0)
+        return 0.0
+
+
+def _vertical_span(word: Mapping[str, Any]) -> tuple[float, float]:
+    top = _num(word.get("y"))
+    return top, top + max(_num(word.get("h")), 0.0)
+
+
+def _same_visual_line(word: Mapping[str, Any], top: float, bottom: float) -> bool:
+    """True when the word overlaps this line by half of the shorter height."""
+    word_top, word_bottom = _vertical_span(word)
+    overlap = min(word_bottom, bottom) - max(word_top, top)
+    if overlap <= 0:
+        return False
+    shorter = min(word_bottom - word_top, bottom - top)
+    if shorter <= 0:
+        return abs(word_top - top) <= 0.004
+    return overlap >= _LINE_OVERLAP * shorter
+
+
+def _cluster_visual_lines(
+    words: Sequence[Mapping[str, Any]],
+) -> list[list[Mapping[str, Any]]]:
+    ordered = sorted(words, key=lambda word: (_num(word.get("y")), _num(word.get("x"))))
+    clusters: list[list[Mapping[str, Any]]] = []
+    bands: list[tuple[float, float]] = []
+    for word in ordered:
+        placed = False
+        for index, (top, bottom) in enumerate(bands):
+            if not _same_visual_line(word, top, bottom):
+                continue
+            clusters[index].append(word)
+            word_top, word_bottom = _vertical_span(word)
+            bands[index] = (min(top, word_top), max(bottom, word_bottom))
+            placed = True
+            break
+        if not placed:
+            clusters.append([word])
+            bands.append(_vertical_span(word))
+    return clusters
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _horizontal_gap(prev: Mapping[str, Any], nxt: Mapping[str, Any]) -> float:
+    return _num(nxt.get("x")) - (_num(prev.get("x")) + _num(prev.get("w")))
+
+
+def _split_horizontal(
+    line_words: Sequence[Mapping[str, Any]],
+) -> list[list[Mapping[str, Any]]]:
+    ordered = sorted(line_words, key=lambda word: _num(word.get("x")))
+    if len(ordered) < 2:
+        return [list(ordered)]
+    gaps = [_horizontal_gap(prev, nxt) for prev, nxt in pairwise(ordered)]
+    word_gaps = [gap for gap in gaps if 0 < gap <= _COLUMN_GAP]
+    threshold = max(
+        _COLUMN_GAP, _GAP_MULTIPLE * (_median(word_gaps) if word_gaps else 0.0)
+    )
+    segments: list[list[Mapping[str, Any]]] = [[ordered[0]]]
+    for gap, nxt in zip(gaps, ordered[1:], strict=True):
+        if gap > threshold:
+            segments.append([nxt])
+        else:
+            segments[-1].append(nxt)
+    return segments
+
+
+def _word_rect(
+    line_words: Sequence[Mapping[str, Any]], page: int
+) -> dict[str, float | int]:
+    xs = [_num(word.get("x")) for word in line_words]
+    ys = [_num(word.get("y")) for word in line_words]
+    rights = [_num(word.get("x")) + _num(word.get("w")) for word in line_words]
+    bottoms = [_num(word.get("y")) + _num(word.get("h")) for word in line_words]
+    x = min(xs)
+    y = min(ys)
+    return {
+        "page": page,
+        "x": round(x, 6),
+        "y": round(y, 6),
+        "w": round(max(rights) - x, 6),
+        "h": round(max(bottoms) - y, 6),
+    }
 
 
 def union_line_boxes(
     words: Sequence[Mapping[str, Any]], page: int
 ) -> list[dict[str, float | int]]:
-    """One rectangle per visual line, clipped to the matched words."""
-    grouped: dict[tuple[int, float], list[Mapping[str, Any]]] = {}
-    order: list[tuple[int, float]] = []
-    for word in words:
-        key = _group_line_key(word)
-        if key not in grouped:
-            grouped[key] = []
-            order.append(key)
-        grouped[key].append(word)
+    """One rectangle per visual line segment, clipped to the matched words.
+
+    Words group by vertical overlap, then split on a column gutter so a
+    shared baseline cannot paint one bar across both columns.
+    """
     boxes: list[dict[str, float | int]] = []
-    for key in order:
-        line_words = grouped[key]
-        xs = [float(w.get("x") or 0) for w in line_words]
-        ys = [float(w.get("y") or 0) for w in line_words]
-        rights = [float(w.get("x") or 0) + float(w.get("w") or 0) for w in line_words]
-        bottoms = [float(w.get("y") or 0) + float(w.get("h") or 0) for w in line_words]
-        x = min(xs)
-        y = min(ys)
-        boxes.append(
-            {
-                "page": page,
-                "x": round(x, 6),
-                "y": round(y, 6),
-                "w": round(max(rights) - x, 6),
-                "h": round(max(bottoms) - y, 6),
-            }
-        )
+    for cluster in _cluster_visual_lines(words):
+        for segment in _split_horizontal(cluster):
+            boxes.append(_word_rect(segment, page))
+    boxes.sort(key=lambda box: (_num(box.get("y")), _num(box.get("x"))))
     return boxes
 
 
@@ -515,14 +855,13 @@ def _boxes_on_page(
     if not words:
         return [], "page_only"
     haystack, spans = _join_words(words)
-    found = _match_span(_norm_text(quote), haystack)
-    if found is None:
+    found = _match_spans(_norm_text(quote), haystack)
+    if not found:
         return [], "page_only"
-    start, end = found
     matched = [
         words[index]
         for index, span_start, span_end in spans
-        if span_end > start and span_start < end
+        if any(span_end > start and span_start < end for start, end in found)
     ]
     if not matched:
         return [], "page_only"
