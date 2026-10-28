@@ -2886,11 +2886,11 @@ def test_parse_create_kwargs_overrides_tier_for_fast_slots(
     precise = parse_create_kwargs(config, file_id="file-cover", precise=True)
     assert precise["tier"] == "agentic"
     assert precise["file_id"] == "file-cover"
-    assert precise["output_options"]["granular_bboxes"] == ["word", "line"]
+    assert precise["output_options"]["granular_bboxes"] == ["word", "line", "cell"]
     secondary = parse_create_kwargs(config, file_id="file-annexure", precise=False)
     assert secondary["tier"] == "agentic"
     assert secondary["version"] == "latest"
-    assert secondary["output_options"]["granular_bboxes"] == ["word", "line"]
+    assert secondary["output_options"]["granular_bboxes"] == ["word", "line", "cell"]
     hosted = parse_create_kwargs(
         ParseConfig.model_validate(
             {
