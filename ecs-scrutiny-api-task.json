@@ -94,6 +94,10 @@
           "value": "8"
         },
         {
+          "name": "SCRUTINY_BATCH_SIZE",
+          "value": "4"
+        },
+        {
           "name": "SCRUTINY_TOP_K",
           "value": "8"
         },

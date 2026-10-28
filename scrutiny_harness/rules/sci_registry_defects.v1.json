@@ -1,7 +1,7 @@
 {
   "catalogue_id": "sci_registry_defects",
   "schema_version": "2.1",
-  "catalogue_version": "3.2.0",
+  "catalogue_version": "3.2.1",
   "jurisdiction": "Supreme Court of India",
   "disclaimer": "Internal pre-filing assistance only. This catalogue does not represent the Supreme Court Registry, decide legal validity, or replace review by an Advocate-on-Record. A requirement marked 'Needs legal verification' is non-dispositive and must return needs_review until a current authoritative source and all applicability prerequisites are verified.",
   "sources": [
@@ -500,6 +500,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified copy of the impugned order passed by the Armed Forces Tribunal.",
         "If the copy filed is a plain, downloaded or uncertified copy: Option for the User to upload and replace the impugned order with a corrected version, namely the certified copy issued by the Armed Forces Tribunal.",
@@ -793,6 +795,8 @@
         "Affidavit",
         "Annexures"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Affidavit"],
       "how_to_cure": [
         "1. Affidavit not in compliance with Section 11(4)/(5)/(6) or if Affidavit missing:",
         "1.1. Option for Jubeex to draft the affidavit , prompt the User to have it duly sworn, and provide an option to upload the duly sworn affidavit with Jubeex.",
@@ -823,6 +827,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "1. Option for the user to upload the certified copy of the impugned judgement",
         "2. Option for the user to draft Application for Exemption from filing Certified copy"
@@ -991,6 +997,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified copy of the judgment or order appealed from."
       ],
@@ -1047,6 +1055,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the order granting the certificate with Jubeex."
       ],
@@ -1139,6 +1149,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified copy of the decision sought to be appealed from."
       ],
@@ -1166,6 +1178,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified copy of the order appealed from."
       ],
@@ -1522,6 +1536,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified copy of the judgment or order appealed from."
       ],
@@ -1731,6 +1747,8 @@
         "AOR's Certificate",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "Prompt the User to obtain and upload the certificate of the Senior Advocate certifying that the Curative Petition meets the requirements laid down in Rupa Ashok Hurrah v. Ashok Hurrah, and review the same with Jubeex."
       ],
@@ -1786,6 +1804,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the certified or authenticated copy of the judgment or order complained of with Jubeex."
       ],
@@ -1932,6 +1952,8 @@
         "AOR's Certificate",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "Prompt the User to obtain the certificate of the Senior Advocate certifying that the petition discloses one or more substantial questions for challenging the election of the President or the Vice-President, and include an option to upload the same with Jubeex."
       ],
@@ -2203,6 +2225,8 @@
       "inspect_parts": [
         "Advocate's Checklist"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Advocate's Checklist"],
       "how_to_cure": [
         "1. Advocate's Check List",
         "1.1  Option for Jubeex to auto-generate and populate the Advocate's Check List.",
@@ -2236,6 +2260,8 @@
         "AOR's Certificate",
         "Vakalatnama"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "1. Prompt the User to provide the Advocate-on-Record's Code Number and auto-fill the same in the Advocate-on-Record's certificate",
         "2. Option for the User to edit the Advocate-on-Record's Code Number in the certificate with Jubeex."
@@ -2264,6 +2290,7 @@
       "inspect_parts": [
         "Advocate's Checklist"
       ],
+      "manifest_absence_parts": ["Advocate's Checklist"],
       "manifest_absence_proves_defect": true,
       "how_to_cure": [
         "1. Option for Jubeex to auto-generate the Advocate's Check List in the prescribed format.",
@@ -2638,6 +2665,8 @@
       "inspect_parts": [
         "Vakalatnama"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Vakalatnama"],
       "how_to_cure": [
         "1. Execution of the Vakalatnama by the Petitioner(s)",
         "1.1 Prompt the User to ensure that the Vakalatnama is duly executed by all the petitioner(s) and upload the same with Jubeex.",
@@ -2668,6 +2697,8 @@
       "inspect_parts": [
         "Memo of Appearance"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Memo of Appearance"],
       "how_to_cure": [
         "1. Option for Jubeex to auto-generate the Memo of Appearance .",
         "2. Option for the User to upload the Memo of Appearance with Jubeex."
@@ -2696,6 +2727,8 @@
       "inspect_parts": [
         "Vakalatnama"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Vakalatnama"],
       "how_to_cure": [
         "Prompt the User to obtain the Advocate-on-Record's certification that the Vakalatnama was executed in the AoR's presence, or the AoR's endorsement that they have satisfied themselves about its due execution"
       ],
@@ -4228,6 +4261,8 @@
       "inspect_parts": [
         "Listing Proforma"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Listing Proforma"],
       "how_to_cure": [
         "If Listing Proforma missing:",
         "1. Option for Jubeex to auto-add and fill it",
@@ -4982,6 +5017,8 @@
         "Affidavit",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Affidavit"],
       "how_to_cure": [
         "1. Option for Jubeex to draft the fresh affidavit  and prompt the User to have it duly sworn on the same or subsequent date and upload the duly sworn affidavit with Jubeex.",
         "2. Option for the User to add and edit the fresh affidavit with Jubeex.",
@@ -5102,6 +5139,8 @@
         "AOR's Certificate",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "1. Option for Jubeex to auto-draft the AOR's certification to the effect and prompt the User to get it signed, along with an option for the user to re-upload the same.",
         "2. Option for the User to upload the AOR's Certificate with Jubeex."
@@ -5804,6 +5843,8 @@
         "Affidavit",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Affidavit"],
       "how_to_cure": [
         "1. Option for Jubeex to draft the supporting affidavit, and prompt the User to have it duly sworn and upload the duly sworn affidavit with Jubeex.",
         "2. Option for the User to upload the affidavit with Jubeex."
@@ -6299,6 +6340,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for User to upload the certified copy of the impugned judgment/order."
       ],
@@ -7016,6 +7059,8 @@
       "inspect_parts": [
         "AOR's Certificate"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "1. Option for Jubeex to auto-draft the AOR's certificate  and prompt the User to get it signed, along with an option for the user to re-upload the same.",
         "2. Option for the User to upload the AOR's Certificate with Jubeex."
@@ -7076,6 +7121,8 @@
       "inspect_parts": [
         "Office Report on Limitation"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Office Report on Limitation"],
       "how_to_cure": [
         "Option for the User to upload a  clear and legible copy of the Office Report on Limitation."
       ],
@@ -7103,6 +7150,8 @@
       "inspect_parts": [
         "Listing Proforma"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Listing Proforma"],
       "how_to_cure": [
         "Option for the User to upload a  clear and legible copy of the Listing Proforma."
       ],
@@ -7132,6 +7181,8 @@
         "Synopsis",
         "List of Dates & Events"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Synopsis", "List of Dates & Events"],
       "how_to_cure": [
         "1. Synopsis and List of Dates",
         "1.1. Option for the User to draft the Synopsis and List of Dates/Events with Jubeex.",
@@ -7161,6 +7212,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload a clear and legible copy of the Impugned Judgment."
       ],
@@ -7920,6 +7973,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to upload the Order of Eviction or other necessary/assailed orders."
       ],
@@ -7975,6 +8030,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "1.1. Option for Jubeex to auto-draft the Application for Exemption from Filing the Certified Copy of the Impugned Order.",
         "1.2. Option for the User to upload the duly completed application with Jubeex."
@@ -8121,6 +8178,8 @@
       "inspect_parts": [
         "Affidavit"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Affidavit"],
       "how_to_cure": [
         "1. Option for Jubeex to auto-draft the affidavit; prompt the User to get the affidavit duly sworn and provide an option to upload the sworn affidavit drafted by Jubeex.",
         "2. Option for the User to upload the duly sworn affidavit with Jubeex."
@@ -8149,6 +8208,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "1Option for the User to upload the certified copy of the judgment/order with Jubeex."
       ],
@@ -8518,6 +8579,8 @@
         "Synopsis",
         "List of Dates & Events"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Synopsis", "List of Dates & Events"],
       "how_to_cure": [
         "Option for the User to re-upload a clear and legible copy of the Synopsis and List of Dates/Eventswith Jubeex."
       ],
@@ -8545,6 +8608,8 @@
       "inspect_parts": [
         "Impugned Order"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Impugned Order"],
       "how_to_cure": [
         "Option for the User to re-upload a clear and legible copy of the Impugned Judgment with Jubeex."
       ],
@@ -8574,6 +8639,8 @@
         "AOR's Certificate",
         "Affidavit"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Main Petition", "AOR's Certificate", "Affidavit"],
       "how_to_cure": [
         "Option for the User to re-upload signed, clear and legible copies of the  Certificate and Affidavit with Jubeex."
       ],
@@ -8655,6 +8722,8 @@
       "inspect_parts": [
         "Memo of Parties"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Memo of Parties"],
       "how_to_cure": [
         "1. Option for the User to re-upload clear and legible copies of the Memo of Parties with Jubeex.",
         "2. Option for Jubeex to draft  Memo of parties."
@@ -9322,6 +9391,8 @@
         "AOR's Certificate",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["AOR's Certificate"],
       "how_to_cure": [
         "Prompt the User to obtain the required certificate from the AOR certifying that the case involves substantial questions of general importance, and provide an option to upload the duly signed certificate with Jubeex."
       ],
@@ -9463,6 +9534,8 @@
         "Affidavit",
         "Main Petition"
       ],
+      "manifest_absence_proves_defect": true,
+      "manifest_absence_parts": ["Affidavit"],
       "how_to_cure": [
         "1.1. Option for Jubeex to draft a fresh the affidavit verifying the facts relied upon in the petition, prompt the User to get the affidavit duly sworn and provide an option to upload the sworn affidavit drafted by Jubeex.",
         "1.2. Option for the User to upload the duly sworn affidavit with Jubeex."

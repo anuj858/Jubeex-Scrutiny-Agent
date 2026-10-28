@@ -557,7 +557,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     catalogue = rules_mod._load_file_catalogue()
     monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
-    assert catalogue.catalogue_version == "3.2.0"
+    assert catalogue.catalogue_version == "3.2.1"
     assert len(catalogue.defects) == 323
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
@@ -579,7 +579,11 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert not finding_title(d061, catalogue).startswith("61")
     assert d061.inspect_parts == ["Advocate's Checklist"]
     assert d061.manifest_absence_proves_defect
-    assert not catalogue.defect("D-59").manifest_absence_proves_defect
+    assert d061.manifest_absence_parts == ["Advocate's Checklist"]
+    assert catalogue.defect("D-59").manifest_absence_proves_defect
+    d073 = catalogue.defect("D-73")
+    assert d073.manifest_absence_proves_defect
+    assert d073.manifest_absence_parts == ["Vakalatnama"]
     assert "SCI_CHECKLIST_2025" in d061.location_source
     assert "Defect List.pdf" not in d061.location_source
 

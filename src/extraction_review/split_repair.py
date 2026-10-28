@@ -5691,6 +5691,89 @@ def _bracketed_annexure_offset(
     return None
 
 
+def _verified_outer_paperbook_offset(
+    rows: Sequence[IndexPrintedRow],
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    page_count: int,
+) -> int | None:
+    """Return one physical-minus-printed offset proved by outer documents.
+
+    A compiled paper book can expose several unrelated pagination tracks on
+    the same physical sheet: the outer paper-book folio, the petition's old
+    pagination, and page counters inside reproduced judgments.  Raw numeric
+    frequency therefore cannot decide which track the master Index describes.
+
+    Lock an offset only when at least two distinct, adjacent Index rows begin
+    on physical pages which both retain the model owner *and* carry an explicit
+    matching outer heading.  Once established, that physical mapping is more
+    reliable than isolated numbers found inside the petition or an Annexure.
+    """
+    annexure_starts = [
+        row.start
+        for row in rows
+        if row.mapped_part
+        and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+        and row.kind == "number"
+        and not row.end_suffix
+        and row.start > 0
+    ]
+    first_annexure = min(annexure_starts, default=page_count + 1)
+    outer_rows = [
+        row
+        for row in rows
+        if row.mapped_part
+        and family_split_name(row.mapped_part) != ANNEXURE_FAMILY
+        and row.kind == "number"
+        and not row.end_suffix
+        and 0 < row.start <= row.end < first_annexure
+    ]
+
+    supported: dict[int, list[IndexPrintedRow]] = {}
+    for row in outer_rows:
+        candidates = [
+            page
+            for page in range(1, page_count + 1)
+            if row.mapped_part in parts_on_page(page_parts.get(page))
+            and row.mapped_part not in parts_on_page(page_parts.get(page - 1))
+            and _outer_anchor_label(page_text.get(page, "")) == row.mapped_part
+            and 0 <= page - row.start
+            and row.end + (page - row.start) <= page_count
+        ]
+        # Multiple matching openings are ambiguous (for example, a historical
+        # petition reproduced inside an Annexure). Do not use this row as an
+        # offset anchor.
+        if len(candidates) != 1:
+            continue
+        offset = candidates[0] - row.start
+        supported.setdefault(offset, []).append(row)
+
+    verified: list[tuple[int, int]] = []
+    for offset, offset_rows in supported.items():
+        distinct = {
+            (row.mapped_part, row.start, row.end)
+            for row in offset_rows
+            if row.mapped_part
+        }
+        if len(distinct) < 2:
+            continue
+        ordered = sorted(offset_rows, key=lambda row: (row.start, row.end))
+        adjacent_pairs = sum(
+            first.end + 1 == second.start
+            for first, second in zip(ordered, ordered[1:], strict=False)
+        )
+        if adjacent_pairs:
+            verified.append((len(distinct), offset))
+
+    if not verified:
+        return None
+    verified.sort(reverse=True)
+    winner_support, winner_offset = verified[0]
+    if len(verified) > 1 and verified[1][0] >= winner_support:
+        return None
+    return winner_offset
+
+
 def _index_heading_part(text: str) -> str | None:
     stamped = annexure_label_from_text(text)
     if stamped:
@@ -5826,13 +5909,27 @@ def _apply_indexed_annexure_ranges(
     }
     stamped_intervals = _consecutive_stamped_annexure_folios(page_text, folios)
     volume_hints = _master_volume_offsets(page_text, folios, page_count)
-    bracketed_offset = (
+    outer_paperbook_offset = (
         None
         if volume_hints
+        else _verified_outer_paperbook_offset(
+            all_rows, page_parts, page_text, page_count
+        )
+    )
+    bracketed_offset = (
+        None
+        if volume_hints or outer_paperbook_offset is not None
         else _bracketed_annexure_offset(all_rows, page_text, folios, page_count)
     )
     owner_candidates: dict[int, set[str]] = {}
     verified_owner_candidates: dict[int, set[str]] = {}
+    explicit_stamp_conflicts: dict[int, str] = {}
+    indexed_annexure_labels = {
+        row.mapped_part
+        for row in rows
+        if row.mapped_part
+        and family_split_name(row.mapped_part) == ANNEXURE_FAMILY
+    }
     supported_labels: set[str] = set()
     application_labels = {
         id(row): f"Application {number}"
@@ -5858,6 +5955,14 @@ def _apply_indexed_annexure_ranges(
             # verified openings rather than making this row authoritative.
             continue
         preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
+        offset_locked_by_outer_documents = False
+        if (
+            preferred_offset is None
+            and outer_paperbook_offset is not None
+            and family_split_name(label) == ANNEXURE_FAMILY
+        ):
+            preferred_offset = outer_paperbook_offset
+            offset_locked_by_outer_documents = True
         if (
             preferred_offset is None
             and bracketed_offset is not None
@@ -5902,7 +6007,10 @@ def _apply_indexed_annexure_ranges(
                     and (
                         preferred_offset is None
                         or offset == preferred_offset
-                        or matching_outer_stamp
+                        or (
+                            not offset_locked_by_outer_documents
+                            and matching_outer_stamp
+                        )
                     )
                 ):
                     preferred_offset = offset
@@ -5940,6 +6048,27 @@ def _apply_indexed_annexure_ranges(
             continue
         supported_labels.add(label)
         for page in row_pages:
+            if family_split_name(label) == ANNEXURE_FAMILY:
+                explicit_mark = annexure_ref_in_heading(page_text.get(page, ""))
+                existing = parts_on_page(page_parts.get(page))
+                if (
+                    explicit_mark is not None
+                    and explicit_mark.label != label
+                    and explicit_mark.label in indexed_annexure_labels
+                    and existing
+                    and all(
+                        family_split_name(name) == ANNEXURE_FAMILY
+                        or name in {"Undefined", "Unidentified", "other"}
+                        for name in existing
+                    )
+                ):
+                    # The Index can describe this attachment as P-2 while the
+                    # filed sheet itself is expressly stamped P-1. Preserve
+                    # the source identity and leave that contradiction for the
+                    # split audit; reconciliation must not silently renumber a
+                    # filed document merely to make the Index sequence tidy.
+                    explicit_stamp_conflicts[page] = explicit_mark.label
+                    continue
             owner_candidates.setdefault(page, set()).add(label)
             if locally_verified_offset:
                 verified_owner_candidates.setdefault(page, set()).add(label)
@@ -5948,7 +6077,7 @@ def _apply_indexed_annexure_ranges(
         for page, labels in owner_candidates.items()
         if len(verified_owner_candidates.get(page, labels)) == 1
     }
-    if not owners:
+    if not owners and not explicit_stamp_conflicts:
         return page_parts
 
     updated = {int(page): list(names) for page, names in page_parts.items()}
@@ -5971,6 +6100,8 @@ def _apply_indexed_annexure_ranges(
         # Index row spans assign the outer exhibit identity to the complete
         # physical page, including an exhibit cover and poorly OCR'd sheets.
         updated[page] = [owner]
+    for page, stamped_label in explicit_stamp_conflicts.items():
+        updated[page] = [stamped_label]
     return updated
 
 
@@ -6170,6 +6301,13 @@ def _apply_indexed_outer_document_ranges(
         for page in range(1, page_count + 1)
     }
     volume_hints = _master_volume_offsets(page_text, folios, page_count)
+    outer_paperbook_offset = (
+        None
+        if volume_hints
+        else _verified_outer_paperbook_offset(
+            rows, page_parts, page_text, page_count
+        )
+    )
     updated = {page: list(names) for page, names in page_parts.items()}
 
     def has_conflicting_outer_heading(page: int, target: str | None) -> bool:
@@ -6207,6 +6345,13 @@ def _apply_indexed_outer_document_ranges(
     def physical_pages(row: IndexPrintedRow) -> list[int]:
         """Map an Index folio span even when an interior scan has no OCR folio."""
         preferred_offset, physical_window = _volume_hint_for_row(row, volume_hints)
+        if (
+            preferred_offset is None
+            and outer_paperbook_offset is not None
+            and row.kind == "number"
+            and not row.end_suffix
+        ):
+            preferred_offset = outer_paperbook_offset
         matched = [
             page
             for page in _physical_pages_for_index_row(

@@ -93,6 +93,16 @@ For ECS queue, lease, callback, and rollout checks see
 [`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
 Argon must be validated for project access, latency, 429 rate, cost, and defect
 accuracy before a production rollout.
+Compatible registry checks are transported in small structured batches to
+avoid spending one project-wide Vertex rate-limit slot per catalogue row.
+`SCRUTINY_BATCH_SIZE` defaults to `4` in the checked-in deployments; every
+finding retains its own evidence, prompt section, sanitization, confidence
+policy, and report row. Set it to `1` to return immediately to the legacy
+one-request-per-check path. `SCRUTINY_BATCH_CONCURRENCY` can cap simultaneous
+batch requests; when unset, it reuses `SCRUTINY_CONCURRENCY` so long-running
+model responses do not leave the 8 RPM request pipeline idle. A malformed or
+incomplete multi-check response is retried through the established individual
+check path, and the run cannot complete if any planned finding is missing.
 Checked-in release defaults use the enabled production defects from the DB
 catalogue (`SCRUTINY_CATALOGUE_SOURCE=db`, `SCRUTINY_DEFECTS=all`). The former
 11-code JSON subset is only an explicit test override. SQS workers impose a

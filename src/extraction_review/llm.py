@@ -786,6 +786,15 @@ def _close_truncated_json(text: str) -> str | None:
 
 
 def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
+    batch = data.get("findings")
+    if isinstance(batch, list):
+        completed_batch: list[Any] = []
+        for item in batch:
+            completed_batch.append(
+                _complete_structured_fields(item) if isinstance(item, dict) else item
+            )
+        return {**data, "findings": completed_batch}
+
     completed = dict(data)
     legacy = completed.get("reasoning")
     if not str(completed.get("observed") or "").strip():
@@ -799,7 +808,9 @@ def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
         else:
             completed["summary"] = "Model omitted summary."
     if not str(completed.get("observed") or "").strip():
-        completed["observed"] = completed.get("summary") or "Model response was truncated."
+        completed["observed"] = (
+            completed.get("summary") or "Model response was truncated."
+        )
     if completed.get("confidence") is None:
         status = str(completed.get("status") or "").strip().lower()
         # Conservative defaults when the model drops the field.

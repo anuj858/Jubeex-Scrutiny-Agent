@@ -226,15 +226,19 @@ def _document_page(
 def _format_evidence(
     chunks: list[dict[str, Any]],
     layout: dict[int, dict[str, Any]] | None = None,
+    *,
+    preserve_excerpt_ids: bool = False,
+    max_chars: int = MAX_EVIDENCE_CHARS,
 ) -> str:
     if not chunks:
         return "No document excerpts could be retrieved."
 
-    for chunk in chunks:
-        chunk.pop("excerpt_id", None)
+    if not preserve_excerpt_ids:
+        for chunk in chunks:
+            chunk.pop("excerpt_id", None)
 
     blocks: list[str] = []
-    budget = MAX_EVIDENCE_CHARS
+    budget = max_chars
     truncated = 0
     excerpt_n = 0
 
@@ -243,8 +247,11 @@ def _format_evidence(
         page = chunk.get("page")
         label = ""
         if kind != "summary" and page is not None:
-            excerpt_n += 1
-            label = f"c{excerpt_n}"
+            if preserve_excerpt_ids:
+                label = str(chunk.get("excerpt_id") or "").strip()
+            if not label:
+                excerpt_n += 1
+                label = f"c{excerpt_n}"
         if kind == "summary":
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
@@ -279,7 +286,7 @@ def _format_evidence(
         text = chunk.get("text") or ""
         block = f"{header}\n{text}"
         if len(block) > budget:
-            if label:
+            if label and not preserve_excerpt_ids:
                 excerpt_n -= 1
             truncated += 1
             continue
@@ -294,6 +301,59 @@ def _format_evidence(
             f"was reached. Treat coverage as incomplete.]"
         )
     return "\n\n".join(blocks)
+
+
+def _batch_chunk_key(chunk: dict[str, Any]) -> tuple[Any, ...]:
+    """Stable identity used to print a batch excerpt only once."""
+    record_id = str(chunk.get("record_id") or "").strip()
+    if record_id:
+        return ("record", record_id)
+    return (
+        "content",
+        chunk.get("chunk_kind"),
+        chunk.get("page"),
+        chunk.get("page_end"),
+        format_document_parts(chunk.get("document_part")),
+        str(chunk.get("text") or ""),
+    )
+
+
+def _prepare_batch_evidence(
+    tasks: list[tuple[Defect, dict[str, Any] | None, list[dict[str, Any]]]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> tuple[str, dict[str, list[str]]]:
+    """Deduplicate excerpts while preserving each task's citation boundary."""
+    pooled: list[dict[str, Any]] = []
+    by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    allowed: dict[str, list[str]] = {}
+    next_id = 1
+    for defect, _record, chunks in tasks:
+        task_ids: list[str] = []
+        for chunk in chunks:
+            key = _batch_chunk_key(chunk)
+            shared = by_key.get(key)
+            if shared is None:
+                shared = chunk
+                if chunk.get("chunk_kind") != "summary" and chunk.get("page") is not None:
+                    shared["excerpt_id"] = f"c{next_id}"
+                    next_id += 1
+                by_key[key] = shared
+                pooled.append(shared)
+            excerpt_id = str(shared.get("excerpt_id") or "").strip()
+            if excerpt_id:
+                chunk["excerpt_id"] = excerpt_id
+                if excerpt_id not in task_ids:
+                    task_ids.append(excerpt_id)
+        allowed[defect.check_id] = task_ids
+    return (
+        _format_evidence(
+            pooled,
+            layout,
+            preserve_excerpt_ids=True,
+            max_chars=MAX_EVIDENCE_CHARS * max(1, len(tasks)),
+        ),
+        allowed,
+    )
 
 
 def _visual_part_matches(document_type: str, targets: list[str]) -> bool:
@@ -1572,6 +1632,109 @@ def build_system_prompt(
     filing_type: str | None = None,
 ) -> str:
     return _system_prompt(catalogue, filing_type)
+
+
+def build_defect_batch_prompt(
+    tasks: list[tuple[Defect, dict[str, Any] | None, list[dict[str, Any]]]],
+    *,
+    catalogue: Catalogue,
+    filing_type: str | None,
+    visual_index: dict[str, Any] | None = None,
+    layout: dict[int, dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    """Build a compact request with shared evidence and isolated decisions."""
+
+    check_ids = [defect.check_id for defect, _, _ in tasks]
+    system = _system_prompt(catalogue, filing_type).replace(
+        "Decide exactly one defect. Return one status:",
+        (
+            "Decide every supplied defect independently. Never use one task's "
+            "document excerpts as evidence for another task. Return one status "
+            "for each task:"
+        ),
+    )
+    shared_evidence, allowed_ids = _prepare_batch_evidence(tasks, layout)
+    sections = [
+        "# Batched scrutiny request",
+        (
+            "Evaluate every task below independently. Return exactly one result for "
+            f"each of these check_ids, in this order: {', '.join(check_ids)}."
+        ),
+        (
+            'Return one JSON object shaped as {"findings": [<result for the first '
+            "task>, ...]}. Do not omit, duplicate, merge, or reorder checks. The "
+            "result fields are check_id, status, confidence, summary, observed, "
+            "elements, gap, gap_detail, conclusion, and evidence."
+        ),
+    ]
+    for index, (defect, record, _chunks) in enumerate(tasks, start=1):
+        search = "\n".join(
+            f"{i}. {_search_step(step)}"
+            for i, step in enumerate(defect.where_to_look, start=1)
+        )
+        task_sections = [
+            "",
+            f"# Independent task {index} of {len(tasks)} — {defect.check_id}",
+            "## Standard",
+            _format_standard(defect),
+            "## Where to look",
+            search or "Use the document types below.",
+            "## Document types to inspect",
+            _document_types_for_prompt(defect) or "The parts named above.",
+        ]
+        if defect.ai_note:
+            task_sections.extend(["## Note for AI", defect.ai_note.strip()])
+        guidance = _check_specific_guidance(defect)
+        if guidance:
+            task_sections.extend(["## Decision guardrail", guidance])
+        ids = allowed_ids.get(defect.check_id) or []
+        task_sections.extend(
+            [
+                "## Structured filing record",
+                _format_record(record),
+                "## Allowed shared excerpts",
+                (
+                    ", ".join(ids)
+                    if ids
+                    else "None. Return needs_review if filing evidence is required."
+                ),
+                "## Stored visual observations",
+                _format_visual_observations(defect, visual_index),
+            ]
+        )
+        sections.extend(
+            task_sections
+        )
+    sections.extend(
+        [
+            "",
+            "# Shared document excerpts",
+            (
+                "Each task may cite only the excerpt ids listed in its Allowed shared "
+                "excerpts section. The same excerpt is printed once even when several "
+                "tasks may use it."
+            ),
+            shared_evidence,
+            "",
+            "# Output fields",
+            (
+                "For each result, summary is one plain sentence; observed states only "
+                "what the filing shows; elements contains the Requirement/Note elements; "
+                "gap is null unless status is needs_review; conclusion is one sentence; "
+                "and evidence contains at most six non-overlapping {chunk_id, quote} "
+                "items. Copy chunk_id exactly from an allowed shared excerpt and quote "
+                "verbatim. Do not mention excerpt ids, retrieval, page numbers, check_id, "
+                "or rulebook locations in observed or conclusion."
+            ),
+            "",
+            "# Final batch output",
+            (
+                'Return only {"findings": [...]}. The findings array must contain '
+                f"exactly {len(tasks)} items in this order: {', '.join(check_ids)}."
+            ),
+        ]
+    )
+    return system, "\n".join(sections)
 
 
 def build_evidence_queries(defect: Defect) -> list[str]:

@@ -161,6 +161,10 @@
           "value": "8"
         },
         {
+          "name": "SCRUTINY_BATCH_SIZE",
+          "value": "4"
+        },
+        {
           "name": "VERTEX_REQUESTS_PER_MINUTE",
           "value": "8"
         },

@@ -312,6 +312,7 @@ class Defect(_Strict):
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
     manifest_absence_proves_defect: bool = False
+    manifest_absence_parts: list[str] = Field(default_factory=list)
     how_to_cure: list[str]
     remediation_config: dict[str, Any] = Field(default_factory=dict)
     applicable_rule: str | None = None
@@ -375,6 +376,7 @@ class Defect(_Strict):
         "how_to_cure",
         "inspect_parts",
         "context_parts",
+        "manifest_absence_parts",
         "exclude_parts",
         mode="before",
     )

@@ -212,6 +212,10 @@ def _defect_from_row(row: dict[str, Any]) -> Defect:
             row.get("missing_document_is_defect")
             or row.get("manifest_absence_proves_defect")
         ),
+        manifest_absence_parts=_string_list(
+            row.get("missing_document_parts")
+            or row.get("manifest_absence_parts")
+        ),
         context_parts=_string_list(row.get("context_parts")),
         exclude_parts=_optional_string_list(row.get("exclude_parts")),
         how_to_cure=_string_list(row.get("how_to_cure")),

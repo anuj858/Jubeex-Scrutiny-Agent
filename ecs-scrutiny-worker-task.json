@@ -136,6 +136,10 @@
           "value": "8"
         },
         {
+          "name": "SCRUTINY_BATCH_SIZE",
+          "value": "4"
+        },
+        {
           "name": "PARSE_CONCURRENCY",
           "value": "8"
         },

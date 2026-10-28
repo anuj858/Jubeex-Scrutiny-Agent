@@ -497,6 +497,83 @@ def test_index_range_ignores_repeated_internal_document_folios() -> None:
     assert _physical_pages_for_index_row(row, folios, 683) == list(range(54, 87))
 
 
+def test_outer_paperbook_offset_wins_over_petition_and_scc_internal_pages() -> None:
+    """Defect File_018: physical ownership must not follow inner pagination."""
+    from extraction_review.split_repair import (
+        _apply_indexed_annexure_ranges,
+        _apply_indexed_outer_document_ranges,
+        _verified_outer_paperbook_offset,
+    )
+    from extraction_review.split_audit import aligned_index_printed_rows
+
+    texts = {
+        2: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "3.\tCopy of the final Impugned order dated 09-03-2022 passed "
+            "in C.A. No. 3638 of 2007.\t1\n"
+            "4.\tReview Petition with Affidavit.\t2-21\n"
+            "5.\tAnnexure P-1: judgment in United India Insurance Co. Ltd. "
+            "v. Rajendra Singh.\t22-29\n"
+            "6.\tAnnexure P-2: RTI reply dated 11.03.2015.\t30"
+        ),
+        17: (
+            "IN THE SUPREME COURT OF INDIA\nCIVIL APPELLATE JURISDICTION\n"
+            "CIVIL APPEAL NO. 3638 OF 2007\nO R D E R\n"
+            "The civil appeal is dismissed.\nJ.\nMARCH 09, 2022."
+        ),
+        18: (
+            "2\nIN THE SUPREME COURT OF INDIA\nCIVIL ORIGINAL JURISDICTION\n"
+            "REVIEW PETITION (CIVIL) NO. OF 2022\n"
+            "MOST RESPECTFULLY SHOWETH\n17"
+        ),
+        35: "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nAOR certificate\n34",
+        36: "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\nDEPONENT\n35",
+        37: "Affidavit verification and attestation\n36",
+        46: (
+            "Annexure P-1\nGovernment of NCT of Delhi\n"
+            "RTI reply dated 11.03.2015 regarding the petitioners' land\n"
+            "Paper-book folio 30\nAPIO"
+        ),
+    }
+    # The petition exposes its old internal folios 22-30 on physical pages
+    # 23-31. Those numbers previously stole pages from the continuous petition.
+    for page in range(19, 35):
+        texts.setdefault(page, f"Review Petition grounds continue\n{page - 1}")
+    # The reproduced SCC judgment resets its own pagination to 1-8. Those
+    # counters previously made physical page 38 look like Impugned Order p.1.
+    for page in range(38, 46):
+        texts[page] = (
+            "SCC ONLINE True Print\nUNITED INDIA INSURANCE CO. LTD. "
+            f"v. RAJENDRA SINGH\nJudgment continuation\nPage {page - 37} of 8"
+        )
+
+    parts = {
+        2: ["Index"],
+        17: ["Impugned Order"],
+        **{page: ["Main Petition"] for page in range(18, 35)},
+        35: ["AOR's Certificate"],
+        36: ["Affidavit"],
+        37: ["Affidavit"],
+        **{page: ["Annexures"] for page in range(38, 47)},
+    }
+    rows = aligned_index_printed_rows(parts, texts)
+
+    assert _verified_outer_paperbook_offset(rows, parts, texts, 46) == 16
+
+    repaired = _apply_indexed_annexure_ranges(parts, texts, 46)
+    repaired = _apply_indexed_outer_document_ranges(repaired, texts, 46)
+
+    assert repaired[17] == ["Impugned Order"]
+    assert all(repaired[page] == ["Main Petition"] for page in range(18, 35))
+    assert repaired[35] == ["AOR's Certificate"]
+    assert repaired[36] == ["Affidavit"]
+    assert repaired[37] == ["Affidavit"]
+    assert all(repaired[page] == ["Annexure P-1"] for page in range(38, 46))
+    # The filed page is expressly stamped P-1 even though the Index calls the
+    # RTI reply P-2. Preserve the source label; the audit reports the conflict.
+    assert repaired[46] == ["Annexure P-1"]
+
+
 def test_master_volume_offsets_confine_printed_ranges_to_their_volume() -> None:
     from extraction_review.split_repair import _master_volume_offsets
 

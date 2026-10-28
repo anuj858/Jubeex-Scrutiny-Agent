@@ -13,3 +13,8 @@ def test_failed_defect_check_rejects_completed_scrutiny() -> None:
 
 def test_inconclusive_but_evaluated_check_can_complete() -> None:
     require_successful_checks([SimpleNamespace(error=None)], planned=1)
+
+
+def test_missing_check_rejects_completed_scrutiny() -> None:
+    with pytest.raises(RuntimeError, match="1 checks are missing"):
+        require_successful_checks([SimpleNamespace(error=None)], planned=2)

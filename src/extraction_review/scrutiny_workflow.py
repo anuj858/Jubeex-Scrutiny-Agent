@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections import defaultdict
 from typing import Annotated, Any, Literal
 
 from llama_cloud import AsyncLlamaCloud
@@ -52,6 +53,7 @@ from .layout_index import (
 )
 from .llm import (
     LLMError,
+    LLMFatalError,
     call_structured,
     llm_provider,
     llm_requests_per_minute,
@@ -65,6 +67,7 @@ from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
+    build_defect_batch_prompt,
     build_defect_prompt,
     build_system_prompt,
 )
@@ -80,8 +83,10 @@ from .scrutiny.rules import (
 )
 from .scrutiny.schema import (
     Coverage,
+    DefectBatchResponse,
     DefectFinding,
     DefectResponse,
+    LlmUsage,
     ScrutinyReport,
     apply_evidence_capability_policy,
     apply_evidence_pages,
@@ -95,6 +100,7 @@ from .scrutiny.schema import (
     failed_finding,
     manifest_absence_proven,
     missing_document_finding,
+    missing_manifest_parts,
     summarize,
     summarize_usage,
 )
@@ -114,6 +120,7 @@ from .visual.store import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONCURRENCY = 8
+DEFAULT_BATCH_SIZE = 4
 DEFAULT_PERSIST_EVERY = 10
 SCRUTINY_AFTER_INDEX_ERROR = "Unable to run scrutiny defects. Try after some time."
 _VISUAL_TERMS = (
@@ -146,9 +153,11 @@ class ScrutinyAfterIndexError(Exception):
 def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
     """Reject a nominally complete run when any individual check failed."""
     failed = sum(bool(finding.error) for finding in findings)
-    if failed:
+    missing = max(0, planned - len(findings))
+    if failed or missing:
         raise RuntimeError(
-            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
+            f"Scrutiny incomplete: {failed} of {planned} checks failed"
+            f" and {missing} checks are missing; rerun scrutiny"
         )
 
 
@@ -192,6 +201,88 @@ def _int_env(name: str, default: int) -> int:
         return int(os.getenv(name, "") or default)
     except ValueError:
         return default
+
+
+def scrutiny_batch_size() -> int:
+    """Number of independent checks transported in one structured LLM call."""
+
+    return min(8, max(1, _int_env("SCRUTINY_BATCH_SIZE", DEFAULT_BATCH_SIZE)))
+
+
+def scrutiny_batch_concurrency(check_concurrency: int, batch_size: int) -> int:
+    """Keep enough model requests active to saturate the configured RPM."""
+
+    configured = _int_env("SCRUTINY_BATCH_CONCURRENCY", 0)
+    if configured > 0:
+        return configured
+    return max(1, check_concurrency)
+
+
+def _batch_key(defect: Defect) -> tuple[str, bool]:
+    """Group checks by primary evidence family and visual capability."""
+
+    parts = required_parts_for_defect(defect)
+    primary = family_split_name(parts[0]).casefold() if parts else "filing"
+    wording = f"{defect.defect} {defect.requirement} {defect.ai_note or ''}".casefold()
+    return primary, any(term in wording for term in _VISUAL_TERMS)
+
+
+def partition_defects(defects: list[Defect], batch_size: int) -> list[list[Defect]]:
+    """Create small stable batches without mixing unrelated document evidence."""
+
+    size = max(1, batch_size)
+    grouped: dict[tuple[str, bool], list[Defect]] = defaultdict(list)
+    key_order: list[tuple[str, bool]] = []
+    for defect in defects:
+        key = _batch_key(defect)
+        if key not in grouped:
+            key_order.append(key)
+        grouped[key].append(defect)
+    batches: list[list[Defect]] = []
+    for key in key_order:
+        group = grouped[key]
+        batches.extend(
+            group[index : index + size] for index in range(0, len(group), size)
+        )
+    return batches
+
+
+def _split_integer(total: int, count: int) -> list[int]:
+    base, remainder = divmod(max(0, total), max(1, count))
+    return [base + (1 if index < remainder else 0) for index in range(count)]
+
+
+def split_batch_usage(usage: LlmUsage, count: int) -> list[LlmUsage]:
+    """Allocate one request's measured usage without inflating report totals."""
+
+    count = max(1, count)
+    prompt = _split_integer(usage.prompt_tokens, count)
+    completion = _split_integer(usage.completion_tokens, count)
+    total = _split_integer(usage.total_tokens, count)
+    cached = _split_integer(usage.cached_tokens, count)
+    reasoning = _split_integer(usage.reasoning_tokens, count)
+    costs: list[float | None]
+    if usage.cost_usd is None:
+        costs = [None] * count
+    else:
+        share = usage.cost_usd / count
+        costs = [share] * count
+        costs[-1] = usage.cost_usd - sum(costs[:-1])
+    return [
+        LlmUsage(
+            prompt_tokens=prompt[index],
+            completion_tokens=completion[index],
+            total_tokens=total[index],
+            cached_tokens=cached[index],
+            reasoning_tokens=reasoning[index],
+            calls=usage.calls if index == 0 else 0,
+            cost_usd=costs[index],
+            model=usage.model,
+            generation_id=usage.generation_id if index == 0 else None,
+            generation_ids=list(usage.generation_ids) if index == 0 else [],
+        )
+        for index in range(count)
+    ]
 
 
 def scrutiny_enabled() -> bool:
@@ -341,11 +432,52 @@ async def _run_defect(
     if manifest_absence_proven(defect, layout):
         return missing_document_finding(
             defect,
-            required_parts_for_defect(defect),
+            missing_manifest_parts(defect, layout),
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
 
+    coverage = _coverage_for_defect(
+        defect,
+        record=record,
+        chunks=chunks,
+        layout=layout,
+        visual_index=visual_index,
+    )
+    raw, usage = await call_structured(
+        system_prompt=build_system_prompt(catalogue, filing_type),
+        user_prompt=build_defect_prompt(
+            defect,
+            record=slice_record_for_defect(record, defect),
+            chunks=chunks,
+            catalogue=catalogue,
+            visual_index=visual_index,
+            layout=layout,
+        ),
+        response_model=DefectResponse,
+        model=scrutiny_model(),
+        request_label=f"scrutiny:{defect.check_id}",
+    )
+    return _finding_from_response(
+        defect,
+        raw,
+        usage=usage,
+        coverage=coverage,
+        record=record,
+        chunks=chunks,
+        layout=layout,
+        visual_index=visual_index,
+    )
+
+
+def _coverage_for_defect(
+    defect: Defect,
+    *,
+    record: dict[str, Any] | None,
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+    visual_index: dict[str, Any] | None,
+) -> Coverage:
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     visual_required = any(
         term
@@ -364,7 +496,7 @@ async def _run_defect(
         and visual_pages
         and not visual_index.get("failures")
     )
-    coverage = Coverage(
+    return Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
@@ -374,21 +506,19 @@ async def _run_defect(
         visual_pages_reviewed=visual_pages,
     )
 
-    raw, usage = await call_structured(
-        system_prompt=build_system_prompt(catalogue, filing_type),
-        user_prompt=build_defect_prompt(
-            defect,
-            record=slice_record_for_defect(record, defect),
-            chunks=chunks,
-            catalogue=catalogue,
-            visual_index=visual_index,
-            layout=layout,
-        ),
-        response_model=DefectResponse,
-        model=scrutiny_model(),
-    )
-    response = _sanitize_response(defect, raw, chunks, visual_index, layout)
 
+def _finding_from_response(
+    defect: Defect,
+    response: DefectResponse,
+    *,
+    usage: LlmUsage,
+    coverage: Coverage,
+    record: dict[str, Any] | None,
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+    visual_index: dict[str, Any] | None,
+) -> DefectFinding:
+    response = _sanitize_response(defect, response, chunks, visual_index, layout)
     return build_finding(
         defect,
         response,
@@ -400,6 +530,92 @@ async def _run_defect(
         visual_index=visual_index,
         record=record if isinstance(record, dict) else None,
     )
+
+
+async def _run_defect_batch(
+    tasks: list[tuple[Defect, list[dict[str, Any]]]],
+    *,
+    catalogue: Catalogue,
+    record: dict[str, Any] | None,
+    filing_type: str | None,
+    layout: dict[int, dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
+) -> list[DefectFinding]:
+    """Evaluate several evidence-isolated checks in one structured request."""
+
+    if len(tasks) == 1:
+        defect, chunks = tasks[0]
+        return [
+            await _run_defect(
+                defect,
+                catalogue=catalogue,
+                record=record,
+                chunks=chunks,
+                filing_type=filing_type,
+                layout=layout,
+                visual_index=visual_index,
+            )
+        ]
+
+    prompt_tasks = [
+        (defect, slice_record_for_defect(record, defect), chunks)
+        for defect, chunks in tasks
+    ]
+    system_prompt, user_prompt = build_defect_batch_prompt(
+        prompt_tasks,
+        catalogue=catalogue,
+        filing_type=filing_type,
+        visual_index=visual_index,
+        layout=layout,
+    )
+    raw, usage = await call_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=DefectBatchResponse,
+        model=scrutiny_model(),
+        request_label="scrutiny-batch:" + ",".join(d.check_id for d, _ in tasks),
+    )
+    expected = [defect.check_id for defect, _ in tasks]
+    returned = [finding.check_id for finding in raw.findings]
+    if len(returned) != len(expected) or len(set(returned)) != len(returned):
+        raise LLMError(
+            f"Batch returned {len(returned)} unique result(s) for {len(expected)} checks",
+            usage=usage,
+        )
+    by_id = {finding.check_id: finding for finding in raw.findings}
+    missing = [check_id for check_id in expected if check_id not in by_id]
+    unexpected = [check_id for check_id in returned if check_id not in set(expected)]
+    if missing or unexpected:
+        raise LLMError(
+            "Batch check_id mismatch"
+            f"; missing={','.join(missing) or 'none'}"
+            f"; unexpected={','.join(unexpected) or 'none'}",
+            usage=usage,
+        )
+
+    usage_shares = split_batch_usage(usage, len(tasks))
+    findings: list[DefectFinding] = []
+    for index, (defect, chunks) in enumerate(tasks):
+        coverage = _coverage_for_defect(
+            defect,
+            record=record,
+            chunks=chunks,
+            layout=layout,
+            visual_index=visual_index,
+        )
+        findings.append(
+            _finding_from_response(
+                defect,
+                by_id[defect.check_id],
+                usage=usage_shares[index],
+                coverage=coverage,
+                record=record,
+                chunks=chunks,
+                layout=layout,
+                visual_index=visual_index,
+            )
+        )
+    return findings
 
 
 async def _chunks_for_defect(
@@ -1087,7 +1303,7 @@ async def collect_defect_findings(
                 finding = await finished
             except asyncio.CancelledError:
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001 - collector cancels peer tasks
                 stopped_early = True
                 abort.set()
                 for task in tasks:
@@ -1113,6 +1329,61 @@ async def collect_defect_findings(
             if isinstance(result, DefectFinding) and result.check_id not in seen:
                 seen.add(result.check_id)
                 findings.append(result)
+                added_after_cancel = True
+        if on_update is not None and (stopped_early or added_after_cancel):
+            await on_update(list(findings), stopped_early)
+    return findings, stopped_early
+
+
+async def collect_defect_batch_findings(
+    batches: list[list[Defect]],
+    runner: Any,
+    *,
+    concurrency: int,
+    on_update: Any = None,
+) -> tuple[list[DefectFinding], bool]:
+    """Run bounded batches while publishing every completed finding."""
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    findings: list[DefectFinding] = []
+    seen: set[str] = set()
+    stopped_early = False
+
+    async def guarded(batch: list[Defect]) -> list[DefectFinding]:
+        async with semaphore:
+            return await runner(batch)
+
+    tasks = [asyncio.create_task(guarded(batch)) for batch in batches]
+    try:
+        for finished in asyncio.as_completed(tasks):
+            try:
+                batch_findings = await finished
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 - collector cancels peer tasks
+                stopped_early = True
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                break
+            for finding in batch_findings:
+                if finding.check_id in seen:
+                    continue
+                seen.add(finding.check_id)
+                findings.append(finding)
+                if on_update is not None:
+                    await on_update(list(findings), False)
+    finally:
+        leftovers = await asyncio.gather(*tasks, return_exceptions=True)
+        added_after_cancel = False
+        for result in leftovers:
+            if not isinstance(result, list):
+                continue
+            for finding in result:
+                if not isinstance(finding, DefectFinding) or finding.check_id in seen:
+                    continue
+                seen.add(finding.check_id)
+                findings.append(finding)
                 added_after_cancel = True
         if on_update is not None and (stopped_early or added_after_cancel):
             await on_update(list(findings), stopped_early)
@@ -1321,6 +1592,8 @@ class ScrutinyWorkflow(Workflow):
             )
 
         concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
+        batch_size = scrutiny_batch_size()
+        batch_concurrency = scrutiny_batch_concurrency(concurrency, batch_size)
         persist_every = max(
             1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY)
         )
@@ -1367,7 +1640,8 @@ class ScrutinyWorkflow(Workflow):
                     level="info",
                     message=(
                         "Each concurrent check will retrieve its own excerpts "
-                        f"from Pinecone ({concurrency} at a time)"
+                        f"from Pinecone ({concurrency} checks across "
+                        f"{batch_concurrency} batch(es) at a time)"
                     ),
                 )
             )
@@ -1383,7 +1657,7 @@ class ScrutinyWorkflow(Workflow):
                     f"({filing_type_label(filing_type)}) against "
                     f"{len(defects)} defect(s) in {category_labels} "
                     f"(overlays: {', '.join(special_categories) or 'none'}; "
-                    f"{concurrency} at a time)"
+                    f"batch size {batch_size}, {batch_concurrency} batches at a time)"
                 ),
             )
         )
@@ -1443,15 +1717,13 @@ class ScrutinyWorkflow(Workflow):
             if not done and len(current) % persist_every == 0:
                 schedule_persist(report)
 
-        async def run_one(defect: Defect) -> DefectFinding:
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=f"Checking {defect.check_id}",
-                )
-            )
+        async def retrieve_one(
+            defect: Defect,
+        ) -> tuple[Defect, list[dict[str, Any]], float, Exception | None]:
+            if manifest_absence_proven(defect, layout):
+                return defect, [], 0.0, None
+            retrieval_started = time.perf_counter()
             try:
-                retrieval_started = time.perf_counter()
                 chunks = await _chunks_for_defect(
                     defect,
                     file_hash=file_hash,
@@ -1462,78 +1734,203 @@ class ScrutinyWorkflow(Workflow):
                     index_generation=index_generation,
                     layout=layout,
                 )
-                retrieval_seconds = time.perf_counter() - retrieval_started
-                evaluation_started = time.perf_counter()
-                finding = await _run_defect(
+                return (
                     defect,
-                    catalogue=catalogue,
-                    record=record,
-                    chunks=chunks,
-                    filing_type=filing_type,
-                    layout=layout,
-                    visual_index=visual_index,
-                )
-                logger.info(
-                    "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
-                    defect.check_id,
-                    retrieval_seconds,
-                    time.perf_counter() - evaluation_started,
+                    chunks,
+                    time.perf_counter() - retrieval_started,
+                    None,
                 )
             except asyncio.CancelledError:
                 raise
-            except LLMError as e:
-                logger.exception("[Scrutiny] %s failed", defect.check_id)
-                ctx.write_event_to_stream(
-                    Status(
-                        level="error",
-                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
-                    )
-                )
-                return failed_finding(
-                    defect,
-                    str(e),
-                    usage=e.usage,
-                    visual_index=visual_index,
-                    record=record if isinstance(record, dict) else None,
-                )
-            except Exception as e:
-                logger.exception("[Scrutiny] %s failed", defect.check_id)
-                ctx.write_event_to_stream(
-                    Status(
-                        level="error",
-                        message=f"{defect.check_id} failed; continuing remaining checks. {e}",
-                    )
-                )
-                return failed_finding(
-                    defect,
-                    str(e),
-                    visual_index=visual_index,
-                    record=record if isinstance(record, dict) else None,
-                )
+            except Exception as error:  # noqa: BLE001
+                return defect, [], time.perf_counter() - retrieval_started, error
 
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message=(
-                        f"{defect.check_id} → {finding.status} "
-                        f"({finding.confidence:.0%} confidence)"
-                    ),
+        async def run_batch(batch: list[Defect]) -> list[DefectFinding]:
+            check_ids = [defect.check_id for defect in batch]
+            for check_id in check_ids:
+                ctx.write_event_to_stream(
+                    Status(level="info", message=f"Checking {check_id}")
                 )
+            retrieval_started = time.perf_counter()
+            retrieved = await asyncio.gather(
+                *(retrieve_one(defect) for defect in batch)
             )
-            return finding
+            retrieval_elapsed = time.perf_counter() - retrieval_started
+            direct: list[DefectFinding] = []
+            llm_tasks: list[tuple[Defect, list[dict[str, Any]]]] = []
+            retrieval_by_id: dict[str, float] = {}
+            for defect, chunks, seconds, retrieval_error in retrieved:
+                retrieval_by_id[defect.check_id] = seconds
+                if retrieval_error is not None:
+                    logger.warning(
+                        "[Scrutiny] %s retrieval failed: %s",
+                        defect.check_id,
+                        retrieval_error,
+                    )
+                    direct.append(
+                        failed_finding(
+                            defect,
+                            f"Evidence retrieval failed: {retrieval_error}",
+                            visual_index=visual_index,
+                            record=record if isinstance(record, dict) else None,
+                        )
+                    )
+                elif manifest_absence_proven(defect, layout):
+                    direct.append(
+                        missing_document_finding(
+                            defect,
+                            missing_manifest_parts(defect, layout),
+                            visual_index=visual_index,
+                            record=record if isinstance(record, dict) else None,
+                        )
+                    )
+                else:
+                    llm_tasks.append((defect, chunks))
 
-        findings, stopped_early = await collect_defect_findings(
-            defects,
-            run_one,
-            concurrency=concurrency,
-            stop_on_error=False,
+            evaluated: list[DefectFinding] = []
+            evaluation_started = time.perf_counter()
+            if llm_tasks:
+                try:
+                    evaluated = await _run_defect_batch(
+                        llm_tasks,
+                        catalogue=catalogue,
+                        record=record,
+                        filing_type=filing_type,
+                        layout=layout,
+                        visual_index=visual_index,
+                    )
+                except LLMFatalError:
+                    raise
+                except LLMError as batch_error:
+                    if len(llm_tasks) == 1:
+                        defect, _ = llm_tasks[0]
+                        evaluated = [
+                            failed_finding(
+                                defect,
+                                str(batch_error),
+                                usage=batch_error.usage,
+                                visual_index=visual_index,
+                                record=record if isinstance(record, dict) else None,
+                            )
+                        ]
+                    else:
+                        logger.warning(
+                            "[Scrutiny] Batch %s failed; retrying %s check(s) "
+                            "independently: %s",
+                            ",".join(check_ids),
+                            len(llm_tasks),
+                            batch_error,
+                        )
+
+                        async def fallback_one(
+                            defect: Defect, chunks: list[dict[str, Any]]
+                        ) -> DefectFinding:
+                            try:
+                                return await _run_defect(
+                                    defect,
+                                    catalogue=catalogue,
+                                    record=record,
+                                    chunks=chunks,
+                                    filing_type=filing_type,
+                                    layout=layout,
+                                    visual_index=visual_index,
+                                )
+                            except LLMFatalError:
+                                raise
+                            except LLMError as error:
+                                return failed_finding(
+                                    defect,
+                                    str(error),
+                                    usage=error.usage,
+                                    visual_index=visual_index,
+                                    record=record if isinstance(record, dict) else None,
+                                )
+                            except Exception as error:  # noqa: BLE001
+                                return failed_finding(
+                                    defect,
+                                    str(error),
+                                    visual_index=visual_index,
+                                    record=record if isinstance(record, dict) else None,
+                                )
+
+                        evaluated = list(
+                            await asyncio.gather(
+                                *(
+                                    fallback_one(defect, chunks)
+                                    for defect, chunks in llm_tasks
+                                )
+                            )
+                        )
+                        failed_usage = split_batch_usage(
+                            batch_error.usage, len(evaluated)
+                        )
+                        evaluated = [
+                            finding.model_copy(
+                                update={
+                                    "usage": failed_usage[index].plus(
+                                        finding.usage or LlmUsage()
+                                    )
+                                }
+                            )
+                            for index, finding in enumerate(evaluated)
+                        ]
+
+            evaluation_elapsed = time.perf_counter() - evaluation_started
+            findings_by_id = {
+                finding.check_id: finding for finding in [*direct, *evaluated]
+            }
+            findings = [findings_by_id[check_id] for check_id in check_ids]
+            for finding in findings:
+                logger.info(
+                    "[ScrutinyTiming] check=%s retrieval=%.2fs batch_evaluation=%.2fs",
+                    finding.check_id,
+                    retrieval_by_id.get(finding.check_id, 0.0),
+                    0.0 if finding in direct else evaluation_elapsed,
+                )
+                ctx.write_event_to_stream(
+                    Status(
+                        level="error" if finding.error else "info",
+                        message=(
+                            f"{finding.check_id} failed: {finding.error}"
+                            if finding.error
+                            else f"{finding.check_id} → {finding.status} "
+                            f"({finding.confidence:.0%} confidence)"
+                        ),
+                    )
+                )
+            logger.info(
+                "[ScrutinyBatchTiming] checks=%s size=%s retrieval=%.2fs "
+                "evaluation=%.2fs",
+                ",".join(check_ids),
+                len(check_ids),
+                retrieval_elapsed,
+                evaluation_elapsed,
+            )
+            return findings
+
+        batches = partition_defects(defects, batch_size)
+        logger.info(
+            "[Scrutiny] Planned %s check(s) as %s batch(es) "
+            "(batch_size=%s batch_concurrency=%s)",
+            len(defects),
+            len(batches),
+            batch_size,
+            batch_concurrency,
+        )
+        findings, stopped_early = await collect_defect_batch_findings(
+            batches,
+            run_batch,
+            concurrency=batch_concurrency,
             on_update=publish,
         )
         logger.info(
-            "[ScrutinyTiming] total=%.1fs checks=%s concurrency=%s rpm=%s",
+            "[ScrutinyTiming] total=%.1fs checks=%s batches=%s batch_size=%s "
+            "batch_concurrency=%s rpm=%s",
             time.perf_counter() - scrutiny_started,
             len(findings),
-            concurrency,
+            len(batches),
+            batch_size,
+            batch_concurrency,
             llm_requests_per_minute() or "unlimited",
         )
         report = build_report(findings, stopped_early=stopped_early)

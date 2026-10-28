@@ -184,6 +184,14 @@ ingestion: JUBEEX_WORKER_KINDS=process_file, SPLIT_OCR_CONCURRENCY=4
 scrutiny:  JUBEEX_WORKER_KINDS=scrutiny, LLM_PROVIDER=vertex
 ```
 
+The scrutiny worker also uses `SCRUTINY_BATCH_SIZE=4`. The worker groups checks
+by primary document family, retrieves and sanitizes evidence independently for
+each check, and spends one Vertex request slot per compatible group. Set
+`SCRUTINY_BATCH_SIZE=1` and redeploy for an immediate behavioral rollback.
+Compare `[ScrutinyBatchTiming]` and the final `[ScrutinyTiming]` line before and
+after rollout; the final line reports checks, batches, batch size, concurrency,
+RPM, and end-to-end seconds.
+
 The scrutiny log must also contain these startup lines before the worker begins:
 
 ```text

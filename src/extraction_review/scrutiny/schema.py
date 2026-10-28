@@ -247,6 +247,24 @@ class DefectResponse(BaseModel):
         return data
 
 
+class DefectBatchResponse(BaseModel):
+    """Several independent defect decisions returned by one model request.
+
+    The server still sanitizes and assembles every item independently.  This
+    envelope only removes repeated network/rate-limit overhead; it does not
+    merge the legal tests or evidence contracts for the contained checks.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    findings: list[DefectResponse] = Field(
+        description=(
+            "Exactly one independently decided finding for every supplied check_id, "
+            "in the same order as the tasks."
+        )
+    )
+
+
 class Coverage(BaseModel):
     """How much of the document backed this finding."""
 
@@ -332,9 +350,10 @@ class UsageSummary(BaseModel):
     highest_cost_usd: float | None = None
     by_check: list[UsageByCheck] = Field(default_factory=list)
     note: str = (
-        "Exact OpenRouter usage.cost from each /chat/completions reply, "
-        "summed for this check. The model is not asked for cost. LlamaParse, "
-        "extract, classify, and Pinecone are billed separately."
+        "Provider-reported request usage is summed exactly for the run. Usage from "
+        "a batched request is allocated evenly across its checks, so per-check rows "
+        "are estimates while report totals remain exact. The model is not asked for "
+        "cost. LlamaParse, extract, classify, and Pinecone are billed separately."
     )
 
 
@@ -1234,9 +1253,37 @@ def manifest_absence_proven(
     """Whether a complete layout proves every required part of a switched row absent."""
     if not getattr(defect, "manifest_absence_proves_defect", False):
         return False
-    missing = missing_parts_in_layout(defect, layout)
-    required = required_parts_for_defect(defect)
-    return bool(missing) and bool(required) and len(missing) == len(required)
+    return bool(missing_manifest_parts(defect, layout))
+
+
+def missing_manifest_parts(
+    defect: Defect,
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[str]:
+    """Mandatory whole-document parts proved absent by a complete manifest."""
+    if not getattr(defect, "manifest_absence_proves_defect", False):
+        return []
+    explicit_parts = list(
+        getattr(defect, "manifest_absence_parts", None) or []
+    )
+    absence_parts = explicit_parts or required_parts_for_defect(defect)
+    if not absence_parts or not layout:
+        return []
+    pages: list[dict[str, Any]] = []
+    for page in layout.values():
+        if not isinstance(page, dict):
+            return []
+        names = parts_on_page(page.get("document_part"))
+        if not names:
+            return []
+        pages.append({"document_part": names, "chunk_kind": "page"})
+    missing = [part for part in absence_parts if not chunks_cover_part(pages, part)]
+    # Preserve the legacy switch's conservative all-parts behavior. The new
+    # explicit field declares that each listed document is independently
+    # mandatory, so any one of those parts being absent proves the defect.
+    if not explicit_parts and len(missing) != len(absence_parts):
+        return []
+    return missing
 
 
 def missing_document_sentence(parts: list[str]) -> str:
@@ -1269,7 +1316,7 @@ def apply_manifest_absence_policy(
     """Record a wholly missing document. The model is not asked to explain it."""
     if not manifest_absence_proven(defect, layout):
         return response
-    sentence = missing_document_sentence(required_parts_for_defect(defect))
+    sentence = missing_document_sentence(missing_manifest_parts(defect, layout))
     response.status = "defect_found"
     response.confidence = 1.0
     response.summary = sentence

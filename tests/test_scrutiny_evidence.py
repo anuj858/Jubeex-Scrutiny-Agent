@@ -1091,6 +1091,60 @@ def test_partial_manifest_does_not_prove_document_absence() -> None:
     )
 
 
+def test_manifest_absence_parts_separate_required_document_from_context() -> None:
+    defect = SimpleNamespace(
+        manifest_absence_proves_defect=True,
+        manifest_absence_parts=["Affidavit"],
+        inspect_parts=["Affidavit", "Main Petition"],
+        context_parts=[],
+        where_to_look=[],
+    )
+    layout = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": "Annexures"},
+    }
+    assert manifest_absence_proven(defect, layout)
+
+
+def test_legacy_absence_switch_still_requires_every_inspect_part_to_be_absent() -> None:
+    defect = SimpleNamespace(
+        manifest_absence_proves_defect=True,
+        inspect_parts=["Affidavit", "Main Petition"],
+        context_parts=[],
+        where_to_look=[],
+    )
+    layout = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": "Annexures"},
+    }
+    assert not manifest_absence_proven(defect, layout)
+
+
+def test_any_individually_mandatory_manifest_part_can_prove_compound_defect() -> None:
+    defect = SimpleNamespace(
+        manifest_absence_proves_defect=True,
+        manifest_absence_parts=["Main Petition", "AOR's Certificate", "Affidavit"],
+        inspect_parts=["Main Petition", "AOR's Certificate", "Affidavit"],
+        context_parts=[],
+        where_to_look=[],
+    )
+    layout = {
+        1: {"document_part": "Main Petition"},
+        2: {"document_part": "Affidavit"},
+    }
+    response = DefectResponse(
+        check_id="D-281",
+        status="needs_review",
+        confidence=0.4,
+        summary="Certificate was not retrieved.",
+        reasoning="Retrieval was inconclusive.",
+        evidence=[],
+    )
+    decided = apply_manifest_absence_policy(defect, response, layout)
+    assert decided.status == "defect_found"
+    assert decided.summary == "The AOR's Certificate is missing from the case file."
+
+
 def test_evidence_pages_snap_to_excerpt_not_rulebook() -> None:
     chunks = [
         {
