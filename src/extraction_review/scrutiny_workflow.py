@@ -89,6 +89,7 @@ from .scrutiny.schema import (
     apply_presence_only_policy,
     apply_retrieval_policy,
     apply_status_policy,
+    apply_supported_evidence_policy,
     apply_undetermined_policy,
     apply_visual_conflict_policy,
     build_finding,
@@ -277,6 +278,7 @@ def _sanitize_response(
     response = apply_status_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
     response = apply_retrieval_policy(defect, response, chunks)
+    response = apply_supported_evidence_policy(defect, response)
     response = apply_grounded_defect_policy(response)
     response = apply_visual_conflict_policy(defect, response, visual_index)
     response = apply_evidence_capability_policy(defect, response, visual_index)

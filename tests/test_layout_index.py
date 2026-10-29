@@ -10,6 +10,7 @@ from extraction_review.layout_index import (
     load_layout_index,
     locate_quote,
     merge_granular_bboxes,
+    merge_pdf_text_words,
     parse_sidecar_jsonl,
     quote_in_text,
     stitch_slot_layouts,
@@ -881,3 +882,225 @@ def test_utf8_byte_spans_keep_the_following_word() -> None:
     assert status == "matched"
     assert boxes[0]["x"] == 0.1
     assert boxes[0]["w"] == 0.15
+
+
+def _placed(text: str, x: float, y: float, w: float = 0.06) -> dict:
+    return {"t": text, "x": x, "y": y, "w": w, "h": 0.02, "line": 0}
+
+
+_PAWAN_QUOTE = (
+    "Column 1: 1.Col. Pawan Kumar Gopinath Sharma, s/o Gopinath Sharma, Indian Jew\n"
+    "Column 2: Respondent No.\n"
+    "Column 3: Petitioner\n"
+    "\n"
+    "Column 1: Versus"
+)
+
+_PRATAP_QUOTE = (
+    "Column 1: 10.Mr. Pratap, s/o\n"
+    "Haridas Dhopte,\n"
+    "Column 2: Respondent No.\n"
+    "Column 3: Respondent No."
+)
+
+
+def _party_word_layout() -> dict:
+    """Cell order, with role words on the first name line and an earlier role."""
+    words = [
+        _placed("Respondent", 0.50, 0.10, 0.10),
+        _placed("No.", 0.61, 0.10, 0.04),
+        _placed("1.Col.", 0.06, 0.30, 0.06),
+        _placed("Pawan", 0.13, 0.30, 0.06),
+        _placed("Kumar", 0.20, 0.30, 0.06),
+        _placed("Gopinath", 0.06, 0.33, 0.08),
+        _placed("Sharma,", 0.15, 0.33, 0.08),
+        _placed("s/o", 0.24, 0.33, 0.04),
+        _placed("Gopinath", 0.06, 0.36, 0.08),
+        _placed("Sharma,", 0.15, 0.36, 0.08),
+        _placed("Indian", 0.06, 0.39, 0.06),
+        _placed("Jew", 0.13, 0.39, 0.04),
+        _placed("Respondent", 0.50, 0.30, 0.10),
+        _placed("No.", 0.61, 0.30, 0.04),
+        _placed("Petitioner", 0.78, 0.30, 0.12),
+        _placed("Versus", 0.30, 0.50, 0.08),
+        _placed("Versus", 0.30, 0.80, 0.08),
+        _placed("10.Mr.", 0.06, 0.62, 0.07),
+        _placed("Pratap,", 0.14, 0.62, 0.07),
+        _placed("s/o", 0.22, 0.62, 0.04),
+        _placed("Haridas", 0.06, 0.65, 0.08),
+        _placed("Dhopte,", 0.15, 0.65, 0.08),
+        _placed("Respondent", 0.50, 0.62, 0.10),
+        _placed("No.", 0.61, 0.62, 0.04),
+        _placed("Respondent", 0.78, 0.62, 0.10),
+        _placed("No.", 0.89, 0.62, 0.04),
+    ]
+    return _bare_layout(words)
+
+
+def test_column_labels_box_the_party_row_and_the_versus_below() -> None:
+    boxes, status = boxes_for_quote(_PAWAN_QUOTE, 1, _party_word_layout())
+    assert status == "matched"
+    assert boxes
+    assert all(box["y"] > 0.20 for box in boxes)
+    assert all(box["y"] < 0.70 for box in boxes)
+    name = [box for box in boxes if box["x"] < 0.40 and box["y"] < 0.45]
+    assert len(name) >= 2
+    assert any(box["y"] == 0.30 for box in name)
+    roles = [box for box in boxes if box["x"] >= 0.45 and box["y"] == 0.30]
+    assert len(roles) == 2
+    assert roles[0]["x"] < 0.70
+    assert roles[1]["x"] >= 0.75
+    versus = [box for box in boxes if box["y"] >= 0.45]
+    assert len(versus) == 1
+    assert versus[0]["y"] == 0.50
+
+
+def test_column_labels_box_both_role_cells_on_the_same_row() -> None:
+    boxes, status = boxes_for_quote(_PRATAP_QUOTE, 1, _party_word_layout())
+    assert status == "matched"
+    assert all(box["y"] > 0.20 for box in boxes)
+    name = [box for box in boxes if box["x"] < 0.40]
+    assert len(name) == 2
+    assert name[0]["y"] == 0.62
+    assert name[1]["y"] == 0.65
+    roles = [box for box in boxes if box["x"] >= 0.45]
+    assert len(roles) == 2
+    assert roles[0]["y"] == 0.62
+    assert roles[1]["y"] == 0.62
+    assert roles[0]["x"] < roles[1]["x"]
+    assert roles[0]["x"] + roles[0]["w"] < roles[1]["x"]
+
+
+def test_parenthetical_column_label_is_removed_before_matching() -> None:
+    layout = _bare_layout(
+        [
+            _placed("Respondent", 0.50, 0.20, 0.10),
+            _placed("No.", 0.61, 0.20, 0.04),
+        ]
+    )
+    boxes, status = boxes_for_quote(
+        "BEFORE HIGH COURT (column 2): Respondent No.", 1, layout
+    )
+    assert status == "matched"
+    assert len(boxes) == 1
+    assert boxes[0]["x"] == 0.50
+
+
+def test_column_word_inside_a_sentence_stays_on_the_normal_path() -> None:
+    layout = _bare_layout(
+        [
+            _placed("the", 0.10, 0.20, 0.04),
+            _placed("column", 0.15, 0.20, 0.08),
+            _placed("of", 0.24, 0.20, 0.03),
+            _placed("names", 0.28, 0.20, 0.06),
+            _placed("stays", 0.35, 0.20, 0.06),
+        ]
+    )
+    boxes, status = boxes_for_quote("the column of names stays", 1, layout)
+    assert status == "matched"
+    assert len(boxes) == 1
+    assert boxes[0]["x"] == 0.10
+
+
+def test_unmatched_party_row_does_not_box_a_later_versus() -> None:
+    layout = _bare_layout([_placed("Versus", 0.30, 0.50, 0.08)])
+    boxes, status = boxes_for_quote(_PAWAN_QUOTE, 1, layout)
+    assert boxes == []
+    assert status == "page_only"
+
+
+def _pdf_bytes() -> bytes:
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        page = document.new_page(width=1400, height=800)
+        page.insert_text(
+            (36, 220),
+            "1.Col. Pawan Kumar Gopinath Sharma, s/o Gopinath Sharma, Indian Jew",
+            fontsize=11,
+        )
+        page.insert_text((780, 220), "Respondent No.", fontsize=11)
+        page.insert_text((1100, 220), "Petitioner", fontsize=11)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def _empty_table_layout() -> dict:
+    return compact_sidecar_pages(
+        [
+            {
+                "page_number": 1,
+                "page_width": 1400.0,
+                "page_height": 800.0,
+                "success": True,
+                "items": [
+                    {
+                        "type": "table",
+                        "md": "party table",
+                        "grounding": {
+                            "source": "table",
+                            "bbox": {"x": 0, "y": 0, "w": 1400, "h": 400},
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+
+def test_pdf_words_box_a_table_page_that_has_no_cell_words() -> None:
+    layout = _empty_table_layout()
+    assert layout[1]["words"] == []
+    merged = merge_pdf_text_words(layout, _pdf_bytes())
+    boxes, status = boxes_for_quote(_PAWAN_QUOTE, 1, merged)
+    assert status == "matched"
+    name = [box for box in boxes if box["x"] < 0.45]
+    roles = [box for box in boxes if box["x"] >= 0.50]
+    assert name
+    assert len(roles) >= 2
+    assert roles[0]["x"] + roles[0]["w"] <= roles[1]["x"] + 0.01
+
+
+def test_a_sidecar_word_is_not_added_again_from_the_pdf() -> None:
+    hello_pdf = _hello_world_pdf()
+    discovered = merge_pdf_text_words({1: {"words": [], "local_page": 1}}, hello_pdf)
+    hello = next(word for word in discovered[1]["words"] if word["t"] == "Hello")
+    layout = {1: {"words": [hello], "local_page": 1}}
+    merged = merge_pdf_text_words(layout, hello_pdf)
+    texts = [word["t"] for word in merged[1]["words"]]
+    assert merged[1]["words"][0] is hello
+    assert texts.count("Hello") == 1
+    assert "World" in texts
+
+
+def _hello_world_pdf() -> bytes:
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        page = document.new_page(width=600, height=400)
+        page.insert_text((40, 120), "Hello", fontsize=12)
+        page.insert_text((240, 120), "World", fontsize=12)
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def test_a_scan_page_does_not_receive_pdf_words() -> None:
+    import pymupdf
+
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+    pixmap.clear_with(255)
+    document = pymupdf.open()
+    try:
+        page = document.new_page(width=600, height=800)
+        page.insert_image(pymupdf.Rect(20, 20, 580, 760), stream=pixmap.tobytes("png"))
+        page.insert_text((40, 400), "Pawan Kumar stale ocr layer", fontsize=12)
+        pdf = document.tobytes()
+    finally:
+        document.close()
+    layout = {1: {"words": [], "local_page": 1}}
+    merged = merge_pdf_text_words(layout, pdf)
+    assert merged[1]["words"] == []

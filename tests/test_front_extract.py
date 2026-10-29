@@ -180,6 +180,49 @@ def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> Non
     assert done["advocates_on_record"] == [{"name": "Ravi"}]
 
 
+def test_chamber_line_phone_is_stored_on_the_advocate() -> None:
+    """Ph. after the chamber PIN is the advocate's phone, not part of the place."""
+    chamber = (
+        "Chamber: 320, New Lawyers Chamber, C.K. Daphtary Block, "
+        "Supreme Court, New Delhi -110001 Ph.: 23386175"
+    )
+    done = finalize_front_extract(
+        {
+            "advocates_on_record": [
+                {"name": "Ravi", "office_address": chamber, "mobile": None}
+            ]
+        }
+    )
+    advocate = done["advocates_on_record"][0]
+    assert advocate["mobile"] == "23386175"
+    assert "23386175" not in advocate["office_address"]
+    assert "110001" in advocate["office_address"]
+    assert "320" in advocate["office_address"]
+
+
+def test_chamber_phone_is_read_from_the_page_when_the_address_omits_it() -> None:
+    done = finalize_front_extract(
+        {
+            "advocates_on_record": [
+                {
+                    "name": "Ravi",
+                    "office_address": (
+                        "320, New Lawyers Chamber, C.K. Daphtary Block, "
+                        "Supreme Court, New Delhi -110001"
+                    ),
+                }
+            ]
+        },
+        page_markdown={
+            35: (
+                "Chamber: 320, New Lawyers Chamber, C.K. Daphtary Block,\n"
+                "Supreme Court, New Delhi -110001 Ph.: 23386175"
+            )
+        },
+    )
+    assert done["advocates_on_record"][0]["mobile"] == "23386175"
+
+
 _MEMO = """
 MEMO OF PARTIES
 IN THE MATTER OF:-

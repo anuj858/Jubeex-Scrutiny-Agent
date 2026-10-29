@@ -26,7 +26,13 @@ from ..document_parts import (
     preferred_parts_for_defect,
     required_parts_for_defect,
 )
-from ..layout_index import boxes_on_pages, page_entry, part_for_page, quote_in_text
+from ..layout_index import (
+    boxes_on_pages,
+    page_entry,
+    part_for_page,
+    quote_body,
+    quote_in_text,
+)
 from .prompts import (
     compose_reasoning,
     location_for_finding,
@@ -1021,6 +1027,126 @@ def _move_to_review(
     response.gap = gap
     if detail:
         response.gap_detail = detail
+    return response
+
+
+_ADDRESS_TOPIC = re.compile(r"\baddresses?\b", re.IGNORECASE)
+_ADDRESS_SHOWN = re.compile(
+    r"\b(?:r\s*/\s*o|resident\s+of|residing\s+at|gut\s+no|plot\s+no|"
+    r"house\s+no|street|locality|district|taluka|tehsil)\b",
+    re.IGNORECASE,
+)
+_PARTY_NAME = re.compile(
+    r"\b(?:col\.|mr\.|mrs\.|ms\.|shri|smt)\b|\b\d{1,2}\s*[.)]",
+    re.IGNORECASE,
+)
+_OMITTED_PHRASE = re.compile(
+    r"\b(?:omits?|missing|lacks?|does not contain|does not give|does not show|"
+    r"without)\s+(?:the\s+|a\s+|an\s+|its\s+|their\s+)?"
+    r"(?P<what>[^.;:]{3,80})",
+    re.IGNORECASE,
+)
+
+
+def _claim_text(defect: Defect, response: DefectResponse) -> str:
+    parts = [defect.defect, defect.requirement, defect.ai_note or ""]
+    parts.extend(item.name for item in response.elements)
+    parts.extend(item.detail for item in response.elements)
+    return " ".join(parts)
+
+
+def _address_claim(defect: Defect, response: DefectResponse) -> bool:
+    return _ADDRESS_TOPIC.search(_claim_text(defect, response)) is not None
+
+
+def _omitted_phrases(*texts: str) -> list[str]:
+    found: list[str] = []
+    for text in texts:
+        for match in _OMITTED_PHRASE.finditer(text or ""):
+            phrase = " ".join(match.group("what").split()).strip(" .")
+            if len(phrase) >= 3 and phrase.casefold() not in {item.casefold() for item in found}:
+                found.append(phrase)
+    return found
+
+
+def _place_fragment(text: str) -> bool:
+    """A city or PIN line, with no party name."""
+    compact = " ".join((text or "").split())
+    if not compact or _PARTY_NAME.search(compact) or _ADDRESS_SHOWN.search(compact):
+        return False
+    tokens = re.findall(r"[A-Za-z]+|\d+", compact)
+    if not tokens or len(tokens) > 6:
+        return False
+    return any(token.isalpha() for token in tokens) and any(
+        token.isdigit() and len(token) >= 3 for token in tokens
+    )
+
+
+def _quote_already_shows_claim(
+    quote: str,
+    *,
+    address_claim: bool,
+    omitted: list[str],
+) -> bool:
+    body = quote_body(quote)
+    folded = body.casefold()
+    if address_claim and (_ADDRESS_SHOWN.search(body) or _place_fragment(body)):
+        return True
+    return any(len(phrase) >= 3 and phrase.casefold() in folded for phrase in omitted)
+
+
+def _scoped_claim(address_claim: bool) -> tuple[str, str]:
+    if address_claim:
+        return (
+            "The cited entry gives a name and no residential or office address.",
+            "The cited entries do not give a residential or office address.",
+        )
+    return (
+        "The cited entry does not show the required element.",
+        "The cited entries do not meet this requirement.",
+    )
+
+
+def apply_supported_evidence_policy(
+    defect: Defect, response: DefectResponse
+) -> DefectResponse:
+    """Drop a quote that already shows the thing the finding says is missing.
+
+    This applies to every check. An address row that already names a house,
+    locality, district, or taluka is not proof that the address is absent, and
+    a quote that contains a phrase the finding calls missing is not proof of
+    that gap. The published wording is then limited to the quotes that remain.
+    """
+    if response.status != "defect_found" or not response.evidence:
+        return response
+    address_claim = _address_claim(defect, response)
+    omitted = _omitted_phrases(
+        response.observed,
+        response.conclusion,
+        response.summary,
+        *(item.detail for item in response.elements),
+    )
+    kept = [
+        ref
+        for ref in response.evidence
+        if not _quote_already_shows_claim(
+            ref.quote or "",
+            address_claim=address_claim,
+            omitted=omitted,
+        )
+    ]
+    if len(kept) == len(response.evidence):
+        return response
+    response.evidence = kept
+    if not kept:
+        return response
+    detail, closing = _scoped_claim(address_claim)
+    for item in response.elements:
+        if item.state in ("missing", "incomplete"):
+            item.detail = detail
+    response.observed = detail
+    response.conclusion = closing
+    response.summary = closing
     return response
 
 

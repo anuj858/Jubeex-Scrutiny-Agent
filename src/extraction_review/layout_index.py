@@ -40,6 +40,13 @@ _MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _MD_MARK = re.compile(r"(\*\*|__|~~|`)")
 _ELLIPSIS = re.compile(r"\[\s*(?:\.{3,}|…+)\s*\]|\(\s*(?:\.{3,}|…+)\s*\)|\.{3,}|…+")
 _TABLE_RULE = re.compile(r"(?:\|?\s*:?-{3,}:?\s*)+")
+# Excerpt rows are "Column 1: cell" or "Header (column 2): cell". The label is
+# not printed on the page. Only a whole line is a label, so a real word
+# "column" in a sentence stays in the quote.
+_COLUMN_LINE = re.compile(
+    r"^(?:column\s+\d+|.+?\(\s*column\s+\d+\s*\))\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
 _FOLD = str.maketrans(
     {
         "\u2018": "'",
@@ -482,6 +489,94 @@ def compact_sidecar_pages(
     return layout
 
 
+def _word_center_inside(word: Mapping[str, Any], host: Mapping[str, Any]) -> bool:
+    center_x = _num(word.get("x")) + _num(word.get("w")) / 2
+    center_y = _num(word.get("y")) + _num(word.get("h")) / 2
+    left = _num(host.get("x"))
+    top = _num(host.get("y"))
+    return left <= center_x <= left + _num(
+        host.get("w")
+    ) and top <= center_y <= top + _num(host.get("h"))
+
+
+def _pdf_page_words(page: Any) -> list[dict[str, Any]]:
+    """Normalized visual word boxes from the page text layer."""
+    import pymupdf
+
+    visual = page.rect
+    width = float(visual.width) or 1.0
+    height = float(visual.height) or 1.0
+    matrix = page.rotation_matrix
+    words: list[dict[str, Any]] = []
+    for item in page.get_text("words") or []:
+        if len(item) < 7:
+            continue
+        x0, y0, x1, y1, text, block, line = item[:7]
+        token = str(text or "").strip()
+        if not token:
+            continue
+        rect = pymupdf.Rect(float(x0), float(y0), float(x1), float(y1)) * matrix
+        if rect.width <= 0 or rect.height <= 0:
+            continue
+        words.append(
+            {
+                "t": token,
+                "x": round(max(0.0, min(1.0, rect.x0 / width)), 6),
+                "y": round(max(0.0, min(1.0, rect.y0 / height)), 6),
+                "w": round(max(0.0, min(1.0, rect.width / width)), 6),
+                "h": round(max(0.0, min(1.0, rect.height / height)), 6),
+                "line": int(block) * 1000 + int(line),
+            }
+        )
+    return words
+
+
+def merge_pdf_text_words(layout: LayoutIndex, pdf_bytes: bytes) -> LayoutIndex:
+    """Add text-layer words the sidecar did not already box.
+
+    Scan-sized pages are left alone. A PDF word whose center sits inside a
+    sidecar word is not added again.
+    """
+    if not pdf_bytes:
+        return layout
+    import pymupdf
+
+    from .split_ocr import pages_with_large_images
+
+    scans = pages_with_large_images(pdf_bytes)
+    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for index in range(document.page_count):
+            local_page = index + 1
+            if local_page in scans:
+                continue
+            page = document[index]
+            incoming = _pdf_page_words(page)
+            entry = page_entry(layout, local_page)
+            if entry is None:
+                layout[local_page] = {
+                    "width": float(page.rect.width) or 1.0,
+                    "height": float(page.rect.height) or 1.0,
+                    "local_page": local_page,
+                    "words": incoming,
+                }
+                continue
+            existing = entry.get("words")
+            if not isinstance(existing, list):
+                existing = []
+                entry["words"] = existing
+            for word in incoming:
+                if any(
+                    isinstance(host, Mapping) and _word_center_inside(word, host)
+                    for host in existing
+                ):
+                    continue
+                existing.append(word)
+    finally:
+        document.close()
+    return layout
+
+
 async def download_sidecar_pages(url: str | None) -> list[dict[str, Any]]:
     if not url:
         return []
@@ -843,15 +938,48 @@ def union_line_boxes(
     return boxes
 
 
-def _boxes_on_page(
-    quote: str, page: int, layout: LayoutIndex
+def _column_label_cell(line: str) -> str | None:
+    """Cell text when this line is a pipeline column label, else None."""
+    match = _COLUMN_LINE.match(line.strip())
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _column_row_groups(quote: str) -> list[str] | None:
+    """Drop column labels and split a blank line into a new row.
+
+    None when the quote has no column label, so prose stays on the normal path.
+    """
+    lines = (quote or "").splitlines()
+    if not any(_column_label_cell(line) is not None for line in lines):
+        return None
+    groups: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if not line.strip():
+            if current:
+                groups.append(current)
+                current = []
+            continue
+        cell = _column_label_cell(line)
+        current.append(cell if cell is not None else line.strip())
+    if current:
+        groups.append(current)
+    return ["\n".join(part for part in group if part).strip() for group in groups]
+
+
+def quote_body(quote: str) -> str:
+    """Quote text after pipeline column labels are removed."""
+    groups = _column_row_groups(quote or "")
+    if groups is None:
+        return quote or ""
+    return "\n".join(group for group in groups if group)
+
+
+def _boxes_for_words(
+    quote: str, page: int, words: Sequence[Mapping[str, Any]]
 ) -> tuple[list[dict[str, float | int]], str]:
-    page_layout = layout.get(page)
-    if not isinstance(page_layout, Mapping):
-        return [], "page_only"
-    words = page_layout.get("words") or []
-    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
-        return [], "page_only"
     if not words:
         return [], "page_only"
     haystack, spans = _join_words(words)
@@ -866,6 +994,57 @@ def _boxes_on_page(
     if not matched:
         return [], "page_only"
     return union_line_boxes(matched, page), "matched"
+
+
+def _words_at_or_below(
+    words: Sequence[Mapping[str, Any]], floor: float
+) -> list[Mapping[str, Any]]:
+    return [word for word in words if _num(word.get("y")) >= floor]
+
+
+def _boxes_on_page(
+    quote: str, page: int, layout: LayoutIndex
+) -> tuple[list[dict[str, float | int]], str]:
+    page_layout = layout.get(page)
+    if not isinstance(page_layout, Mapping):
+        return [], "page_only"
+    words = page_layout.get("words") or []
+    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+        return [], "page_only"
+    if not words:
+        return [], "page_only"
+    groups = _column_row_groups(quote)
+    if groups is None:
+        return _boxes_for_words(quote, page, words)
+    if not any(groups):
+        return [], "page_only"
+    collected: list[dict[str, float | int]] = []
+    floor: float | None = None
+    for index, group in enumerate(groups):
+        if not group:
+            continue
+        short = len(_norm_text(group).split()) < _MIN_TOKEN_RUN
+        if index > 0 and short:
+            # A one-word row such as "Versus" must sit under the party row.
+            # Without that row there is nothing to anchor it to.
+            if floor is None:
+                return [], "page_only"
+            boxes, status = _boxes_for_words(
+                group, page, _words_at_or_below(words, floor)
+            )
+        else:
+            boxes, status = _boxes_for_words(group, page, words)
+            if index == 0 and status != "matched":
+                return [], "page_only"
+        if status != "matched":
+            continue
+        collected.extend(boxes)
+        bottom = max(_num(box.get("y")) + _num(box.get("h")) for box in boxes)
+        floor = bottom if floor is None else max(floor, bottom)
+    if not collected:
+        return [], "page_only"
+    collected.sort(key=lambda box: (_num(box.get("y")), _num(box.get("x"))))
+    return collected, "matched"
 
 
 def _page_search_order(

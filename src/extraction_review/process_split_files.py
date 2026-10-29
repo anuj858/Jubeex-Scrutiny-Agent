@@ -55,6 +55,7 @@ from .layout_index import (
     dump_layout_index,
     grounded_items_url,
     merge_granular_bboxes,
+    merge_pdf_text_words,
     stitch_slot_layouts,
 )
 from .llama_usage import (
@@ -70,6 +71,7 @@ from .process_file import (
     ExtractJobStartedEvent,
     ParsedEvent,
     Status,
+    _download_file_bytes,
     _extract_page_markdown,
     _wait_for_parse,
     ingest_remote_file,
@@ -1193,6 +1195,16 @@ async def _parse_one_file(
                 grounded_items_url(parse_result)
             )
             layout = compact_sidecar_pages(sidecar_pages, slot_id=part.slot_id)
+            if part.file_id:
+                try:
+                    pdf_bytes = await _download_file_bytes(client, part.file_id)
+                    layout = merge_pdf_text_words(layout, pdf_bytes)
+                except Exception:
+                    logger.warning(
+                        "Could not add PDF text-layer words for %s",
+                        part.slot_id,
+                        exc_info=True,
+                    )
             ctx.write_event_to_stream(
                 Status(
                     level="info",
