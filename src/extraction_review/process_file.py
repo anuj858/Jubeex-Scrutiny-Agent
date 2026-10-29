@@ -14,6 +14,7 @@ import io
 import logging
 import os
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -54,6 +55,7 @@ from .config import (
     ParseConfig,
     SplitConfig,
     dump_api_configuration,
+    load_config_payload,
     with_config_identity,
 )
 from .document_parts import (
@@ -1154,6 +1156,7 @@ class BundlePrepared(StopEvent):
     usage: dict[str, Any] | None = None
     llama_split: dict[str, Any] | None = None
     split_parse_job_id: str | None = None
+    source_parse_job_id: str | None = None
     parsed_slots: list[str] = Field(default_factory=list)
     match: bool | None = None
     verified_documents: list[VerifiedDocument] = Field(default_factory=list)
@@ -1175,6 +1178,7 @@ class PrepareState(BaseModel):
     classification_reasoning: str | None = None
     started_at: float | None = None
     llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    agent_data_id: str | None = None
 
 
 # Kept for callers that still type the old bundled-extract store.
@@ -2235,15 +2239,29 @@ def _extract_parse_page_metadata(
     return folios, confidences
 
 
+def _llama_parse_file_id(file_id: str) -> str:
+    """LlamaParse wants the file UUID. ``dfl-`` is only the local cache mark."""
+    raw = (file_id or "").strip()
+    if not raw.lower().startswith("dfl-"):
+        return raw
+    bare = raw[4:]
+    try:
+        uuid.UUID(bare)
+    except ValueError:
+        return raw
+    return bare
+
+
 def _split_parse_create_kwargs(
     parse_config: ParseConfig,
     *,
     file_id: str,
 ) -> dict[str, Any]:
     """Create a strict, layout-aware parse request used as Split's input."""
+    parse_file_id = _llama_parse_file_id(file_id)
     if parse_config.configuration_id:
         return {
-            "file_id": file_id,
+            "file_id": parse_file_id,
             "configuration_id": parse_config.configuration_id,
             "tier": parse_config.tier,
             "version": parse_config.version,
@@ -2302,7 +2320,7 @@ def _split_parse_create_kwargs(
     configuration["processing_control"] = control
     # Unlike classify/split, ParsingResource.create accepts configuration
     # fields directly rather than under a ``configuration`` wrapper.
-    return {"file_id": file_id, "project_id": project_id, **configuration}
+    return {"file_id": parse_file_id, "project_id": project_id, **configuration}
 
 
 async def _parse_bundle_for_split(
@@ -2336,6 +2354,147 @@ async def _parse_bundle_for_split(
         client, parse_job_id, payload=parse_result, pages=page_count
     )
     return parse_job_id, page_texts, parse_result, usage
+
+
+def _compiled_parse_config() -> ParseConfig:
+    raw = load_config_payload().get("parse")
+    return ParseConfig.model_validate(raw if isinstance(raw, dict) else {})
+
+
+def _page_coverage_matches(pages: Mapping[int, Any], page_count: int) -> bool:
+    return set(pages) == set(range(1, page_count + 1))
+
+
+def _metadata_from_agent_item(item: Any) -> dict[str, Any]:
+    data = getattr(item, "data", None)
+    if hasattr(data, "model_dump") and not isinstance(data, dict):
+        dumped = data.model_dump(mode="json")
+        data = dumped if isinstance(dumped, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("metadata")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+async def _parse_compiled_book(
+    client: AsyncLlamaCloud,
+    *,
+    parse_config: ParseConfig,
+    file_id: str,
+    pdf_bytes: bytes,
+) -> tuple[
+    str,
+    dict[int, str],
+    dict[int, dict[str, Any]],
+    dict[int, dict[str, Any]],
+    dict[str, Any],
+]:
+    """Parse the compiled PDF once with the split OCR settings.
+
+    The returned job id is the one LlamaSplit accepts as ``file_input``.
+    """
+    from .layout_index import (
+        compact_sidecar_pages,
+        download_sidecar_pages,
+        grounded_items_url,
+        merge_pdf_text_words,
+    )
+    from .parsed_document import extract_structured_pages
+
+    page_count = pdf_page_count(pdf_bytes)
+    parse_job = await client.parsing.create(
+        **_split_parse_create_kwargs(parse_config, file_id=file_id)
+    )
+    parse_job_id = str(parse_job.id)
+    await _wait_for_parse(client, parse_job_id)
+    parse_result = await client.parsing.get(
+        parse_job_id,
+        expand=["markdown", "text", "items", "metadata", "usage"],
+        project_id=project_id,
+    )
+    page_texts = _extract_page_markdown(parse_result)
+    if not _page_coverage_matches(page_texts, page_count):
+        expected = set(range(1, page_count + 1))
+        missing = sorted(expected - set(page_texts))
+        unexpected = sorted(set(page_texts) - expected)
+        raise RuntimeError(
+            "LlamaParse page coverage does not match the source PDF: "
+            f"missing={missing}, unexpected={unexpected}, expected={page_count}"
+        )
+    structured = extract_structured_pages(parse_result)
+    sidecar_pages = await download_sidecar_pages(grounded_items_url(parse_result))
+    layout = compact_sidecar_pages(sidecar_pages, slot_id="petition")
+    if pdf_bytes:
+        layout = merge_pdf_text_words(layout, pdf_bytes)
+    usage = await collect_parse_usage(
+        client, parse_job_id, payload=parse_result, pages=page_count
+    )
+    return parse_job_id, page_texts, structured, layout, usage
+
+
+async def _load_reused_split_parse(
+    client: AsyncLlamaCloud,
+    *,
+    agent_data_id: str | None,
+    pdf_bytes: bytes,
+) -> tuple[str, dict[int, str], Any, dict[str, Any]] | None:
+    """Read the extract-front parse when it is the same compiled PDF.
+
+    ``parsing.get`` reads the finished job. It does not start another OCR.
+    """
+    from .s3_artifacts import download_json_object
+    from .split_upload import PARSE_ARTIFACT_KEY_KEY, load_source_book
+
+    clean_id = (agent_data_id or "").strip()
+    if not clean_id:
+        return None
+    try:
+        item = await client.beta.agent_data.get(clean_id)
+    except NotFoundError:
+        logger.info("No Agent Data %s to reuse for split", clean_id)
+        return None
+    except Exception:
+        logger.warning(
+            "Could not load Agent Data %s for parse reuse", clean_id, exc_info=True
+        )
+        return None
+    meta = _metadata_from_agent_item(item)
+    job_id = str(meta.get("source_parse_job_id") or "").strip()
+    expected_hash = str(meta.get("source_file_hash") or "").strip().lower()
+    actual_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    if not job_id or not expected_hash or expected_hash != actual_hash:
+        return None
+    page_count = pdf_page_count(pdf_bytes)
+    try:
+        parse_result = await client.parsing.get(
+            job_id,
+            expand=["markdown", "text", "metadata", "usage"],
+            project_id=project_id,
+        )
+    except Exception:
+        logger.warning("Could not read parse job %s", job_id, exc_info=True)
+        return None
+    if _job_status(parse_result) not in PARSE_DONE_STATUSES:
+        logger.info(
+            "Parse job %s is %s; splitting will parse again",
+            job_id,
+            _job_status(parse_result),
+        )
+        return None
+    artifact = download_json_object(str(meta.get(PARSE_ARTIFACT_KEY_KEY) or ""))
+    book = load_source_book(artifact)
+    page_texts = dict(book["pages"]) if book else {}
+    if not _page_coverage_matches(page_texts, page_count):
+        page_texts = _extract_page_markdown(parse_result)
+    if not _page_coverage_matches(page_texts, page_count):
+        logger.info(
+            "Saved parse %s does not cover %s source pages", job_id, page_count
+        )
+        return None
+    usage = await collect_parse_usage(
+        client, job_id, payload=parse_result, pages=page_count
+    )
+    return job_id, page_texts, parse_result, usage
 
 
 def _filename_from_url(url: str) -> str:
@@ -2749,6 +2908,11 @@ async def _extract_sliced_parts(
     reuse_structured_pages_by_slot: dict[str, dict[str, Any]] | None = None,
     reuse_parse_job_ids: dict[str, str] | None = None,
     front_text_layer: dict[int, str] | None = None,
+    source_parse_job_id: str | None = None,
+    source_file_id: str | None = None,
+    source_file_hash: str | None = None,
+    source_book: dict[str, Any] | None = None,
+    supplied_parse_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -2783,6 +2947,11 @@ async def _extract_sliced_parts(
             reuse_layouts_by_slot=reuse_layouts_by_slot or {},
             reuse_structured_pages_by_slot=reuse_structured_pages_by_slot or {},
             reuse_parse_job_ids=reuse_parse_job_ids or {},
+            source_parse_job_id=source_parse_job_id,
+            source_file_id=source_file_id,
+            source_file_hash=source_file_hash,
+            source_book=source_book,
+            supplied_parse_usage=supplied_parse_usage,
         )
     )
     async for ev in handler.stream_events():
@@ -2802,7 +2971,9 @@ async def _run_split_from_file_event(
     from .split_upload import (
         PARSE_ARTIFACT_KEY_KEY,
         SplitPartInput,
+        compiled_index_reuse,
         load_parse_artifact,
+        load_source_book,
         resolve_upload_slot,
         slot_is_extract_source,
     )
@@ -2816,6 +2987,11 @@ async def _run_split_from_file_event(
     reuse_layouts: dict[str, dict[str, Any]] = {}
     reuse_structured: dict[str, dict[str, Any]] = {}
     reuse_jobs: dict[str, str] = {}
+    source_book: dict[str, Any] | None = None
+    source_book_raw: dict[str, Any] | None = None
+    source_parse_job_id: str | None = None
+    source_file_id: str | None = None
+    source_file_hash: str | None = None
     agent_data_id = (event.agent_data_id or "").strip() or None
     if agent_data_id:
         try:
@@ -2899,6 +3075,20 @@ async def _run_split_from_file_event(
         }
         if not parsed_slots:
             parsed_slots = list(_slots)
+        source_book = load_source_book(artifact)
+        raw_book = artifact.get("source_book") if isinstance(artifact, dict) else None
+        source_book_raw = dict(raw_book) if isinstance(raw_book, dict) else None
+        source_parse_job_id = str(meta.get("source_parse_job_id") or "").strip() or None
+        source_file_id = str(meta.get("source_file_id") or "").strip() or None
+        source_file_hash = str(meta.get("source_file_hash") or "").strip() or None
+        if job in INDEX_JOB_TYPES and (source_book or source_parse_job_id):
+            # The compiled extract stores the whole book under one slot name.
+            # Index cuts that book by each slot's source page span instead.
+            parsed_slots = []
+            reuse_pages = {}
+            reuse_layouts = {}
+            reuse_structured = {}
+            reuse_jobs = {}
 
     ctx.write_event_to_stream(
         Status(
@@ -3010,6 +3200,32 @@ async def _run_split_from_file_event(
         parse_scope = "extract_sources"
     elif index_only:
         parse_scope = "unparsed"
+    if source_book and index_only:
+        (
+            sliced_pages,
+            sliced_layouts,
+            sliced_structured,
+            sliced_jobs,
+            parsed_slots,
+        ) = compiled_index_reuse(
+            source_book,
+            [(part.slot_id, part.page_span) for part in split_parts],
+            edited=edited,
+            reusable_slots=reusable_slots,
+        )
+        reuse_pages = {
+            slot: {str(page): text for page, text in pages.items()}
+            for slot, pages in sliced_pages.items()
+        }
+        reuse_layouts = {
+            slot: {str(page): payload for page, payload in layout.items()}
+            for slot, layout in sliced_layouts.items()
+        }
+        reuse_structured = {
+            slot: {str(page): payload for page, payload in pages.items()}
+            for slot, pages in sliced_structured.items()
+        }
+        reuse_jobs = sliced_jobs
     nested_payload = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
@@ -3029,6 +3245,10 @@ async def _run_split_from_file_event(
         reuse_layouts_by_slot=reuse_layouts if index_only else {},
         reuse_structured_pages_by_slot=reuse_structured if index_only else {},
         reuse_parse_job_ids=reuse_jobs if index_only else {},
+        source_parse_job_id=source_parse_job_id,
+        source_file_id=source_file_id,
+        source_file_hash=source_file_hash,
+        source_book=source_book_raw if index_only else None,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [
@@ -3056,12 +3276,16 @@ async def _run_split_from_file_event(
     )
 
 
+def _string_keyed(pages: Mapping[int, Any]) -> dict[str, Any]:
+    return {str(page): value for page, value in pages.items()}
+
+
 async def _run_extract_front(
     event: FileEvent,
     ctx: Context[PrepareState],
     client: AsyncLlamaCloud,
 ) -> BundlePrepared:
-    """Parse pages 1–30 of one compiled PDF, then extract. No split or index."""
+    """Parse the compiled PDF once, then extract every page. No split or index."""
     from .process_split_files import SplitPartEvent
 
     filing_type = (event.filing_type or "").strip() or DEFAULT_COMPILED_FILING_TYPE
@@ -3070,7 +3294,7 @@ async def _run_extract_front(
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message="Downloading the compiled PDF for the first 30 pages",
+                message="Downloading the compiled PDF",
             )
         )
         file_id, content_hash, filename = await ingest_remote_file(
@@ -3093,32 +3317,32 @@ async def _run_extract_front(
 
     pdf_bytes = await _load_bundle_pdf(client, file_id=file_id)
     total_pages = pdf_page_count(pdf_bytes)
-    opening_pages = front_extract_opening_pages(total_pages)
-    sliced = first_pages_pdf(pdf_bytes, opening_pages)
+    content_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    file_hash = (
+        verified_content_hash(file_hash, content_hash) if file_hash else content_hash
+    )
     slice_name = filename or "compiled.pdf"
     ctx.write_event_to_stream(
         Status(
             level="info",
             message=(
-                f"extract_front: parsing the first {opening_pages} pages "
-                f"of {total_pages} and the last {FRONT_EXTRACT_END_PAGE_LIMIT} "
-                "pages. Split, classify, and Pinecone are skipped."
+                f"extract_front: parsing all {total_pages} pages once. "
+                "Split, classify, and Pinecone are skipped."
             ),
         )
     )
-    slice_id = await _upload_slot_pdf(
+    parse_job_id, pages, structured, layout, parse_usage = await _parse_compiled_book(
         client,
-        filename=(
-            f"front-{opening_pages}-end-{FRONT_EXTRACT_END_PAGE_LIMIT}-{slice_name}"
-        ),
-        pdf_bytes=sliced,
+        parse_config=_compiled_parse_config(),
+        file_id=file_id,
+        pdf_bytes=pdf_bytes,
     )
     source = event.documents[0]
     part = SplitPartEvent(
         slot_id="petition",
-        file_id=slice_id,
+        file_id=file_id,
         filename=slice_name,
-        file_hash=hashlib.sha256(sliced).hexdigest(),
+        file_hash=file_hash,
         file_url=file_url,
         document_id=source.document_id,
     )
@@ -3130,14 +3354,23 @@ async def _run_extract_front(
         parts=[part],
         echo=echo,
         require_all_slots=False,
-        parse_scope="all",
+        parse_scope="supplied",
         skip_index=True,
         stitch_in_request_order=True,
         front_extract=True,
-        front_opening_pages=opening_pages,
-        front_text_layer=_front_extract_text_layer(pdf_bytes, sliced),
+        front_opening_pages=total_pages,
+        front_text_layer=_pdf_text_layer(pdf_bytes),
         special_category=None,
         court=None,
+        parsed_slots=["petition"],
+        reuse_pages_by_slot={"petition": _string_keyed(pages)},
+        reuse_layouts_by_slot={"petition": _string_keyed(layout)},
+        reuse_structured_pages_by_slot={"petition": _string_keyed(structured)},
+        reuse_parse_job_ids={"petition": parse_job_id},
+        source_parse_job_id=parse_job_id,
+        source_file_id=file_id,
+        source_file_hash=file_hash,
+        supplied_parse_usage=parse_usage,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = PreparedPart(
@@ -3165,6 +3398,7 @@ async def _run_extract_front(
         agent_data_id=agent_data_id,
         parsed_slots=["fullpetition"],
         report=report,
+        source_parse_job_id=parse_job_id,
         **echo,
     )
 
@@ -3301,6 +3535,7 @@ class ProcessFileWorkflow(Workflow):
             state.org_id = echo["org_id"]
             state.source_documents = source_docs
             state.started_at = started_at
+            state.agent_data_id = (event.agent_data_id or "").strip() or None
 
         job = (event.job_type or "").strip().lower()
         # Compiled bundles must be classified from the PDF. A caller-supplied
@@ -3484,24 +3719,41 @@ class ProcessFileWorkflow(Workflow):
             )
             with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
                 page_count = pdf.page_count
-            ctx.write_event_to_stream(
-                Status(
-                    level="info",
-                    message="Running agentic OCR and layout parsing for every source page",
-                )
-            )
             parse_started = start_timer()
-            (
-                parse_job_id,
-                page_texts,
-                parse_result,
-                parse_usage,
-            ) = await _parse_bundle_for_split(
+            reused = await _load_reused_split_parse(
                 llama_cloud_client,
-                parse_config=parse_config,
-                file_id=state.file_id,
-                page_count=page_count,
+                agent_data_id=state.agent_data_id,
+                pdf_bytes=pdf_bytes,
             )
+            if reused is None:
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message="Running agentic OCR and layout parsing for every source page",
+                    )
+                )
+                (
+                    parse_job_id,
+                    page_texts,
+                    parse_result,
+                    parse_usage,
+                ) = await _parse_bundle_for_split(
+                    llama_cloud_client,
+                    parse_config=parse_config,
+                    file_id=state.file_id,
+                    page_count=page_count,
+                )
+            else:
+                parse_job_id, page_texts, parse_result, parse_usage = reused
+                ctx.write_event_to_stream(
+                    Status(
+                        level="info",
+                        message=(
+                            f"Reusing parse job {parse_job_id} for all "
+                            f"{page_count} source pages"
+                        ),
+                    )
+                )
             page_folios, page_confidences = _extract_parse_page_metadata(parse_result)
             # LlamaParse is the sole OCR authority. The local stage still
             # computes immutable page geometry/folios, but never runs Tesseract

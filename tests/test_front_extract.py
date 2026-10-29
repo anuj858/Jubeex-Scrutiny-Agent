@@ -24,7 +24,10 @@ from extraction_review.split_upload import (
     build_extract_pack_markdown,
     build_front_extract_pack_markdown,
     build_front_extract_system_prompt,
+    compiled_index_reuse,
+    dump_source_book,
     front_extract_configuration,
+    load_source_book,
 )
 
 
@@ -118,12 +121,15 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "special_category" in FrontExtractRecord.model_fields
     assert "special_category" not in LegalExtractRecord.model_fields
     prompt = build_front_extract_system_prompt()
-    assert "Opening pages" in prompt
+    assert "Compiled filing" in prompt
+    assert "Search every page" in prompt
     assert "petition_date" in prompt
     assert "special_category" in prompt
     assert "Look for:" in prompt
     assert "IN THE MATTER OF" in prompt
-    assert "Main Petition" not in prompt
+    assert "Synopsis" in prompt
+    assert "Main Petition" in prompt
+    assert "up to 3" in prompt
     assert "stay null" not in prompt
     assert "configuration_id" not in front
     legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
@@ -144,13 +150,14 @@ def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
     assert "page 1 text" in front
     assert "page 20 text" in front
     assert "page 30 text" in front
-    assert "## [Opening pages] (p. 20)" in front
-    assert "## [Closing pages] (p. 31)" in front
+    assert "## [Compiled filing] (p. 20)" in front
+    assert "## [Compiled filing] (p. 31)" in front
     assert "## [Cover Page]" not in front
+    assert "## [Opening pages]" not in front
     assert "page 35 text" in front
     wide = build_front_extract_pack_markdown(pages, opening_pages=75)
-    assert "## [Opening pages] (p. 31)" in wide
-    assert "## [Closing pages] (p. 31)" not in wide
+    assert "## [Compiled filing] (p. 31)" in wide
+    assert "## [Closing pages]" not in wide
 
 
 def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> None:
@@ -482,28 +489,210 @@ def test_printed_special_category_is_kept() -> None:
     assert done["special_category"] == "Tax Matters"
 
 
+def test_unknown_special_category_and_blank_markers_stay_null() -> None:
+    catch_all = finalize_front_extract(
+        {
+            "special_category": (
+                "Any matter arising out of Civil suit/proceedings, "
+                "which is not covered in any of the above categories"
+            )
+        }
+    )
+    blank = finalize_front_extract({"special_category": "N/A"})
+    assert catch_all["special_category"] is None
+    assert blank["special_category"] is None
+
+
+def test_motor_vehicles_act_alias_and_three_category_cap() -> None:
+    alias = finalize_front_extract(
+        {"special_category": "Motor Vehicles Act, 1988"}
+    )
+    capped = finalize_front_extract(
+        {
+            "special_category": (
+                "Tax Matters, Eviction Matters, PIL, "
+                "Bail Applications/Bail Matters"
+            )
+        }
+    )
+    assert alias["special_category"] == "Motor Vehicle Act"
+    assert capped["special_category"] == "Tax Matters, Eviction Matters, PIL"
+
+
+def test_listing_proforma_tax_row_is_not_a_special_category() -> None:
+    done = finalize_front_extract(
+        {"special_category": None},
+        page_markdown={
+            3: "9. Tax Matters: State the tax effect: N.A.\n10. Special Category (Petitioner only): N.A."
+        },
+    )
+    assert done["special_category"] is None
+
+
+def test_plain_petition_has_no_special_category() -> None:
+    """A review or transfer petition with no named category stays null."""
+    done = finalize_front_extract(
+        {
+            "petition_type": "REVIEW PETITION (CIVIL)",
+            "special_category": "Tax Matters",
+        },
+        page_markdown={
+            8: (
+                "SYNOPSIS\n"
+                "The petitioners seek review of the judgment dated 09.03.2022.\n"
+            ),
+            17: (
+                "REVIEW PETITION (CIVIL) NO. 572 OF 2022\n"
+                "PETITION UNDER ARTICLE 137 OF THE CONSTITUTION OF INDIA\n"
+                "MOST RESPECTFULLY SHOWETH:\n"
+                "1. That the petitioners are residents of Delhi.\n"
+            ),
+            18: (
+                "TRANSFER PETITION (CIVIL) NO. 12 OF 2024\n"
+                "MAIN PETITION\n"
+                "The petitioner seeks transfer of the suit.\n"
+            ),
+        },
+    )
+    assert done["special_category"] is None
+
+
+def test_bail_application_in_the_impugned_order_is_a_special_category() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CRL.)",
+            "special_category": None,
+            "impugned_orders": [
+                {
+                    "case_number": "Misc. Criminal case No. 28663 of 2026",
+                    "raw_text": (
+                        "Arising from the impugned Judgment and final order dated "
+                        "03.08.2026 passed by the Hon'ble High Court of Madhya Pradesh "
+                        "at Jabalpur in Bail Application No.- Misc. Criminal case No. "
+                        "28663 of 2026"
+                    ),
+                }
+            ],
+        },
+        page_markdown={
+            4: (
+                "SYNOPSIS\n"
+                "The petitioner seeks leave against the order refusing bail.\n"
+                "In a petition (PIL) filed under clause (d) of Rule 12(1), "
+                "the petitioner has disclosed the facts in the Public Interest Litigation. | NA\n"
+            ),
+            9: (
+                "LISTING PROFORMA\n"
+                "Whether any bail application was preferred earlier and decision thereupon: N.A.\n"
+            ),
+        },
+    )
+    assert done["special_category"] == "Bail Applications/Bail Matters"
+
+
+def test_public_interest_litigation_on_the_main_petition_is_pil() -> None:
+    done = finalize_front_extract(
+        {"petition_type": "WRIT PETITION (CIVIL)", "special_category": None},
+        page_markdown={
+            12: (
+                "IN THE SUPREME COURT OF INDIA\n"
+                "CIVIL WRIT PETITION NO. OF 2024\n"
+                "(UNDER ARTICLE 32 OF THE CONSTITUTION OF INDIA)\n"
+                "(PUBLIC INTEREST LITIGATION)\n"
+                "IN THE MATTER OF:\n"
+                "Alakh Pandey\n"
+            ),
+        },
+    )
+    assert done["special_category"] == "PIL"
+
+
+def test_aadhaar_line_is_not_the_petitioner_name() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "WRIT PETITION (CIVIL)",
+            "special_category": None,
+            "cause_title": {"formatted_title": "Aadhaar No VS National Testing Agency and Anr."},
+            "petitioners": [{"name": "Aadhaar No"}],
+            "respondents": [{"name": "National Testing Agency"}],
+        },
+        page_markdown={
+            12: """
+            IN THE SUPREME COURT OF INDIA
+            CIVIL WRIT PETITION NO. OF 2024
+            (UNDER ARTICLE 32 OF THE CONSTITUTION OF INDIA)
+            (PUBLIC INTEREST LITIGATION)
+            IN THE MATTER OF:
+            Alakh Pandey
+            Aadhaar No. 8562 7987 8438
+            S/o Satish Kumar Pandey
+            Aged About 32 years
+            R/o R K 27, Kalindipuram, Allahabad,
+            Uttar Pradesh- 211011
+            Email: neet24@singhania.com
+            Mob: 9891829172
+            ..........Petitioner
+            Versus
+            1. National Testing Agency
+            Through Director General
+            First Floor, NSIC-MDBP Building,
+            Okhla Industrial Estate, New Delhi,
+            Delhi 110020.
+            2. Ministry of Education
+            Through Secretary,
+            Dr Rajendra Prasad Rd, Rajpath Area,
+            Windsor Place, New Delhi, Delhi 110001
+            ..........Respondents
+            """,
+        },
+    )
+    assert [party["name"] for party in done["petitioners"]] == ["Alakh Pandey"]
+    petitioner = done["petitioners"][0]
+    assert petitioner["relation"] == "S/o"
+    assert petitioner["guardian"] == "Satish Kumar Pandey"
+    assert petitioner["age"] == "32 years"
+    assert "Kalindipuram" in petitioner["address"]
+    assert "Aadhaar" not in petitioner["address"]
+    assert "neet24" not in petitioner["address"].lower()
+    assert done["cause_title"]["formatted_title"].startswith("Alakh Pandey VS")
+    assert [party["name"] for party in done["respondents"]] == [
+        "National Testing Agency",
+        "Ministry of Education",
+    ]
+
+
+def test_synopsis_tax_matters_fills_an_empty_special_category() -> None:
+    done = finalize_front_extract(
+        {"special_category": "N/A"},
+        page_markdown={
+            2: "Index\nSynopsis .......... 4\nMain Petition .......... 8",
+            4: "SYNOPSIS\nThis Special Leave Petition arises out of tax matters.",
+        },
+    )
+    assert done["special_category"] == "Tax Matters"
+
+
 @pytest.mark.asyncio
-async def test_extract_front_uploads_the_30_page_slice_and_skips_the_request_category(
+async def test_extract_front_parses_the_compiled_pdf_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from extraction_review.process_file import _run_extract_front
 
-    uploaded: dict[str, bytes] = {}
     captured: dict[str, object] = {}
+    parsed: dict[str, object] = {}
 
     async def fake_load(*_args: object, **_kwargs: object) -> bytes:
         return _pdf_bytes(45)
 
-    async def fake_upload(
-        _client: object,
-        *,
-        filename: str,
-        pdf_bytes: bytes,
-        external_file_id: str | None = None,
-    ) -> str:
-        del filename, external_file_id
-        uploaded["pdf"] = pdf_bytes
-        return "dfl-front-slice"
+    async def fake_parse(_client: object, **kwargs: object) -> tuple:
+        parsed.update(kwargs)
+        return (
+            "pjb-book",
+            {1: "page one", 45: "last page"},
+            {1: {"items": []}},
+            {1: {"words": []}},
+            {"product": "parse", "job_id": "pjb-book", "credits": 1.0},
+        )
 
     async def fake_extract(_ctx: object, **kwargs: object) -> str:
         captured.update(kwargs)
@@ -514,8 +703,8 @@ async def test_extract_front_uploads_the_30_page_slice_and_skips_the_request_cat
         fake_load,
     )
     monkeypatch.setattr(
-        "extraction_review.process_file._upload_slot_pdf",
-        fake_upload,
+        "extraction_review.process_file._parse_compiled_book",
+        fake_parse,
     )
     monkeypatch.setattr(
         "extraction_review.process_file._extract_sliced_parts",
@@ -538,16 +727,21 @@ async def test_extract_front_uploads_the_30_page_slice_and_skips_the_request_cat
         ctx=SimpleNamespace(write_event_to_stream=lambda _event: None),
         client=object(),
     )
-    assert _page_count(uploaded["pdf"]) == (
-        FRONT_EXTRACT_PAGE_LIMIT + FRONT_EXTRACT_END_PAGE_LIMIT
-    )
+    assert parsed["file_id"] == "dfl-full"
     assert captured["front_extract"] is True
     assert captured["skip_index"] is True
+    assert captured["parse_scope"] == "supplied"
     assert captured["special_category"] is None
     assert captured["court"] is None
+    assert captured["source_parse_job_id"] == "pjb-book"
+    assert captured["reuse_parse_job_ids"] == {"petition": "pjb-book"}
+    pages = captured["reuse_pages_by_slot"]
+    assert pages["petition"]["1"] == "page one"
+    assert pages["petition"]["45"] == "last page"
     parts = captured["parts"]
-    assert parts[0].file_id == "dfl-front-slice"
+    assert parts[0].file_id == "dfl-full"
     assert result.agent_data_id == "agd-front"
+    assert result.source_parse_job_id == "pjb-book"
     assert result.parsed_slots == ["fullpetition"]
     assert len(event.documents) == 1
     assert result.job_type == "extract_front"
@@ -787,10 +981,14 @@ def test_review_memo_keeps_every_numbered_respondent_and_the_second_address() ->
     Land Building Department, Vikas Bhawan, New Delhi.
     3. Land Acquisition Collector,
     Delhi, Saraswati Vihar, Kanjhawala, Delhi.
-    4. Director of Education, Govt. of NCT, Old secretariat, Delhi.
-    5. General Manager, Indian Oil Corporation, World Trade Centre, Babar Road, New Delhi.
-    6. Secretary, Ministry of Petroleum & Natural Gas, Government of India, New Delhi.
-    7. Sh. K.S.Mahra, Commissioner of MCD, Town Hall, Chandi Chowk, Delhi-110006
+    4. Director of Education, Govt. of NCT, Old secretariat,
+    Delhi.
+    5. General Manager, Indian Oil Corporation, World Trade Centre,
+    Babar Road, New Delhi.
+    6. Secretary, Ministry of Petroleum & Natural Gas, Government
+    of India, New Delhi.
+    7. Sh. K.S.Mahra, Commissioner of MCD, Town Hall, Chandi
+    Chowk, Delhi-110006
     8. Master Azad Singh, Counsellor, MCD, S/o Sh. Meer Singh,
     R/o House No.N.S.23, Ground Floor, Mianwali Nagar, Delhi-110087;
     Second Address:
@@ -822,8 +1020,25 @@ def test_review_memo_keeps_every_numbered_respondent_and_the_second_address() ->
     assert done["petitioners"][2]["relation"] == "W/o"
     assert done["petitioners"][2]["guardian"] == "Shri Anang Pal Singh"
     names = [party["name"] for party in done["respondents"]]
-    assert names[2] == "Land Acquisition Collector"
+    assert names == [
+        "Union of India",
+        "Govt. of N.C.T. Delhi",
+        "Land Acquisition Collector",
+        "Director of Education, Govt. of NCT",
+        "General Manager, Indian Oil Corporation",
+        "Secretary, Ministry of Petroleum & Natural Gas, Government of India",
+        "Sh. K.S.Mahra, Commissioner of MCD",
+        "Master Azad Singh, Counsellor, MCD",
+    ]
     assert "Saraswati" in done["respondents"][2]["address"]
+    assert done["respondents"][3]["address"] == "Old secretariat, Delhi"
+    assert done["respondents"][4]["address"] == (
+        "World Trade Centre, Babar Road, New Delhi"
+    )
+    assert done["respondents"][5]["address"] == "New Delhi"
+    assert done["respondents"][6]["address"] == (
+        "Town Hall, Chandi Chowk, Delhi-110006"
+    )
     assert "Second Address" not in names
     azad = done["respondents"][-1]
     assert "Azad Singh" in azad["name"]
@@ -930,6 +1145,85 @@ def test_a_middle_party_schedule_is_labelled_opening_pages() -> None:
         {1: "opening", 32: "closing vakalatnama", 40: pages[40]},
         opening_pages=30,
     )
-    assert "[Opening pages] (p. 40)" in packed
-    assert "[Closing pages] (p. 32)" in packed
-    assert "[Opening pages] (p. 1)" in packed
+    assert "[Compiled filing] (p. 40)" in packed
+    assert "[Compiled filing] (p. 32)" in packed
+    assert "[Compiled filing] (p. 1)" in packed
+
+
+def test_index_cuts_the_saved_book_by_source_span() -> None:
+    book = {
+        "pages": {1: "one", 2: "two", 3: "three"},
+        "layout": {2: {"words": ["a"]}, 3: {"words": ["b"]}},
+        "structured": {2: {"items": []}},
+        "parse_job_id": "pjb-saved",
+    }
+    pages, layouts, _structured, jobs, slots = compiled_index_reuse(
+        book,
+        [("petition", [{"start": 2, "end": 3}]), ("annexure_p1", None)],
+        edited=False,
+        reusable_slots=set(),
+    )
+    assert slots == ["petition"]
+    assert pages["petition"] == {1: "two", 2: "three"}
+    assert layouts["petition"][1]["local_page"] == 1
+    assert layouts["petition"][1]["slot_id"] == "petition"
+    assert layouts["petition"][2]["words"] == ["b"]
+    assert jobs["petition"] == "pjb-saved"
+
+
+def test_unchanged_edited_slot_still_uses_the_saved_book() -> None:
+    book = {
+        "pages": {1: "one", 2: "two"},
+        "layout": {},
+        "structured": {},
+        "parse_job_id": "pjb",
+    }
+    pages, _layouts, _structured, jobs, slots = compiled_index_reuse(
+        book,
+        [("petition", [{"start": 1, "end": 2}])],
+        edited=True,
+        reusable_slots={"petition"},
+    )
+    assert slots == ["petition"]
+    assert pages["petition"] == {1: "one", 2: "two"}
+    assert jobs["petition"] == "pjb"
+
+
+def test_edited_slot_is_parsed_again_instead_of_using_the_saved_book() -> None:
+    book = {"pages": {1: "one", 2: "two"}, "layout": {}, "structured": {}, "parse_job_id": "pjb"}
+    _pages, _layouts, _structured, _jobs, slots = compiled_index_reuse(
+        book,
+        [("petition", [{"start": 1, "end": 2}])],
+        edited=True,
+        reusable_slots=set(),
+    )
+    assert slots == []
+
+
+def test_missing_source_page_is_not_reused() -> None:
+    book = {"pages": {1: "one"}, "layout": {}, "structured": {}, "parse_job_id": "pjb"}
+    _pages, _layouts, _structured, _jobs, slots = compiled_index_reuse(
+        book,
+        [("petition", [{"start": 1, "end": 2}])],
+        edited=False,
+        reusable_slots=set(),
+    )
+    assert slots == []
+
+
+def test_source_book_round_trip_keeps_page_text_and_job_id() -> None:
+    saved = dump_source_book(
+        pages={1: "cover", 2: "petition"},
+        layout={1: {"words": []}},
+        structured={2: {"items": [{"type": "heading"}]}},
+        parse_job_id="pjb-book",
+        file_id="dfl-full",
+        file_hash="abc",
+    )
+    loaded = load_source_book({"source_book": saved})
+    assert loaded is not None
+    assert loaded["pages"] == {1: "cover", 2: "petition"}
+    assert loaded["parse_job_id"] == "pjb-book"
+    assert loaded["file_id"] == "dfl-full"
+    assert loaded["file_hash"] == "abc"
+    assert loaded["structured"][2]["items"][0]["type"] == "heading"

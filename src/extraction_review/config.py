@@ -558,29 +558,68 @@ class LegalExtractRecord(BaseModel):
         return value
 
 
+FRONT_SPECIAL_CATEGORIES: tuple[str, ...] = (
+    "Motor Vehicle Act",
+    "Demolition Matters",
+    "Tax Matters",
+    "Eviction Matters",
+    "Matters involving/pertaining to minors",
+    "Indigent person",
+    "Jail Petition",
+    "Bail Applications/Bail Matters",
+    "Civil Appeal with High Court Certificate",
+    "Appeal (Armed Forces)",
+    "Advocates Act, 1961",
+    "Consumer Protection Act, 2019",
+    "PIL",
+    "Criminal Appeal with High Court Certificate",
+    "Re-filing defect",
+    "Transfer Petition",
+)
+
+FRONT_SPECIAL_CATEGORY_DESCRIPTION = (
+    "Read the Main Petition first, then the Synopsis. "
+    "Also read the impugned order when it names the case, such as Bail Application No. "
+    "A plain petition has no special category: leave null. "
+    "The petition type itself, such as Special Leave Petition, Writ Petition, "
+    "Review Petition, Civil Appeal, or Transfer Petition, is not a special category. "
+    "Use only these names when one is printed: "
+    + "; ".join(FRONT_SPECIAL_CATEGORIES)
+    + ". "
+    "A filing may name up to 3. Return those names comma-separated, in the order printed. "
+    "Leave null when the Main Petition, the Synopsis, and the impugned order do not state one. "
+    "Do not infer a category from the facts of the case. "
+    "Do not use the listing proforma subject list, and do not use the "
+    "Special Category (First Petitioner/Appellant Only) checkboxes "
+    "(Senior Citizen, SC/ST, Woman/Child, Disabled, Legal Aid, In Custody). "
+    "A checklist row such as 'Tax Matters: State the tax effect: N.A.' is not a match. "
+    "A question such as whether any bail application was preferred is not a match. "
+    "Motor Vehicles Act, 1988 is Motor Vehicle Act. "
+    "Bail Application No. is Bail Applications/Bail Matters. "
+    "Public interest litigation is PIL."
+)
+
+
 class FrontExtractRecord(LegalExtractRecord):
-    """Extract schema for the opening pages plus the last 5. Not used by /v1/filings/extract."""
+    """Extract schema for the whole compiled filing. Not used by /v1/filings/extract."""
 
     court: str | None = Field(
         default=None,
         description=(
             "Court where the petition is filed (e.g. Supreme Court of India, High Court of Delhi), "
-            "as printed on any opening page."
+            "as printed on any page of the compiled filing."
         ),
     )
     petition_type: str | None = Field(
         default=None,
         description=(
             "Petition type (e.g. Special Leave Petition (Civil), Special Leave Petition (Crl.), "
-            "Writ Petition (Civil), Transfer Petition), as printed on any opening page."
+            "Writ Petition (Civil), Transfer Petition), as printed on any page of the compiled filing."
         ),
     )
     special_category: str | None = Field(
         default=None,
-        description=(
-            "Matter subtype or subject classification printed in the filing, "
-            "such as Tax Matters. Leave null when not explicitly printed."
-        ),
+        description=FRONT_SPECIAL_CATEGORY_DESCRIPTION,
     )
     cause_title: CauseTitle | None = Field(
         default=None,
@@ -600,7 +639,7 @@ class FrontExtractRecord(LegalExtractRecord):
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocate on record from any opening page or the closing pages. "
+            "Advocate on record from any page of the compiled filing. "
             "Copy the printed name, code, chamber, email, and phone. Do not invent them."
         ),
     )
@@ -608,23 +647,23 @@ class FrontExtractRecord(LegalExtractRecord):
         default_factory=list,
         description=(
             "Order under challenge. Extract court name, order date, and case number "
-            "from whichever opening page prints them."
+            "from whichever page of the compiled filing prints them."
         ),
     )
     relief_sort: str | None = Field(
         default=None,
         description=(
-            "Prayer body under Main Prayer or Prayer on any opening page. "
-            "Omit the heading. Leave null only when that prayer is not in the window."
+            "Prayer body under Main Prayer or Prayer on any page of the compiled filing. "
+            "Omit the heading. Leave null only when that prayer is not printed."
         ),
     )
     petition_date: str | None = Field(
         default=None,
         description=(
-            "Date after Main Prayer or Prayer on any opening page, next to Date, "
+            "Date after Main Prayer or Prayer on any page of the compiled filing, next to Date, "
             "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
             "are printed. A page number between the label and the date is not the "
-            "date. Leave null only when no such date is printed in the window."
+            "date. Leave null only when no such date is printed."
         ),
     )
 

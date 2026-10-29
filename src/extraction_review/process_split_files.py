@@ -100,6 +100,7 @@ from .split_upload import (
     coerce_page_parts,
     display_filename,
     dump_parse_artifact,
+    dump_source_book,
     extract_configuration,
     extract_source_parts,
     find_part,
@@ -222,6 +223,11 @@ class SplitFilesEvent(StartEvent):
         default_factory=dict
     )
     reuse_parse_job_ids: dict[str, str] = Field(default_factory=dict)
+    source_parse_job_id: str | None = None
+    source_file_id: str | None = None
+    source_file_hash: str | None = None
+    source_book: dict[str, Any] | None = None
+    supplied_parse_usage: dict[str, Any] | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -282,6 +288,9 @@ class SplitFilesState(BaseModel):
     )
     parse_artifact_url: str | None = None
     parse_artifact_key: str | None = None
+    source_parse_job_id: str | None = None
+    source_file_id: str | None = None
+    source_file_hash: str | None = None
 
 
 async def _workspace_agent_data_item(
@@ -478,6 +487,8 @@ class ProcessSplitFilesWorkflow(Workflow):
             reuse_job_ids=reuse_jobs,
             ctx=ctx,
         )
+        if event.supplied_parse_usage:
+            parse_usage = [*parse_usage, event.supplied_parse_usage]
         parse_seconds = elapsed_seconds(parse_started)
         logger.info(
             "[ExtractionTiming] ingest=%ss parse=%ss documents=%s parsed_slots=%s",
@@ -581,6 +592,9 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
             state.structured_pages_by_slot = structured_pages_by_slot
+            state.source_parse_job_id = event.source_parse_job_id
+            state.source_file_id = event.source_file_id
+            state.source_file_hash = event.source_file_hash
 
         set_job_context(
             file_hash or filename,
@@ -598,6 +612,12 @@ class ProcessSplitFilesWorkflow(Workflow):
             organization_id=event.organization_id or event.org_id,
             workspace_id=event.workspace_id,
             job_id=file_hash,
+            source_book=_source_book_payload(
+                event,
+                pages_by_slot=pages_by_slot,
+                layouts_by_slot=layouts_by_slot,
+                structured_pages_by_slot=structured_pages_by_slot,
+            ),
         )
         if parse_record:
             async with ctx.store.edit_state() as state:
@@ -836,6 +856,10 @@ class ProcessSplitFilesWorkflow(Workflow):
             overall = overall_confidence_from_job(job)
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
+            if state.source_parse_job_id:
+                data.metadata["source_parse_job_id"] = state.source_parse_job_id
+                data.metadata["source_file_id"] = state.source_file_id
+                data.metadata["source_file_hash"] = state.source_file_hash
             data.metadata["parsed_slots"] = list(state.parsed_slots)
             data.metadata["document_order"] = [item.slot_id for item in state.parts]
             data.metadata["page_count"] = len(page_markdown)
@@ -1564,7 +1588,8 @@ def _reuse_parse_maps(
     dict[str, str],
 ]:
     del parts
-    if (event.parse_scope or "all") != "unparsed":
+    scope = (event.parse_scope or "all").strip().lower()
+    if scope not in {"unparsed", "supplied"}:
         return {}, {}, {}, {}
     pages = {
         slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})
@@ -1648,6 +1673,31 @@ async def _detect_visual_for_state(
     return index
 
 
+def _source_book_payload(
+    event: SplitFilesEvent,
+    *,
+    pages_by_slot: dict[str, dict[int, str]],
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]],
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    if event.source_book:
+        return event.source_book
+    if not event.source_parse_job_id:
+        return None
+    for slot_id, slot_pages in pages_by_slot.items():
+        if not slot_pages:
+            continue
+        return dump_source_book(
+            pages=slot_pages,
+            layout=layouts_by_slot.get(slot_id) or {},
+            structured=structured_pages_by_slot.get(slot_id) or {},
+            parse_job_id=event.source_parse_job_id,
+            file_id=event.source_file_id,
+            file_hash=event.source_file_hash,
+        )
+    return None
+
+
 def _upload_parse_artifact(
     *,
     parsed_slots: list[str],
@@ -1659,6 +1709,7 @@ def _upload_parse_artifact(
     organization_id: str | None,
     workspace_id: str | None,
     job_id: str | None,
+    source_book: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     payload = dump_parse_artifact(
         parsed_slots=parsed_slots,
@@ -1672,6 +1723,8 @@ def _upload_parse_artifact(
         payload["organization_id"] = organization_id
     if workspace_id:
         payload["workspace_id"] = workspace_id
+    if source_book:
+        payload["source_book"] = source_book
     return upload_step_json(
         STEP_PARSE,
         with_config_identity(payload),

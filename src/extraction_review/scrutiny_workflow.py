@@ -44,7 +44,7 @@ from .document_parts import (
     select_chunks_for_defect,
     slice_record_for_defect,
 )
-from .extract_record import stamp_review_status
+from .extract_record import match_front_special_categories, stamp_review_status
 from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
@@ -995,10 +995,12 @@ def _special_categories_for_filing(
 
     def add(value: Any) -> None:
         text = str(value or "").strip()
-        if not normalize_special_category(text):
-            return
-        if text not in found:
-            found.append(text)
+        names = match_front_special_categories(text, limit=None)
+        if not names and normalize_special_category(text):
+            names = [text]
+        for name in names:
+            if name not in found:
+                found.append(name)
 
     add(supplied)
     add((metadata or {}).get("special_category"))

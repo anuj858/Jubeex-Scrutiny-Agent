@@ -62,6 +62,7 @@ EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
 OPENING_PAGES_SOURCE = "Opening pages"
 CLOSING_PAGES_SOURCE = "Closing pages"
+COMPILED_FILING_SOURCE = "Compiled filing"
 OPENING_PAGE_LIMIT = 30
 CLOSING_PAGE_LIMIT = 5
 _PAGE_WINDOW_SOURCES = frozenset({OPENING_PAGES_SOURCE, CLOSING_PAGES_SOURCE})
@@ -709,6 +710,10 @@ def parse_action_for_slot(
         if not slot_is_extract_source(part, catalog):
             return "skip"
         return "parse"
+    if scope == "supplied":
+        if slot in reused:
+            return "reuse"
+        return "parse"
     if scope == "unparsed":
         if slot in reused:
             return "reuse"
@@ -852,6 +857,160 @@ def load_parse_artifact(
         layouts_by_slot,
         structured_pages_by_slot,
     )
+
+
+_SOURCE_BOOK_SLOT = "compiled"
+
+
+def dump_source_book(
+    *,
+    pages: Mapping[int, str],
+    layout: Mapping[int, Mapping[str, Any]] | None = None,
+    structured: Mapping[int, Mapping[str, Any]] | None = None,
+    parse_job_id: str | None = None,
+    file_id: str | None = None,
+    file_hash: str | None = None,
+) -> dict[str, Any]:
+    """Full-book parse pages, stored beside the per-slot artifact."""
+    artifact = dump_parse_artifact(
+        parsed_slots=[_SOURCE_BOOK_SLOT],
+        document_order=[_SOURCE_BOOK_SLOT],
+        pages_by_slot={_SOURCE_BOOK_SLOT: pages},
+        parse_job_ids={_SOURCE_BOOK_SLOT: parse_job_id or ""},
+        layouts_by_slot={_SOURCE_BOOK_SLOT: layout or {}},
+        structured_pages_by_slot={_SOURCE_BOOK_SLOT: structured or {}},
+    )
+    book = dict(artifact["slots"][_SOURCE_BOOK_SLOT])
+    if file_id:
+        book["file_id"] = file_id
+    if file_hash:
+        book["file_hash"] = file_hash
+    return book
+
+
+def load_source_book(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Restore the compiled-book parse saved by extract-front."""
+    data = payload if isinstance(payload, Mapping) else {}
+    raw = data.get("source_book")
+    if not isinstance(raw, Mapping):
+        return None
+    _slots, _order, pages, jobs, layouts, structured = load_parse_artifact(
+        {"slots": {_SOURCE_BOOK_SLOT: raw}, "parsed_slots": [_SOURCE_BOOK_SLOT]}
+    )
+    book_pages = pages.get(_SOURCE_BOOK_SLOT) or {}
+    if not book_pages:
+        return None
+    return {
+        "pages": book_pages,
+        "layout": layouts.get(_SOURCE_BOOK_SLOT) or {},
+        "structured": structured.get(_SOURCE_BOOK_SLOT) or {},
+        "parse_job_id": jobs.get(_SOURCE_BOOK_SLOT)
+        or str(raw.get("parse_job_id") or "").strip(),
+        "file_id": str(raw.get("file_id") or "").strip(),
+        "file_hash": str(raw.get("file_hash") or "").strip(),
+    }
+
+
+def pages_for_source_span(
+    pages: Mapping[int, Any],
+    page_span: Sequence[Mapping[str, Any]] | None,
+    *,
+    require_complete: bool = True,
+    slot_id: str | None = None,
+) -> dict[int, Any] | None:
+    """Renumber compiled-book pages to 1..n inside one sliced slot.
+
+    Returns None when a source page in the span has no saved text. Layout
+    callers set ``require_complete`` false and keep the local page numbers of
+    the pages that do have boxes.
+    """
+    if not page_span:
+        return None
+    out: dict[int, Any] = {}
+    local = 1
+    missing = False
+    for span in page_span:
+        if not isinstance(span, Mapping):
+            return None
+        try:
+            start = int(span.get("start"))
+            end = int(span.get("end"))
+        except (TypeError, ValueError):
+            return None
+        if end < start:
+            return None
+        for source in range(start, end + 1):
+            if source in pages:
+                value = pages[source]
+                if isinstance(value, Mapping):
+                    value = dict(value)
+                    value["local_page"] = local
+                    if slot_id:
+                        value["slot_id"] = slot_id
+                out[local] = value
+            else:
+                missing = True
+            local += 1
+    if require_complete and (missing or not out):
+        return None
+    return out
+
+
+def compiled_index_reuse(
+    book: Mapping[str, Any],
+    parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
+    *,
+    edited: bool,
+    reusable_slots: set[str],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+    list[str],
+]:
+    """Cut the saved book parse into slot pages. Skip a slot that was edited."""
+    book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
+    book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
+    book_structured = (
+        book.get("structured") if isinstance(book.get("structured"), Mapping) else {}
+    )
+    job_id = str(book.get("parse_job_id") or "").strip()
+    pages_by_slot: dict[str, dict[int, str]] = {}
+    layouts: dict[str, dict[int, dict[str, Any]]] = {}
+    structured: dict[str, dict[int, dict[str, Any]]] = {}
+    jobs: dict[str, str] = {}
+    slots: list[str] = []
+    for slot_id, span in parts:
+        slot = (slot_id or "").strip()
+        if not slot:
+            continue
+        if edited and slot not in reusable_slots:
+            continue
+        sliced = pages_for_source_span(book_pages, span)
+        if not sliced:
+            continue
+        pages_by_slot[slot] = {page: str(text or "") for page, text in sliced.items()}
+        layout = pages_for_source_span(
+            book_layout, span, require_complete=False, slot_id=slot
+        )
+        layouts[slot] = {
+            page: dict(payload)
+            for page, payload in (layout or {}).items()
+            if isinstance(payload, Mapping)
+        }
+        structures = pages_for_source_span(
+            book_structured, span, require_complete=False
+        )
+        structured[slot] = {
+            page: dict(payload)
+            for page, payload in (structures or {}).items()
+            if isinstance(payload, Mapping)
+        }
+        if job_id:
+            jobs[slot] = job_id
+        slots.append(slot)
+    return pages_by_slot, layouts, structured, jobs, slots
 
 
 def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:
@@ -1115,21 +1274,34 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     return notes
 
 
-def _window_extract_preamble() -> str:
+def _window_extract_preamble(*, whole_filing: bool = False) -> str:
+    if whole_filing:
+        where = (
+            "Search every page labelled Compiled filing. "
+            "The heading page number is the compiled PDF page number."
+        )
+        missing = "If a value is not printed in this filing, write N/A."
+        field_pages = "any page"
+    else:
+        where = (
+            f"Search every page labelled Opening pages. That is the first "
+            f"{OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter. "
+            f"Pages labelled Closing pages are the last {CLOSING_PAGE_LIMIT} pages."
+        )
+        missing = "If a value is not printed in that window, write N/A."
+        field_pages = "any opening page"
     return "\n".join(
         [
             "# Extraction rules",
             "This filing has not been split. Do not assume which page is the "
             "Cover Page, Main Petition, Vakalatnama, or any other section.",
-            f"Search every page labelled Opening pages. That is the first "
-            f"{OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter. "
-            f"Pages labelled Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
+            where,
             "Copy printed text only. Do not invent names, addresses, dates, or "
-            "categories. If a value is not printed in that window, write N/A.",
+            f"categories. {missing}",
             "Record source_pages as the heading page numbers for every value.",
             "",
             "- court, petition_type, cause_title, petitioners, respondents, "
-            "impugned_orders, relief_sort, and petition_date may be on any opening page.",
+            f"impugned_orders, relief_sort, and petition_date may be on {field_pages}.",
             "- petitioners and respondents: read every numbered party from the "
             "petition opening in these pages. Copy the relation, guardian, age, "
             "occupation, and address printed under that name. When the same "
@@ -1584,7 +1756,7 @@ def extract_configuration(
 
 
 def build_front_extract_system_prompt() -> str:
-    """Prompt for the opening-page extract. Split labels are not known yet."""
+    """Prompt for the full compiled filing. Split labels are not known yet."""
     from .config import (
         FRONT_ACTING_THROUGH_DESCRIPTION,
         FRONT_ADDRESS_DESCRIPTION,
@@ -1594,20 +1766,19 @@ def build_front_extract_system_prompt() -> str:
         FRONT_PETITIONERS_DESCRIPTION,
         FRONT_RELATION_DESCRIPTION,
         FRONT_RESPONDENTS_DESCRIPTION,
+        FRONT_SPECIAL_CATEGORY_DESCRIPTION,
     )
 
     return "\n".join(
         [
             "You are extracting a compiled court filing before it has been split.",
-            "The pack is labelled only as Opening pages and Closing pages.",
-            f"Opening pages are the first {OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter.",
-            f"Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
-            "A field may be on any opening page. Copy printed text only. If it is not printed, write N/A.",
-            "source_part is Opening pages or Closing pages. source_pages are the heading page numbers.",
+            "The pack is labelled Compiled filing. Each heading page number is the compiled PDF page number.",
+            "Search every page. Copy printed text only. If it is not printed, write N/A.",
+            "source_part is Compiled filing. source_pages are the heading page numbers.",
             "",
-            "- court: the court heading, from whichever opening page prints it.",
-            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever opening page prints it.",
-            "- cause_title: the caption from whichever opening page prints the fullest party list. Main names come from that list, without And Anr or And Ors.",
+            "- court: the court heading, from whichever page prints it.",
+            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever page prints it.",
+            "- cause_title: the caption from whichever page prints the fullest party list. Main names come from that list, without And Anr or And Ors.",
             f"- petitioners: {FRONT_PETITIONERS_DESCRIPTION}",
             f"- respondents: {FRONT_RESPONDENTS_DESCRIPTION}",
             f"- address: {FRONT_ADDRESS_DESCRIPTION}",
@@ -1616,14 +1787,14 @@ def build_front_extract_system_prompt() -> str:
             f"- relation: {FRONT_RELATION_DESCRIPTION}",
             f"- guardian: {FRONT_GUARDIAN_DESCRIPTION}",
             f"- acting_through: {FRONT_ACTING_THROUGH_DESCRIPTION}",
-            "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "- advocates_on_record: the printed advocate footer on any page. "
             "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
             "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
-            "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
+            "- impugned_orders: court, date, and case number of the order under challenge, from whichever page prints them. bench is the CORAM judge names joined with '; '.",
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
             "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- special_category: the printed matter subtype, such as Tax Matters. Leave it null when it is not printed. Do not infer it.",
+            f"- special_category: {FRONT_SPECIAL_CATEGORY_DESCRIPTION}",
             "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
             "- documents stays empty.",
         ]
@@ -1635,30 +1806,26 @@ def build_front_extract_pack_markdown(
     page_layout: Mapping[int, Mapping[str, Any]] | None = None,
     opening_pages: int = 30,
 ) -> str:
-    """Opening pages, then the closing pages. No section names are guessed."""
+    """Every parsed page of the compiled filing, with its own page number."""
+    from .config import FRONT_SPECIAL_CATEGORY_DESCRIPTION
+
+    del opening_pages
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
     for page in sorted(page_markdown):
         body = (page_markdown.get(page) or "").strip()
         if not body or body.startswith(_PARSE_STUB_PREFIX):
             continue
-        # The sliced closing block is renumbered to 31–35. A party schedule
-        # inserted from the middle of the book keeps its original page number.
-        closing_last = opening_pages + CLOSING_PAGE_LIMIT
-        if opening_pages < page <= closing_last:
-            label = CLOSING_PAGES_SOURCE
-        else:
-            label = OPENING_PAGES_SOURCE
-        sections.append(f"## [{label}] (p. {page})\n\n{body}".rstrip())
+        sections.append(
+            f"## [{COMPILED_FILING_SOURCE}] (p. {page})\n\n{body}".rstrip()
+        )
     packed = "\n\n".join(sections).strip()
     if not packed:
         return ""
     preamble = (
-        f"{_window_extract_preamble()}\n"
-        f"This pack is the first {opening_pages} pages, "
-        f"then the last {CLOSING_PAGE_LIMIT} pages when the file is longer.\n"
-        "special_category is the printed matter subtype, such as Tax Matters. "
-        "Leave it null when it is not printed.\n"
+        f"{_window_extract_preamble(whole_filing=True)}\n"
+        "This pack is every page of the compiled filing.\n"
+        f"special_category: {FRONT_SPECIAL_CATEGORY_DESCRIPTION}\n"
         "Do not copy checklist questions, Yes/NA answers, or index rows as parties."
     )
     return f"{preamble}\n\n{packed}"

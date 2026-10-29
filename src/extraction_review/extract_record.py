@@ -949,6 +949,31 @@ _PLACE_MARK = re.compile(
     r"also\s+at|south|north|east|west|gut\s+no|plot|village|vpo)\b",
     re.IGNORECASE,
 )
+_OFFICE_PLACE_SEGMENT = re.compile(
+    r"(?:"
+    r"^(?:"
+    r"old\s+secretariat\b"
+    r"|world\s+trade\s+centre\b"
+    r"|town\s+hall\b"
+    r"|new\s+delhi\b"
+    r"|delhi\b"
+    r"|[\w.'’/-]+(?:\s+[\w.'’/-]+){0,5}\s+"
+    r"(?:road|chowk|street|lane|marg|nagar|colony|bhawan|vihar)\b"
+    r")"
+    r"|police\s+station\b"
+    r"|district\b"
+    r"|tamil\s*nadu\b"
+    r")",
+    re.IGNORECASE,
+)
+_NAME_WRAP_TAIL = re.compile(
+    r"^((?:of|and)\s+\S+(?:\s+\S+){0,2})(?:,\s*(.*))?$",
+    re.IGNORECASE,
+)
+_PLACE_WORD_CONTINUATION = re.compile(
+    r"^(?:chowk|road|street|lane|marg)\b",
+    re.IGNORECASE,
+)
 _SCHEDULE_ROLE_TOKEN = (
     r"(?:not\s+a\s+party(?:\s+proforma)?|proforma(?:\s+respondents?)?|dead|"
     r"(?:appellants?|petitioners?|respondents?)\s*(?:no\.?|number)?\s*[\d/]*)"
@@ -963,6 +988,19 @@ _BARE_LIST_NUMBER = re.compile(r"^[(\[]?\s*\d+\s*[.)\]]$")
 
 def _normalize_relation(token: str) -> str:
     return f"{token[0].upper()}/o"
+
+
+def _split_office_place(name: str) -> tuple[str, str | None]:
+    """An office respondent's place starts at Old secretariat, Town Hall, or a road."""
+    parts = [part.strip(" ,.") for part in name.split(",") if part.strip(" ,.")]
+    for index, part in enumerate(parts):
+        if index == 0 or not _OFFICE_PLACE_SEGMENT.search(part):
+            continue
+        kept = ", ".join(parts[:index]).strip(" ,.")
+        place = ", ".join(parts[index:]).strip(" ,.")
+        if kept and place:
+            return kept, place
+    return name, None
 
 
 def _split_relation_tail(rest: str) -> tuple[str, str | None]:
@@ -1982,13 +2020,245 @@ def apply_extract_envelope(
     return payload
 
 
-def _printed_special_category(value: object) -> str | None:
-    if value is None:
+_SPECIAL_CATEGORY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"civil appeal with high court certificate", re.IGNORECASE),
+        "Civil Appeal with High Court Certificate",
+    ),
+    (
+        re.compile(r"criminal appeal with high court certificate", re.IGNORECASE),
+        "Criminal Appeal with High Court Certificate",
+    ),
+    (
+        re.compile(r"bail applications?(?:\s*/\s*|\s+)bail matters", re.IGNORECASE),
+        "Bail Applications/Bail Matters",
+    ),
+    (
+        re.compile(r"bail applications?", re.IGNORECASE),
+        "Bail Applications/Bail Matters",
+    ),
+    (
+        re.compile(r"bail matters", re.IGNORECASE),
+        "Bail Applications/Bail Matters",
+    ),
+    (
+        re.compile(r"matters involving\s*/\s*pertaining to minors", re.IGNORECASE),
+        "Matters involving/pertaining to minors",
+    ),
+    (
+        re.compile(
+            r"matters (?:involving|pertaining) to minors",
+            re.IGNORECASE,
+        ),
+        "Matters involving/pertaining to minors",
+    ),
+    (
+        re.compile(r"motor vehicles?\s+act(?:\s*,?\s*1988)?", re.IGNORECASE),
+        "Motor Vehicle Act",
+    ),
+    (
+        re.compile(r"consumer protection act,?\s*2019", re.IGNORECASE),
+        "Consumer Protection Act, 2019",
+    ),
+    (
+        re.compile(r"advocates act,?\s*1961", re.IGNORECASE),
+        "Advocates Act, 1961",
+    ),
+    (
+        re.compile(r"appeal\s*\(?\s*armed forces\s*\)?", re.IGNORECASE),
+        "Appeal (Armed Forces)",
+    ),
+    (
+        re.compile(r"demolition matters?", re.IGNORECASE),
+        "Demolition Matters",
+    ),
+    (
+        re.compile(r"eviction matters?", re.IGNORECASE),
+        "Eviction Matters",
+    ),
+    (
+        re.compile(r"tax matters?", re.IGNORECASE),
+        "Tax Matters",
+    ),
+    (
+        re.compile(r"indigent persons?", re.IGNORECASE),
+        "Indigent person",
+    ),
+    (
+        re.compile(r"jail petitions?", re.IGNORECASE),
+        "Jail Petition",
+    ),
+    (
+        re.compile(r"public interest litigation", re.IGNORECASE),
+        "PIL",
+    ),
+    (re.compile(r"\bPIL\b", re.IGNORECASE), "PIL"),
+    (
+        re.compile(r"re-?\s*filing defects?", re.IGNORECASE),
+        "Re-filing defect",
+    ),
+    (
+        re.compile(r"transfer petitions?", re.IGNORECASE),
+        "Transfer Petition",
+    ),
+)
+
+_LISTING_CATEGORY_LINE = re.compile(
+    r"state the tax effect"
+    r"|special category\s*\([^)\n]*petitioner"
+    r"|land acquisition matters\s*:"
+    r"|senior citizen"
+    r"|legal aid case"
+    r"|in custody"
+    r"|whether any bail application"
+    r"|in a petition\s*\(\s*pil\s*\)",
+    re.IGNORECASE,
+)
+_CHECKLIST_ANSWER_LINE = re.compile(
+    r":\s*(?:n\.?\s*a\.?|na|yes|no)\s*$",
+    re.IGNORECASE,
+)
+_SYNOPSIS_OR_PETITION_HEADING = re.compile(
+    r"(?i)^\s*(synopsis|main petition)\b(.*)$"
+)
+_MAIN_PETITION_BODY = re.compile(
+    r"most respectfully sh[eo]weth|the humble petition|petition under article|"
+    r"in the matter of|arising (?:from|out of) the impugned",
+    re.IGNORECASE,
+)
+_IDENTITY_LINE = re.compile(
+    r"^(?:aadhaar|aadhar|uid|pan|mobile|mob\.?|phone|email|e-mail)\b",
+    re.IGNORECASE,
+)
+_AGE_ABOUT_LINE = re.compile(
+    r"^aged?\s+about\s+(\d+)\s+years?\b",
+    re.IGNORECASE,
+)
+_PETITION_TYPE_CAPTION = re.compile(
+    r"^\s*(?:\(?\s*)?(?:"
+    r"special\s+leave\s+petition"
+    r"|writ\s+petition"
+    r"|review\s+petition"
+    r"|transfer\s+petition"
+    r"|jail\s+petition"
+    r"|civil\s+appeal"
+    r"|criminal\s+appeal"
+    r"|petition\s+under\s+article"
+    r"|in\s+the\s+matter\s+of"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _without_listing_category_lines(text: str | None) -> str:
+    kept = [
+        line
+        for line in (text or "").splitlines()
+        if line.strip()
+        and not _LISTING_CATEGORY_LINE.search(line)
+        and not _CHECKLIST_ANSWER_LINE.search(line)
+    ]
+    return "\n".join(kept)
+
+
+def match_front_special_categories(
+    text: str | None,
+    *,
+    limit: int | None = 3,
+) -> list[str]:
+    """Catalogue special-category names, in the order the text states them."""
+    hits: list[tuple[int, int, str]] = []
+    for pattern, name in _SPECIAL_CATEGORY_PATTERNS:
+        for match in pattern.finditer(_without_listing_category_lines(text)):
+            hits.append((match.start(), match.end(), name))
+    hits.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    chosen: list[str] = []
+    covered_to = -1
+    for start, end, name in hits:
+        if start < covered_to:
+            continue
+        if name not in chosen:
+            chosen.append(name)
+        covered_to = end
+        if limit is not None and len(chosen) >= limit:
+            break
+    return chosen
+
+
+def _category_heading_line(line: str) -> bool:
+    match = _SYNOPSIS_OR_PETITION_HEADING.match(line.strip())
+    if not match:
+        return False
+    rest = match.group(2).strip(" \t.:|-")
+    if not rest:
+        return True
+    if re.fullmatch(r"\d+", rest):
+        return False
+    return bool(re.search(r"[A-Za-z]{3,}", rest))
+
+
+def _special_category_page_text(pages: Mapping[int, str] | None) -> str:
+    """Synopsis and main-petition text, without listing-proforma answer rows."""
+    if not pages:
+        return ""
+    chunks: list[str] = []
+    for page in sorted(pages):
+        text = pages.get(page) or ""
+        lines = text.splitlines()
+        source = any(_category_heading_line(line) for line in lines) or bool(
+            _MAIN_PETITION_BODY.search(text)
+        )
+        if not source:
+            continue
+        kept = [
+            line
+            for line in lines
+            if not _LISTING_CATEGORY_LINE.search(line)
+            and not _CHECKLIST_ANSWER_LINE.search(line)
+            and not _PETITION_TYPE_CAPTION.match(line.strip())
+        ]
+        if kept:
+            chunks.append("\n".join(kept))
+    return "\n".join(chunks)
+
+
+def _impugned_category_text(payload: Mapping[str, Any] | None) -> str:
+    """The challenged order can name the category, as in Bail Application No."""
+    if not payload:
+        return ""
+    bits: list[str] = []
+    for order in payload.get("impugned_orders") or []:
+        if not isinstance(order, dict):
+            continue
+        for key in ("raw_text", "case_number", "Forum", "forum"):
+            value = order.get(key)
+            if isinstance(value, str) and value.strip():
+                bits.append(value.strip())
+    return "\n".join(bits)
+
+
+def _printed_special_category(
+    value: object,
+    page_markdown: Mapping[int, str] | None = None,
+    impugned_text: str | None = None,
+) -> str | None:
+    filed = "\n".join(
+        part
+        for part in (
+            _special_category_page_text(page_markdown),
+            impugned_text or "",
+        )
+        if part and part.strip()
+    )
+    if filed.strip():
+        names = match_front_special_categories(filed)
+        return ", ".join(names) if names else None
+    names = match_front_special_categories(
+        str(value) if value is not None else ""
+    )
+    if not names:
         return None
-    text = str(value).strip()
-    if not text or text.lower() in {"n/a", "na", "null", "none", "-"}:
-        return None
-    return text
+    return ", ".join(names)
 
 
 _NOT_A_PARTY_NAME = re.compile(
@@ -2038,7 +2308,9 @@ def _looks_like_party_name(name: str | None) -> bool:
         return False
     if re.fullmatch(r"(?:col|mr|mrs|ms|shri|smt|the)\.?", text, re.IGNORECASE):
         return False
-    if re.match(r"^(?:occupation|age|years)\b", text, re.IGNORECASE):
+    if re.match(r"^(?:occupation|age|years|aged\s+about)\b", text, re.IGNORECASE):
+        return False
+    if _IDENTITY_LINE.match(text):
         return False
     if re.match(r"^the\s+humble\s+petition\b", text, re.IGNORECASE):
         return False
@@ -2259,6 +2531,8 @@ def _parse_party_section(
         relation = None
         guardian = None
         acting_through = None
+        office_place = None
+        age = None
         addr_parts: list[str] = []
 
         rel_m = _RELATION_MARK.search(raw_cand)
@@ -2269,14 +2543,10 @@ def _parse_party_section(
             if leftover:
                 addr_parts.append(leftover)
         else:
-            addr_m = re.match(
-                r"^(.+?),\s*([A-Za-z0-9\s,.-]+(?:Police station|District|Tamil\s*nadu|State|Court|Road|Nadu).*)$",
-                raw_cand,
-                re.IGNORECASE,
-            )
-            if addr_m:
-                party_name = addr_m.group(1).strip()
-                addr_parts.append(addr_m.group(2).strip())
+            party_name, office_place = _split_office_place(raw_cand)
+            if office_place:
+                addr_parts.append(office_place)
+        office_at = len(addr_parts) - 1 if office_place else None
 
         rep_m = re.search(
             r"(?:rep(?:\.|resented)?\s+by|through)\s+([A-Za-z\s.\x27\x60’]+?)(?:,|$)",
@@ -2291,6 +2561,29 @@ def _parse_party_section(
                 re.IGNORECASE,
             ):
                 party_name = party_name[: rep_m.start()].strip(" ,.")
+
+        follow_at = idx + 1
+        if (
+            follow_at < len(lines)
+            and re.search(r"(?:government|govt\.?)$", party_name, re.IGNORECASE)
+        ):
+            wrapped = _NAME_WRAP_TAIL.match(lines[follow_at])
+            if wrapped:
+                party_name = f"{party_name.rstrip(' ,')} {wrapped.group(1).strip()}"
+                remainder = (wrapped.group(2) or "").strip(" ,")
+                if remainder:
+                    lines[follow_at] = remainder
+                else:
+                    follow_at += 1
+                party_name, office_place = _split_office_place(party_name)
+                if office_place:
+                    addr_parts.append(office_place)
+                    office_at = len(addr_parts) - 1
+        if office_at is not None:
+            follow = lines[follow_at] if follow_at < len(lines) else ""
+            if not _PLACE_WORD_CONTINUATION.match(follow):
+                addr_parts[office_at] = addr_parts[office_at].rstrip(" ,") + ","
+        idx = follow_at - 1
 
         cursor = idx + 1
         while cursor < len(lines):
@@ -2308,6 +2601,14 @@ def _parse_party_section(
                 continue
             if _ADDRESS_CONTINUATION.match(c_line):
                 addr_parts.append(c_line)
+                cursor += 1
+                continue
+            if _IDENTITY_LINE.match(c_line):
+                cursor += 1
+                continue
+            age_about = _AGE_ABOUT_LINE.match(c_line)
+            if age_about:
+                age = age or f"{age_about.group(1)} years"
                 cursor += 1
                 continue
             if re.match(
@@ -2419,6 +2720,7 @@ def _parse_party_section(
                 pages=pages,
                 relation=relation,
                 guardian=guardian or None,
+                age=age,
                 address=address or None,
             )
             if acting_through:
@@ -3165,7 +3467,11 @@ def finalize_front_extract(
     """Keep the extract keys, put special_category beside petition_type, and clear later-page fields."""
     repair_front_parties(payload, page_markdown)
     _fill_aor_phones(payload, page_markdown)
-    category = _printed_special_category(payload.get("special_category"))
+    category = _printed_special_category(
+        payload.get("special_category"),
+        page_markdown,
+        _impugned_category_text(payload),
+    )
     ordered: dict[str, Any] = {}
     for key, value in payload.items():
         if key == "special_category":

@@ -992,7 +992,7 @@ async def extract_front(
     body: ExtractFrontRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
-    """Same body as extract, with one compiled PDF. Parses an opening slice and the last 5 pages."""
+    """Same body as extract, with one compiled PDF. Parses the whole PDF once."""
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
     payload.pop("special_category", None)
