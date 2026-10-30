@@ -142,6 +142,11 @@ PART_DOCUMENT_TYPES: dict[str, dict[str, str]] = {
         "name": "Vakalatnama",
         "split_label": "Vakalatnama",
     },
+    "PoA/BR": {
+        "code": "poa-board-resolution",
+        "name": "Power of Attorney / Board Resolution",
+        "split_label": "PoA/BR",
+    },
     "Filing Memo": {
         "code": "filing-memo",
         "name": "Filing Memo",
