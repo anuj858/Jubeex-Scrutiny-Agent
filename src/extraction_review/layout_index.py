@@ -50,6 +50,14 @@ _COLUMN_LINE = re.compile(
 # Table chunks prefix each cell with its header: "S.NO.: 01.01.2031".
 # The header is printed once, above the column, not on the row.
 _HEADER_LINE = re.compile(r"^[A-Z][A-Z0-9 .'/().-]{0,40}\s*:\s*(.*)$")
+# "S.No.:" is mixed case, so the all-caps header rule does not see it.
+_SNO_LINE = re.compile(
+    r"^(?:s\.?\s*no\.?|sr\.?\s*no\.?)\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
+# A wrapped index header keeps its colon on the last physical line:
+# "Page No. of part …\n(Contents\nof Paper\nBook): NS1 to".
+_WRAPPED_HEADER_START = re.compile(r"^page no\.?\s+of\s+part\b", re.IGNORECASE)
 _FOLD = str.maketrans(
     {
         "\u2018": "'",
@@ -107,7 +115,7 @@ def _canon_token(token: str) -> str:
         return ordinal.group(1)
     if _SLASH_DATE.match(token):
         return token.split("/")[0].split(".")[0].split("-")[0]
-    return token.replace("-", "")
+    return token.replace("-", "").rstrip(".")
 
 
 def quote_in_text(quote: str, text: str) -> bool:
@@ -749,6 +757,32 @@ def _hyphen_join(left: str, right: str) -> str | None:
     return _canon_token(left[:-1] + right)
 
 
+def _same_canon(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    stripped = left.rstrip(".")
+    return bool(stripped) and stripped == right.rstrip(".")
+
+
+def _punct_glue(
+    needle_canon: Sequence[str],
+    hay_tokens: Sequence[str],
+    needle_at: int,
+    hay_at: int,
+) -> int:
+    """1. + Col. is one token in the quote, and s + / + o is s/o."""
+    needle = needle_canon[needle_at]
+    if "." not in needle and "/" not in needle:
+        return 0
+    acc = ""
+    limit = min(3, len(hay_tokens) - hay_at)
+    for step in range(1, limit + 1):
+        acc += hay_tokens[hay_at + step - 1]
+        if step > 1 and _same_canon(_canon_token(acc), needle):
+            return step
+    return 0
+
+
 def _token_step(
     needle_canon: Sequence[str],
     hay_tokens: Sequence[str],
@@ -756,14 +790,13 @@ def _token_step(
     needle_at: int,
     hay_at: int,
 ) -> int:
-    if needle_canon[needle_at] == hay_canon[hay_at]:
+    if _same_canon(needle_canon[needle_at], hay_canon[hay_at]):
         return 1
-    if hay_at + 1 >= len(hay_tokens):
-        return 0
-    joined = _hyphen_join(hay_tokens[hay_at], hay_tokens[hay_at + 1])
-    if joined is not None and joined == needle_canon[needle_at]:
-        return 2
-    return 0
+    if hay_at + 1 < len(hay_tokens):
+        joined = _hyphen_join(hay_tokens[hay_at], hay_tokens[hay_at + 1])
+        if joined is not None and _same_canon(joined, needle_canon[needle_at]):
+            return 2
+    return _punct_glue(needle_canon, hay_tokens, needle_at, hay_at)
 
 
 def _cover_token_runs(
@@ -771,17 +804,18 @@ def _cover_token_runs(
     hay_tokens: Sequence[str],
     *,
     min_run: int,
-) -> list[tuple[int, int]]:
-    """In-order haystack runs that cover the quote, as (index, length).
+) -> list[tuple[int, int, int]]:
+    """In-order haystack runs that cover the quote.
 
-    One mismatched word does not drop the rest of the quote. A short quote
-    still has to match in full.
+    Each run is (hay index, hay length, needle tokens covered). One mismatched
+    word does not drop the rest of the quote. A short quote still has to
+    match in full.
     """
     if min_run < 1 or not needle_tokens or not hay_tokens:
         return []
     needle_canon = [_canon_token(token) for token in needle_tokens]
     hay_canon = [_canon_token(token) for token in hay_tokens]
-    covered: list[tuple[int, int]] = []
+    covered: list[tuple[int, int, int]] = []
     needle_at = 0
     hay_cursor = 0
     nlen = len(needle_canon)
@@ -810,35 +844,59 @@ def _cover_token_runs(
             needle_at += 1
             continue
         hay_at, hay_run, needle_run = found
-        covered.append((hay_at, hay_run))
+        covered.append((hay_at, hay_run, needle_run))
         needle_at += needle_run
         hay_cursor = hay_at + hay_run
     return covered
 
 
-def _token_run_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
+def _fragment_limits(nlen: int) -> tuple[int, int]:
+    """A wrapped column may break every few words. Cover the quote in pieces.
+
+    Two words together can count. A quote shorter than five words still has
+    to be covered in full, and a longer quote still needs five words so a
+    shared pair does not highlight the page.
+    """
+    if nlen <= 2:
+        return nlen, nlen
+    if nlen < _MIN_TOKEN_RUN:
+        return 2, nlen
+    return 2, _MIN_TOKEN_RUN
+
+
+def _token_run_spans(
+    needle: str, haystack: str, *, fragmented: bool = False
+) -> list[tuple[int, int]]:
     needle_tokens = needle.split()
     hay_tokens = haystack.split()
     if not needle_tokens or not hay_tokens:
         return []
+    nlen = len(needle_tokens)
+    if fragmented:
+        min_run, need = _fragment_limits(nlen)
+    else:
+        min_run = _required_run(nlen)
+        need = min_run
+    runs = _cover_token_runs(needle_tokens, hay_tokens, min_run=min_run)
+    if sum(needle_run for _hay_at, _hay_run, needle_run in runs) < need:
+        return []
     starts = _token_starts(hay_tokens)
     return [
-        _span_from_tokens(hay_tokens, starts, hay_at, run)
-        for hay_at, run in _cover_token_runs(
-            needle_tokens,
-            hay_tokens,
-            min_run=_required_run(len(needle_tokens)),
-        )
+        _span_from_tokens(hay_tokens, starts, hay_at, hay_run)
+        for hay_at, hay_run, _needle_run in runs
     ]
 
 
-def _match_segment(segment: str, haystack: str, cursor: int) -> list[tuple[int, int]]:
+def _match_segment(
+    segment: str, haystack: str, cursor: int, *, fragmented: bool = False
+) -> list[tuple[int, int]]:
     suffix = haystack[cursor:]
     lead = len(suffix) - len(suffix.lstrip(" "))
     suffix = suffix[lead:]
     base = cursor + lead
     return [
-        (base + start, base + end) for start, end in _token_run_spans(segment, suffix)
+        (base + start, base + end)
+        for start, end in _token_run_spans(segment, suffix, fragmented=fragmented)
     ]
 
 
@@ -846,7 +904,9 @@ def _quote_segments(needle: str) -> list[str]:
     return [part.strip() for part in needle.split(_GAP_TOKEN) if part.strip()]
 
 
-def _match_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
+def _match_spans(
+    needle: str, haystack: str, *, fragmented: bool = False
+) -> list[tuple[int, int]]:
     """Character spans of each ellipsis segment. Empty when any segment misses."""
     if not needle or not haystack:
         return []
@@ -856,7 +916,7 @@ def _match_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     cursor = 0
     for segment in segments:
-        found = _match_segment(segment, haystack, cursor)
+        found = _match_segment(segment, haystack, cursor, fragmented=fragmented)
         if not found:
             return []
         spans.extend(found)
@@ -986,59 +1046,127 @@ def union_line_boxes(
 def _column_label_cell(line: str) -> str | None:
     """Cell text when this line is a pipeline column label, else None."""
     text = line.strip()
-    match = _COLUMN_LINE.match(text)
-    if match is None:
-        match = _HEADER_LINE.match(text)
+    match = (
+        _COLUMN_LINE.match(text) or _HEADER_LINE.match(text) or _SNO_LINE.match(text)
+    )
     if match is None:
         return None
     return match.group(1).strip()
 
 
-def _column_row_groups(quote: str) -> list[str] | None:
-    """Drop column labels and split a blank line into a new row.
+def _wrapped_header_cell(lines: Sequence[str]) -> str | None:
+    """Cell under a header whose colon sits on the last wrapped line."""
+    if not lines or ":" not in lines[-1]:
+        return None
+    head, cell = lines[-1].split(":", 1)
+    label = " ".join([*lines[:-1], head]).casefold()
+    if "page no" not in label or "part" not in label:
+        return None
+    return cell.strip()
+
+
+def _quote_rows(quote: str) -> list[list[str]] | None:
+    """Table-chunk rows as cell values, with column titles removed.
 
     None when the quote has no column label, so prose stays on the normal path.
+    A blank line starts the next row. Wrapped particulars stay in their cell.
     """
-    lines = (quote or "").splitlines()
-    if not any(_column_label_cell(line) is not None for line in lines):
+    lines = [line.strip() for line in (quote or "").splitlines()]
+    if not any(
+        _column_label_cell(line) is not None or _WRAPPED_HEADER_START.match(line)
+        for line in lines
+    ):
         return None
-    groups: list[list[str]] = []
-    current: list[str] = []
+    rows: list[list[str]] = []
+    cells: list[str] = []
+    pending: list[str] = []
+
+    def flush_row() -> None:
+        nonlocal cells
+        if cells:
+            rows.append(cells)
+            cells = []
+
+    def absorb(extra: list[str]) -> None:
+        if not extra:
+            return
+        text = "\n".join(extra)
+        if cells:
+            cells[-1] = f"{cells[-1]}\n{text}".strip()
+        else:
+            cells.append(text)
+
     for line in lines:
-        if not line.strip():
-            if current:
-                groups.append(current)
-                current = []
+        if not line:
+            absorb(pending)
+            pending = []
+            flush_row()
             continue
+        if pending:
+            pending.append(line)
+            if ":" not in line:
+                continue
+            cell = _wrapped_header_cell(pending)
+            if cell is not None:
+                if cell:
+                    cells.append(cell)
+                pending = []
+                continue
+            absorb(pending[:-1])
+            pending = []
         cell = _column_label_cell(line)
-        current.append(cell if cell is not None else line.strip())
-    if current:
-        groups.append(current)
-    return ["\n".join(part for part in group if part).strip() for group in groups]
+        if cell is not None:
+            if cell:
+                cells.append(cell)
+            continue
+        if _WRAPPED_HEADER_START.match(line):
+            wrapped = _wrapped_header_cell([line])
+            if wrapped is not None:
+                if wrapped:
+                    cells.append(wrapped)
+            else:
+                pending = [line]
+            continue
+        if cells:
+            cells[-1] = f"{cells[-1]}\n{line}".strip()
+        else:
+            cells.append(line)
+    absorb(pending)
+    flush_row()
+    return rows or None
 
 
 def quote_body(quote: str) -> str:
     """Quote text after pipeline column labels are removed."""
-    groups = _column_row_groups(quote or "")
-    if groups is None:
+    rows = _quote_rows(quote or "")
+    if not rows:
         return quote or ""
-    return "\n".join(group for group in groups if group)
+    return "\n\n".join(
+        "\n".join(cell for cell in row if cell) for row in rows if any(row)
+    )
+
+
+def _matched_words(
+    quote: str, words: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """Words that carry this quote. Column gaps may split a long quote."""
+    if not words or not (quote or "").strip():
+        return []
+    haystack, spans = _join_words(words)
+    found = _match_spans(_norm_text(quote), haystack, fragmented=True)
+    if not found:
+        return []
+    return [
+        words[index]
+        for index, span_start, span_end in spans
+        if any(span_end > start and span_start < end for start, end in found)
+    ]
 
 
 def _boxes_for_words(
     quote: str, page: int, words: Sequence[Mapping[str, Any]]
 ) -> tuple[list[dict[str, float | int]], str]:
-    if not words:
-        return [], "page_only"
-    haystack, spans = _join_words(words)
-    found = _match_spans(_norm_text(quote), haystack)
-    if not found:
-        return [], "page_only"
-    matched = [
-        words[index]
-        for index, span_start, span_end in spans
-        if any(span_end > start and span_start < end for start, end in found)
-    ]
+    matched = _matched_words(quote, words)
     if not matched:
         return [], "page_only"
     return union_line_boxes(matched, page), "matched"
@@ -1048,6 +1176,71 @@ def _words_at_or_below(
     words: Sequence[Mapping[str, Any]], floor: float
 ) -> list[Mapping[str, Any]]:
     return [word for word in words if _num(word.get("y")) >= floor]
+
+
+def _can_anchor(cell: str) -> bool:
+    """A lone letter is too common to choose the row by itself."""
+    tokens = _norm_text(cell).split()
+    if len(tokens) >= 2:
+        return True
+    if not tokens:
+        return False
+    token = tokens[0]
+    if any(char.isdigit() for char in token):
+        return True
+    return len(token) >= 3
+
+
+def _top_line_band(words: Sequence[Mapping[str, Any]]) -> tuple[float, float]:
+    top = min(_num(word.get("y")) for word in words)
+    line = [word for word in words if abs(_num(word.get("y")) - top) <= 0.008]
+    bottom = max(_num(word.get("y")) + _num(word.get("h")) for word in line)
+    return top, max(bottom, top + 0.012)
+
+
+def _words_on_band(
+    words: Sequence[Mapping[str, Any]], top: float, bottom: float
+) -> list[Mapping[str, Any]]:
+    return [word for word in words if _same_visual_line(word, top, bottom)]
+
+
+def _row_words(
+    cells: Sequence[str], words: Sequence[Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """Match one table row. Short cells stay on the anchor cell's line."""
+    lengths = [len(_norm_text(cell).split()) for cell in cells]
+    ranked = sorted(range(len(cells)), key=lambda index: lengths[index], reverse=True)
+    longest = lengths[ranked[0]] if ranked else 0
+    # A long party cell has to be the one that places the row. "Respondent No."
+    # must not highlight a later "Versus" when the name itself is missing.
+    if longest >= _MIN_TOKEN_RUN:
+        ranked = [index for index in ranked if lengths[index] >= _MIN_TOKEN_RUN]
+    anchor: list[Mapping[str, Any]] = []
+    anchor_at: int | None = None
+    for index in ranked:
+        if not _can_anchor(cells[index]):
+            continue
+        hit = _matched_words(cells[index], words)
+        if not hit:
+            continue
+        anchor = hit
+        anchor_at = index
+        break
+    if anchor_at is None:
+        return []
+    chosen = {id(word) for word in anchor}
+    top, bottom = _top_line_band(anchor)
+    band = _words_on_band(words, top, bottom)
+    for index, cell in enumerate(cells):
+        if index == anchor_at or not cell.strip():
+            continue
+        pool = [word for word in band if id(word) not in chosen]
+        hit = _matched_words(cell, pool)
+        if not hit:
+            continue
+        anchor.extend(hit)
+        chosen.update(id(word) for word in hit)
+    return anchor
 
 
 def _boxes_on_page(
@@ -1061,31 +1254,24 @@ def _boxes_on_page(
         return [], "page_only"
     if not words:
         return [], "page_only"
-    groups = _column_row_groups(quote)
-    if groups is None:
+    rows = _quote_rows(quote)
+    if not rows:
         return _boxes_for_words(quote, page, words)
-    if not any(groups):
-        return [], "page_only"
     collected: list[dict[str, float | int]] = []
     floor: float | None = None
-    for index, group in enumerate(groups):
-        if not group:
+    for index, row in enumerate(rows):
+        if not any(row):
             continue
-        short = len(_norm_text(group).split()) < _MIN_TOKEN_RUN
-        if index > 0 and short:
-            # A one-word row such as "Versus" must sit under the party row.
-            # Without that row there is nothing to anchor it to.
-            if floor is None:
+        scoped = words if floor is None else _words_at_or_below(words, floor)
+        # A one-word row such as "Versus" must sit under the party row.
+        if index > 0 and floor is None:
+            return [], "page_only"
+        hit = _row_words(row, scoped)
+        if not hit:
+            if index == 0:
                 return [], "page_only"
-            boxes, status = _boxes_for_words(
-                group, page, _words_at_or_below(words, floor)
-            )
-        else:
-            boxes, status = _boxes_for_words(group, page, words)
-            if index == 0 and status != "matched":
-                return [], "page_only"
-        if status != "matched":
             continue
+        boxes = union_line_boxes(hit, page)
         collected.extend(boxes)
         bottom = max(_num(box.get("y")) + _num(box.get("h")) for box in boxes)
         floor = bottom if floor is None else max(floor, bottom)
