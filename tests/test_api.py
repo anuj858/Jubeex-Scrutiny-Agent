@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from extraction_review.api import JOBS, DocumentIn, app
@@ -824,15 +825,19 @@ def test_index_rejects_malformed_document_hash(client: TestClient) -> None:
     assert "64-character hexadecimal SHA-256" in response.text
 
 
-def test_reindex_requires_workspace_then_queues_atomic_replacement(
+def test_reindex_deletes_workspace_vectors_then_queues_index(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-reindex-1")
     captured: dict[str, object] = {}
     notified: dict[str, object] = {}
+    deleted: list[str] = []
 
     async def fake_notify(**kwargs):
         notified.update(kwargs)
+
+    def fake_delete(workspace_id: str) -> None:
+        deleted.append(workspace_id)
 
     monkeypatch.setattr(
         "extraction_review.api.process_file_workflow.run",
@@ -840,6 +845,7 @@ def test_reindex_requires_workspace_then_queues_atomic_replacement(
         or ImmediateHandler(prepared),
     )
     monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+    monkeypatch.setattr("extraction_review.api.delete_workspace_records", fake_delete)
 
     missing = client.post(
         "/v1/filings/agd-reindex-1/reindex",
@@ -849,7 +855,54 @@ def test_reindex_requires_workspace_then_queues_atomic_replacement(
         },
     )
     assert missing.status_code == 422
+    assert deleted == []
 
+    async def missing_filing(*_args: object, **_kwargs: object) -> None:
+        raise HTTPException(status_code=404, detail="Filing not found: agd-reindex-1")
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        missing_filing,
+    )
+    unknown = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert unknown.status_code == 404
+    assert deleted == []
+    assert "event" not in captured
+
+    async def existing_filing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        existing_filing,
+    )
+
+    def failing_delete(_workspace_id: str) -> None:
+        raise RuntimeError("pinecone down")
+
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        failing_delete,
+    )
+    failed = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert failed.status_code == 502
+    assert "event" not in captured
+
+    monkeypatch.setattr("extraction_review.api.delete_workspace_records", fake_delete)
     response = client.post(
         "/v1/filings/agd-reindex-1/reindex",
         json={
@@ -859,6 +912,7 @@ def test_reindex_requires_workspace_then_queues_atomic_replacement(
         },
     )
     assert response.status_code == 202
+    assert deleted == ["ws-reindex-1"]
     job_id = response.json()["job_id"]
     polled = None
     for _ in range(40):

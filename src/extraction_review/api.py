@@ -56,6 +56,7 @@ from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
+from .vector_store import delete_workspace_records
 
 load_dotenv()
 
@@ -1293,7 +1294,7 @@ async def index_filing(
     response_model=JobAccepted,
     status_code=status.HTTP_202_ACCEPTED,
     tags=["scrutiny"],
-    summary="Build and activate a replacement vector generation, then run scrutiny",
+    summary="Delete workspace vectors, then index and run scrutiny",
     dependencies=[Depends(require_api_key)],
 )
 async def reindex_filing(
@@ -1301,10 +1302,10 @@ async def reindex_filing(
     body: IndexFilingRequest,
     background_tasks: BackgroundTasks,
 ) -> JobAccepted:
-    """Atomically replace the active vector generation, then run scrutiny.
+    """Delete this workspace's Pinecone records, then run the index job.
 
-    Existing vectors remain readable until the replacement has been fully
-    upserted and activated. The worker removes the prior generation afterward.
+    The filing is loaded before the delete. A missing ``workspace_id`` returns
+    422. A failed delete returns 502 and does not start the job.
     """
     if not body.workspace_id:
         raise HTTPException(
@@ -1316,13 +1317,18 @@ async def reindex_filing(
         organization_id=body.organization_id,
         workspace_id=body.workspace_id,
     )
-    event = _index_event(agent_data_id, body)
-    return _accept_process_file(
-        event,
-        callback_url=body.callback_url,
-        background_tasks=background_tasks,
-        callback_kind="scrutiny",
-    )
+    try:
+        await asyncio.to_thread(delete_workspace_records, body.workspace_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to delete Pinecone records for workspace_id=%s",
+            body.workspace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not delete Pinecone records for this workspace.",
+        ) from exc
+    return _accept_index_filing(agent_data_id, body, background_tasks)
 
 
 @app.post(

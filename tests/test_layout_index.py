@@ -1009,6 +1009,219 @@ def test_unmatched_party_row_does_not_box_a_later_versus() -> None:
     assert status == "page_only"
 
 
+def _reading_order(lines: list[tuple[float, list[tuple[str, float, float]]]]) -> list[dict]:
+    words: list[dict] = []
+    for y, items in lines:
+        for text, x, width in items:
+            words.append(_placed(text, x, y, width))
+    return words
+
+
+_PAWAN_LINES = (
+    "1.Col. Pawan Kumar\nGopinath Sharma, s/o\nGopinath Sharma,\nIndian Jew"
+)
+
+
+def _interrupted_party_layout() -> dict:
+    """Each name line is broken by the next column, so no five words sit together."""
+    return _bare_layout(
+        _reading_order(
+            [
+                (
+                    0.30,
+                    [
+                        ("1.", 0.06, 0.03),
+                        ("Col.", 0.10, 0.05),
+                        ("Pawan", 0.16, 0.07),
+                        ("Kumar", 0.24, 0.07),
+                        ("Respondent", 0.50, 0.12),
+                        ("No.", 0.63, 0.04),
+                        ("Petitioner", 0.78, 0.12),
+                    ],
+                ),
+                (
+                    0.33,
+                    [
+                        ("Gopinath", 0.06, 0.09),
+                        ("Sharma,", 0.16, 0.08),
+                        ("s/o", 0.25, 0.04),
+                        ("role", 0.50, 0.06),
+                    ],
+                ),
+                (
+                    0.36,
+                    [
+                        ("Gopinath", 0.06, 0.09),
+                        ("Sharma,", 0.16, 0.08),
+                        ("role", 0.50, 0.06),
+                    ],
+                ),
+                (0.39, [("Indian", 0.06, 0.07), ("Jew", 0.14, 0.05), ("role", 0.50, 0.06)]),
+            ]
+        )
+    )
+
+
+def test_party_lines_split_by_other_columns_still_box_indian_jew() -> None:
+    layout = _interrupted_party_layout()
+    boxes, status = boxes_for_quote(_PAWAN_LINES, 1, layout)
+    assert status == "matched"
+    jew = [box for box in boxes if box["y"] == 0.39 and box["x"] < 0.30]
+    assert jew
+    assert jew[0]["x"] < 0.10
+    name = [box for box in boxes if box["y"] == 0.30 and box["x"] < 0.40]
+    assert name
+    assert name[0]["x"] < 0.10
+
+    boxed, boxed_status = boxes_for_quote(_PAWAN_QUOTE, 1, layout)
+    assert boxed_status == "matched"
+    assert any(box["y"] == 0.39 and box["x"] < 0.30 for box in boxed)
+    roles = [box for box in boxed if box["y"] == 0.30 and box["x"] >= 0.45]
+    assert len(roles) == 2
+    assert roles[0]["x"] + roles[0]["w"] < roles[1]["x"]
+
+
+def test_index_note_sheet_row_is_boxed_without_the_wrapped_header() -> None:
+    quote = (
+        "S.No.: 7.\n"
+        "PARTICULARS: Note Sheet\n"
+        "Page No. of part to which it belongs — Part – II\n"
+        "(Contents\n"
+        "of Paper\n"
+        "Book): NS1 to"
+    )
+    words = _reading_order(
+        [
+            (
+                0.08,
+                [
+                    ("Page", 0.40, 0.06),
+                    ("No.", 0.47, 0.04),
+                    ("PARTICULARS", 0.55, 0.12),
+                    ("of", 0.68, 0.03),
+                    ("part", 0.72, 0.05),
+                    ("to", 0.78, 0.03),
+                ],
+            ),
+            (
+                0.42,
+                [
+                    ("7.", 0.06, 0.04),
+                    ("Note", 0.18, 0.06),
+                    ("Sheet", 0.25, 0.07),
+                    ("NS1", 0.55, 0.05),
+                    ("to", 0.61, 0.03),
+                ],
+            ),
+        ]
+    )
+    boxes, status = boxes_for_quote(quote, 1, _bare_layout(words))
+    assert status == "matched"
+    assert boxes
+    assert all(box["y"] > 0.20 for box in boxes)
+    assert any(box["x"] < 0.12 for box in boxes)
+    assert any(box["x"] >= 0.50 for box in boxes)
+    note = [box for box in boxes if 0.15 <= box["x"] < 0.45]
+    assert note
+    assert note[0]["y"] == 0.42
+
+
+def test_index_office_report_row_boxes_both_page_letters() -> None:
+    quote = (
+        "S.No.: 1.\n"
+        "PARTICULARS: Office Report on Limitation\n"
+        "Page No. of part to which it belongs — Part – I\n"
+        "(Contents\n"
+        "of Paper\n"
+        "Book): A\n"
+        "Page No. of part to which it belongs — Part – II\n"
+        "(Contents\n"
+        "of Paper\n"
+        "Book): A"
+    )
+    words = _reading_order(
+        [
+            (
+                0.40,
+                [
+                    ("1.", 0.06, 0.04),
+                    ("Office", 0.16, 0.08),
+                    ("Report", 0.25, 0.08),
+                    ("on", 0.34, 0.03),
+                    ("Limitation", 0.38, 0.10),
+                    ("A", 0.62, 0.03),
+                    ("A", 0.78, 0.03),
+                ],
+            )
+        ]
+    )
+    boxes, status = boxes_for_quote(quote, 1, _bare_layout(words))
+    assert status == "matched"
+    letters = [box for box in boxes if box["x"] >= 0.60]
+    assert len(letters) == 2
+    assert letters[0]["x"] < letters[1]["x"]
+    assert any(box["x"] < 0.12 for box in boxes)
+
+
+def test_list_of_dates_keeps_the_left_date_on_its_own_row() -> None:
+    quote = (
+        "S.NO.: 01.01.2031\n"
+        "PARTICULARS: That in exercise of power under Section 165 of the Act "
+        "for getting the necessary documents"
+    )
+    words = _reading_order(
+        [
+            (0.05, [("01.01.1993", 0.08, 0.12)]),
+            (
+                0.20,
+                [
+                    ("01.01.2031", 0.08, 0.12),
+                    ("That", 0.36, 0.05),
+                    ("in", 0.42, 0.03),
+                    ("exercise", 0.46, 0.08),
+                    ("of", 0.55, 0.03),
+                    ("power", 0.59, 0.06),
+                    ("under", 0.66, 0.06),
+                    ("Section", 0.73, 0.08),
+                    ("165", 0.82, 0.04),
+                ],
+            ),
+            (
+                0.24,
+                [
+                    ("of", 0.36, 0.03),
+                    ("the", 0.40, 0.04),
+                    ("Act", 0.45, 0.04),
+                    ("for", 0.50, 0.04),
+                    ("getting", 0.55, 0.08),
+                    ("the", 0.64, 0.04),
+                    ("necessary", 0.69, 0.09),
+                    ("documents", 0.79, 0.10),
+                ],
+            ),
+        ]
+    )
+    boxes, status = boxes_for_quote(quote, 1, _bare_layout(words))
+    assert status == "matched"
+    left = [box for box in boxes if box["x"] < 0.20]
+    assert len(left) == 1
+    assert left[0]["y"] == 0.20
+    assert left[0]["x"] + left[0]["w"] < 0.30
+    assert any(box["x"] >= 0.30 and box["y"] == 0.20 for box in boxes)
+    assert all(box["y"] > 0.10 for box in boxes)
+
+
+def test_two_shared_words_do_not_box_a_longer_quote() -> None:
+    layout = _bare_layout(
+        [_placed("the", 0.10, 0.20, 0.04), _placed("court", 0.16, 0.20, 0.06)]
+    )
+    boxes, status = boxes_for_quote(
+        "the court granted the petitioner interim relief", 1, layout
+    )
+    assert boxes == []
+    assert status == "page_only"
+
+
 def _pdf_bytes() -> bytes:
     import pymupdf
 
@@ -1065,14 +1278,17 @@ def test_pdf_words_box_a_table_page_that_has_no_cell_words() -> None:
 
 def test_a_sidecar_word_is_not_added_again_from_the_pdf() -> None:
     hello_pdf = _hello_world_pdf()
-    discovered = merge_pdf_text_words({1: {"words": [], "local_page": 1}}, hello_pdf)
-    hello = next(word for word in discovered[1]["words"] if word["t"] == "Hello")
-    layout = {1: {"words": [hello], "local_page": 1}}
+    layout = {
+        1: {
+            "words": [_placed("Hello", 0.07, 0.28, 0.08)],
+            "local_page": 1,
+        }
+    }
     merged = merge_pdf_text_words(layout, hello_pdf)
     texts = [word["t"] for word in merged[1]["words"]]
-    assert merged[1]["words"][0] is hello
     assert texts.count("Hello") == 1
     assert "World" in texts
+    assert texts.index("Hello") < texts.index("World")
 
 
 def _hello_world_pdf() -> bytes:
@@ -1104,3 +1320,76 @@ def test_a_scan_page_does_not_receive_pdf_words() -> None:
     layout = {1: {"words": [], "local_page": 1}}
     merged = merge_pdf_text_words(layout, pdf)
     assert merged[1]["words"] == []
+
+
+_FILING_PDF = (
+    "/Users/laptopbazaar/Documents/Petition_Folder/Defect File _001.pdf"
+)
+
+_NOTE_SHEET_QUOTE = (
+    "S.No.: 7.\n"
+    "PARTICULARS: Note Sheet\n"
+    "Page No. of part to which it belongs — Part – II\n"
+    "(Contents\n"
+    "of Paper\n"
+    "Book): NS1 to"
+)
+
+
+def _filing_pdf():
+    from pathlib import Path
+
+    path = Path(_FILING_PDF)
+    if not path.is_file():
+        pytest.skip(f"filing PDF is not on this machine: {path}")
+    return path.read_bytes()
+
+
+def test_a_markup_slice_does_not_hide_the_pdf_word() -> None:
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        page = document.new_page(width=600, height=400)
+        page.insert_text((80, 160), "Note", fontsize=12)
+        pdf = document.tobytes()
+    finally:
+        document.close()
+    layout = {
+        1: {
+            "words": [_placed("| P", 0.10, 0.35, 0.20)],
+            "local_page": 1,
+        }
+    }
+    merged = merge_pdf_text_words(layout, pdf)
+    texts = [word["t"] for word in merged[1]["words"]]
+    assert "Note" in texts
+    assert "| P" not in texts
+    boxes, status = boxes_for_quote("Note", 1, merged)
+    assert status == "matched"
+    assert boxes
+
+
+def test_index_note_sheet_boxes_come_from_the_pdf_text_layer() -> None:
+    layout = merge_pdf_text_words({2: {"words": [], "local_page": 2}}, _filing_pdf())
+    boxes, status = boxes_for_quote(_NOTE_SHEET_QUOTE, 2, layout)
+    assert status == "matched"
+    row = [box for box in boxes if 0.55 <= box["y"] <= 0.65]
+    assert len(row) == 3
+    assert any(box["x"] < 0.16 for box in row)
+    assert any(0.16 <= box["x"] < 0.45 for box in row)
+    assert any(box["x"] >= 0.60 for box in row)
+    assert all(box["y"] > 0.20 for box in boxes)
+
+
+def test_petition_name_boxes_come_from_the_pdf_text_layer() -> None:
+    layout = merge_pdf_text_words({15: {"words": [], "local_page": 15}}, _filing_pdf())
+    boxes, status = boxes_for_quote(_PAWAN_LINES, 15, layout)
+    assert status == "matched"
+    first = [box for box in boxes if abs(box["y"] - 0.306) < 0.02 and box["x"] < 0.20]
+    jew = [box for box in boxes if abs(box["y"] - 0.356) < 0.02 and box["x"] < 0.25]
+    assert first
+    assert jew
+    assert first[0]["x"] < 0.15
+    assert all(box["x"] < 0.40 for box in boxes)
+
