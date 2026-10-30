@@ -71,7 +71,10 @@ def prepare(
             raise ValueError(f"{filename}: release requires the JSON catalogue")
         if env.get("SCRUTINY_DEFECTS", "").lower() != "all":
             raise ValueError(f"{filename}: production cannot use a defect allowlist")
-        if env.get("OPENROUTER_VISION_ENABLED", "").lower() != "true":
+        vision_enabled = env.get("VISION_ENABLED") or env.get(
+            "OPENROUTER_VISION_ENABLED", ""
+        )
+        if vision_enabled.lower() != "true":
             raise ValueError(f"{filename}: visual checks must be enabled")
         if env.get("JUBEEX_SQS_ENABLED", "").lower() != "true":
             raise ValueError(f"{filename}: SQS must be enabled")
@@ -84,25 +87,40 @@ def prepare(
                 raise ValueError(f"{filename}: expected worker kind {expected}")
             _set_environment(container, "JUBEEX_WORKER_MAX_JOB_SECONDS", "5400")
         if role != "api":
-            if env.get("LLM_PROVIDER", "vertex") != "vertex":
-                raise ValueError(f"{filename}: worker must use Vertex")
-            if env.get("VERTEX_SHARED_RATE_LIMIT", "").lower() != "true":
+            provider = env.get("LLM_PROVIDER", "openrouter")
+            if provider not in {"openrouter", "gemini"}:
                 raise ValueError(
-                    f"{filename}: shared Vertex rate limit must be enabled"
+                    f"{filename}: worker must use OpenRouter or Gemini Developer API"
                 )
+            if provider == "openrouter":
+                secret_name = "OPENROUTER_API_KEY"
+                model_name = "OPENROUTER_MODEL"
+                rpm_name = "OPENROUTER_REQUESTS_PER_MINUTE"
+                if not env.get(model_name, "").startswith("google/"):
+                    raise ValueError(f"{filename}: OpenRouter Gemini model is required")
+            else:
+                secret_name = "GEMINI_API_KEY"
+                model_name = "GEMINI_MODEL"
+                rpm_name = "GEMINI_REQUESTS_PER_MINUTE"
+                if not env.get(model_name, "").startswith("gemini-"):
+                    raise ValueError(
+                        f"{filename}: Gemini Developer API model is required"
+                    )
+            if secret_name not in secrets:
+                raise ValueError(f"{filename}: missing {secret_name} secret")
             try:
-                vertex_rpm = int(env.get("VERTEX_REQUESTS_PER_MINUTE", ""))
+                provider_rpm = int(env.get(rpm_name, ""))
             except ValueError as exc:
-                raise ValueError(f"{filename}: invalid Vertex request limit") from exc
-            if vertex_rpm <= 0:
-                raise ValueError(f"{filename}: Vertex request limit must be positive")
+                raise ValueError(
+                    f"{filename}: invalid {provider} request limit"
+                ) from exc
+            if provider_rpm <= 0:
+                raise ValueError(
+                    f"{filename}: {provider} request limit must be positive"
+                )
             if env.get("LLM_REQUESTS_PER_MINUTE"):
                 raise ValueError(
-                    f"{filename}: LLM_REQUESTS_PER_MINUTE overrides the Vertex limit"
-                )
-            if not (env.get("AWS_S3_BUCKET") or env.get("JUBEEX_ARTIFACT_BUCKET")):
-                raise ValueError(
-                    f"{filename}: shared Vertex limiter requires an S3 bucket"
+                    f"{filename}: LLM_REQUESTS_PER_MINUTE overrides the provider limit"
                 )
         bucket = env.get("AWS_S3_BUCKET") or env.get("JUBEEX_ARTIFACT_BUCKET")
         if bucket:
@@ -110,10 +128,7 @@ def prepare(
             _set_environment(
                 container,
                 "JUBEEX_REMOTE_FILE_HOSTS",
-                (
-                    f"{bucket}.s3.{region}.amazonaws.com,"
-                    f"s3.{region}.amazonaws.com"
-                ),
+                (f"{bucket}.s3.{region}.amazonaws.com,s3.{region}.amazonaws.com"),
             )
         if role == "api" and "JUBEEX_API_KEY" not in secrets:
             raise ValueError(f"{filename}: missing JUBEEX_API_KEY secret")

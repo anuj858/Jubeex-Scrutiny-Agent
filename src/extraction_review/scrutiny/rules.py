@@ -13,7 +13,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -312,6 +312,9 @@ class Defect(_Strict):
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
     manifest_absence_proves_defect: bool = False
+    legal_verification_status: Literal[
+        "not_required", "needs_verification", "verified", "unsupported"
+    ] = "not_required"
     how_to_cure: list[str]
     remediation_config: dict[str, Any] = Field(default_factory=dict)
     applicable_rule: str | None = None
@@ -553,6 +556,46 @@ def _stamp_explicit_applicability(catalogue: Catalogue) -> Catalogue:
 
     stamped: list[Defect] = []
     for defect in catalogue.defects:
+        note = defect.ai_note or ""
+        status = defect.legal_verification_status
+        if (
+            status == "not_required"
+            and "Legal-source gate — This obligation is marked unverified." in note
+        ):
+            status = "needs_verification"
+        if note:
+            # Authority verification is structured policy. Let the model decide
+            # the filing evidence first, then apply the authority gate in Python.
+            note = re.sub(
+                r"\n?Legal-source gate — This obligation is marked unverified\..*?"
+                r"(?=\n\nInspection —)",
+                "",
+                note,
+                count=1,
+                flags=re.DOTALL,
+            )
+            note = re.sub(
+                r"^Legal status: Needs legal verification\..*?"
+                r"Also return needs_review when any prerequisite evidence is unavailable\.\s*",
+                "",
+                note,
+                count=1,
+                flags=re.DOTALL,
+            )
+            note = note.replace("After legal verification is completed, ", "")
+            note = re.sub(
+                r"\s*Apply this outcome only after the Legal-source gate has been "
+                r"satisfied; otherwise return Need Review\.",
+                "",
+                note,
+            )
+            note = note.replace(
+                " This is also the required result while the Legal-source gate remains unsatisfied.",
+                "",
+            )
+        defect = defect.model_copy(
+            update={"ai_note": note or None, "legal_verification_status": status}
+        )
         if defect.use_explicit_applicability:
             stamped.append(defect)
             continue

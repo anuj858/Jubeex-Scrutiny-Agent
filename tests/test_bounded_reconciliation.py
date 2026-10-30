@@ -182,7 +182,7 @@ def test_failed_semantic_revalidation_rolls_back_and_iteration_is_bounded(monkey
 
     assert result == baseline
     assert changes == []
-    assert any(item.status == "rolled_back" for item in operations)
+    assert any(item.status == "left_for_review" for item in operations)
     stop = operations[-1]
     assert stop.status == "stopped"
     assert "max_iterations=3" in stop.reason

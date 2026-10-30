@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 _INDEX_SERIAL_WORD_RE = re.compile(r"(?P<serial>\d{1,3})[.)]")
 _INDEX_SPAN_CELL_RE = re.compile(
@@ -307,10 +308,29 @@ def extract_split_layout(
 
 _FOLIO_NUM_RE = re.compile(r"^(?P<n>\d{1,4})(?P<suffix>[A-Za-z])?$")
 _FOLIO_LETTER_RE = re.compile(r"^[A-Za-z]{1,2}$")
+_REPORTED_JUDGMENT_PAGE_RE = re.compile(
+    r"\b(?:scc\s+online|supreme\s+court\s+cases|air\s+online)\b",
+    re.IGNORECASE,
+)
 
 
-def printed_folio(text: str) -> tuple[str, int, str] | None:
-    """Corner folio such as ``36``, ``63B``, or ``B``.
+@dataclass(frozen=True)
+class PrintedFolioEvidence:
+    """A page-number candidate together with its evidential provenance.
+
+    ``printed_folio`` historically returned an internal ``Page X of Y`` counter
+    when no isolated corner folio was available.  That fallback is useful for
+    continuity checks, but it is not an outer paper-book folio and therefore
+    must never be used to align a master Index with physical PDF pages.
+    """
+
+    value: tuple[str, int, str]
+    source: str
+    authoritative_for_index: bool
+
+
+def printed_folio_evidence(text: str) -> PrintedFolioEvidence | None:
+    """Return a corner folio and whether it is safe for Index alignment.
 
     Only the bottom line counts. A page number cited in the paragraph above
     it (``36`` then ``37 to 48``) is not the folio of this sheet.
@@ -327,7 +347,11 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
             re.IGNORECASE,
         )
         if match:
-            page_counter = ("number", int(match.group(1)), "")
+            page_counter = PrintedFolioEvidence(
+                ("number", int(match.group(1)), ""),
+                source="internal_page_counter",
+                authoritative_for_index=False,
+            )
             break
     skipped_word = False
     for line in reversed(lines):
@@ -335,18 +359,55 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
             continue
         prefixed = re.fullmatch(r"A(\d{1,2})", line, re.IGNORECASE)
         if prefixed:
-            return ("prefixed", int(prefixed.group(1)), "")
+            return PrintedFolioEvidence(
+                ("prefixed", int(prefixed.group(1)), ""),
+                source="isolated_outer_folio",
+                authoritative_for_index=True,
+            )
         numbered = _FOLIO_NUM_RE.fullmatch(line)
         if numbered:
             number = int(numbered.group("n"))
             if 1900 <= number <= 2099:
                 break
-            return ("number", number, (numbered.group("suffix") or "").upper())
+            candidate = ("number", number, (numbered.group("suffix") or "").upper())
+            if (
+                page_counter
+                and page_counter.value == candidate
+                and _REPORTED_JUDGMENT_PAGE_RE.search(text or "")
+            ):
+                return PrintedFolioEvidence(
+                    candidate,
+                    source="reported_judgment_page_counter",
+                    authoritative_for_index=False,
+                )
+            return PrintedFolioEvidence(
+                candidate,
+                source="isolated_outer_folio",
+                authoritative_for_index=True,
+            )
         if _FOLIO_LETTER_RE.fullmatch(line):
-            return ("letter", letter_folio_number(line), "")
+            return PrintedFolioEvidence(
+                ("letter", letter_folio_number(line), ""),
+                source="isolated_outer_folio",
+                authoritative_for_index=True,
+            )
         # "61" then "December": the folio sits just above a one-word signature.
         if not skipped_word and re.fullmatch(r"[A-Za-z]{3,}", line):
             skipped_word = True
             continue
         break
     return page_counter
+
+
+def printed_folio(text: str) -> tuple[str, int, str] | None:
+    """Return the best folio candidate, preserving the legacy tuple API."""
+    evidence = printed_folio_evidence(text)
+    return evidence.value if evidence else None
+
+
+def index_printed_folio(text: str) -> tuple[str, int, str] | None:
+    """Return only an outer folio that may align a master Index range."""
+    evidence = printed_folio_evidence(text)
+    if not evidence or not evidence.authoritative_for_index:
+        return None
+    return evidence.value

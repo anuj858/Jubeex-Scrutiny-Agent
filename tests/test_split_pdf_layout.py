@@ -3,7 +3,11 @@
 import pymupdf
 
 from extraction_review.split_audit import index_rows_with_printed_pages
-from extraction_review.split_pdf_layout import printed_folio
+from extraction_review.split_pdf_layout import (
+    index_printed_folio,
+    printed_folio,
+    printed_folio_evidence,
+)
 from extraction_review.structure_split import extract_page_units
 
 
@@ -135,3 +139,38 @@ def test_judgment_page_counter_is_a_fallback_folio():
     signed = "Page 1 of 9\nSignature Not Verified\nSigning Date:11.11.2025"
     assert printed_folio(signed) == ("number", 1, "")
     assert printed_folio(signed + "\n92") == ("number", 92, "")
+
+
+def test_internal_page_counter_is_not_authoritative_for_index_alignment():
+    text = "SCC ONLINE True Print | Page 1 of 8\nJudgment body"
+
+    assert printed_folio(text) == ("number", 1, "")
+    assert index_printed_folio(text) is None
+    evidence = printed_folio_evidence(text)
+    assert evidence is not None
+    assert evidence.source == "internal_page_counter"
+    assert evidence.authoritative_for_index is False
+
+
+def test_isolated_scc_reporter_counter_is_not_an_outer_index_folio():
+    text = (
+        "SCC ONLINE True Print | Page 1 of 8\n"
+        "SUPREME COURT CASES reported judgment\n1"
+    )
+
+    assert printed_folio(text) == ("number", 1, "")
+    assert index_printed_folio(text) is None
+    evidence = printed_folio_evidence(text)
+    assert evidence is not None
+    assert evidence.source == "reported_judgment_page_counter"
+    assert evidence.authoritative_for_index is False
+
+
+def test_isolated_outer_folio_remains_authoritative_for_index_alignment():
+    text = "SCC ONLINE True Print | Page 1 of 8\nJudgment body\n22"
+
+    assert index_printed_folio(text) == ("number", 22, "")
+    evidence = printed_folio_evidence(text)
+    assert evidence is not None
+    assert evidence.source == "isolated_outer_folio"
+    assert evidence.authoritative_for_index is True

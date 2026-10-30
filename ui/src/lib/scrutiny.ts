@@ -12,7 +12,27 @@ export type ResultState =
   | "compliant"
   | "not_applicable"
   | "not_determined"
-  | "needs_review";
+  | "needs_review"
+  | "rule_verification_pending";
+
+export type ReviewReasonCode =
+  | "part_not_in_excerpts"
+  | "element_page_not_in_excerpts"
+  | "unreadable"
+  | "ambiguous"
+  | "conflict"
+  | "low_confidence"
+  | "legal_rule_unverified";
+
+export const REVIEW_REASON_LABELS: Record<ReviewReasonCode, string> = {
+  part_not_in_excerpts: "Required document unavailable",
+  element_page_not_in_excerpts: "Required page or field unavailable",
+  unreadable: "Scan or handwriting unreadable",
+  ambiguous: "Applicability or wording unclear",
+  conflict: "Conflicting information",
+  low_confidence: "Low-confidence assessment",
+  legal_rule_unverified: "Legal rule pending verification",
+};
 
 export interface BoundingBox {
   page: number;
@@ -86,6 +106,10 @@ export interface Coverage {
   chunks_reviewed: number;
   pages_reviewed: number[];
   structured_record_available: boolean;
+  document_found?: boolean;
+  required_scope_found?: boolean;
+  scope_complete?: boolean;
+  prompt_truncated?: boolean;
   evidence_complete: boolean;
 }
 
@@ -109,6 +133,8 @@ export interface DefectFinding {
   status: ResultState;
   summary: string;
   confidence: number;
+  review_reason_code?: ReviewReasonCode | null;
+  review_reason?: string | null;
   reasoning?: string;
   evidence?: EvidenceRef[];
   suggested_fix?: string | null;
@@ -133,6 +159,7 @@ export interface ScrutinySummary {
   defects_found: number;
   compliant: number;
   needs_review: number;
+  rule_verification_pending?: number;
   not_determined: number;
   not_applicable: number;
   overall_confidence: number;
@@ -159,9 +186,14 @@ export const RESULT_LABELS: Record<ResultState, string> = {
   defect_found: "Defect found",
   compliant: "Compliant",
   not_applicable: "Not applicable",
-  not_determined: "Visual / undetermined",
-  needs_review: "Needs review",
+  not_determined: "Check not completed",
+  needs_review: "Need Review",
+  rule_verification_pending: "Need Review",
 };
+
+export function publicResultState(status: ResultState): ResultState {
+  return status;
+}
 
 /** Tailwind classes per result state, ordered from most to least alarming. */
 export const RESULT_STYLES: Record<ResultState, string> = {
@@ -169,6 +201,8 @@ export const RESULT_STYLES: Record<ResultState, string> = {
     "bg-red-50 text-red-800 border-red-200 dark:bg-red-950 dark:text-red-100 dark:border-red-900",
   needs_review:
     "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950 dark:text-amber-100 dark:border-amber-900",
+  rule_verification_pending:
+    "bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950 dark:text-violet-100 dark:border-violet-900",
   not_determined:
     "bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:border-slate-700",
   compliant:
@@ -180,13 +214,18 @@ export const RESULT_STYLES: Record<ResultState, string> = {
 const RESULT_ORDER: ResultState[] = [
   "defect_found",
   "needs_review",
+  "rule_verification_pending",
   "not_determined",
   "compliant",
   "not_applicable",
 ];
 
-export function checkIdSortKey(checkId: string | null | undefined): [number, string] {
-  const text = String(checkId ?? "").trim().toUpperCase();
+export function checkIdSortKey(
+  checkId: string | null | undefined,
+): [number, string] {
+  const text = String(checkId ?? "")
+    .trim()
+    .toUpperCase();
   const match = text.match(/^D-?(\d+)([A-Z]*)$/);
   if (!match) {
     return [Number.MAX_SAFE_INTEGER, text];
@@ -197,7 +236,8 @@ export function checkIdSortKey(checkId: string | null | undefined): [number, str
 export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
   return [...findings].sort((a, b) => {
     const byStatus =
-      RESULT_ORDER.indexOf(a.status) - RESULT_ORDER.indexOf(b.status);
+      RESULT_ORDER.indexOf(publicResultState(a.status)) -
+      RESULT_ORDER.indexOf(publicResultState(b.status));
     if (byStatus !== 0) {
       return byStatus;
     }
@@ -311,14 +351,16 @@ function escapeHtml(value: string) {
 const STATUS_COLORS: Record<ResultState, { bg: string; fg: string }> = {
   defect_found: { bg: "#FEE2E2", fg: "#991B1B" },
   needs_review: { bg: "#FEF3C7", fg: "#92400E" },
+  rule_verification_pending: { bg: "#EDE9FE", fg: "#5B21B6" },
   not_determined: { bg: "#F1F5F9", fg: "#334155" },
   compliant: { bg: "#D1FAE5", fg: "#065F46" },
   not_applicable: { bg: "#F1F5F9", fg: "#64748B" },
 };
 
 function statusBadge(status: ResultState) {
-  const colors = STATUS_COLORS[status];
-  return `<span style="background:${colors.bg};color:${colors.fg};padding:2px 8px;border-radius:999px;font-size:10pt;font-weight:600;">${escapeHtml(RESULT_LABELS[status])}</span>`;
+  const publicStatus = publicResultState(status);
+  const colors = STATUS_COLORS[publicStatus];
+  return `<span style="background:${colors.bg};color:${colors.fg};padding:2px 8px;border-radius:999px;font-size:10pt;font-weight:600;">${escapeHtml(RESULT_LABELS[publicStatus])}</span>`;
 }
 
 function buildScrutinyDocHtml(report: ScrutinyReport): string {
@@ -450,9 +492,9 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
   <table class="summary" style="width:100%;border-collapse:collapse;margin:16px 0 24px;">
     <tr>
       <td style="background:#FEE2E2;"><b style="font-size:18pt;">${report.summary.defects_found}</b><br/>Defects found</td>
-      <td style="background:#FEF3C7;"><b style="font-size:18pt;">${report.summary.needs_review}</b><br/>Needs review</td>
-      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_determined}</b><br/>Visual / undetermined</td>
       <td style="background:#D1FAE5;"><b style="font-size:18pt;">${report.summary.compliant}</b><br/>Compliant</td>
+      <td style="background:#FEF3C7;"><b style="font-size:18pt;">${report.summary.needs_review + report.summary.not_determined + (report.summary.rule_verification_pending ?? 0)}</b><br/>Manual verification required</td>
+      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_applicable}</b><br/>Not applicable</td>
     </tr>
   </table>
 
@@ -467,10 +509,12 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
 </html>`;
 }
 
-function stopSubscription(sub: {
-  disconnect?: () => void;
-  unsubscribe?: () => void;
-} | null) {
+function stopSubscription(
+  sub: {
+    disconnect?: () => void;
+    unsubscribe?: () => void;
+  } | null,
+) {
   sub?.disconnect?.();
   sub?.unsubscribe?.();
 }

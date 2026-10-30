@@ -54,6 +54,15 @@ ResultState = Literal[
     "not_applicable",
     "not_determined",
     "needs_review",
+    "rule_verification_pending",
+]
+
+ModelResultState = Literal[
+    "defect_found",
+    "compliant",
+    "not_applicable",
+    "not_determined",
+    "needs_review",
 ]
 
 BoxesStatus = Literal["matched", "page_only", "unavailable"]
@@ -153,6 +162,7 @@ GapKind = Literal[
     "ambiguous",
     "conflict",
     "low_confidence",
+    "legal_rule_unverified",
 ]
 
 
@@ -183,7 +193,9 @@ class DefectResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     check_id: str
-    status: ResultState
+    # Governance-only states are assigned after model validation and must not
+    # be offered to the model as filing-classification choices.
+    status: ModelResultState
     confidence: float = Field(ge=0.0, le=1.0)
     summary: str = Field(
         description=(
@@ -261,6 +273,10 @@ class Coverage(BaseModel):
     chunks_reviewed: int = 0
     pages_reviewed: list[int] = Field(default_factory=list)
     structured_record_available: bool = False
+    document_found: bool = False
+    required_scope_found: bool = False
+    scope_complete: bool = False
+    prompt_truncated: bool = False
     evidence_complete: bool = False
     visual_required: bool = False
     visual_complete: bool = False
@@ -491,7 +507,7 @@ class DefectFinding(BaseModel):
 # A published defect is a high-impact assertion.  Prefer an explicit review
 # over a false positive; individual deployments can still tune this after
 # calibrating against a labelled filing set.
-DEFAULT_REVIEW_CONFIDENCE = 0.8
+DEFAULT_REVIEW_CONFIDENCE = 0.6
 
 
 def _safe_page_number(value: Any) -> int | None:
@@ -517,7 +533,7 @@ def review_reason_for_response(
     coverage: Coverage | None = None,
 ) -> str | None:
     """Explain a review outcome without exposing internal prompt terminology."""
-    if response.status != "needs_review":
+    if response.status not in {"needs_review", "rule_verification_pending"}:
         return None
 
     detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
@@ -547,6 +563,10 @@ def review_reason_for_response(
         )
     elif response.gap == "conflict":
         reason = "The extracted text and the visible document evidence do not agree."
+    elif response.gap == "legal_rule_unverified":
+        reason = (
+            "This check is awaiting verification of its controlling legal source."
+        )
     else:
         reason = "The available evidence is insufficient for a confirmed outcome."
 
@@ -1011,6 +1031,411 @@ def apply_status_policy(response: DefectResponse) -> DefectResponse:
     return response
 
 
+def apply_review_reason_consistency_policy(
+    response: DefectResponse,
+) -> DefectResponse:
+    """Keep the structured review reason consistent with its numeric score.
+
+    A model may be highly confident that human review is appropriate and still
+    label that outcome ``low_confidence``.  That is not the meaning of this
+    reason code: it is reserved exclusively for scores below the configured
+    publication threshold.
+    """
+    if (
+        response.status == "needs_review"
+        and response.gap == "low_confidence"
+        and response.confidence >= review_confidence_threshold()
+    ):
+        response.gap = "ambiguous"
+        response.gap_detail = (
+            "The evidence is inconclusive even though the model reported a "
+            "high confidence in routing the check for review."
+        )
+    return response
+
+
+def apply_legal_verification_policy(
+    defect: Defect, response: DefectResponse
+) -> DefectResponse:
+    """Preserve the filing outcome regardless of source-audit metadata.
+
+    ``legal_verification_status`` and source locators are catalogue governance
+    fields.  The approved operational requirement, its applicability and the
+    filing evidence determine the filing status.  Keep this compatibility
+    helper as a no-op so older callers cannot silently reinstate the former
+    pre-retrieval gate.
+    """
+    del defect
+    return response
+
+
+def apply_scope_coverage_policy(
+    response: DefectResponse,
+    *,
+    scope_complete: bool,
+    prompt_truncated: bool = False,
+) -> DefectResponse:
+    """Do not publish collection-wide compliance from a semantic sample."""
+    if response.status != "compliant" or scope_complete:
+        return response
+    detail = (
+        "The complete relevant evidence exceeded the prompt evidence limit."
+        if prompt_truncated
+        else "The complete relevant document scope was not inspected."
+    )
+    return _move_to_review(
+        response,
+        gap="element_page_not_in_excerpts",
+        detail=detail,
+    )
+
+
+_PARTY_ROLES = re.compile(
+    r"\b(petitioner(?:s)?|appellant(?:s)?|respondent(?:s)?|intervenor(?:s)?)\b",
+    re.IGNORECASE,
+)
+
+
+def apply_internal_contradiction_policy(
+    defect: Defect, response: DefectResponse
+) -> DefectResponse:
+    """Treat an affirmative filing contradiction as a defect, not uncertainty."""
+    if response.status != "needs_review" or response.gap != "conflict":
+        return response
+    wording = f"{defect.defect} {defect.requirement}".casefold()
+    if not any(term in wording for term in ("specify whether", "inconsistent", "correctly")):
+        return response
+    roles = {
+        match.group(1).casefold().rstrip("s")
+        for ref in response.evidence
+        for match in _PARTY_ROLES.finditer(ref.quote or "")
+    }
+    if len(roles) < 2:
+        return response
+    response.status = "defect_found"
+    response.confidence = max(response.confidence, 0.9)
+    response.gap = None
+    response.gap_detail = ""
+    response.summary = "The filing gives inconsistent party-side descriptions."
+    response.observed = "The relevant filing text identifies more than one incompatible represented side."
+    response.conclusion = "The required represented side is internally inconsistent."
+    return response
+
+
+def apply_visual_field_policy(
+    defect: Defect,
+    response: DefectResponse,
+    visual_index: dict[str, Any] | None,
+) -> DefectResponse:
+    """Resolve owned date-presence failures from completed field review."""
+    if not isinstance(visual_index, dict):
+        return response
+    wording = f"{defect.defect} {defect.requirement}".casefold()
+    simple_date_presence = (
+        "date" in wording
+        and any(term in wording for term in ("mention the date", "does not mention", "date is blank"))
+        and not any(term in wording for term in ("same as", "prior date", "earlier than", "later than"))
+    )
+    check_id = re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
+    vakalatnama_date_owner = check_id == "D57"
+    if not simple_date_presence and not vakalatnama_date_owner:
+        return response
+    required = {part.casefold() for part in defect.inspect_parts}
+    assessments = []
+    for item in visual_index.get("field_assessments") or []:
+        if not isinstance(item, dict) or item.get("field") != "execution_date":
+            continue
+        document_type = str(item.get("document_type") or "").casefold()
+        if vakalatnama_date_owner and "vakalat" not in document_type:
+            continue
+        if required and not any(
+            part in document_type or document_type in part for part in required
+        ):
+            continue
+        assessments.append(item)
+    if not assessments:
+        blank_date = any(
+            re.search(r"(?im)^\s*(?:dated|date)\s*[:\-]\s*$", ref.quote or "")
+            for ref in response.evidence
+        )
+        positive_date_mark = any(
+            isinstance(mark, dict)
+            and str(mark.get("marking_type") or "").casefold()
+            in {"handwritten_field_value", "date_field_value"}
+            and "date" in str(mark.get("associated_label") or "").casefold()
+            for mark in visual_index.get("marks") or []
+        )
+        target_pages = {
+            _safe_page_number(item.get("page"))
+            for item in visual_index.get("targets") or []
+            if isinstance(item, dict)
+        }
+        reviewed_pages = {
+            _safe_page_number(page) for page in visual_index.get("pages") or []
+        }
+        visual_scope_complete = bool(
+            str(visual_index.get("status") or "").casefold() == "ok"
+            and target_pages
+            and None not in target_pages
+            and target_pages.issubset(reviewed_pages)
+            and not visual_index.get("failures")
+        )
+        if blank_date and visual_scope_complete and not positive_date_mark:
+            assessments = [
+                {
+                    "field": "execution_date",
+                    "readable": True,
+                    "value_present": False,
+                }
+            ]
+    if not assessments or not all(bool(item.get("readable")) for item in assessments):
+        return response
+    if all(bool(item.get("value_present")) for item in assessments):
+        # D-57 still needs the actual chronology comparison.  Presence alone
+        # cannot establish compliance, so leave that decision to the grounded
+        # evaluator.
+        if vakalatnama_date_owner:
+            return response
+        response.status = "compliant"
+        response.confidence = max(response.confidence, 0.9)
+        response.summary = "The execution date is present in the inspected date field."
+        response.observed = response.summary
+        response.conclusion = "The date requirement is satisfied."
+    else:
+        response.status = "defect_found"
+        response.confidence = max(response.confidence, 0.9)
+        response.summary = "The inspected execution-date field is blank."
+        response.observed = "The complete relevant page shows the date label without an entered value."
+        response.conclusion = "The required execution date is missing."
+    response.gap = None
+    response.gap_detail = ""
+    return response
+
+
+def apply_margin_layout_policy(
+    defect: Defect,
+    response: DefectResponse,
+    layout: dict[int, dict[str, Any]] | None,
+) -> DefectResponse:
+    """Measure D-89 margins from normalized PDF/OCR word geometry.
+
+    The check states fixed dimensions, so a deterministic measurement is more
+    reliable than asking the model to infer centimetres from a screenshot.
+    A small tolerance absorbs box-rounding noise without excusing a real miss.
+    """
+    if _normalized_check_id(defect) != "D89" or not layout:
+        return response
+    wanted = {part.casefold() for part in defect.inspect_parts}
+    measurements: list[tuple[int, float, float, float, float, str]] = []
+    incomplete = False
+    for raw_page, entry in sorted(layout.items()):
+        if not isinstance(entry, dict):
+            incomplete = True
+            continue
+        names = {part.casefold() for part in parts_on_page(entry.get("document_part"))}
+        if wanted and not any(
+            expected in actual or actual in expected
+            for expected in wanted
+            for actual in names
+        ):
+            continue
+        words = [item for item in entry.get("words") or [] if isinstance(item, dict)]
+        try:
+            width = float(entry.get("width") or 0)
+            height = float(entry.get("height") or 0)
+            page = int(raw_page)
+        except (TypeError, ValueError):
+            incomplete = True
+            continue
+        if width <= 1 or height <= 1 or not words:
+            incomplete = True
+            continue
+        boxes = []
+        for word in words:
+            try:
+                x = float(word.get("x"))
+                y = float(word.get("y"))
+                w = float(word.get("w"))
+                h = float(word.get("h"))
+            except (TypeError, ValueError):
+                continue
+            if w <= 0 or h <= 0:
+                continue
+            boxes.append((x, y, x + w, y + h, str(word.get("text") or word.get("t") or "")))
+        if not boxes:
+            incomplete = True
+            continue
+        left_box = min(boxes, key=lambda box: box[0])
+        right_box = max(boxes, key=lambda box: box[2])
+        top_box = min(boxes, key=lambda box: box[1])
+        bottom_box = max(boxes, key=lambda box: box[3])
+        margins = (
+            left_box[0] * width,
+            (1.0 - right_box[2]) * width,
+            top_box[1] * height,
+            (1.0 - bottom_box[3]) * height,
+        )
+        nearest = min(
+            (left_box, right_box, top_box, bottom_box),
+            key=lambda box: min(box[0], 1 - box[2], box[1], 1 - box[3]),
+        )
+        measurements.append((page, *margins, nearest[4]))
+    if not measurements:
+        return response
+    horizontal = 4.0 * 72.0 / 2.54
+    vertical = 2.0 * 72.0 / 2.54
+    tolerance = 3.0
+    failures = [
+        row
+        for row in measurements
+        if row[1] + tolerance < horizontal
+        or row[2] + tolerance < horizontal
+        or row[3] + tolerance < vertical
+        or row[4] + tolerance < vertical
+    ]
+    if failures:
+        page, left, right, top, bottom, token = failures[0]
+        response.status = "defect_found"
+        response.confidence = max(response.confidence, 0.95)
+        response.gap = None
+        response.gap_detail = ""
+        response.summary = (
+            f"Page {page} measures approximately {left:.1f}pt left, "
+            f"{right:.1f}pt right, {top:.1f}pt top and {bottom:.1f}pt bottom; "
+            "at least one required margin is undersized."
+        )
+        response.observed = response.summary
+        response.conclusion = "The required 4 cm horizontal and 2 cm vertical margins are not met."
+        response.evidence = [EvidenceRef(page=page, quote=token or "Measured page content boundary")]
+    elif not incomplete:
+        response.status = "compliant"
+        response.confidence = max(response.confidence, 0.95)
+        response.gap = None
+        response.gap_detail = ""
+        response.summary = "All covered petition and synopsis pages meet the measured margin thresholds."
+        response.observed = response.summary
+        response.conclusion = "The margin requirement is satisfied."
+    return response
+
+
+_AOR_EXECUTION_ENDORSEMENT = re.compile(
+    r"\b(?:executed\s+in\s+my\s+presence|satisf(?:ied|y).{0,80}due\s+execution|"
+    r"due\s+execution.{0,80}(?:certif|satisf)|identified\s+and\s+accepted)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def apply_deterministic_postclassification_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+    visual_index: dict[str, Any] | None,
+    *,
+    scope_complete: bool,
+) -> DefectResponse:
+    """Resolve complete, field-specific evidence after all retrieval retries."""
+    if _normalized_check_id(defect) != "D75" or not scope_complete:
+        return response
+    if response.status not in {"needs_review", "not_determined"}:
+        return response
+    text = "\n".join(str(chunk.get("text") or "") for chunk in chunks)
+    if _AOR_EXECUTION_ENDORSEMENT.search(text):
+        return response
+    if not isinstance(visual_index, dict):
+        return response
+    target_pages = {
+        _safe_page_number(item.get("page"))
+        for item in visual_index.get("targets") or []
+        if isinstance(item, dict)
+    }
+    reviewed_pages = {
+        _safe_page_number(page) for page in visual_index.get("pages") or []
+    }
+    visual_complete = bool(
+        str(visual_index.get("status") or "").casefold() == "ok"
+        and target_pages
+        and None not in target_pages
+        and target_pages.issubset(reviewed_pages)
+        and not visual_index.get("failures")
+    )
+    if not visual_complete:
+        return response
+    page = next(
+        (
+            _safe_page_number(chunk.get("page"))
+            for chunk in chunks
+            if str(chunk.get("text") or "").strip()
+        ),
+        None,
+    )
+    response.status = "defect_found"
+    response.confidence = max(response.confidence, 0.9)
+    response.gap = None
+    response.gap_detail = ""
+    response.summary = (
+        "The complete Vakalatnama contains no AOR certification that execution "
+        "occurred in the AOR's presence and no endorsement of due execution."
+    )
+    response.observed = response.summary
+    response.conclusion = "The required AOR execution endorsement is missing."
+    if not response.evidence and page is not None:
+        response.evidence = [EvidenceRef(page=page, quote="Vakalatnama execution block")]
+    return response
+
+
+def apply_conditional_manifest_policy(
+    defect: Defect,
+    response: DefectResponse,
+    layout: dict[int, dict[str, Any]] | None,
+) -> DefectResponse:
+    """Return N/A when a complete manifest affirmatively lacks the trigger.
+
+    This is deliberately limited to requirements phrased as a condition
+    (``Where ...``) and catalogue-provided trigger phrases. It never turns an
+    incomplete or unlabelled manifest into an absence finding.
+    """
+    if not str(defect.requirement or "").lstrip().casefold().startswith("where "):
+        return response
+    if response.status == "defect_found":
+        return response
+    raw_terms = str(getattr(defect, "trigger_words", "") or "")
+    terms = [
+        " ".join(item.casefold().split())
+        for item in re.split(r"[;\n|]+", raw_terms)
+        if len(" ".join(item.split())) >= 5
+    ]
+    if not terms or not layout:
+        return response
+    pages: list[str] = []
+    for entry in layout.values():
+        if not isinstance(entry, dict) or not parts_on_page(entry.get("document_part")):
+            return response
+        direct = str(entry.get("text") or entry.get("markdown") or "").strip()
+        if direct:
+            pages.append(direct)
+            continue
+        words = [
+            str(item.get("text") or item.get("t") or "").strip()
+            for item in entry.get("words") or []
+            if isinstance(item, dict)
+        ]
+        pages.append(" ".join(item for item in words if item))
+    corpus = " ".join(" ".join(pages).casefold().split())
+    if not corpus or any(term in corpus for term in terms):
+        return response
+    response.status = "not_applicable"
+    response.confidence = 1.0
+    response.gap = None
+    response.gap_detail = ""
+    response.summary = (
+        "Not applicable because the complete document manifest contains no "
+        "evidence of the factual condition that activates this requirement."
+    )
+    response.observed = response.summary
+    response.conclusion = "The conditional requirement is not activated."
+    return response
+
+
 def _move_to_review(
     response: DefectResponse,
     *,
@@ -1064,7 +1489,9 @@ def _omitted_phrases(*texts: str) -> list[str]:
     for text in texts:
         for match in _OMITTED_PHRASE.finditer(text or ""):
             phrase = " ".join(match.group("what").split()).strip(" .")
-            if len(phrase) >= 3 and phrase.casefold() not in {item.casefold() for item in found}:
+            if len(phrase) >= 3 and phrase.casefold() not in {
+                item.casefold() for item in found
+            }:
                 found.append(phrase)
     return found
 
@@ -1177,11 +1604,33 @@ def apply_visual_conflict_policy(
     visual_index: dict[str, Any] | None,
 ) -> DefectResponse:
     """Route text/vision conflicts to review instead of asserting absence."""
-    if response.status not in ("defect_found", "compliant"):
+    # A detected mark supports a compliant signature finding; it is not a
+    # conflict.  Only a confirmed absence claim can conflict with vision.
+    if response.status != "defect_found":
         return response
     wording = f"{defect.defect} {defect.requirement}".casefold()
+    missing_claim = " ".join(
+        [
+            response.observed or "",
+            response.conclusion or "",
+            response.summary or "",
+            *(item.detail for item in response.elements if item.state != "present"),
+        ]
+    ).casefold()
     relevant_types: set[str] = set()
-    if any(term in wording for term in ("signature", "signed", "executed")):
+    signature_absence_claimed = bool(
+        re.search(
+            r"(?:missing|absent|no|without|unsigned|not\s+(?:signed|executed))"
+            r"[^.;]{0,60}(?:signature|thumb impression)|"
+            r"(?:signature|thumb impression)[^.;]{0,60}"
+            r"(?:missing|absent|not shown|blank)",
+            missing_claim,
+            re.IGNORECASE,
+        )
+    )
+    if signature_absence_claimed and any(
+        term in wording for term in ("signature", "signed", "executed")
+    ):
         relevant_types.update(
             {
                 "signature_like_mark",
@@ -1204,6 +1653,15 @@ def apply_visual_conflict_policy(
             detail="Required visual evidence was not inspected.",
         )
     targets = {part.casefold() for part in defect.inspect_parts}
+    expected_signature_roles: set[str] = set()
+    if any(term in wording for term in ("petitioner", "executant", "thumb impression")):
+        expected_signature_roles.add("executant")
+    if any(term in wording for term in ("advocate", "aor", "accepted by")):
+        expected_signature_roles.add("advocate")
+    evidence_pages = {
+        int(ref.page) for ref in response.evidence if ref.page is not None
+    }
+    detected_signature_roles: set[str] = set()
     conflicts: list[str] = []
     for mark in visual_index.get("marks") or []:
         if not isinstance(mark, dict):
@@ -1211,25 +1669,87 @@ def apply_visual_conflict_policy(
         marking_type = str(mark.get("marking_type") or "").strip().casefold()
         if marking_type not in relevant_types:
             continue
+        mark_page = _safe_page_number(mark.get("page"))
+        if (
+            evidence_pages
+            and marking_type
+            in {
+                "signature_like_mark",
+                "advocate_on_record_signature",
+                "executant_signature",
+            }
+            and mark_page not in evidence_pages
+        ):
+            continue
         document_type = str(mark.get("document_type") or "").strip()
         if targets and not any(
             target in document_type.casefold() or document_type.casefold() in target
             for target in targets
         ):
             continue
+        signature_role = str(mark.get("signature_role") or "").strip().casefold()
+        if marking_type in {
+            "signature_like_mark",
+            "advocate_on_record_signature",
+            "executant_signature",
+        }:
+            if not signature_role:
+                # An untyped mark elsewhere on the document is not enough to
+                # contradict a role-specific absence finding.
+                continue
+            normalized_role = (
+                "advocate"
+                if signature_role in {"advocate", "aor", "advocate_on_record"}
+                else "executant"
+                if signature_role in {"executant", "petitioner", "deponent"}
+                else signature_role
+            )
+            if expected_signature_roles and normalized_role not in expected_signature_roles:
+                continue
+            detected_signature_roles.add(normalized_role)
         visible = str(mark.get("visible_text") or "").strip()
         label = str(mark.get("associated_label") or "").strip()
         detail = visible or label or marking_type.replace("_", " ")
         conflicts.append(f"{document_type or 'target document'}: {detail}")
+    if expected_signature_roles and not expected_signature_roles.issubset(
+        detected_signature_roles
+    ):
+        # One AOR mark cannot erase a separately missing executant signature,
+        # and vice versa.  Keep the grounded defect for the unmet role.
+        conflicts = []
     if not conflicts:
         status = str(visual_index.get("status") or "").casefold()
         pages = visual_index.get("pages") or []
+        target_pages = {
+            _safe_page_number(item.get("page"))
+            for item in visual_index.get("targets") or []
+            if isinstance(item, dict)
+            and _safe_page_number(item.get("page")) is not None
+        }
+        reviewed_pages = {
+            page for raw in pages if (page := _safe_page_number(raw)) is not None
+        }
         failures = visual_index.get("failures") or []
-        if status != "ok" or not pages or failures:
+        if (
+            status != "ok"
+            or not target_pages
+            or not target_pages.issubset(reviewed_pages)
+            or failures
+        ):
+            original_error = str(visual_index.get("error") or "").strip()
+            failure_details = [
+                str(item.get("error") or item.get("reason") or "").strip()
+                for item in failures
+                if isinstance(item, dict)
+            ]
+            reason = next((item for item in failure_details if item), original_error)
             return _move_to_review(
                 response,
                 gap="unreadable",
-                detail="Required visual evidence has incomplete page coverage.",
+                detail=(
+                    "Required visual evidence has incomplete page coverage"
+                    + (f": {reason}" if reason else ".")
+                ),
             )
         return response
     return _move_to_review(
@@ -1257,6 +1777,31 @@ def apply_evidence_capability_policy(
         else None
     )
     if isinstance(assessments, list) and assessments:
+        targets = {
+            _safe_page_number(item.get("page"))
+            for item in (visual_index or {}).get("targets") or []
+            if isinstance(item, dict)
+        }
+        assessed = {
+            _safe_page_number(item.get("page"))
+            for item in assessments
+            if isinstance(item, dict)
+        }
+        complete = bool(
+            str((visual_index or {}).get("status") or "").casefold() == "ok"
+            and targets
+            and None not in targets
+            and targets.issubset(assessed)
+            and not (visual_index or {}).get("failures")
+        )
+        if complete and all(bool(item.get("readable")) for item in assessments):
+            response.status = "compliant"
+            response.confidence = max(response.confidence, 0.9)
+            response.gap = None
+            response.gap_detail = ""
+            response.summary = "Every covered page was visually readable."
+            response.observed = response.summary
+            response.conclusion = "The legibility requirement is satisfied."
         return response
     if response.status not in ("defect_found", "compliant", "needs_review"):
         return response
@@ -1357,12 +1902,12 @@ def manifest_absence_proven(
     defect: Defect,
     layout: dict[int, dict[str, Any]] | None,
 ) -> bool:
-    """Whether a complete layout proves every required part of a switched row absent."""
+    """Whether a complete layout proves a required part of a switched row absent."""
     if not getattr(defect, "manifest_absence_proves_defect", False):
         return False
     missing = missing_parts_in_layout(defect, layout)
-    required = required_parts_for_defect(defect)
-    return bool(missing) and bool(required) and len(missing) == len(required)
+    owned = required_parts_for_defect(defect)
+    return bool(missing) and any(part in owned for part in missing)
 
 
 def missing_document_sentence(parts: list[str]) -> str:
@@ -1395,7 +1940,11 @@ def apply_manifest_absence_policy(
     """Record a wholly missing document. The model is not asked to explain it."""
     if not manifest_absence_proven(defect, layout):
         return response
-    sentence = missing_document_sentence(required_parts_for_defect(defect))
+    missing = missing_parts_in_layout(defect, layout) or []
+    owned = required_parts_for_defect(defect)
+    sentence = missing_document_sentence(
+        [part for part in missing if part in owned]
+    )
     response.status = "defect_found"
     response.confidence = 1.0
     response.summary = sentence
@@ -1442,11 +1991,22 @@ def apply_undetermined_policy(
     return _move_to_review(response, gap="unreadable")
 
 
+def finalize_public_response(response: DefectResponse) -> DefectResponse:
+    """Preserve an unresolved result and its original evidence-gap reason.
+
+    An inability to verify a check is not affirmative proof of compliance.
+    Callers may omit unresolved rows from the public findings list, but must
+    never rewrite them as ``compliant``.
+    """
+    return response
+
+
 class ScrutinySummary(BaseModel):
     total_defects: int
     defects_found: int
     compliant: int
     needs_review: int
+    rule_verification_pending: int = 0
     not_determined: int
     not_applicable: int
     overall_confidence: float
@@ -1560,7 +2120,11 @@ def build_finding(
             evidence_pages=evidence_pages,
         ),
         confidence=response.confidence,
-        review_reason_code=response.gap if response.status == "needs_review" else None,
+        review_reason_code=(
+            response.gap
+            if response.status in {"needs_review", "rule_verification_pending"}
+            else None
+        ),
         review_reason=review_reason_for_response(response, coverage),
         reasoning=compose_reasoning(
             defect,
@@ -1677,6 +2241,55 @@ def missing_document_finding(
     )
 
 
+def missing_dependency_finding(
+    defect: Defect,
+    parts: list[str],
+    *,
+    record: dict[str, Any] | None = None,
+) -> DefectFinding:
+    """Skip a content/formality check when its source document is absent.
+
+    The absence itself is reported once by the document-presence owner check.
+    Signature, stamp, date, execution and content checks cannot truthfully be
+    evaluated against a document which the complete manifest proves is absent.
+    """
+    label = _english_join([part for part in parts if part]) or "required document"
+    sentence = (
+        f"Not applicable because the {label} is absent from the complete "
+        "document manifest; its dependent check was skipped."
+    )
+    try:
+        catalogue = get_catalogue()
+        sources = official_source_locations(defect, catalogue)
+    except (RuntimeError, AttributeError):
+        sources = []
+    try:
+        cure = cure_from_defect(defect)
+    except AttributeError:
+        cure = HowToCure(steps=list(getattr(defect, "how_to_cure", None) or []))
+    return DefectFinding(
+        check_id=str(getattr(defect, "check_id", "") or ""),
+        defect=str(getattr(defect, "defect", "") or ""),
+        requirement=str(getattr(defect, "requirement", "") or ""),
+        main_category=str(getattr(defect, "main_category", "") or ""),
+        special_category=getattr(defect, "special_category", None),
+        status="not_applicable",
+        summary=sentence,
+        confidence=1.0,
+        reasoning=sentence,
+        evidence=[],
+        how_to_cure=cure,
+        applicable_rule=getattr(defect, "applicable_rule", None),
+        location="Required document absent from the complete manifest.",
+        location_source=sources,
+        coverage=Coverage(
+            structured_record_available=isinstance(record, dict) and bool(record),
+            evidence_complete=True,
+        ),
+        defect_version=int(getattr(defect, "defect_version", 1) or 1),
+    )
+
+
 def summarize_usage(
     findings: list[DefectFinding], *, model: str | None
 ) -> UsageSummary:
@@ -1734,6 +2347,7 @@ def summarize(findings: list[DefectFinding]) -> ScrutinySummary:
         defects_found=counts.get("defect_found", 0),
         compliant=counts.get("compliant", 0),
         needs_review=counts.get("needs_review", 0),
+        rule_verification_pending=counts.get("rule_verification_pending", 0),
         not_determined=counts.get("not_determined", 0),
         not_applicable=counts.get("not_applicable", 0),
         overall_confidence=round(sum(confidences) / len(confidences), 3),

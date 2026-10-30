@@ -5,6 +5,7 @@ import { cn } from "./utils";
 import {
   DefectFinding,
   RESULT_LABELS,
+  REVIEW_REASON_LABELS,
   RESULT_STYLES,
   ResultState,
   ScrutinyReport,
@@ -15,6 +16,7 @@ import {
   downloadScrutinyDoc,
   formatUsd,
   formatTokens,
+  publicResultState,
 } from "./scrutiny";
 
 function StatusBadge({
@@ -24,14 +26,15 @@ function StatusBadge({
   status: ResultState;
   children?: ReactNode;
 }) {
+  const displayStatus = publicResultState(status);
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap",
-        RESULT_STYLES[status],
+        RESULT_STYLES[displayStatus],
       )}
     >
-      {children ?? RESULT_LABELS[status]}
+      {children ?? RESULT_LABELS[displayStatus]}
     </span>
   );
 }
@@ -119,9 +122,7 @@ function SuggestedFix({
 }
 
 function FindingCard({ finding }: { finding: DefectFinding }) {
-  const [open, setOpen] = useState(
-    finding.status === "defect_found" || finding.status === "needs_review",
-  );
+  const [open, setOpen] = useState(finding.status === "defect_found");
 
   return (
     <div className="rounded-lg border border-border overflow-hidden">
@@ -162,8 +163,22 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
         <div className="bg-muted/20">
           <div className="border-t border-border px-4 py-3">
             {finding.reasoning && (
-              <p className="text-sm text-muted-foreground">{finding.reasoning}</p>
+              <p className="text-sm text-muted-foreground">
+                {finding.reasoning}
+              </p>
             )}
+            {(finding.status === "needs_review" ||
+              finding.status === "rule_verification_pending") &&
+              finding.review_reason_code && (
+                <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+                  <div className="font-semibold">
+                    {REVIEW_REASON_LABELS[finding.review_reason_code]}
+                  </div>
+                  {finding.review_reason && (
+                    <p className="mt-0.5">{finding.review_reason}</p>
+                  )}
+                </div>
+              )}
             <EvidenceList evidence={finding.evidence ?? []} />
             <VisualList items={finding.visual_localizations ?? []} />
             {(finding.defect || finding.requirement) && (
@@ -171,7 +186,9 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
                 {finding.defect && (
                   <div>
                     <div className="text-xs font-semibold">Defect</div>
-                    <p className="mt-1 text-muted-foreground">{finding.defect}</p>
+                    <p className="mt-1 text-muted-foreground">
+                      {finding.defect}
+                    </p>
                   </div>
                 )}
                 {finding.requirement && (
@@ -211,7 +228,10 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
             )}
           </div>
           {(finding.subcheck_results ?? []).map((result) => (
-            <div key={result.subcheck_id} className="border-t border-border px-4 py-3">
+            <div
+              key={result.subcheck_id}
+              className="border-t border-border px-4 py-3"
+            >
               <div className="flex items-start justify-between gap-3">
                 <div className="text-sm font-medium">{result.subcheck_id}</div>
                 <StatusBadge status={result.status} />
@@ -231,8 +251,9 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
               Based on {finding.coverage.chunks_reviewed} excerpt(s)
               {finding.coverage.pages_reviewed.length > 0 &&
                 ` from page ${finding.coverage.pages_reviewed.join(", ")}`}
-              . Coverage was incomplete, so undetermined results may simply mean
-              the relevant text was not retrieved.
+              . When coverage is incomplete, the result follows the
+              no-confirmed-defect policy unless grounded evidence establishes a
+              defect.
             </div>
           )}
           {(finding.location ||
@@ -264,7 +285,10 @@ function FindingCard({ finding }: { finding: DefectFinding }) {
 
 function UsagePanel({ report }: { report: ScrutinyReport }) {
   const usage = report.usage;
-  if (!usage || (!usage.llm_calls && !usage.total_tokens && usage.cost_usd == null)) {
+  if (
+    !usage ||
+    (!usage.llm_calls && !usage.total_tokens && usage.cost_usd == null)
+  ) {
     return null;
   }
   const rows = usage.by_check ?? [];
@@ -287,7 +311,8 @@ function UsagePanel({ report }: { report: ScrutinyReport }) {
         </div>
         {usage.highest_cost_check_id && (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
-            Highest: {usage.highest_cost_check_id} · {formatUsd(usage.highest_cost_usd)}
+            Highest: {usage.highest_cost_check_id} ·{" "}
+            {formatUsd(usage.highest_cost_usd)}
           </div>
         )}
       </div>
@@ -298,18 +323,18 @@ function UsagePanel({ report }: { report: ScrutinyReport }) {
             return (
               <div key={row.check_id} className="space-y-0.5">
                 <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="min-w-0 truncate">
-                    {row.check_id}
-                  </span>
+                  <span className="min-w-0 truncate">{row.check_id}</span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {formatUsd(row.cost_usd)} · {formatTokens(row.total_tokens)} ·{" "}
-                    {pct}%
+                    {formatUsd(row.cost_usd)} · {formatTokens(row.total_tokens)}{" "}
+                    · {pct}%
                   </span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                   <div
                     className="h-full rounded-full bg-amber-500/80"
-                    style={{ width: `${Math.min(100, Math.max(pct, pct > 0 ? 2 : 0))}%` }}
+                    style={{
+                      width: `${Math.min(100, Math.max(pct, pct > 0 ? 2 : 0))}%`,
+                    }}
                   />
                 </div>
               </div>
@@ -332,19 +357,22 @@ function SummaryBar({ report }: { report: ScrutinyReport }) {
       status: "defect_found",
     },
     {
-      label: "Needs review",
-      value: report.summary.needs_review,
-      status: "needs_review",
-    },
-    {
-      label: "Visual / undetermined",
-      value: report.summary.not_determined,
-      status: "not_determined",
-    },
-    {
       label: "Compliant",
       value: report.summary.compliant,
       status: "compliant",
+    },
+    {
+      label: "Manual verification required",
+      value:
+        report.summary.needs_review +
+        report.summary.not_determined +
+        (report.summary.rule_verification_pending ?? 0),
+      status: "needs_review",
+    },
+    {
+      label: "Not applicable",
+      value: report.summary.not_applicable,
+      status: "not_applicable",
     },
   ];
 

@@ -58,19 +58,17 @@ def test_api_prepares_google_adc_before_starting() -> None:
 @pytest.mark.parametrize(
     "definition_name", ["worker-task-definition.json", "ecs-scrutiny-worker-task.json"]
 )
-def test_workers_use_shared_vertex_pacing(definition_name: str) -> None:
-    definition = json.loads(
-        (REPO_ROOT / definition_name).read_text(encoding="utf-8")
-    )
+def test_workers_use_openrouter_gemini_pacing(definition_name: str) -> None:
+    definition = json.loads((REPO_ROOT / definition_name).read_text(encoding="utf-8"))
     environment = {
         entry["name"]: entry.get("value")
         for entry in definition["containerDefinitions"][0].get("environment", [])
     }
 
-    assert environment["VERTEX_SHARED_RATE_LIMIT"] == "true"
-    assert environment["VERTEX_REQUESTS_PER_MINUTE"] == "8"
-    assert environment["AWS_S3_BUCKET"]
-    assert environment["VERTEX_MAX_ATTEMPTS"] == "6"
+    assert environment["LLM_PROVIDER"] == "openrouter"
+    assert environment["OPENROUTER_MODEL"].startswith("google/")
+    assert environment["OPENROUTER_REQUESTS_PER_MINUTE"] == "25"
+    assert environment["OPENROUTER_MAX_ATTEMPTS"] == "4"
     assert environment["SCRUTINY_CONCURRENCY"] == "8"
     assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "json"
     assert environment["SCRUTINY_DEFECTS"] == "all"

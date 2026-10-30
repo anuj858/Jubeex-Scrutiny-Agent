@@ -1,4 +1,4 @@
-"""Minimal OpenRouter client for structured (JSON-schema constrained) output.
+"""Provider-neutral Gemini/OpenRouter structured-output client.
 
 OpenRouter exposes an OpenAI-compatible chat completions endpoint, so this is a
 thin `httpx` wrapper rather than a new SDK dependency. Not every model honours
@@ -30,26 +30,31 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_VERTEX_PROJECT = "scrutiny-jubeex"
 DEFAULT_VERTEX_LOCATION = "global"
 DEFAULT_VERTEX_MODEL = "gemini-4-argon"
+DEFAULT_GEMINI_MODEL = "gemini-4-argon"
 # DEFAULT_MODEL kept for OpenRouter ids.
 DEFAULT_MODEL = "google/gemini-4-argon"
 DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-4-argon"
 DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-4-argon"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_VERTEX_REQUEST_TIMEOUT_S = 900
+DEFAULT_GEMINI_REQUEST_TIMEOUT_S = 900
 # Hard ceiling sent to the model. It is never raised.
 DEFAULT_MAX_TOKENS = 9000
 # The model is told to finish the whole JSON inside this. The gap up to
 # 9000 is spare so a finished sentence is not cut at the ceiling.
 ANSWER_TOKEN_BUDGET = 8200
 MAX_ATTEMPTS = 3
+DEFAULT_OPENROUTER_MAX_ATTEMPTS = 3
 DEFAULT_REQUESTS_PER_MINUTE = 0
 DEFAULT_VERTEX_MAX_ATTEMPTS = 6
+DEFAULT_GEMINI_MAX_ATTEMPTS = 4
 MAX_VERTEX_RETRY_DELAY_S = 60.0
 MAX_SHARED_RATE_LIMIT_QUEUE_S = 600.0
 DEFAULT_VERTEX_SHARED_COOLDOWN_BASE_S = 30.0
 DEFAULT_VERTEX_SHARED_COOLDOWN_MAX_S = 300.0
 
 _genai_client: Any = None
+_genai_client_key: tuple[str, ...] | None = None
 _genai_client_lock = asyncio.Lock()
 _vertex_rate_limit_s3_client: Any = None
 
@@ -67,18 +72,41 @@ class LLMFatalError(LLMError):
 
 
 def llm_provider() -> str:
-    """Active backend: ``vertex`` (GCP Gen AI SDK) or ``openrouter``."""
-    raw = (os.getenv("LLM_PROVIDER") or "vertex").strip().casefold()
+    """Active backend: Gemini Developer API, Vertex, or OpenRouter."""
+    raw = (os.getenv("LLM_PROVIDER") or "openrouter").strip().casefold()
     if raw in {"openrouter", "or"}:
         return "openrouter"
-    if raw in {"google", "gemini", "google_ai", "ai_studio"}:
-        # Treat AI Studio key mode as openrouter-incompatible; use vertex enterprise.
+    if raw in {"vertex", "vertex_ai", "vertexai"}:
         return "vertex"
-    return "vertex"
+    if raw in {
+        "google",
+        "gemini",
+        "genai",
+        "google_ai",
+        "google_ai_studio",
+        "ai_studio",
+        "gemini_developer_api",
+    }:
+        return "gemini"
+    return "openrouter"
+
+
+def openrouter_max_attempts() -> int:
+    """Maximum OpenRouter attempts, including the initial request."""
+    raw = (os.getenv("OPENROUTER_MAX_ATTEMPTS") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_OPENROUTER_MAX_ATTEMPTS
+    except ValueError:
+        return DEFAULT_OPENROUTER_MAX_ATTEMPTS
 
 
 def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
+
+
+def gemini_api_key() -> str | None:
+    """Developer API key; GOOGLE_API_KEY remains an SDK-compatible fallback."""
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 def google_cloud_project() -> str:
@@ -102,12 +130,17 @@ def mask_openrouter_api_key(key: str | None = None) -> str:
     """Safe console fingerprint — never log the full secret."""
     if llm_provider() == "vertex":
         return f"vertex:{google_cloud_project()}/{google_cloud_location()}"
-    value = key if key is not None else openrouter_api_key()
+    provider = llm_provider()
+    value = (
+        key
+        if key is not None
+        else (gemini_api_key() if provider == "gemini" else openrouter_api_key())
+    )
     if not value:
         return "(unset)"
     if len(value) <= 16:
-        return f"{value[:4]}…(len={len(value)})"
-    return f"{value[:12]}…{value[-4:]} (len={len(value)})"
+        return f"{provider}:{value[:4]}…(len={len(value)})"
+    return f"{provider}:{value[:12]}…{value[-4:]} (len={len(value)})"
 
 
 def _strip_google_model_prefix(model: str) -> str:
@@ -127,13 +160,21 @@ def openrouter_model() -> str:
             or DEFAULT_VERTEX_MODEL
         )
         return _strip_google_model_prefix(raw)
+    if llm_provider() == "gemini":
+        raw = (
+            os.getenv("GEMINI_MODEL")
+            or os.getenv("GOOGLE_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or DEFAULT_GEMINI_MODEL
+        )
+        return _strip_google_model_prefix(raw)
     return os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
 
 
 def scrutiny_model() -> str:
     """Model used only for registry defect checks."""
     raw = (os.getenv("SCRUTINY_MODEL") or "").strip()
-    if llm_provider() == "vertex":
+    if llm_provider() in {"vertex", "gemini"}:
         return _strip_google_model_prefix(raw or DEFAULT_SCRUTINY_VERTEX_MODEL)
     return raw or DEFAULT_SCRUTINY_OPENROUTER_MODEL
 
@@ -141,7 +182,24 @@ def scrutiny_model() -> str:
 def openrouter_enabled() -> bool:
     if llm_provider() == "vertex":
         return bool(google_cloud_project())
+    if llm_provider() == "gemini":
+        return bool(gemini_api_key())
     return bool(openrouter_api_key())
+
+
+def llm_enabled() -> bool:
+    """Whether the selected provider has its required authentication config."""
+    return openrouter_enabled()
+
+
+def llm_model() -> str:
+    """Provider-neutral alias for the resolved default model."""
+    return openrouter_model()
+
+
+def mask_llm_credential(key: str | None = None) -> str:
+    """Provider-neutral, non-secret credential fingerprint for diagnostics."""
+    return mask_openrouter_api_key(key)
 
 
 def openrouter_requests_per_minute() -> int:
@@ -166,8 +224,15 @@ def llm_requests_per_minute() -> int:
             return max(0, int(generic))
         except ValueError:
             return DEFAULT_REQUESTS_PER_MINUTE
-    if llm_provider() == "openrouter":
+    provider = llm_provider()
+    if provider == "openrouter":
         return openrouter_requests_per_minute()
+    if provider == "gemini":
+        raw = (os.getenv("GEMINI_REQUESTS_PER_MINUTE") or "").strip()
+        try:
+            return max(0, int(raw)) if raw else DEFAULT_REQUESTS_PER_MINUTE
+        except ValueError:
+            return DEFAULT_REQUESTS_PER_MINUTE
     raw = (os.getenv("VERTEX_REQUESTS_PER_MINUTE") or "").strip()
     try:
         return max(0, int(raw)) if raw else DEFAULT_REQUESTS_PER_MINUTE
@@ -196,6 +261,41 @@ def vertex_request_timeout_seconds() -> int:
     if not 60 <= timeout <= 3600:
         raise ValueError("VERTEX_REQUEST_TIMEOUT_S must be between 60 and 3600")
     return timeout
+
+
+def gemini_max_attempts() -> int:
+    """Maximum Developer API attempts, including the initial request."""
+    raw = (os.getenv("GEMINI_MAX_ATTEMPTS") or "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_GEMINI_MAX_ATTEMPTS
+    except ValueError:
+        return DEFAULT_GEMINI_MAX_ATTEMPTS
+
+
+def gemini_request_timeout_seconds() -> int:
+    """Bound one Gemini Developer API request."""
+    raw = (os.getenv("GEMINI_REQUEST_TIMEOUT_S") or "").strip()
+    if not raw:
+        return DEFAULT_GEMINI_REQUEST_TIMEOUT_S
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise ValueError("GEMINI_REQUEST_TIMEOUT_S must be an integer") from exc
+    if not 60 <= timeout <= 3600:
+        raise ValueError("GEMINI_REQUEST_TIMEOUT_S must be between 60 and 3600")
+    return timeout
+
+
+def genai_max_attempts() -> int:
+    return (
+        gemini_max_attempts() if llm_provider() == "gemini" else vertex_max_attempts()
+    )
+
+
+def genai_request_timeout_seconds() -> int:
+    if llm_provider() == "gemini":
+        return gemini_request_timeout_seconds()
+    return vertex_request_timeout_seconds()
 
 
 class _OpenRouterRateLimiter:
@@ -244,6 +344,20 @@ def vertex_shared_rate_limit_enabled() -> bool:
     return bool(bucket) and sqs in {"1", "true", "yes", "on"}
 
 
+def genai_shared_rate_limit_enabled() -> bool:
+    """Coordinate Gemini/Vertex calls across every ECS worker via S3."""
+    if llm_provider() != "gemini":
+        return vertex_shared_rate_limit_enabled()
+    raw = (os.getenv("GEMINI_SHARED_RATE_LIMIT") or "").strip().casefold()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    bucket = (os.getenv("AWS_S3_BUCKET") or "").strip() or (
+        os.getenv("JUBEEX_ARTIFACT_BUCKET") or ""
+    ).strip()
+    sqs = (os.getenv("JUBEEX_SQS_ENABLED") or "").strip().casefold()
+    return bool(bucket) and sqs in {"1", "true", "yes", "on"}
+
+
 def _vertex_rate_limit_bucket() -> str:
     return (os.getenv("AWS_S3_BUCKET") or "").strip() or (
         os.getenv("JUBEEX_ARTIFACT_BUCKET") or ""
@@ -251,11 +365,17 @@ def _vertex_rate_limit_bucket() -> str:
 
 
 def _vertex_rate_limit_key(model_name: str | None) -> str:
+    provider = llm_provider()
+    credential_scope = ""
+    if provider == "gemini" and gemini_api_key():
+        credential_scope = hashlib.sha256(gemini_api_key().encode()).hexdigest()[:16]
     scope = "|".join(
         (
+            provider,
             google_cloud_project(),
             google_cloud_location(),
             _strip_google_model_prefix(model_name or openrouter_model()),
+            credential_scope,
         )
     )
     digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:24]
@@ -451,8 +571,8 @@ async def _publish_vertex_cooldown(
     model_name: str,
     request_label: str | None,
 ) -> float:
-    """Pause all workers after Vertex reports exhausted shared capacity."""
-    if not vertex_shared_rate_limit_enabled():
+    """Pause all workers after the active Google provider reports a 429."""
+    if not genai_shared_rate_limit_enabled():
         return 0.0
     bucket = _vertex_rate_limit_bucket()
     if not bucket:
@@ -468,8 +588,9 @@ async def _publish_vertex_cooldown(
         logger.warning("Could not publish shared Vertex cooldown: %s", exc)
         return 0.0
     logger.warning(
-        "[LLM]%s Vertex capacity exhausted; pausing all workers for %.1fs",
+        "[LLM]%s %s capacity exhausted; pausing all workers for %.1fs",
         f"[{request_label}]" if request_label else "",
+        llm_provider(),
         delay_s,
     )
     return delay_s
@@ -484,13 +605,14 @@ async def acquire_openrouter_slot(
     rpm = llm_requests_per_minute()
     if rpm <= 0:
         return
-    if llm_provider() != "vertex" or not vertex_shared_rate_limit_enabled():
+    provider = llm_provider()
+    if provider not in {"vertex", "gemini"} or not genai_shared_rate_limit_enabled():
         await _openrouter_rate_limiter.acquire(rpm=rpm, request_label=request_label)
         return
 
     bucket = _vertex_rate_limit_bucket()
     if not bucket:
-        raise LLMError("VERTEX_SHARED_RATE_LIMIT requires an artifact S3 bucket")
+        raise LLMError("Shared GenAI rate limiting requires an artifact S3 bucket")
     client = _get_vertex_rate_limit_s3_client()
     key = _vertex_rate_limit_key(model_name)
     while True:
@@ -505,11 +627,12 @@ async def acquire_openrouter_slot(
         except Exception as exc:
             # Failing closed prevents an S3 outage from turning every ECS task into
             # an independent burst source and worsening Vertex exhaustion.
-            raise LLMError(f"Shared Vertex rate limiter unavailable: {exc}") from exc
+            raise LLMError(f"Shared GenAI rate limiter unavailable: {exc}") from exc
         if wait_s > 0:
             logger.info(
-                "[LLM]%s shared Vertex pacing at %s req/min; waiting %.1fs",
+                "[LLM]%s shared %s pacing at %s req/min; waiting %.1fs",
                 f"[{request_label}]" if request_label else "",
+                provider,
                 rpm,
                 wait_s,
             )
@@ -522,7 +645,7 @@ async def acquire_openrouter_slot(
                 key=key,
             )
         except Exception as exc:
-            raise LLMError(f"Shared Vertex rate limiter unavailable: {exc}") from exc
+            raise LLMError(f"Shared GenAI rate limiter unavailable: {exc}") from exc
         if cooldown_s <= 0:
             return
         logger.info(
@@ -574,39 +697,58 @@ def _is_retryable_vertex_error(error: Exception) -> bool:
 
 
 def get_genai_client() -> Any:
-    """Lazy Google Gen AI client (Vertex / Agent Platform, ADC or WIF)."""
-    global _genai_client
-    if _genai_client is not None:
+    """Lazy Google Gen AI client for Developer API key or Vertex credentials."""
+    global _genai_client, _genai_client_key
+    provider = llm_provider()
+    if provider == "gemini":
+        api_key = gemini_api_key()
+        if not api_key:
+            raise LLMFatalError("GEMINI_API_KEY is required for LLM_PROVIDER=gemini")
+        client_key = (provider, hashlib.sha256(api_key.encode()).hexdigest()[:12])
+    elif provider == "vertex":
+        client_key = (provider, google_cloud_project(), google_cloud_location())
+    else:
+        raise LLMError("Google Gen AI client requires LLM_PROVIDER=gemini or vertex")
+    if _genai_client is not None and _genai_client_key == client_key:
         return _genai_client
     try:
         from google import genai
         from google.genai import types
     except ImportError as exc:
         raise LLMError(
-            "google-genai is required for LLM_PROVIDER=vertex "
+            "google-genai is required for LLM_PROVIDER=gemini or vertex "
             "(pip install google-genai)"
         ) from exc
-    project = google_cloud_project()
-    location = google_cloud_location()
-    from .aws_wif import ecs_google_credentials
-
-    _genai_client = genai.Client(
-        enterprise=True,
-        project=project,
-        location=location,
-        credentials=ecs_google_credentials(),
+    http_options = types.HttpOptions(
         # Keep a single retry layer. SDK retries happen below our limiter and
-        # previously multiplied request bursts across ECS worker processes.
-        http_options=types.HttpOptions(
-            retry_options=types.HttpRetryOptions(attempts=1),
-            timeout=vertex_request_timeout_seconds() * 1000,
-        ),
+        # would otherwise multiply bursts across concurrent worker processes.
+        retry_options=types.HttpRetryOptions(attempts=1),
+        timeout=genai_request_timeout_seconds() * 1000,
     )
-    logger.info(
-        "[LLM] GenAI client ready provider=vertex project=%s location=%s",
-        project,
-        location,
-    )
+    if provider == "gemini":
+        _genai_client = genai.Client(
+            api_key=api_key,
+            http_options=http_options,
+        )
+        logger.info("[LLM] GenAI client ready provider=gemini_developer_api")
+    else:
+        project = google_cloud_project()
+        location = google_cloud_location()
+        from .aws_wif import ecs_google_credentials
+
+        _genai_client = genai.Client(
+            enterprise=True,
+            project=project,
+            location=location,
+            credentials=ecs_google_credentials(),
+            http_options=http_options,
+        )
+        logger.info(
+            "[LLM] GenAI client ready provider=vertex project=%s location=%s",
+            project,
+            location,
+        )
+    _genai_client_key = client_key
     return _genai_client
 
 
@@ -799,7 +941,9 @@ def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
         else:
             completed["summary"] = "Model omitted summary."
     if not str(completed.get("observed") or "").strip():
-        completed["observed"] = completed.get("summary") or "Model response was truncated."
+        completed["observed"] = (
+            completed.get("summary") or "Model response was truncated."
+        )
     if completed.get("confidence") is None:
         status = str(completed.get("status") or "").strip().lower()
         # Conservative defaults when the model drops the field.
@@ -900,7 +1044,7 @@ def _parse_json(content: str) -> dict[str, Any]:
     ) from last_error
 
 
-async def _call_structured_vertex[T: BaseModel](
+async def _call_structured_genai[T: BaseModel](
     *,
     system_prompt: str,
     user_prompt: str,
@@ -910,7 +1054,7 @@ async def _call_structured_vertex[T: BaseModel](
     token_limit: int | None,
     request_label: str | None,
 ) -> tuple[T, LlmUsage]:
-    """Vertex / Agent Platform via google-genai (ADC locally, WIF on ECS)."""
+    """Structured output through Google GenAI (Developer API or Vertex)."""
     from google.genai import types
 
     client = get_genai_client()
@@ -919,7 +1063,9 @@ async def _call_structured_vertex[T: BaseModel](
     last_error: Exception | None = None
     contents = user_prompt
     use_schema = True
-    max_attempts = vertex_max_attempts()
+    provider = llm_provider()
+    provider_label = "Gemini Developer API" if provider == "gemini" else "Vertex"
+    max_attempts = genai_max_attempts()
     attempts_made = 0
 
     for attempt in range(1, max_attempts + 1):
@@ -954,12 +1100,13 @@ async def _call_structured_vertex[T: BaseModel](
                 if isinstance(parsed_obj, BaseModel):
                     return response_model.model_validate(parsed_obj.model_dump()), usage
             if not content:
-                raise LLMError("Vertex response had empty text")
+                raise LLMError(f"{provider_label} response had empty text")
             reason = _finish_reason_name(response)
             if _answer_was_cut(content, finish_reason=reason):
                 logger.warning(
-                    "[LLM] Vertex reply was cut off (%s); retrying inside "
+                    "[LLM] %s reply was cut off (%s); retrying inside "
                     "max_output_tokens=%s",
+                    provider_label,
                     reason or "incomplete JSON",
                     token_limit,
                 )
@@ -978,14 +1125,15 @@ async def _call_structured_vertex[T: BaseModel](
             else:
                 complete = _loads_complete_json(content)
             if complete is None:
-                raise LLMError("Vertex response was not a JSON object")
+                raise LLMError(f"{provider_label} response was not a JSON object")
             parsed = _complete_structured_fields(complete)
             return response_model.model_validate(parsed), usage
         except ValidationError as e:
             last_error = e
             logger.warning(
-                "[LLM]%s Vertex attempt %s/%s malformed: %s",
+                "[LLM]%s %s attempt %s/%s malformed: %s",
                 f"[{request_label}]" if request_label else "",
+                provider_label,
                 attempt,
                 max_attempts,
                 str(e)[:300],
@@ -1007,10 +1155,13 @@ async def _call_structured_vertex[T: BaseModel](
                 token in lower
                 for token in ("permission", "unauthenticated", "403", "401", "billing")
             ):
-                raise LLMFatalError(f"Vertex auth/billing: {msg[:300]}") from e
+                raise LLMFatalError(
+                    f"{provider_label} auth/billing: {msg[:300]}"
+                ) from e
             logger.warning(
-                "[LLM]%s Vertex attempt %s/%s failed: %s",
+                "[LLM]%s %s attempt %s/%s failed: %s",
                 f"[{request_label}]" if request_label else "",
+                provider_label,
                 attempt,
                 max_attempts,
                 msg[:300],
@@ -1033,8 +1184,9 @@ async def _call_structured_vertex[T: BaseModel](
                     shared_cooldown_s,
                 )
                 logger.info(
-                    "[LLM]%s Retrying Vertex after %.1fs (attempt %s/%s)",
+                    "[LLM]%s Retrying %s after %.1fs (attempt %s/%s)",
                     f"[{request_label}]" if request_label else "",
+                    provider_label,
                     delay_s,
                     attempt,
                     max_attempts,
@@ -1059,13 +1211,15 @@ async def generate_vision_json(
     model: str | None = None,
     max_tokens: int | None = None,
 ) -> tuple[str, LlmUsage]:
-    """Multimodal JSON generation for visual marks (Vertex Gen AI SDK).
+    """Multimodal JSON generation through Gemini Developer API or Vertex.
 
     ``images`` is a list of ``(jpeg_bytes, mime_type)`` including the page and
     optional reference sheets.
     """
-    if llm_provider() != "vertex":
-        raise LLMError("generate_vision_json requires LLM_PROVIDER=vertex")
+    provider = llm_provider()
+    if provider not in {"vertex", "gemini"}:
+        raise LLMError("generate_vision_json requires LLM_PROVIDER=gemini or vertex")
+    provider_label = "Gemini Developer API" if provider == "gemini" else "Vertex"
     from google.genai import types
 
     model_name = _strip_google_model_prefix(model or openrouter_model())
@@ -1079,7 +1233,7 @@ async def generate_vision_json(
         parts.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
 
     client = get_genai_client()
-    max_attempts = vertex_max_attempts()
+    max_attempts = genai_max_attempts()
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1116,7 +1270,8 @@ async def generate_vision_json(
                 shared_cooldown_s,
             )
             logger.info(
-                "[LLM][vision] Retrying Vertex after %.1fs (attempt %s/%s)",
+                "[LLM][vision] Retrying %s after %.1fs (attempt %s/%s)",
+                provider_label,
                 delay_s,
                 attempt,
                 max_attempts,
@@ -1127,7 +1282,7 @@ async def generate_vision_json(
     usage = parse_genai_usage(response, model=model_name)
     content = (getattr(response, "text", None) or "").strip()
     if not content:
-        raise LLMError("Vertex vision response had empty text", usage=usage)
+        raise LLMError(f"{provider_label} vision response had empty text", usage=usage)
     return content, usage
 
 
@@ -1142,16 +1297,16 @@ async def call_structured[T: BaseModel](
     client: httpx.AsyncClient | None = None,
     request_label: str | None = None,
 ) -> tuple[T, LlmUsage]:
-    """Call Vertex (default) or OpenRouter and return validated JSON + usage."""
+    """Call Gemini Developer API, Vertex, or OpenRouter with validated JSON."""
     model_name = model or openrouter_model()
     system_prompt = _with_output_budget(system_prompt)
-    if llm_provider() == "vertex":
+    if llm_provider() in {"vertex", "gemini"}:
         model_name = _strip_google_model_prefix(model_name)
         token_limit = max_tokens
         if token_limit is None:
             raw_limit = os.getenv("OPENROUTER_MAX_TOKENS", "").strip()
             token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
-        return await _call_structured_vertex(
+        return await _call_structured_genai(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             response_model=response_model,
@@ -1199,11 +1354,12 @@ async def call_structured[T: BaseModel](
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=timeout)
     use_json_schema = True
+    max_attempts = openrouter_max_attempts()
     last_error: Exception | None = None
     usage = LlmUsage(model=model_name)
 
     try:
-        for attempt in range(1, MAX_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
             try:
                 await acquire_openrouter_slot(
                     model_name=model_name,
@@ -1271,7 +1427,7 @@ async def call_structured[T: BaseModel](
                         finish or "incomplete JSON",
                         token_limit,
                     )
-                    if attempt < MAX_ATTEMPTS:
+                    if attempt < max_attempts:
                         messages.append(
                             {
                                 "role": "user",
@@ -1301,10 +1457,10 @@ async def call_structured[T: BaseModel](
                 logger.warning(
                     "[LLM] Attempt %s/%s returned malformed data: %s",
                     attempt,
-                    MAX_ATTEMPTS,
+                    max_attempts,
                     str(e)[:300],
                 )
-                if attempt < MAX_ATTEMPTS:
+                if attempt < max_attempts:
                     messages.append(
                         {
                             "role": "user",
@@ -1326,10 +1482,10 @@ async def call_structured[T: BaseModel](
                 logger.warning(
                     "[LLM] Attempt %s/%s failed: %s",
                     attempt,
-                    MAX_ATTEMPTS,
+                    max_attempts,
                     str(e)[:300],
                 )
-                if isinstance(e, LLMError) and attempt < MAX_ATTEMPTS:
+                if isinstance(e, LLMError) and attempt < max_attempts:
                     messages.append(
                         {
                             "role": "user",
@@ -1342,7 +1498,7 @@ async def call_structured[T: BaseModel](
                         }
                     )
 
-            if attempt < MAX_ATTEMPTS:
+            if attempt < max_attempts:
                 await asyncio.sleep(min(2**attempt, 8) + random.uniform(0, 0.5))
     finally:
         if owns_client:
@@ -1351,6 +1507,6 @@ async def call_structured[T: BaseModel](
     if isinstance(last_error, LLMFatalError):
         raise last_error
     raise LLMError(
-        f"{model_name} failed after {MAX_ATTEMPTS} attempts: {last_error}",
+        f"{model_name} failed after {max_attempts} attempts: {last_error}",
         usage=usage,
     ) from last_error

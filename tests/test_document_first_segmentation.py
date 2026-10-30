@@ -10,6 +10,8 @@ from extraction_review.bundle_slicer import (
 from extraction_review.document_parts import annexure_ref_in_heading
 from extraction_review.process_file import (
     _document_first_page_ownership,
+    _refine_boundary_proposals_with_explicit_annexures,
+    _refine_boundary_proposals_with_classified_openings,
     attach_split_output_trace,
 )
 from extraction_review.split_audit import audit_compiled_split
@@ -20,6 +22,7 @@ from extraction_review.split_repair import (
 from extraction_review.split_upload import type_catalog
 from extraction_review.structure_split import (
     PageUnit,
+    _restore_explicit_llama_owned_segments,
     classify_page,
     structure_aware_split,
 )
@@ -46,6 +49,174 @@ def _report(*segments: tuple[str, list[int]]) -> dict:
             for category, pages in segments
         ]
     }
+
+
+def test_llamaparse_noisy_header_exposes_explicit_annexure_owner() -> None:
+    text = (
+        "1 | icon: circular mark | icon: handwritten mark | Annexure A/21 "
+        "FIRST ADDITIONAL DISTRICT SESSIONS COURT, TIRUNELVELI\n"
+        "Sessions Case No. 272/2013"
+    )
+
+    mark = annexure_ref_in_heading(text)
+
+    assert mark is not None
+    assert mark.label == "Annexure A-21"
+    assert annexure_ref_in_heading("Annexure Af20 142 P.W.19").label == (
+        "Annexure A-20"
+    )
+
+
+def test_explicit_annexure_owner_overrides_enclosed_judgment_type() -> None:
+    pages = list(range(153, 209))
+    page_parts, segments, issues = _document_first_page_ownership(
+        [_proposal(1, 153, 208)],
+        _report(("Impugned Order", pages)),
+        page_count=208,
+        page_texts={
+            153: (
+                "1 | icon: circular mark | icon: handwritten mark | Annexure A/21 "
+                "FIRST ADDITIONAL DISTRICT SESSIONS COURT, TIRUNELVELI"
+            )
+        },
+    )
+
+    assert all(page_parts[page] == ["Annexure A-21"] for page in pages)
+    owned = next(item for item in segments if item["segment_id"] == "boundary-1")
+    assert owned["category"] == "Annexure A-21"
+    assert owned["contained_document_type"] == "Impugned Order"
+    assert "explicit_outer_annexure_label" in owned["type_evidence"]
+    assert not any(item["code"] == "boundary_classification_conflict" for item in issues)
+
+
+def test_local_repairs_cannot_repaint_explicit_llama_owned_annexure_range() -> None:
+    llama = {page: ["Annexure A-21"] for page in range(153, 209)}
+    locally_repainted = {
+        **{page: ["Affidavit"] for page in range(153, 195)},
+        **{page: ["Annexure A-19"] for page in range(195, 209)},
+    }
+
+    restored = _restore_explicit_llama_owned_segments(
+        locally_repainted,
+        llama,
+        {
+            153: (
+                "1 | icon: circular mark | icon: handwritten mark | Annexure A/21 "
+                "FIRST ADDITIONAL DISTRICT SESSIONS COURT"
+            )
+        },
+        [153],
+    )
+
+    assert all(restored[page] == ["Annexure A-21"] for page in range(153, 209))
+
+
+def test_noisy_generic_llama_annexure_owner_beats_enclosed_judgment_type() -> None:
+    llama = {page: ["Annexures"] for page in range(38, 46)}
+    locally_repainted = {**llama, 38: ["Impugned Order"]}
+
+    restored = _restore_explicit_llama_owned_segments(
+        locally_repainted,
+        llama,
+        {
+            38: (
+                "SCC ONLINE True Print | Page 1\n"
+                "Annexure - PJ | 22\nUNITED INDIA INSURANCE CO. LTD."
+            )
+        },
+        [38],
+    )
+
+    assert all(restored[page] == ["Annexures"] for page in range(38, 46))
+
+
+def test_consecutive_explicit_annexure_stamp_refines_model_physical_range() -> None:
+    refined, events = _refine_boundary_proposals_with_explicit_annexures(
+        [_proposal(1, 143, 152)],
+        {
+            143: "135 | Annexure A/19 | P.W.18\nDEPOSITION OF WITNESS",
+            150: "Annexure Af20 142 P.W.19\nDEPOSITION OF WITNESS",
+        },
+    )
+
+    assert [(item["start_page"], item["end_page"]) for item in refined] == [
+        (143, 149),
+        (150, 152),
+    ]
+    assert events == [
+        {
+            "parent_segment_id": "boundary-1",
+            "source_page": 150,
+            "previous_label": "Annexure A-19",
+            "new_label": "Annexure A-20",
+            "evidence": ["explicit_consecutive_outer_annexure_label"],
+        }
+    ]
+
+
+def test_classifier_refines_coarse_range_only_at_explicit_outer_opening() -> None:
+    proposals, events = _refine_boundary_proposals_with_classified_openings(
+        [_proposal(1, 7, 24)],
+        _report(
+            ("Listing Proforma", [7, 8]),
+            ("List of Dates & Events", list(range(9, 13))),
+            ("List of Dates & Events", list(range(13, 25))),
+        ),
+        {
+            7: "PROFORMA FOR FIRST LISTING",
+            9: "LIST OF DATES, EVENTS AND FACTS OF THE CASE",
+        },
+    )
+
+    assert [(item["start_page"], item["end_page"]) for item in proposals] == [
+        (7, 8),
+        (9, 24),
+    ]
+    assert events == [
+        {
+            "parent_segment_id": "boundary-1",
+            "source_page": 9,
+            "category": "List of Dates & Events",
+            "evidence": [
+                "complete_classification_coverage",
+                "matching_explicit_outer_opening",
+            ],
+        }
+    ]
+
+
+def test_classifier_does_not_refine_without_matching_outer_opening() -> None:
+    proposals, events = _refine_boundary_proposals_with_classified_openings(
+        [_proposal(1, 38, 45)],
+        _report(("Annexures", [38]), ("Impugned Order", list(range(39, 46)))),
+        {39: "Judgment body continued without a new outer separator"},
+    )
+
+    assert [(item["start_page"], item["end_page"]) for item in proposals] == [(38, 45)]
+    assert events == []
+
+
+def test_explicit_opening_types_boundary_when_classifier_abstains() -> None:
+    page_parts, segments, issues = _document_first_page_ownership(
+        [_proposal(1, 1, 2)],
+        _report(("uncategorized", [1, 2])),
+        page_count=2,
+        page_texts={
+            1: (
+                "SUPREME COURT OF INDIA\nRECORD OF PROCEEDINGS\n"
+                "Listed On: 22-09-2025\nCourt No.: 4"
+            ),
+            2: "DATE: 19-09-2025\nASSISTANT REGISTRAR\nCopy to:",
+        },
+    )
+
+    assert page_parts[1] == page_parts[2] == ["Record of Proceedings"]
+    owned = next(item for item in segments if item["start_page"] == 1)
+    assert owned["category"] == "Record of Proceedings"
+    assert "explicit_outer_heading_after_classifier_abstention" in owned[
+        "type_evidence"
+    ]
+    assert not issues
 
 
 def test_internal_cover_page_heading_does_not_split_annexure() -> None:

@@ -53,10 +53,10 @@ from .layout_index import (
 from .llm import (
     LLMError,
     call_structured,
+    llm_enabled,
     llm_provider,
     llm_requests_per_minute,
-    mask_openrouter_api_key,
-    openrouter_enabled,
+    mask_llm_credential,
     scrutiny_model,
 )
 from .logging_utils import safe_url_for_log
@@ -65,6 +65,7 @@ from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
 from .scrutiny.prompts import (
+    MAX_EVIDENCE_CHARS,
     build_defect_prompt,
     build_system_prompt,
 )
@@ -82,20 +83,30 @@ from .scrutiny.schema import (
     Coverage,
     DefectFinding,
     DefectResponse,
+    LlmUsage,
     ScrutinyReport,
+    apply_conditional_manifest_policy,
+    apply_deterministic_postclassification_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
+    apply_internal_contradiction_policy,
+    apply_margin_layout_policy,
     apply_presence_only_policy,
     apply_retrieval_policy,
+    apply_review_reason_consistency_policy,
+    apply_scope_coverage_policy,
     apply_status_policy,
     apply_supported_evidence_policy,
     apply_undetermined_policy,
     apply_visual_conflict_policy,
+    apply_visual_field_policy,
     build_finding,
     failed_finding,
     manifest_absence_proven,
+    missing_dependency_finding,
     missing_document_finding,
+    missing_parts_in_layout,
     summarize,
     summarize_usage,
 )
@@ -264,6 +275,8 @@ def _sanitize_response(
     chunks: list[dict[str, Any]],
     visual_index: dict[str, Any] | None = None,
     layout: dict[int, dict[str, Any]] | None = None,
+    *,
+    enforce_retrieval: bool = True,
 ) -> DefectResponse:
     """Keep the catalogue check_id and drop fixes unless a defect was found."""
     if response.check_id != defect.check_id:
@@ -276,11 +289,16 @@ def _sanitize_response(
     response = apply_evidence_pages(response, chunks, defect)
     response = apply_presence_only_policy(defect, response, chunks, layout)
     response = apply_status_policy(response)
+    response = apply_review_reason_consistency_policy(response)
     response = apply_undetermined_policy(defect, response, chunks)
-    response = apply_retrieval_policy(defect, response, chunks)
+    if enforce_retrieval:
+        response = apply_retrieval_policy(defect, response, chunks)
+    response = apply_margin_layout_policy(defect, response, layout)
     response = apply_supported_evidence_policy(defect, response)
     response = apply_grounded_defect_policy(response)
+    response = apply_internal_contradiction_policy(defect, response)
     response = apply_visual_conflict_policy(defect, response, visual_index)
+    response = apply_visual_field_policy(defect, response, visual_index)
     response = apply_evidence_capability_policy(defect, response, visual_index)
     return response
 
@@ -294,11 +312,10 @@ def _retrieval_evidence_complete(
 
     if not chunks or missing_required_parts(defect, chunks):
         return False
-    strategy = retrieval_plan_for_defect(defect).strategy
-    if strategy == "semantic":
-        return True
     if not layout:
         return False
+
+    strategy = retrieval_plan_for_defect(defect).strategy
 
     reviewed = {int(chunk["page"]) for chunk in chunks if chunk.get("page") is not None}
     for part in required_parts_for_defect(defect):
@@ -320,14 +337,253 @@ def _retrieval_evidence_complete(
         ]
         if not part_pages:
             return False
-        required_pages = (
-            set(part_pages)
-            if strategy == "exhaustive_part"
-            else {part_pages[0], part_pages[-1]}
-        )
+        complete_retry = any(chunk.get("complete_part_retry") for chunk in chunks)
+        if complete_retry or strategy == "exhaustive_part":
+            required_pages = set(part_pages)
+        elif strategy == "boundary_and_neighbors":
+            required_pages = {part_pages[0], part_pages[-1]}
+        else:
+            # A semantic hit proves that a document was found, not that the
+            # exact clause or field needed for this check was inspected.
+            return False
         if not required_pages.issubset(reviewed):
             return False
     return True
+
+
+def _prompt_evidence_truncated(chunks: list[dict[str, Any]]) -> bool:
+    """Conservative preflight for the prompt's evidence-character ceiling."""
+    used = 0
+    for chunk in chunks:
+        text = str(chunk.get("text") or "")
+        used += len(text) + 300
+        if used > MAX_EVIDENCE_CHARS:
+            return True
+    return False
+
+
+def _complete_evidence_batches(
+    chunks: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    """Partition complete evidence without dropping a parsed page.
+
+    Summary chunks are repeated as context. Oversized single pages are split
+    into page-preserving slices so every character reaches an evaluator.
+    """
+    summaries = [dict(chunk) for chunk in chunks if chunk.get("chunk_kind") == "summary"]
+    evidence: list[dict[str, Any]] = []
+    slice_limit = max(4_000, MAX_EVIDENCE_CHARS - 1_000)
+    for chunk in chunks:
+        if chunk.get("chunk_kind") == "summary":
+            continue
+        text = str(chunk.get("text") or "")
+        if len(text) <= slice_limit:
+            evidence.append(dict(chunk))
+            continue
+        for offset in range(0, len(text), slice_limit):
+            piece = dict(chunk)
+            piece["text"] = text[offset : offset + slice_limit]
+            piece["complete_page_slice"] = offset // slice_limit + 1
+            evidence.append(piece)
+    batches: list[list[dict[str, Any]]] = []
+    current = [dict(item) for item in summaries]
+    used = sum(len(str(item.get("text") or "")) + 300 for item in current)
+    for chunk in evidence:
+        cost = len(str(chunk.get("text") or "")) + 300
+        if len(current) > len(summaries) and used + cost > MAX_EVIDENCE_CHARS:
+            batches.append(current)
+            current = [dict(item) for item in summaries]
+            used = sum(len(str(item.get("text") or "")) + 300 for item in current)
+        current.append(chunk)
+        used += cost
+    if len(current) > len(summaries) or not batches:
+        batches.append(current)
+    return batches
+
+
+def _aggregate_complete_batch_responses(
+    responses: list[DefectResponse],
+) -> DefectResponse:
+    """Aggregate exhaustive batches; a local defect is immediately decisive."""
+    defects = [item for item in responses if item.status == "defect_found"]
+    if defects:
+        return max(defects, key=lambda item: item.confidence)
+    governed = [
+        item for item in responses if item.status == "rule_verification_pending"
+    ]
+    if governed:
+        return governed[0]
+    if responses and all(item.status == "compliant" for item in responses):
+        chosen = max(responses, key=lambda item: item.confidence)
+        chosen.summary = "Every complete-evidence batch satisfied the requirement."
+        return chosen
+    if responses and all(item.status == "not_applicable" for item in responses):
+        return max(responses, key=lambda item: item.confidence)
+    chosen = max(responses, key=lambda item: item.confidence)
+    chosen.status = "needs_review"
+    chosen.gap = chosen.gap or "ambiguous"
+    chosen.gap_detail = chosen.gap_detail or (
+        "The exhaustive evidence batches did not produce one consistent outcome."
+    )
+    return chosen
+
+
+def _absence_owner_check_ids(
+    defects: list[Defect],
+    layout: dict[int, dict[str, Any]] | None,
+) -> dict[str, list[str]]:
+    """Choose exactly one catalogue row to report each missing document.
+
+    Only rows explicitly marked ``manifest_absence_proves_defect`` may own a
+    missing document.  Wording is deliberately not used as a fallback: phrases
+    such as "not filed" commonly occur in conditional checks (caveats,
+    substitution applications, powers of attorney, etc.) and choosing one of
+    those rows would manufacture a defect whose prerequisites were never
+    established.
+
+    The policy is catalogue-driven rather than a hard-coded check-id map.  If a
+    document has no applicable, explicitly marked presence row, all checks
+    which depend on that absent document are skipped as not applicable.  This
+    is safer than relabelling an arbitrary content check as a document-presence
+    defect.
+    """
+    candidates: dict[str, list[Defect]] = {}
+    for defect in defects:
+        if not defect.manifest_absence_proves_defect:
+            continue
+        missing = missing_parts_in_layout(defect, layout)
+        if not missing:
+            continue
+        owned_parts = required_parts_for_defect(defect)
+        for part in missing:
+            if part not in owned_parts:
+                continue
+            candidates.setdefault(part, []).append(defect)
+
+    owners: dict[str, list[str]] = {}
+    for part, options in candidates.items():
+        # Prefer the narrowest explicit row when two applicable catalogue rows
+        # own the same part; the stable check-id tie-break keeps runs
+        # reproducible.  Both candidates have already opted into deterministic
+        # manifest-absence handling.
+        owner = min(
+            options,
+            key=lambda item: (
+                # Prefer the filing-specific presence check over a broad
+                # catalogue row.  For example, D-181 owns a missing
+                # supporting Affidavit in SLP (Civil), while D-64 remains the
+                # fallback for filing types without a narrower check.
+                len(getattr(item, "agent_filing_types", []) or []),
+                len(required_parts_for_defect(item)),
+                check_id_sort_key(item.check_id),
+            ),
+        )
+        owners.setdefault(owner.check_id, []).append(part)
+    return owners
+
+
+def _visual_index_for_defect(
+    defect: Defect,
+    visual_index: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Restrict visual evidence to pages belonging to this check's documents."""
+    if not isinstance(visual_index, dict):
+        return visual_index
+    required = required_parts_for_defect(defect)
+    if not required:
+        return dict(visual_index)
+
+    targets: list[dict[str, Any]] = []
+    for target in visual_index.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        names = target.get("document_types") or target.get("document_parts") or []
+        probe = {"document_part": names, "chunk_kind": "page"}
+        if any(chunks_cover_part([probe], part) for part in required):
+            targets.append(target)
+    target_pages = {
+        int(target["page"]) for target in targets if target.get("page") is not None
+    }
+    filtered = dict(visual_index)
+    filtered["targets"] = targets
+    filtered["pages"] = [
+        int(page)
+        for page in visual_index.get("pages") or []
+        if int(page) in target_pages
+    ]
+    filtered["marks"] = [
+        mark
+        for mark in visual_index.get("marks") or []
+        if isinstance(mark, dict) and int(mark.get("page") or -1) in target_pages
+    ]
+    filtered["field_assessments"] = [
+        item
+        for item in visual_index.get("field_assessments") or []
+        if isinstance(item, dict) and int(item.get("page") or -1) in target_pages
+    ]
+    filtered["failures"] = [
+        failure
+        for failure in visual_index.get("failures") or []
+        if not isinstance(failure, dict)
+        or failure.get("page") is None
+        or int(failure.get("page")) in target_pages
+    ]
+    return filtered
+
+
+def _complete_layout_chunks_for_defect(
+    defect: Defect,
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Return every parsed page belonging to this check's required parts.
+
+    This is the automatic second-pass evidence set.  It is intentionally built
+    from the immutable page manifest rather than another semantic search, so a
+    paragraph, blank field, signature block, or application cannot remain
+    "not in excerpts" when its document was successfully parsed.
+    """
+    if not layout:
+        return chunks
+    required = required_parts_for_defect(defect)
+    evidence_parts = list(
+        dict.fromkeys([*required, *(getattr(defect, "context_parts", None) or [])])
+    )
+    if not evidence_parts:
+        return chunks
+
+    summary = [
+        chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"
+    ][:1]
+    complete: list[dict[str, Any]] = []
+    for page_number, page in sorted(layout.items()):
+        if not isinstance(page, dict):
+            continue
+        names = _layout_document_parts(page.get("document_part"))
+        if not names or not any(
+            chunks_cover_part(
+                [{"document_part": names, "chunk_kind": "page"}], part
+            )
+            for part in evidence_parts
+        ):
+            continue
+        text = _layout_page_text(page)
+        if not text:
+            continue
+        complete.append(
+            {
+                "record_id": f"layout-complete:{page_number}",
+                "score": 0.0,
+                "chunk_kind": "page",
+                "page": page_number,
+                "page_end": page_number,
+                "document_part": names,
+                "text": text,
+                "layout_fallback": True,
+                "complete_part_retry": True,
+            }
+        )
+    return summary + complete if complete else chunks
 
 
 async def _run_defect(
@@ -339,14 +595,35 @@ async def _run_defect(
     filing_type: str | None,
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
+    absence_defect_parts: list[str] | None = None,
 ) -> DefectFinding:
-    if manifest_absence_proven(defect, layout):
+    # Legal-source fields are catalogue-governance metadata.  They must not
+    # short-circuit retrieval or replace the filing outcome.  The operational
+    # requirement, applicability, manifest and filing evidence determine the
+    # result; source verification can be audited separately.
+    missing_parts = missing_parts_in_layout(defect, layout)
+    if missing_parts and absence_defect_parts:
         return missing_document_finding(
             defect,
-            required_parts_for_defect(defect),
+            [part for part in missing_parts if part in absence_defect_parts],
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
+    if missing_parts:
+        return missing_dependency_finding(
+            defect,
+            missing_parts,
+            record=record if isinstance(record, dict) else None,
+        )
+    if manifest_absence_proven(defect, layout):
+        return missing_document_finding(
+            defect,
+            missing_parts or required_parts_for_defect(defect),
+            visual_index=visual_index,
+            record=record if isinstance(record, dict) else None,
+        )
+
+    check_visual_index = _visual_index_for_defect(defect, visual_index)
 
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     visual_required = any(
@@ -355,41 +632,164 @@ async def _run_defect(
         for term in _VISUAL_TERMS
     )
     visual_pages = (
-        [int(page) for page in visual_index.get("pages") or []]
-        if isinstance(visual_index, dict)
+        [int(page) for page in check_visual_index.get("pages") or []]
+        if isinstance(check_visual_index, dict)
         else []
+    )
+    visual_target_pages = (
+        {
+            int(target["page"])
+            for target in check_visual_index.get("targets") or []
+            if isinstance(target, dict) and target.get("page") is not None
+        }
+        if isinstance(check_visual_index, dict)
+        else set()
     )
     visual_complete = bool(
         visual_required
-        and isinstance(visual_index, dict)
-        and visual_index.get("status") == "ok"
-        and visual_pages
-        and not visual_index.get("failures")
+        and isinstance(check_visual_index, dict)
+        and check_visual_index.get("status") == "ok"
+        and visual_target_pages
+        and visual_target_pages.issubset(set(visual_pages))
+        and not check_visual_index.get("failures")
     )
+    document_found = bool(chunks) and not missing_required_parts(defect, chunks)
+    prompt_truncated = _prompt_evidence_truncated(chunks)
+    scope_complete = _retrieval_evidence_complete(defect, chunks, layout) and not prompt_truncated
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
         structured_record_available=bool(record),
-        evidence_complete=_retrieval_evidence_complete(defect, chunks, layout),
+        document_found=document_found,
+        required_scope_found=scope_complete,
+        scope_complete=scope_complete,
+        prompt_truncated=prompt_truncated,
+        evidence_complete=scope_complete,
         visual_required=visual_required,
         visual_complete=visual_complete,
         visual_pages_reviewed=visual_pages,
     )
 
+    system_prompt = build_system_prompt(catalogue, filing_type)
+    user_prompt = build_defect_prompt(
+        defect,
+        record=slice_record_for_defect(record, defect),
+        chunks=chunks,
+        catalogue=catalogue,
+        visual_index=check_visual_index,
+        layout=layout,
+    )
     raw, usage = await call_structured(
-        system_prompt=build_system_prompt(catalogue, filing_type),
-        user_prompt=build_defect_prompt(
-            defect,
-            record=slice_record_for_defect(record, defect),
-            chunks=chunks,
-            catalogue=catalogue,
-            visual_index=visual_index,
-            layout=layout,
-        ),
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         response_model=DefectResponse,
         model=scrutiny_model(),
+        request_label=f"scrutiny:{defect.check_id}",
     )
-    response = _sanitize_response(defect, raw, chunks, visual_index, layout)
+    response = _sanitize_response(defect, raw, chunks, check_visual_index, layout)
+    response = apply_scope_coverage_policy(
+        response,
+        scope_complete=scope_complete,
+        prompt_truncated=prompt_truncated,
+    )
+
+    # A needs-review result caused by sampled evidence is an internal retry
+    # signal, not a final user journey.  Retry once with every parsed page of
+    # the required document parts.  Genuine unreadable/contradictory evidence
+    # remains unresolved; missing semantic excerpts do not.
+    if (
+        response.status == "needs_review"
+        and response.gap in {"part_not_in_excerpts", "element_page_not_in_excerpts"}
+        and layout
+    ):
+        complete_chunks = _complete_layout_chunks_for_defect(defect, chunks, layout)
+        complete_pages = {
+            int(chunk["page"])
+            for chunk in complete_chunks
+            if chunk.get("page") is not None
+        }
+        original_signature = {
+            (str(chunk.get("record_id") or ""), str(chunk.get("text") or ""))
+            for chunk in chunks
+            if chunk.get("chunk_kind") != "summary"
+        }
+        complete_signature = {
+            (str(chunk.get("record_id") or ""), str(chunk.get("text") or ""))
+            for chunk in complete_chunks
+            if chunk.get("chunk_kind") != "summary"
+        }
+        if complete_signature and complete_signature != original_signature:
+            retry_usage = LlmUsage()
+            retry_responses: list[DefectResponse] = []
+            complete_batches = _complete_evidence_batches(complete_chunks)
+            for batch_number, batch in enumerate(complete_batches, start=1):
+                retry_prompt = build_defect_prompt(
+                    defect,
+                    record=slice_record_for_defect(record, defect),
+                    chunks=batch,
+                    catalogue=catalogue,
+                    visual_index=check_visual_index,
+                    layout=layout,
+                )
+                retry_raw, batch_usage = await call_structured(
+                    system_prompt=system_prompt,
+                    user_prompt=retry_prompt,
+                    response_model=DefectResponse,
+                    model=scrutiny_model(),
+                    request_label=(
+                        f"scrutiny:{defect.check_id}:complete-evidence-retry:"
+                        f"{batch_number}-of-{len(complete_batches)}"
+                    ),
+                )
+                retry_usage = retry_usage.plus(batch_usage)
+                retry_responses.append(
+                    _sanitize_response(
+                        defect,
+                        retry_raw,
+                        batch,
+                        check_visual_index,
+                        layout,
+                        enforce_retrieval=False,
+                    )
+                )
+            response = _aggregate_complete_batch_responses(retry_responses)
+            chunks = complete_chunks
+            usage = usage.plus(retry_usage)
+            pages = sorted(complete_pages)
+            retry_truncated = False
+            retry_complete = _retrieval_evidence_complete(defect, chunks, layout)
+            response = apply_scope_coverage_policy(
+                response,
+                scope_complete=retry_complete,
+                prompt_truncated=retry_truncated,
+            )
+            coverage = coverage.model_copy(
+                update={
+                    "chunks_reviewed": len(chunks),
+                    "pages_reviewed": pages,
+                    "document_found": bool(chunks)
+                    and not missing_required_parts(defect, chunks),
+                    "required_scope_found": retry_complete,
+                    "scope_complete": retry_complete,
+                    "prompt_truncated": retry_truncated,
+                    "evidence_complete": retry_complete,
+                }
+            )
+
+    if response.status != "needs_review" or response.gap not in {
+        "part_not_in_excerpts",
+        "element_page_not_in_excerpts",
+    }:
+        coverage = coverage.model_copy(update={"required_scope_found": True})
+
+    response = apply_deterministic_postclassification_policy(
+        defect,
+        response,
+        chunks,
+        check_visual_index,
+        scope_complete=coverage.scope_complete,
+    )
+    response = apply_conditional_manifest_policy(defect, response, layout)
 
     return build_finding(
         defect,
@@ -399,7 +799,7 @@ async def _run_defect(
         usage=usage,
         chunks=chunks,
         layout=layout,
-        visual_index=visual_index,
+        visual_index=check_visual_index,
         record=record if isinstance(record, dict) else None,
     )
 
@@ -541,7 +941,16 @@ def _layout_document_parts(value: Any) -> list[str]:
 
 
 def _layout_page_text(page: dict[str, Any]) -> str:
-    """Rebuild conservative OCR lines from the stored grounded word boxes."""
+    """Return the parsed page text stored with the complete page manifest.
+
+    LlamaParse-backed layouts can carry page markdown/text without word boxes.
+    Prefer that source verbatim, then rebuild text from grounded boxes for older
+    artifacts.  This makes the manifest a real retrieval fallback instead of
+    silently producing an empty excerpt when Pinecone returns no match.
+    """
+    direct = str(page.get("text") or page.get("markdown") or "").strip()
+    if direct:
+        return direct
     words = page.get("words") or []
     if not isinstance(words, list):
         return ""
@@ -1047,7 +1456,21 @@ def _defects_for_special_categories(
                 continue
             seen.add(defect.check_id)
             found.append(defect)
-    return found
+
+    # These catalogue rows express the same global tests.  Publishing both
+    # produces duplicate findings (and can even produce two different statuses
+    # for the same blank field), so keep the older canonical row whenever both
+    # are selected.  If a caller explicitly enables only the alias, preserve it.
+    duplicate_of = {"D-84": "D-55", "D-85": "D-57"}
+    selected_ids = {defect.check_id for defect in found}
+    return [
+        defect
+        for defect in found
+        if not (
+            defect.check_id in duplicate_of
+            and duplicate_of[defect.check_id] in selected_ids
+        )
+    ]
 
 
 async def collect_defect_findings(
@@ -1136,18 +1559,20 @@ class ScrutinyWorkflow(Workflow):
         scrutiny_started = time.perf_counter()
         if not scrutiny_enabled():
             raise ValueError("Scrutiny is disabled (SCRUTINY_ENABLED=false)")
-        if not openrouter_enabled():
+        if not llm_enabled():
             if llm_provider() == "vertex":
                 raise ValueError(
                     "LLM_PROVIDER=vertex but GOOGLE_CLOUD_PROJECT is not set"
                 )
+            if llm_provider() == "gemini":
+                raise ValueError("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set")
             raise ValueError(
                 "OPENROUTER_API_KEY is not set, so defect checks cannot run"
             )
         logger.info(
             "LLM provider=%s key=%s model=%s rpm=%s",
             llm_provider(),
-            mask_openrouter_api_key(),
+            mask_llm_credential(),
             scrutiny_model(),
             llm_requests_per_minute() or "unlimited",
         )
@@ -1322,6 +1747,16 @@ class ScrutinyWorkflow(Workflow):
                 f"(enabled checks: {', '.join(enabled_defect_ids())})."
             )
 
+        absence_owners = _absence_owner_check_ids(defects, layout)
+        if absence_owners:
+            logger.info(
+                "[Scrutiny] Manifest absence owners: %s",
+                ", ".join(
+                    f"{check_id}={'+'.join(parts)}"
+                    for check_id, parts in sorted(absence_owners.items())
+                ),
+            )
+
         concurrency = _int_env("SCRUTINY_CONCURRENCY", DEFAULT_CONCURRENCY)
         persist_every = max(
             1, _int_env("SCRUTINY_PERSIST_EVERY", DEFAULT_PERSIST_EVERY)
@@ -1454,15 +1889,20 @@ class ScrutinyWorkflow(Workflow):
             )
             try:
                 retrieval_started = time.perf_counter()
-                chunks = await _chunks_for_defect(
-                    defect,
-                    file_hash=file_hash,
-                    max_chunks=max_chunks,
-                    use_pinecone=use_pinecone,
-                    organization_id=vector_organization_id,
-                    workspace_id=vector_workspace_id,
-                    index_generation=index_generation,
-                    layout=layout,
+                manifest_missing = missing_parts_in_layout(defect, layout)
+                chunks = (
+                    []
+                    if manifest_missing
+                    else await _chunks_for_defect(
+                        defect,
+                        file_hash=file_hash,
+                        max_chunks=max_chunks,
+                        use_pinecone=use_pinecone,
+                        organization_id=vector_organization_id,
+                        workspace_id=vector_workspace_id,
+                        index_generation=index_generation,
+                        layout=layout,
+                    )
                 )
                 retrieval_seconds = time.perf_counter() - retrieval_started
                 evaluation_started = time.perf_counter()
@@ -1474,6 +1914,7 @@ class ScrutinyWorkflow(Workflow):
                     filing_type=filing_type,
                     layout=layout,
                     visual_index=visual_index,
+                    absence_defect_parts=absence_owners.get(defect.check_id),
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",

@@ -80,6 +80,10 @@
           "value": "json"
         },
         {
+          "name": "SCRUTINY_REVIEW_CONFIDENCE",
+          "value": "0.6"
+        },
+        {
           "name": "OPENROUTER_VISION_ENABLED",
           "value": "true"
         },

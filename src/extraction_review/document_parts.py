@@ -638,7 +638,8 @@ class AnnexureMark:
 _ANNEXURE_HEADING_RE = re.compile(
     r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
-    r"[-–—/:.~\s\"'“”‘’]*)?"
+    # Handwritten slash is commonly parsed as ``f`` (A/20 -> Af20).
+    r"[-–—/:.~f\s\"'“”‘’]*)?"
     r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
     r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
@@ -650,7 +651,7 @@ _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"(?:"
     r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
-    r"[-–—/:.~\s\"'“”‘’]*)?"
+    r"[-–—/:.~f\s\"'“”‘’]*)?"
     r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
     r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
     r")(?!\w)",
@@ -822,10 +823,45 @@ def _annexure_mark_from_title_or_stamp(
         return None
     nested_exhibits = _looks_like_lower_court_exhibit_list(text)
     bank_transfer_form = _looks_like_bank_transfer_form(text)
+
+    # LlamaParse preserves visual objects in the reading-order line.  A real
+    # top-right paper-book stamp can therefore arrive as one long line such as
+    # ``1 | icon: circular mark | icon: handwritten mark | Annexure A/21
+    # FIRST ADDITIONAL DISTRICT ...``.  The older title detector required a
+    # short line and a match within six characters, discarding the explicit
+    # outer owner even though the parse contained it.  Accept only harmless
+    # leading folio/icon cells here; ordinary prose (``That the Annexure...``),
+    # Index rows and page-range citations remain excluded.
+    first_line_match = _ANNEXURE_HEADING_RE.search(lines[0])
+    if (
+        first_line_match
+        and not _INDEX_ROW_ANNEXURE_RE.match(lines[0])
+        and not _looks_like_index_table(text)
+    ):
+        groups = first_line_match.groupdict()
+        # This tolerant path is only for the explicit word ``Annexure``.
+        # Bare P22/R7 tokens still need the stricter next-line checks below;
+        # they are frequently internal folios on witness continuations.
+        has_series = bool(groups.get("num") and groups.get("series"))
+        prefix = lines[0][: first_line_match.start()]
+        prefix = re.sub(
+            r"(?i)\bicon\s*:\s*[^|]{0,80}(?=\||$)", "", prefix
+        )
+        prefix = re.sub(r"[\d\s|:;,.~_\-–—/\\()[\]{}]+", "", prefix)
+        remainder = lines[0][first_line_match.end() :].strip(" .;:-~_|")
+        if (
+            not prefix
+            and has_series
+            and not _ANNEXURE_PAGE_CITE_RE.search(remainder)
+            and not re.match(r"(?i)^is\s+(?:annexed|a\s+copy)\b", remainder)
+        ):
+            mark = _annexure_mark_from_match(first_line_match)
+            if mark is not None:
+                return mark
+
     # An outer paper-book stamp can sit above an enclosed tribunal document's
     # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
     # the Supreme Court paper-book Index and must not hide the A-n boundary.
-    first_line_match = _ANNEXURE_HEADING_RE.search(lines[0])
     stamped_local_index = bool(
         first_line_match
         and len(lines[0]) <= 80
@@ -2160,6 +2196,9 @@ def retrieval_strategy_for_defect(defect: Defect) -> str:
     if re.search(
         r"chronological\s+order|inspect\s+every|each\s+(?:page|entry|date|party)|"
         r"every\s+(?:page|entry|date|party)|all\s+(?:pages|entries|dates|parties)|"
+        r"(?:each|every|all)\s+applications?|"
+        r"consecutively?\s+numbered\s+(?:paragraphs?|pages?)|"
+        r"paragraph\s+\d+[a-z]?|"
         r"complete\s+(?:list|particulars|addresses)|entire\s+(?:part|section)",
         wording,
     ):

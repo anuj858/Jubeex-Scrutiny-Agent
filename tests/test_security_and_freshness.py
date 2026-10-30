@@ -128,7 +128,7 @@ def _missing_part_defect(*, shortcut: bool) -> Defect:
 
 
 @pytest.mark.asyncio
-async def test_missing_layout_part_is_not_automatic_defect_without_switch(
+async def test_missing_layout_part_skips_dependent_check_without_switch(
     monkeypatch,
 ) -> None:
     response = DefectResponse(
@@ -159,8 +159,8 @@ async def test_missing_layout_part_is_not_automatic_defect_without_switch(
         layout={1: {"document_part": "Main Petition"}},
     )
 
-    assert finding.status == "needs_review"
-    call.assert_awaited_once()
+    assert finding.status == "not_applicable"
+    call.assert_not_awaited()
 
 
 def test_sanitization_preserves_multiple_grounded_evidence_items() -> None:

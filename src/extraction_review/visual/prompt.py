@@ -27,7 +27,11 @@ Important boundaries:
   page as the object's box.
 - Omit ordinary text and false positives instead of forcing a label.
 - Keep relevance_reason to one short clause.
-- Return JSON matching the supplied schema and nothing else."""
+- Return one JSON object with `elements` and `page_quality`. `page_quality` must
+  contain `readable` (boolean), `issue` (short text; empty when readable), and
+  `confidence` (0..1). Treat the page as unreadable only when blur, clipping,
+  resolution, handwriting, or corruption prevents reliable inspection. Return
+  JSON and nothing else."""
 
 
 def user_prompt(
@@ -39,7 +43,8 @@ def user_prompt(
     return (
         "Inspect this private legal-document page. The first image is the complete page. "
         "Later images, when present, are sanitized reference sheets. "
-        "Return every relevant object independently. Every element must contain probable_type, "
+        "Return every relevant object independently in `elements`, and return the complete-page "
+        "legibility result in `page_quality`. Every element must contain probable_type, "
         "bbox_normalized, legal_relevance, a short relevance_reason, associated_label, "
         "field_role, visible_text, near_label, signature_role, confidence (0..1), and reason. "
         f"Allowed types: {types}. Never identify a signer and never claim authenticity or "

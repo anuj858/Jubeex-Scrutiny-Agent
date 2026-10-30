@@ -223,6 +223,11 @@
           "type": "boolean",
           "description": "For a whole-document presence check, allow a complete page manifest with no matching document part to prove the defect. Do not use for missing content inside a present document."
         },
+        "legal_verification_status": {
+          "type": "string",
+          "enum": ["not_required", "needs_verification", "verified", "unsupported"],
+          "description": "Structured authority status. A verified row may resolve to defect_found from complete evidence; needs_verification remains internally gated."
+        },
         "how_to_cure": {
           "type": "array",
           "minItems": 1,

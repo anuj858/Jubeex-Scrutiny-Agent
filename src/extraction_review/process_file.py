@@ -1673,6 +1673,183 @@ def _boundary_proposals_from_exchange(
     }
 
 
+def _refine_boundary_proposals_with_explicit_annexures(
+    proposals: Sequence[Mapping[str, Any]],
+    page_texts: Mapping[int, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a model range only at a verified consecutive outer Annexure stamp.
+
+    Physical Llama boundaries remain authoritative by default.  The one safe
+    deterministic refinement is an explicit next A/P/R stamp inside a range
+    whose opening prints the immediately preceding label (A-19 -> A-20, for
+    example).  This uses the same LlamaParse text, never printed-folio offsets
+    or a second OCR engine.
+    """
+    from .document_parts import annexure_ref_in_heading
+
+    refined: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    next_id = 1
+    for proposal in proposals:
+        pages = list(proposal.get("pages") or ())
+        if not pages:
+            continue
+        starts = [pages[0]]
+        active = annexure_ref_in_heading(page_texts.get(pages[0], ""))
+        for page in pages[1:]:
+            candidate = annexure_ref_in_heading(page_texts.get(page, ""))
+            if (
+                active is not None
+                and candidate is not None
+                and candidate.series == active.series
+                and candidate.number == active.number + 1
+            ):
+                starts.append(page)
+                events.append(
+                    {
+                        "parent_segment_id": proposal.get("segment_id"),
+                        "source_page": page,
+                        "previous_label": active.label,
+                        "new_label": candidate.label,
+                        "evidence": ["explicit_consecutive_outer_annexure_label"],
+                    }
+                )
+                active = candidate
+        ends = [value - 1 for value in starts[1:]] + [pages[-1]]
+        for start, end in zip(starts, ends, strict=True):
+            segment_pages = list(range(start, end + 1))
+            refined.append(
+                {
+                    **dict(proposal),
+                    "segment_id": f"boundary-{next_id}",
+                    "start_page": start,
+                    "end_page": end,
+                    "pages": segment_pages,
+                    "continuation_pages": segment_pages[1:],
+                    "source": (
+                        "llama_boundary_detection+explicit_outer_annexure"
+                        if len(starts) > 1
+                        else proposal.get("source", "llama_boundary_detection")
+                    ),
+                    "parent_segment_id": proposal.get("segment_id"),
+                }
+            )
+            next_id += 1
+    return refined, events
+
+
+def _refine_boundary_proposals_with_classified_openings(
+    proposals: Sequence[Mapping[str, Any]],
+    classification_report: Mapping[str, Any],
+    page_texts: Mapping[int, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split an overbroad boundary only at classifier ranges with real openings.
+
+    The boundary pass remains authoritative unless the classification pass
+    covers the complete candidate range contiguously and every proposed
+    internal transition begins with matching outer-document evidence.  This
+    repairs coarse ranges such as ``Listing Proforma 7-8`` followed by an
+    explicit ``LIST OF DATES`` on page 9 without trusting body-text category
+    changes inside Annexures.
+    """
+    from .document_parts import annexure_ref_in_heading, family_split_name
+    from .split_repair import _outer_anchor_label
+
+    classified = [
+        item
+        for item in classification_report.get("segments", ())
+        if isinstance(item, Mapping)
+        and str(item.get("category") or "").strip()
+        and isinstance(item.get("source_pages"), list)
+        and item.get("source_pages")
+    ]
+
+    def opening_supports(category: str, page: int) -> bool:
+        text = page_texts.get(page, "")
+        if family_split_name(category) == ANNEXURE_FAMILY:
+            mark = annexure_ref_in_heading(text)
+            return bool(
+                mark
+                and (category == ANNEXURE_FAMILY or mark.label == category)
+            )
+        anchor = _outer_anchor_label(text)
+        return bool(
+            anchor
+            and (
+                anchor == category
+                or family_split_name(anchor) == family_split_name(category)
+            )
+        )
+
+    refined: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    next_id = 1
+    for proposal in proposals:
+        pages = list(proposal.get("pages") or ())
+        page_set = set(pages)
+        pieces: list[tuple[int, int, str]] = []
+        for item in classified:
+            source_pages = list(item.get("source_pages") or ())
+            if source_pages and set(source_pages).issubset(page_set):
+                pieces.append(
+                    (
+                        source_pages[0],
+                        source_pages[-1],
+                        str(item["category"]).strip(),
+                    )
+                )
+        pieces.sort()
+        merged: list[tuple[int, int, str]] = []
+        for start, end, category in pieces:
+            if merged and merged[-1][1] + 1 == start and merged[-1][2] == category:
+                merged[-1] = (merged[-1][0], end, category)
+            else:
+                merged.append((start, end, category))
+        covered = [
+            page
+            for start, end, _category in merged
+            for page in range(start, end + 1)
+        ]
+        safe_split = bool(
+            len(merged) > 1
+            and covered == pages
+            and all(opening_supports(category, start) for start, _end, category in merged[1:])
+        )
+        selected = merged if safe_split else [(pages[0], pages[-1], "")]
+        for start, end, category in selected:
+            segment_pages = list(range(start, end + 1))
+            refined.append(
+                {
+                    **dict(proposal),
+                    "segment_id": f"boundary-{next_id}",
+                    "start_page": start,
+                    "end_page": end,
+                    "pages": segment_pages,
+                    "continuation_pages": segment_pages[1:],
+                    "source": (
+                        "llama_boundary_detection+classified_outer_opening"
+                        if safe_split
+                        else proposal.get("source", "llama_boundary_detection")
+                    ),
+                    "parent_segment_id": proposal.get("segment_id"),
+                }
+            )
+            if safe_split and start != pages[0]:
+                events.append(
+                    {
+                        "parent_segment_id": proposal.get("segment_id"),
+                        "source_page": start,
+                        "category": category,
+                        "evidence": [
+                            "complete_classification_coverage",
+                            "matching_explicit_outer_opening",
+                        ],
+                    }
+                )
+            next_id += 1
+    return refined, events
+
+
 def _classification_configuration(
     split_config: SplitConfig,
     proposals: Sequence[Mapping[str, Any]],
@@ -1711,10 +1888,11 @@ def _classification_configuration(
         f"{item['segment_id']}={item['pages']}" for item in proposals
     )
     directive = (
-        "\nCLASSIFICATION PASS: classify each proposed complete segment using the "
-        "canonical split_v1 categories and rules. Keep candidate boundaries unless "
-        "page evidence clearly shows the proposal is wrong. These are exact physical "
-        "PDF page lists; do not fill gaps between listed pages: " + page_lists
+        "\nCLASSIFICATION PASS: classify each proposed complete segment by its OUTER "
+        "filing owner using the canonical split_v1 categories and rules; enclosed "
+        "content type does not change ownership. An explicit opening Annexure A/P/R "
+        "label means Annexures unless it is only a citation. Keep exact physical "
+        "boundaries unless clearly wrong; do not fill gaps: " + page_lists
     )
     strategy = dict(configuration.get("splitting_strategy") or {})
     instructions = str(strategy.get("custom_instructions") or "")
@@ -1732,8 +1910,10 @@ def _classification_configuration(
         )
         compact_directive = (
             "CLASSIFICATION PASS. Treat each listed physical PDF range as one "
-            "candidate document and assign one canonical category to the complete "
-            "range. Preserve these boundaries unless page evidence clearly proves "
+            "candidate document and assign its OUTER filing-owner category to the "
+            "complete range, not the type of a document reproduced inside it. An "
+            "explicit outer Annexure A/P/R label at the opening means Annexures unless "
+            "it is demonstrably only a citation. Preserve these boundaries unless page evidence clearly proves "
             "one is wrong; do not infer pages outside a listed range. RANGES:"
             + compact_ranges
         )
@@ -2049,12 +2229,35 @@ def _document_first_page_ownership(
         # failure modes below. Keep this deliberately contextual so an Index or
         # LOD reproduced inside an established Annexure remains nested.
         opening_anchor = _outer_anchor_label((page_texts or {}).get(pages[0], ""))
+        opening_annexure = annexure_ref_in_heading(
+            (page_texts or {}).get(pages[0], "")
+        )
         previous = segments[-1] if segments else None
         previous_category = str((previous or {}).get("category") or "")
         follows_previous = bool(previous and int(previous["end_page"]) + 1 == pages[0])
         corrected_category: str | None = None
         correction_evidence: str | None = None
-        if (
+        decisive_outer_owner = False
+        contained_document_type: str | None = None
+        if opening_annexure is not None and category != opening_annexure.label:
+            # The boundary pass has already selected the physical range.  An
+            # explicit A/P/R stamp on its opening page identifies the outer
+            # filing owner; a classifier may still correctly recognize that
+            # the enclosed content is a judgment, affidavit or petition.
+            corrected_category = opening_annexure.label
+            correction_evidence = "explicit_outer_annexure_label"
+            decisive_outer_owner = True
+            if family_split_name(category) != ANNEXURE_FAMILY:
+                contained_document_type = category
+        elif category in {"Undefined", "uncategorized"} and opening_anchor:
+            # The physical range is valid but the type pass abstained. A
+            # direct controlled-taxonomy heading on the range opening is
+            # stronger than leaving the complete document unidentified (for
+            # example a two-page Supreme Court Record of Proceedings).
+            corrected_category = opening_anchor
+            correction_evidence = "explicit_outer_heading_after_classifier_abstention"
+            decisive_outer_owner = True
+        elif (
             category == "Cover Page"
             and opening_anchor == "Index"
             and follows_previous
@@ -2090,10 +2293,11 @@ def _document_first_page_ownership(
             category = corrected_category
             confidence = 0.95
             type_evidence.append(correction_evidence or "deterministic_opening_anchor")
-            review_reasons.append(
-                f"classifier_{reported_category.casefold().replace(' ', '_')}_"
-                f"overridden_by_{correction_evidence}"
-            )
+            if not decisive_outer_owner:
+                review_reasons.append(
+                    f"classifier_{reported_category.casefold().replace(' ', '_')}_"
+                    f"overridden_by_{correction_evidence}"
+                )
 
         for page in pages:
             labels = page_parts.setdefault(page, [])
@@ -2114,6 +2318,7 @@ def _document_first_page_ownership(
             "confidence": confidence,
             "review_reasons": review_reasons,
             "reported_categories": categories,
+            "contained_document_type": contained_document_type,
         }
         segments.append(segment)
         if review_reasons:
@@ -3550,7 +3755,16 @@ class ProcessFileWorkflow(Workflow):
         boundary_validation = _boundary_proposals_from_exchange(
             boundary_exchange, page_count=pdf_page_count
         )
-        boundary_proposals = boundary_validation["proposals"]
+        raw_boundary_proposals = list(boundary_validation["proposals"])
+        boundary_proposals, boundary_refinements = (
+            _refine_boundary_proposals_with_explicit_annexures(
+                raw_boundary_proposals,
+                {unit.pdf_page: unit.text for unit in page_units},
+            )
+        )
+        boundary_validation["raw_proposals"] = raw_boundary_proposals
+        boundary_validation["proposals"] = boundary_proposals
+        boundary_validation["explicit_annexure_refinements"] = boundary_refinements
         boundary_seconds = elapsed_seconds(boundary_started) or 0.0
         # Classification is a distinct second SplitV1 pass with the canonical
         # configured categories/rules; boundary labels are never reused as types.
@@ -3565,6 +3779,17 @@ class ProcessFileWorkflow(Workflow):
         raw_classification_page_parts = page_parts
         classification_report = _segment_classification_report(
             llama_split, page_count=pdf_page_count
+        )
+        boundary_proposals, classification_opening_refinements = (
+            _refine_boundary_proposals_with_classified_openings(
+                boundary_proposals,
+                classification_report,
+                {unit.pdf_page: unit.text for unit in page_units},
+            )
+        )
+        boundary_validation["proposals"] = boundary_proposals
+        boundary_validation["classification_opening_refinements"] = (
+            classification_opening_refinements
         )
         raw_classified_ranges = {
             tuple(item["source_pages"]) for item in classification_report["segments"]
@@ -3786,16 +4011,23 @@ class ProcessFileWorkflow(Workflow):
         unresolved_reconciliation = [
             item
             for item in getattr(structured, "reconciliation_operations", ())
-            if getattr(item, "status", None)
-            in {"left_for_review", "rolled_back", "rejected"}
+            # A rejected/rolled-back proposal leaves the validated baseline
+            # intact; it is audit provenance, not user uncertainty. Escalate
+            # only when the evidence genuinely cannot choose between owners.
+            if getattr(item, "status", None) == "left_for_review"
+            and (
+                bool(getattr(item, "evidence", ()))
+                or getattr(item, "classification_before", None) is not None
+            )
             and getattr(item, "operation_type", None) != "reconciliation_stop"
         ]
         if unresolved_reconciliation:
             split_audit.setdefault("flags", []).append(
                 {
-                    "code": "reconciliation_proposal_needs_review",
+                    "code": "split_ownership_conflict",
                     "severity": "warning",
-                    "message": "One or more proposed page-map corrections were unresolved or rolled back; review the reconciliation audit before accepting the split.",
+                    "review_label": "Split Verification Required",
+                    "message": "Competing document owners could not be resolved safely for one or more pages. The protected baseline was retained; verify only the listed pages.",
                     "details": [
                         {
                             "operation_id": item.operation_id,
@@ -3803,6 +4035,10 @@ class ProcessFileWorkflow(Workflow):
                             "status": item.status,
                             "reason": item.reason,
                             "pages": format_page_span(item.proposed_pages),
+                            "current_owner": list(item.original_labels),
+                            "proposed_owner": list(item.proposed_labels),
+                            "evidence": list(item.evidence),
+                            "required_action": "Confirm the document boundary or provide an explicit outer heading/stamp or authoritative folio mapping.",
                         }
                         for item in unresolved_reconciliation
                     ],

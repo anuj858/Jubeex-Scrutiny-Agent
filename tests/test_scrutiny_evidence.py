@@ -32,21 +32,35 @@ from extraction_review.scrutiny.schema import (
     _display_evidence_quote,
     _one_published_evidence,
     apply_evidence_capability_policy,
+    apply_deterministic_postclassification_policy,
+    apply_conditional_manifest_policy,
     apply_evidence_pages,
     apply_grounded_defect_policy,
+    apply_internal_contradiction_policy,
+    apply_legal_verification_policy,
+    apply_margin_layout_policy,
     apply_manifest_absence_policy,
     apply_presence_only_policy,
+    apply_review_reason_consistency_policy,
+    apply_scope_coverage_policy,
     apply_status_policy,
     apply_supported_evidence_policy,
     apply_visual_conflict_policy,
+    apply_visual_field_policy,
     manifest_absence_proven,
+    missing_dependency_finding,
     missing_document_finding,
     missing_parts_in_layout,
     review_reason_for_response,
 )
 from extraction_review.scrutiny_workflow import (
+    _absence_owner_check_ids,
     _add_layout_fallback_chunks,
+    _complete_layout_chunks_for_defect,
+    _complete_evidence_batches,
+    _aggregate_complete_batch_responses,
     _retrieval_evidence_complete,
+    _visual_index_for_defect,
 )
 from extraction_review.vector_store import build_page_records
 
@@ -455,6 +469,63 @@ def test_layout_fallback_supplies_scanned_vakalatnama_when_retrieval_misses_it()
     assert "Dated 9 June 2024" in chunks[0]["text"]
 
 
+def test_complete_retry_uses_all_required_and_context_pages() -> None:
+    defect = SimpleNamespace(
+        inspect_parts=["Main Petition"],
+        context_parts=["Memo of Parties"],
+        exclude_parts=None,
+        where_to_look=[],
+    )
+    layout = {
+        1: {"document_part": "Main Petition", "markdown": "petition one"},
+        2: {"document_part": "Main Petition", "markdown": "petition two"},
+        3: {"document_part": "Memo of Parties", "markdown": "party list"},
+        4: {"document_part": "Annexure P-1", "markdown": "not required"},
+    }
+
+    chunks = _complete_layout_chunks_for_defect(defect, [], layout)
+
+    assert [chunk["page"] for chunk in chunks] == [1, 2, 3]
+    assert all(chunk["complete_part_retry"] for chunk in chunks)
+
+
+def test_complete_evidence_batches_never_drop_oversized_page_text() -> None:
+    text = "x" * 130_000
+    batches = _complete_evidence_batches(
+        [{"page": 7, "document_part": ["Annexures"], "text": text}]
+    )
+    reconstructed = "".join(
+        str(chunk.get("text") or "")
+        for batch in batches
+        for chunk in batch
+        if chunk.get("chunk_kind") != "summary"
+    )
+    assert reconstructed == text
+    assert len(batches) >= 3
+
+
+def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> None:
+    compliant = DefectResponse(
+        check_id="D-68",
+        status="compliant",
+        confidence=0.9,
+        summary="This batch complies.",
+        observed="This batch complies.",
+        conclusion="",
+        evidence=[EvidenceRef(page=1, quote="Translated")],
+    )
+    defect = DefectResponse(
+        check_id="D-68",
+        status="defect_found",
+        confidence=0.95,
+        summary="A vernacular passage has no translation.",
+        observed="A vernacular passage has no translation.",
+        conclusion="The translation is missing.",
+        evidence=[EvidenceRef(page=9, quote="मराठी")],
+    )
+    assert _aggregate_complete_batch_responses([compliant, defect]) is defect
+
+
 def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     defect = SimpleNamespace(
         inspect_parts=["Main Petition"],
@@ -850,7 +921,7 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The evidence confidence is 40%, below the 80% threshold required to "
+        "The evidence confidence is 40%, below the 60% threshold required to "
         "classify this as a confirmed defect or compliance result."
     )
 
@@ -869,7 +940,7 @@ def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
     reason = review_reason_for_response(response)
 
     assert reason is not None
-    assert "below the 80% threshold" not in reason
+    assert "below the 60% threshold" not in reason
     assert "confidence in sending this finding for manual review" in reason
 
 
@@ -959,7 +1030,7 @@ def test_d81_legibility_is_not_published_without_page_quality_evidence() -> None
     gated = apply_evidence_capability_policy(defect, response, {"marks": []})
 
     assert gated.status == "needs_review"
-    assert gated.confidence < 0.8
+    assert gated.confidence < 0.6
     assert gated.evidence == []
     assert "no page-quality assessment" in gated.reasoning
 
@@ -1511,6 +1582,136 @@ def test_missing_vakalatnama_with_the_switch_on_is_only_that_sentence() -> None:
     assert finding.evidence == []
 
 
+def test_missing_document_has_one_presence_owner_and_dependents_are_na() -> None:
+    presence = _scrutiny_row(
+        check_id="D-74",
+        defect="Memo of Appearance is not filed",
+        requirement="A Memo of Appearance must be filed.",
+        inspect_parts=["Memo of Appearance"],
+        manifest_absence_proves_defect=True,
+    )
+    signature = _scrutiny_row(
+        check_id="D-114",
+        defect="Memo of Appearance is not signed by the AOR",
+        requirement="The Memo of Appearance must be signed.",
+        inspect_parts=["Memo of Appearance"],
+    )
+    layout = {1: {"document_part": "Main Petition"}}
+
+    owners = _absence_owner_check_ids([signature, presence], layout)
+
+    assert owners == {"D-74": ["Memo of Appearance"]}
+    skipped = missing_dependency_finding(signature, ["Memo of Appearance"])
+    assert skipped.status == "not_applicable"
+    assert "dependent check was skipped" in skipped.summary
+
+
+def test_filing_specific_missing_document_check_owns_global_fallback() -> None:
+    global_affidavit = _scrutiny_row(
+        check_id="D-64",
+        inspect_parts=["Affidavit"],
+        manifest_absence_proves_defect=True,
+        agent_filing_types=["slp_civil", "slp_criminal", "civil_appeal"],
+    )
+    slp_civil_affidavit = _scrutiny_row(
+        check_id="D-181",
+        inspect_parts=["Affidavit"],
+        manifest_absence_proves_defect=True,
+        agent_filing_types=["slp_civil"],
+    )
+    layout = {1: {"document_part": "Main Petition"}}
+
+    owners = _absence_owner_check_ids(
+        [global_affidavit, slp_civil_affidavit], layout
+    )
+
+    assert owners == {"D-181": ["Affidavit"]}
+
+
+def test_missing_document_without_explicit_presence_owner_is_only_skipped() -> None:
+    conditional_presence = _scrutiny_row(
+        check_id="D-65",
+        defect="A respondent Vakalatnama is not accompanied by a caveat",
+        requirement="A caveat must accompany the respondent Vakalatnama.",
+        inspect_parts=["Vakalatnama"],
+    )
+    execution = _scrutiny_row(
+        check_id="D-75",
+        defect="The Vakalatnama lacks the AOR execution endorsement",
+        requirement="The AOR must endorse execution.",
+        inspect_parts=["Vakalatnama"],
+    )
+    layout = {1: {"document_part": "Main Petition"}}
+
+    assert _absence_owner_check_ids(
+        [conditional_presence, execution], layout
+    ) == {}
+    for defect in (conditional_presence, execution):
+        finding = missing_dependency_finding(defect, ["Vakalatnama"])
+        assert finding.status == "not_applicable"
+
+
+def test_explicit_multi_part_presence_owner_only_owns_declared_part() -> None:
+    impugned_order = _scrutiny_row(
+        check_id="D-325",
+        defect="The impugned order is not filed",
+        requirement="The impugned order must be filed with the petition.",
+        inspect_parts=["Impugned Order"],
+        context_parts=["Main Petition"],
+        manifest_absence_proves_defect=True,
+    )
+
+    only_order_missing = {1: {"document_part": "Main Petition"}}
+    assert _absence_owner_check_ids([impugned_order], only_order_missing) == {
+        "D-325": ["Impugned Order"]
+    }
+
+    only_petition_missing = {1: {"document_part": "Impugned Order"}}
+    assert _absence_owner_check_ids([impugned_order], only_petition_missing) == {}
+
+
+def test_layout_fallback_uses_llamaparse_markdown_without_word_boxes() -> None:
+    defect = _scrutiny_row(inspect_parts=["Vakalatnama"])
+    layout = {
+        105: {
+            "document_part": "Vakalatnama",
+            "markdown": "VAKALATNAMA\nAccepted by the Advocate-on-Record",
+        }
+    }
+
+    chunks = _add_layout_fallback_chunks(defect, [], layout=layout, max_chunks=2)
+
+    assert len(chunks) == 1
+    assert chunks[0]["page"] == 105
+    assert chunks[0]["layout_fallback"] is True
+    assert "Accepted by" in chunks[0]["text"]
+
+
+def test_visual_index_is_filtered_to_the_required_document_part() -> None:
+    defect = _scrutiny_row(inspect_parts=["Vakalatnama"])
+    visual = {
+        "status": "ok",
+        "pages": [20, 105],
+        "targets": [
+            {"page": 20, "document_types": ["Main Petition"]},
+            {"page": 105, "document_types": ["Vakalatnama"]},
+        ],
+        "marks": [
+            {"page": 20, "marking_type": "signature_like_mark"},
+            {"page": 105, "marking_type": "signature_like_mark"},
+        ],
+        "failures": [{"page": 20, "error": "unrelated page timeout"}],
+    }
+
+    filtered = _visual_index_for_defect(defect, visual)
+
+    assert filtered is not None
+    assert filtered["pages"] == [105]
+    assert [item["page"] for item in filtered["targets"]] == [105]
+    assert [item["page"] for item in filtered["marks"]] == [105]
+    assert filtered["failures"] == []
+
+
 def test_one_of_two_documents_missing_reports_only_that_document() -> None:
     defect = _scrutiny_row(
         check_id="D-57",
@@ -1655,3 +1856,329 @@ def test_reasoning_drops_a_citation_the_requirement_does_not_contain() -> None:
     reasoning = compose_reasoning(defect, response)
     assert "Order XXI Rule 9" not in reasoning
     assert "this requirement" in reasoning
+
+
+def test_legal_verification_metadata_does_not_replace_filing_outcome() -> None:
+    defect = _scrutiny_row(legal_verification_status="needs_verification")
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="defect_found",
+        confidence=0.95,
+        summary="The field is blank.",
+        observed="The field is blank.",
+        conclusion="The requirement is not met.",
+        evidence=[EvidenceRef(page=1, quote="Date:")],
+    )
+    gated = apply_legal_verification_policy(defect, response)
+    assert gated.status == "defect_found"
+    assert gated.gap is None
+
+
+def test_high_confidence_review_cannot_use_low_confidence_reason() -> None:
+    response = DefectResponse(
+        check_id="D-89",
+        status="needs_review",
+        confidence=0.91,
+        summary="The margin evidence is inconclusive.",
+        observed="The margin evidence is inconclusive.",
+        conclusion="Review is required.",
+        gap="low_confidence",
+        evidence=[EvidenceRef(page=1, quote="SYNOPSIS")],
+    )
+    checked = apply_review_reason_consistency_policy(response)
+    assert checked.status == "needs_review"
+    assert checked.gap == "ambiguous"
+    assert checked.confidence == 0.91
+
+
+def test_d89_uses_page_geometry_instead_of_low_confidence_review() -> None:
+    defect = _scrutiny_row(
+        check_id="D-89",
+        defect="Margin of 4 cm on left and right and 2 cm top and bottom not used",
+        requirement="Use 4 cm horizontal and 2 cm vertical margins.",
+        inspect_parts=["Main Petition"],
+    )
+    response = DefectResponse(
+        check_id="D-89",
+        status="needs_review",
+        confidence=0.91,
+        summary="Margins require review.",
+        observed="Margins require review.",
+        conclusion="",
+        gap="ambiguous",
+        evidence=[EvidenceRef(page=1, quote="MOST RESPECTFULLY SHOWETH")],
+    )
+    layout = {
+        1: {
+            "width": 595.0,
+            "height": 842.0,
+            "document_part": ["Main Petition"],
+            "words": [
+                {"x": 0.10, "y": 0.08, "w": 0.30, "h": 0.03, "text": "MOST"},
+                {"x": 0.55, "y": 0.80, "w": 0.30, "h": 0.03, "text": "PRAYER"},
+            ],
+        }
+    }
+    decided = apply_margin_layout_policy(defect, response, layout)
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+    assert decided.confidence >= 0.95
+
+
+def test_incomplete_scope_cannot_publish_compliance() -> None:
+    response = DefectResponse(
+        check_id="D-1",
+        status="compliant",
+        confidence=0.95,
+        summary="The sampled page complies.",
+        observed="The sampled page complies.",
+        conclusion="The requirement is satisfied.",
+        evidence=[EvidenceRef(page=1, quote="Present")],
+    )
+    gated = apply_scope_coverage_policy(
+        response,
+        scope_complete=False,
+        prompt_truncated=True,
+    )
+    assert gated.status == "needs_review"
+    assert gated.gap == "element_page_not_in_excerpts"
+    assert "evidence limit" in gated.gap_detail
+
+
+def test_complete_visual_blank_date_is_a_defect() -> None:
+    defect = _scrutiny_row(
+        defect="Memo does not mention the date of execution",
+        requirement="The Memo must mention the date on which it is signed.",
+        inspect_parts=["Memo of Appearance"],
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="needs_review",
+        confidence=0.59,
+        summary="The date may be handwritten.",
+        observed="The field shows Dated:",
+        conclusion="The date cannot be determined.",
+        gap="unreadable",
+        evidence=[EvidenceRef(page=1, quote="Dated:")],
+    )
+    decided = apply_visual_field_policy(
+        defect,
+        response,
+        {
+            "field_assessments": [
+                {
+                    "page": 1,
+                    "document_type": "Memo of Appearance",
+                    "field": "execution_date",
+                    "label_found": True,
+                    "value_present": False,
+                    "readable": True,
+                    "confidence": 0.94,
+                }
+            ]
+        },
+    )
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+
+
+def test_d57_owns_blank_vakalatnama_execution_date() -> None:
+    defect = _scrutiny_row(
+        check_id="D-57",
+        defect="Vakalatnama is not of the same or prior date to drafting",
+        requirement=(
+            "The Vakalatnama execution date must be the same as or earlier "
+            "than the Main Petition drafting date."
+        ),
+        inspect_parts=["Vakalatnama", "Main Petition"],
+    )
+    response = DefectResponse(
+        check_id="D-57",
+        status="not_applicable",
+        confidence=0.8,
+        summary="The comparison dates are incomplete.",
+        observed="The Vakalatnama date field is blank.",
+        conclusion="The dates cannot be compared.",
+        evidence=[],
+    )
+
+    decided = apply_visual_field_policy(
+        defect,
+        response,
+        {
+            "field_assessments": [
+                {
+                    "page": 105,
+                    "document_type": "Vakalatnama",
+                    "field": "execution_date",
+                    "label_found": True,
+                    "value_present": False,
+                    "readable": True,
+                    "confidence": 0.96,
+                },
+                {
+                    "page": 80,
+                    "document_type": "Main Petition",
+                    "field": "execution_date",
+                    "label_found": True,
+                    "value_present": False,
+                    "readable": True,
+                    "confidence": 0.96,
+                },
+            ]
+        },
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.confidence >= 0.9
+    assert decided.gap is None
+
+
+def test_blank_date_is_not_conflicted_by_present_advocate_signature() -> None:
+    defect = _scrutiny_row(
+        defect="Memo of Appearance does not mention the date of execution",
+        requirement="The Memo must mention the date on which it is signed.",
+        inspect_parts=["Memo of Appearance"],
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="defect_found",
+        confidence=0.94,
+        summary="The execution-date field is blank.",
+        observed="The Advocate signature is present and the Dated field is blank.",
+        conclusion="The required execution date is missing.",
+        evidence=[
+            EvidenceRef(
+                page=1,
+                quote="(AJIT SHARMA) Advocate for the Petitioner\n\nDated:",
+            )
+        ],
+    )
+    visual = {
+        "status": "ok",
+        "pages": [105],
+        "targets": [
+            {"page": 105, "document_types": ["Memo of Appearance"]}
+        ],
+        "failures": [],
+        "marks": [
+            {
+                "page": 105,
+                "document_type": "Memo of Appearance",
+                "marking_type": "advocate_on_record_signature",
+                "signature_role": "advocate",
+                "associated_label": "Yours faithfully",
+            }
+        ],
+    }
+    conflict_checked = apply_visual_conflict_policy(defect, response, visual)
+    assert conflict_checked.status == "defect_found"
+    decided = apply_visual_field_policy(defect, conflict_checked, visual)
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+
+
+def test_complete_d75_endorsement_scope_becomes_defect_not_conflict() -> None:
+    defect = _scrutiny_row(
+        check_id="D-75",
+        defect="AOR has not certified or endorsed due execution",
+        requirement=(
+            "The AOR must certify execution in his presence or endorse that he "
+            "has satisfied himself about due execution."
+        ),
+        inspect_parts=["Vakalatnama"],
+    )
+    response = DefectResponse(
+        check_id="D-75",
+        status="needs_review",
+        confidence=0.59,
+        summary="A signature-like mark creates a conflict.",
+        observed="No endorsement was found.",
+        conclusion="Review is required.",
+        gap="conflict",
+        evidence=[EvidenceRef(page=1, quote="Dated this the 5TH (AJIT SHARMA)")],
+    )
+    visual = {
+        "status": "ok",
+        "pages": [1],
+        "targets": [{"page": 1, "document_types": ["Vakalatnama"]}],
+        "failures": [],
+        "marks": [
+            {
+                "page": 1,
+                "document_type": "Vakalatnama",
+                "marking_type": "advocate_on_record_signature",
+                "signature_role": "advocate",
+            }
+        ],
+    }
+    decided = apply_deterministic_postclassification_policy(
+        defect,
+        response,
+        [{"page": 1, "document_part": ["Vakalatnama"], "text": "Dated this the 5TH"}],
+        visual,
+        scope_complete=True,
+    )
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+
+
+def test_complete_manifest_without_conditional_trigger_becomes_not_applicable() -> None:
+    defect = _scrutiny_row(
+        check_id="D-96",
+        defect="Substitution application not filed",
+        requirement=(
+            "Where a party in the court below has died, an Application for "
+            "Substitution must be filed."
+        ),
+        trigger_words="since deceased; through LRs; legal representatives; bringing on record",
+        inspect_parts=["Main Petition", "Application"],
+    )
+    response = DefectResponse(
+        check_id="D-96",
+        status="needs_review",
+        confidence=0.79,
+        summary="The death trigger is unresolved.",
+        observed="The death trigger is unresolved.",
+        conclusion="",
+        gap="ambiguous",
+        evidence=[EvidenceRef(page=1, quote="APPLICATION FOR INTERIM RELIEF")],
+    )
+    layout = {
+        1: {
+            "document_part": ["Main Petition"],
+            "text": "The petitioner challenges the final order.",
+            "words": [],
+        },
+        2: {
+            "document_part": ["Application"],
+            "text": "APPLICATION FOR INTERIM RELIEF",
+            "words": [],
+        },
+    }
+    decided = apply_conditional_manifest_policy(defect, response, layout)
+    assert decided.status == "not_applicable"
+    assert decided.confidence == 1.0
+
+
+def test_internal_party_side_contradiction_is_defect() -> None:
+    defect = _scrutiny_row(
+        defect="Memo does not correctly specify the represented side",
+        requirement="The Memo must specify whether counsel appears for the Petitioner or Respondent.",
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="needs_review",
+        confidence=0.8,
+        summary="The descriptions conflict.",
+        observed="The descriptions conflict.",
+        conclusion="Review is required.",
+        gap="conflict",
+        evidence=[
+            EvidenceRef(page=1, quote="on behalf of the Respondent"),
+            EvidenceRef(page=1, quote="Advocate for the Petitioner"),
+        ],
+    )
+    decided = apply_internal_contradiction_policy(defect, response)
+    assert decided.status == "defect_found"
+    assert decided.gap is None
