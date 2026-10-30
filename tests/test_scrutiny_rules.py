@@ -337,6 +337,22 @@ def test_writ_pil_with_application_runs_both_special_overlays(monkeypatch) -> No
     assert {"D-206", "D-317", "D-319", "D-320", "D-322"} <= check_ids
 
 
+def test_comma_separated_special_categories_are_split() -> None:
+    categories = _special_categories_for_filing(
+        supplied="Tax Matters, Eviction Matters",
+        metadata={},
+        record={"special_category": "Advocates Act, 1961, PIL"},
+        layout={},
+        filing_type="SLP_CIVIL",
+    )
+    assert categories == [
+        "Tax Matters",
+        "Eviction Matters",
+        "Advocates Act, 1961",
+        "PIL",
+    ]
+
+
 def test_slp_civil_runs_global_family_and_civil_side() -> None:
     assert categories_for_filing_type("SLP_CIVIL") == frozenset({"global", "slp_civil"})
     filing = "slp_civil"

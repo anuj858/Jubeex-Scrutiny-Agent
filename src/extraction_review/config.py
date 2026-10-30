@@ -6,7 +6,7 @@ Adapted for JubeeX Core Filing Record schema with deep descriptive context.
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -224,35 +224,18 @@ class Party(BaseModel):
 
 
 FRONT_PETITIONERS_DESCRIPTION = (
-    "Every numbered petitioner printed near IN THE MATTER OF, BETWEEN, VERSUS, "
-    "POSITION OF THE PARTIES, or MEMO OF PARTIES, including the lines under the name "
-    "and the same list continued on the next page. "
-    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the "
-    "following lines. Do not stop at a page break and do not skip a printed number. "
-    "A party may be only a name and a place; no S/o and no Through is still a party. "
-    "Presently at, Second Address, and Also at are more place lines of the party above, "
-    "not another party. R/o marks the place; do not put R/o or the S/o name into the party name. "
-    "A caption that only says '& Anr.' or '& Ors.' is a count, not a party. "
-    "When one page has two columns (Before High Court beside Before Supreme Court, or "
-    "Trial Court / High Court / In this Court), copy only the current-court column. "
-    "Not a Party and Dead are column roles, not people. A case number is not a party. "
-    "Do not stop after the first name. Record source_pages."
+    "Petitioners in the cause title, before Versus. "
+    "A name is a person or an office, not a sentence, a case number, or I.A. No. "
+    "S/o, age, and the place go in their own fields. "
+    "On a two-column list, use the current-court column. "
+    "The same name is not also a respondent."
 )
 FRONT_RESPONDENTS_DESCRIPTION = (
-    "Every numbered respondent printed on the other side of VERSUS, or under RESPONDENT, "
-    "in the same block as the petitioners (IN THE MATTER OF, BETWEEN, POSITION OF THE PARTIES, "
-    "or MEMO OF PARTIES), including the lines under the name and the same list continued on the next page. "
-    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the following lines. "
-    "Do not stop at a page break and do not skip a printed number. "
-    "A party may be only a name and a place, such as Land Acquisition Collector. "
-    "No S/o and no Through is still a party. "
-    "Presently at, Second Address, and Also at are more place lines of the party above, "
-    "not another respondent. R/o marks the place; do not put R/o or the S/o name into the party name. "
-    "'& Ors.' is not a party. "
-    "When one page has two columns (Before High Court beside Before Supreme Court, or "
-    "Trial Court / High Court / In this Court), copy only the current-court column. "
-    "Not a Party and Dead are column roles, not people. A case number is not a party. "
-    "Do not stop after the first name. Record source_pages."
+    "Respondents after Versus in that same cause title. "
+    "A name is a person or an office, not a sentence, a case number, or I.A. No. "
+    "S/o, age, and the place go in their own fields. "
+    "On a two-column list, use the current-court column. "
+    "Do not repeat a petitioner."
 )
 FRONT_ADDRESS_DESCRIPTION = (
     "The place lines printed under this party's number, including a continuation on the next page. "
@@ -558,29 +541,69 @@ class LegalExtractRecord(BaseModel):
         return value
 
 
+FRONT_SPECIAL_CATEGORIES: tuple[str, ...] = (
+    "Motor Vehicle Act",
+    "Demolition Matters",
+    "Tax Matters",
+    "Eviction Matters",
+    "Matters involving/pertaining to minors",
+    "Indigent person",
+    "Jail Petition",
+    "Bail Applications/Bail Matters",
+    "Civil Appeal with High Court Certificate",
+    "Appeal (Armed Forces)",
+    "Advocates Act, 1961",
+    "Consumer Protection Act, 2019",
+    "PIL",
+    "Criminal Appeal with High Court Certificate",
+    "Re-filing defect",
+    "Transfer Petition",
+)
+
+def front_special_category_description(names: Sequence[str]) -> str:
+    """LlamaExtract instruction. ``names`` are the exact database strings."""
+    listed = "; ".join(name.strip() for name in names if name and str(name).strip())
+    if not listed:
+        raise ValueError("special category description needs the database names")
+    return (
+        "Identify applicable special categories by reading the petition, "
+        "cause title, facts, grounds, impugned order, relief sought, "
+        "statutory provisions, and annexures. "
+        "Match synonymous terms, abbreviations, alternative legal expressions, "
+        "and contextual references against these stored categories: "
+        f"{listed}. "
+        "Return only these exact names, comma-separated, up to 3, "
+        "and only when a category is substantively applicable. "
+        "Do not match an isolated keyword, a generic reference, a checklist question, "
+        "or the listing proforma. "
+        "The petition type itself, such as Special Leave Petition, Writ Petition, "
+        "Review Petition, Civil Appeal, or Transfer Petition, is not a special category. "
+        "This field is a classification into the stored names, not a copy of the printed words. "
+        "Leave null when none applies or when applicability is unclear. "
+        "Do not write a review flag or any name that is not in the list."
+    )
+
+
 class FrontExtractRecord(LegalExtractRecord):
-    """Extract schema for the opening pages plus the last 5. Not used by /v1/filings/extract."""
+    """Extract schema for the whole compiled filing. Not used by /v1/filings/extract."""
 
     court: str | None = Field(
         default=None,
         description=(
             "Court where the petition is filed (e.g. Supreme Court of India, High Court of Delhi), "
-            "as printed on any opening page."
+            "as printed on any page of the compiled filing."
         ),
     )
     petition_type: str | None = Field(
         default=None,
         description=(
             "Petition type (e.g. Special Leave Petition (Civil), Special Leave Petition (Crl.), "
-            "Writ Petition (Civil), Transfer Petition), as printed on any opening page."
+            "Writ Petition (Civil), Transfer Petition), as printed on any page of the compiled filing."
         ),
     )
     special_category: str | None = Field(
         default=None,
-        description=(
-            "Matter subtype or subject classification printed in the filing, "
-            "such as Tax Matters. Leave null when not explicitly printed."
-        ),
+        description=front_special_category_description(FRONT_SPECIAL_CATEGORIES),
     )
     cause_title: CauseTitle | None = Field(
         default=None,
@@ -600,7 +623,7 @@ class FrontExtractRecord(LegalExtractRecord):
     advocates_on_record: list[AdvocateOnRecord] = Field(
         default_factory=list,
         description=(
-            "Advocate on record from any opening page or the closing pages. "
+            "Advocate on record from any page of the compiled filing. "
             "Copy the printed name, code, chamber, email, and phone. Do not invent them."
         ),
     )
@@ -608,23 +631,23 @@ class FrontExtractRecord(LegalExtractRecord):
         default_factory=list,
         description=(
             "Order under challenge. Extract court name, order date, and case number "
-            "from whichever opening page prints them."
+            "from whichever page of the compiled filing prints them."
         ),
     )
     relief_sort: str | None = Field(
         default=None,
         description=(
-            "Prayer body under Main Prayer or Prayer on any opening page. "
-            "Omit the heading. Leave null only when that prayer is not in the window."
+            "Prayer body under Main Prayer or Prayer on any page of the compiled filing. "
+            "Omit the heading. Leave null only when that prayer is not printed."
         ),
     )
     petition_date: str | None = Field(
         default=None,
         description=(
-            "Date after Main Prayer or Prayer on any opening page, next to Date, "
+            "Date after Main Prayer or Prayer on any page of the compiled filing, next to Date, "
             "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
             "are printed. A page number between the label and the date is not the "
-            "date. Leave null only when no such date is printed in the window."
+            "date. Leave null only when no such date is printed."
         ),
     )
 

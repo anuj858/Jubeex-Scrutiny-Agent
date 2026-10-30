@@ -126,6 +126,39 @@ async def test_unparsed_scope_does_not_create_parse_for_reused_slot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supplied_scope_does_not_create_parse_for_reused_slot() -> None:
+    created: list[str] = []
+
+    class Parsing:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            created.append(str(kwargs.get("file_id")))
+            raise AssertionError("supplied slot must not call parsing.create")
+
+    catalog = type_catalog("SLP_CIVIL")
+    pages, _structured, jobs, _layouts, _usage = await _parse_labeled_files(
+        SimpleNamespace(parsing=Parsing()),
+        parse_config=SimpleNamespace(),
+        parts=[
+            SplitPartInput(
+                slot_id="petition",
+                file_id="dfl-petition",
+                document_parts=("Main Petition",),
+            )
+        ],
+        source_parts=extract_source_parts(catalog),
+        catalog=catalog,
+        parse_scope="supplied",
+        reuse_slots={"petition"},
+        reuse_pages={"petition": {1: "full book page"}},
+        reuse_job_ids={"petition": "pjb-book"},
+        ctx=_Ctx(),  # type: ignore[arg-type]
+    )
+    assert created == []
+    assert pages["petition"][1] == "full book page"
+    assert jobs["petition"] == "pjb-book"
+
+
+@pytest.mark.asyncio
 async def test_extract_sources_scope_skips_annexure_without_create() -> None:
     created: list[str] = []
 

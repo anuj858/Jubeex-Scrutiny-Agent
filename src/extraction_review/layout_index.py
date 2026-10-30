@@ -41,12 +41,15 @@ _MD_MARK = re.compile(r"(\*\*|__|~~|`)")
 _ELLIPSIS = re.compile(r"\[\s*(?:\.{3,}|…+)\s*\]|\(\s*(?:\.{3,}|…+)\s*\)|\.{3,}|…+")
 _TABLE_RULE = re.compile(r"(?:\|?\s*:?-{3,}:?\s*)+")
 # Excerpt rows are "Column 1: cell" or "Header (column 2): cell". The label is
-# not printed on the page. Only a whole line is a label, so a real word
+# not printed beside the cell. Only a whole line is a label, so a real word
 # "column" in a sentence stays in the quote.
 _COLUMN_LINE = re.compile(
     r"^(?:column\s+\d+|.+?\(\s*column\s+\d+\s*\))\s*:\s*(.*)$",
     re.IGNORECASE,
 )
+# Table chunks prefix each cell with its header: "S.NO.: 01.01.2031".
+# The header is printed once, above the column, not on the row.
+_HEADER_LINE = re.compile(r"^[A-Z][A-Z0-9 .'/().-]{0,40}\s*:\s*(.*)$")
 _FOLD = str.maketrans(
     {
         "\u2018": "'",
@@ -98,13 +101,13 @@ def _norm_text(text: str) -> str:
 
 
 def _canon_token(token: str) -> str:
-    """Collapse 17th / 17/4 / 17.04.2026 so OCR and model quotes still align."""
+    """Collapse 17th / 17/4 / 17.04.2026 and Cooperative / Co-operative."""
     ordinal = _ORDINAL.match(token)
     if ordinal:
         return ordinal.group(1)
     if _SLASH_DATE.match(token):
         return token.split("/")[0].split(".")[0].split("-")[0]
-    return token
+    return token.replace("-", "")
 
 
 def quote_in_text(quote: str, text: str) -> bool:
@@ -739,62 +742,104 @@ def _required_run(nlen: int) -> int:
     return _MIN_TOKEN_RUN
 
 
-def _longest_token_run(
+def _hyphen_join(left: str, right: str) -> str | None:
+    """A line break stores Co- and operative as two words."""
+    if not left.endswith("-") or not right.isalpha():
+        return None
+    return _canon_token(left[:-1] + right)
+
+
+def _token_step(
     needle_canon: Sequence[str],
-    haystack_canon: Sequence[str],
+    hay_tokens: Sequence[str],
+    hay_canon: Sequence[str],
+    needle_at: int,
+    hay_at: int,
+) -> int:
+    if needle_canon[needle_at] == hay_canon[hay_at]:
+        return 1
+    if hay_at + 1 >= len(hay_tokens):
+        return 0
+    joined = _hyphen_join(hay_tokens[hay_at], hay_tokens[hay_at + 1])
+    if joined is not None and joined == needle_canon[needle_at]:
+        return 2
+    return 0
+
+
+def _cover_token_runs(
+    needle_tokens: Sequence[str],
+    hay_tokens: Sequence[str],
     *,
     min_run: int,
-) -> tuple[int, int] | None:
-    """Earliest longest contiguous token run, as (haystack index, length)."""
-    if min_run < 1 or not needle_canon or not haystack_canon:
-        return None
-    prev = [0] * (len(haystack_canon) + 1)
-    best_run = 0
-    best_hay = 0
-    for needle_token in needle_canon:
-        current = [0] * (len(haystack_canon) + 1)
-        for index, hay_token in enumerate(haystack_canon, start=1):
-            if needle_token != hay_token:
-                continue
-            length = prev[index - 1] + 1
-            current[index] = length
-            if length > best_run:
-                best_run = length
-                best_hay = index - length
-        prev = current
-    if best_run < min_run:
-        return None
-    return best_hay, best_run
+) -> list[tuple[int, int]]:
+    """In-order haystack runs that cover the quote, as (index, length).
+
+    One mismatched word does not drop the rest of the quote. A short quote
+    still has to match in full.
+    """
+    if min_run < 1 or not needle_tokens or not hay_tokens:
+        return []
+    needle_canon = [_canon_token(token) for token in needle_tokens]
+    hay_canon = [_canon_token(token) for token in hay_tokens]
+    covered: list[tuple[int, int]] = []
+    needle_at = 0
+    hay_cursor = 0
+    nlen = len(needle_canon)
+    hlen = len(hay_tokens)
+    while needle_at < nlen:
+        found: tuple[int, int, int] | None = None
+        for hay_at in range(hay_cursor, hlen):
+            hay_index = hay_at
+            needle_index = needle_at
+            hay_run = 0
+            needle_run = 0
+            while needle_index < nlen and hay_index < hlen:
+                step = _token_step(
+                    needle_canon, hay_tokens, hay_canon, needle_index, hay_index
+                )
+                if step == 0:
+                    break
+                hay_index += step
+                hay_run += step
+                needle_index += 1
+                needle_run += 1
+            if needle_run >= min_run:
+                found = (hay_at, hay_run, needle_run)
+                break
+        if found is None:
+            needle_at += 1
+            continue
+        hay_at, hay_run, needle_run = found
+        covered.append((hay_at, hay_run))
+        needle_at += needle_run
+        hay_cursor = hay_at + hay_run
+    return covered
 
 
-def _token_run_span(needle: str, haystack: str) -> tuple[int, int] | None:
+def _token_run_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
     needle_tokens = needle.split()
-    haystack_tokens = haystack.split()
-    if not needle_tokens or not haystack_tokens:
-        return None
-    found = _longest_token_run(
-        [_canon_token(token) for token in needle_tokens],
-        [_canon_token(token) for token in haystack_tokens],
-        min_run=_required_run(len(needle_tokens)),
-    )
-    if found is None:
-        return None
-    hay_at, run = found
-    return _span_from_tokens(
-        haystack_tokens, _token_starts(haystack_tokens), hay_at, run
-    )
+    hay_tokens = haystack.split()
+    if not needle_tokens or not hay_tokens:
+        return []
+    starts = _token_starts(hay_tokens)
+    return [
+        _span_from_tokens(hay_tokens, starts, hay_at, run)
+        for hay_at, run in _cover_token_runs(
+            needle_tokens,
+            hay_tokens,
+            min_run=_required_run(len(needle_tokens)),
+        )
+    ]
 
 
-def _match_segment(segment: str, haystack: str, cursor: int) -> tuple[int, int] | None:
+def _match_segment(segment: str, haystack: str, cursor: int) -> list[tuple[int, int]]:
     suffix = haystack[cursor:]
     lead = len(suffix) - len(suffix.lstrip(" "))
     suffix = suffix[lead:]
-    found = _token_run_span(segment, suffix)
-    if found is None:
-        return None
-    start, end = found
     base = cursor + lead
-    return base + start, base + end
+    return [
+        (base + start, base + end) for start, end in _token_run_spans(segment, suffix)
+    ]
 
 
 def _quote_segments(needle: str) -> list[str]:
@@ -812,10 +857,10 @@ def _match_spans(needle: str, haystack: str) -> list[tuple[int, int]]:
     cursor = 0
     for segment in segments:
         found = _match_segment(segment, haystack, cursor)
-        if found is None:
+        if not found:
             return []
-        spans.append(found)
-        cursor = found[1]
+        spans.extend(found)
+        cursor = found[-1][1]
     return spans
 
 
@@ -940,7 +985,10 @@ def union_line_boxes(
 
 def _column_label_cell(line: str) -> str | None:
     """Cell text when this line is a pipeline column label, else None."""
-    match = _COLUMN_LINE.match(line.strip())
+    text = line.strip()
+    match = _COLUMN_LINE.match(text)
+    if match is None:
+        match = _HEADER_LINE.match(text)
     if match is None:
         return None
     return match.group(1).strip()

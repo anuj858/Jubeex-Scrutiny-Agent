@@ -1,7 +1,9 @@
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pymupdf
 import pytest
 
 from extraction_review import process_file
@@ -137,3 +139,94 @@ def test_parse_page_metadata_keeps_folio_separate_from_handwritten_label():
 
     assert folios == {126: "118"}
     assert confidences == {126: 0.952}
+
+
+def _pdf_bytes(page_count: int) -> bytes:
+    document = pymupdf.open()
+    try:
+        for _ in range(page_count):
+            document.new_page()
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+@pytest.mark.asyncio
+async def test_matching_extract_parse_is_reused_without_creating_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf = _pdf_bytes(2)
+    digest = hashlib.sha256(pdf).hexdigest()
+    created: list[object] = []
+
+    class Parsing:
+        async def create(self, **_kwargs: object) -> None:
+            created.append(_kwargs)
+            raise AssertionError("parsing.create")
+
+        async def get(self, job_id: str, **_kwargs: object) -> SimpleNamespace:
+            assert job_id == "pjb-saved"
+            return _parse_result([1, 2])
+
+    class AgentData:
+        async def get(self, item_id: str) -> SimpleNamespace:
+            assert item_id == "agd-1"
+            return SimpleNamespace(
+                data={
+                    "metadata": {
+                        "source_parse_job_id": "pjb-saved",
+                        "source_file_hash": digest,
+                    }
+                }
+            )
+
+    class Client:
+        parsing = Parsing()
+        beta = SimpleNamespace(agent_data=AgentData())
+
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: None,
+    )
+    reused = await process_file._load_reused_split_parse(
+        Client(),
+        agent_data_id="agd-1",
+        pdf_bytes=pdf,
+    )
+    assert created == []
+    assert reused is not None
+    job_id, pages, _result, _usage = reused
+    assert job_id == "pjb-saved"
+    assert pages[1] == "page 1"
+    assert pages[2] == "page 2"
+
+
+@pytest.mark.asyncio
+async def test_different_pdf_does_not_reuse_the_saved_parse() -> None:
+    pdf = _pdf_bytes(1)
+
+    class Parsing:
+        async def get(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("hash mismatch must not read the parse job")
+
+    class AgentData:
+        async def get(self, _item_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                data={
+                    "metadata": {
+                        "source_parse_job_id": "pjb-saved",
+                        "source_file_hash": "a" * 64,
+                    }
+                }
+            )
+
+    class Client:
+        parsing = Parsing()
+        beta = SimpleNamespace(agent_data=AgentData())
+
+    reused = await process_file._load_reused_split_parse(
+        Client(),
+        agent_data_id="agd-1",
+        pdf_bytes=pdf,
+    )
+    assert reused is None
