@@ -52,6 +52,119 @@ def fetch_catalogue_revision() -> int:
     return int(row[0])
 
 
+_ACTIVE_COLUMNS = ("is_active", "active")
+_STATUS_COLUMN = "status"
+_ORDER_COLUMNS = ("display_order", "sort_order", "position")
+_FLAG_TRUE = frozenset({"1", "true", "t", "yes", "y", "active", "enabled"})
+_FLAG_FALSE = frozenset({"0", "false", "f", "no", "n", "inactive", "disabled"})
+_FLAG_ALL = _FLAG_TRUE | _FLAG_FALSE
+
+
+def _column_name(columns: list[str], *candidates: str) -> str | None:
+    lookup = {column.lower(): column for column in columns}
+    for candidate in candidates:
+        found = lookup.get(candidate)
+        if found:
+            return found
+    return None
+
+
+def _flag_is_true(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in _FLAG_TRUE
+
+
+def _usable_flag_column(rows: list[dict[str, Any]], column: str) -> bool:
+    seen = [
+        str(row.get(column)).strip().lower()
+        for row in rows
+        if row.get(column) is not None and str(row.get(column)).strip()
+    ]
+    return bool(seen) and all(item in _FLAG_ALL for item in seen)
+
+
+def special_category_names_from_rows(
+    rows: list[dict[str, Any]],
+    columns: list[str] | None = None,
+) -> list[str]:
+    """Exact special_category strings, active rows first when that column exists."""
+    columns = list(columns or (list(rows[0]) if rows else []))
+    active_column = _column_name(columns, *_ACTIVE_COLUMNS)
+    status_column = _column_name(columns, _STATUS_COLUMN)
+    order_column = _column_name(columns, *_ORDER_COLUMNS)
+    flag_column = active_column
+    if flag_column is None and status_column and _usable_flag_column(rows, status_column):
+        flag_column = status_column
+    kept = [
+        row
+        for row in rows
+        if flag_column is None or _flag_is_true(row.get(flag_column))
+    ]
+    ordered = list(enumerate(kept))
+    if order_column:
+        def sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+            index, row = item
+            raw = row.get(order_column)
+            try:
+                return (0, int(raw), index)
+            except (TypeError, ValueError):
+                return (1, index, index)
+
+        ordered.sort(key=sort_key)
+    names: list[str] = []
+    for _index, row in ordered:
+        label = str(row.get("special_category") or "").strip()
+        if label and label not in names:
+            names.append(label)
+    return names
+
+
+def _names_from_case_types(case_types: dict[str, Any]) -> list[str]:
+    """Exact special-category labels from the local case-type catalogue."""
+    names: list[str] = []
+    for spec in case_types.values():
+        if not isinstance(spec, dict):
+            continue
+        for label in spec.get("special_categories") or []:
+            text = str(label).strip()
+            if text and text not in names:
+                names.append(text)
+    return names
+
+
+def fetch_special_category_names() -> list[str]:
+    """Distinct catalogue names, with the stored spelling unchanged.
+
+    ``CATALOGUE_DATABASE_URL=local`` uses the checked-in case-type list and
+    does not open a database. A real URL reads ``v_parse_petition_specials``.
+    Extract-front does not substitute the old hardcoded list.
+    """
+    from .rules import _use_json_catalogue, get_case_types
+
+    file_catalogue = _use_json_catalogue() or (
+        (os.getenv("SCRUTINY_CATALOGUE_SOURCE") or "db").strip().lower() == "json"
+    )
+    if file_catalogue:
+        names = _names_from_case_types(get_case_types())
+        if not names:
+            raise RuntimeError("Local catalogue has no special categories")
+        return names
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM v_parse_petition_specials")
+        columns = [desc.name for desc in cur.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+    names = special_category_names_from_rows(rows, columns)
+    if not names:
+        raise RuntimeError(
+            "Catalogue database returned no special categories "
+            "from v_parse_petition_specials"
+        )
+    return names
+
+
 def load_catalogue_from_db(revision: int | None = None) -> Catalogue:
     if revision is None:
         revision = fetch_catalogue_revision()

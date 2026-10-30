@@ -279,3 +279,20 @@ def test_live_selector_matches_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
         }
     )
     assert sample.use_explicit_applicability is False
+
+
+def test_local_catalogue_special_names_are_not_a_database_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.scrutiny.catalogue_db import fetch_special_category_names
+
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "local")
+
+    def refuse_connection(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("local catalogue must not open a database connection")
+
+    monkeypatch.setattr("psycopg.connect", refuse_connection)
+    names = fetch_special_category_names()
+    assert names[0] == "Motor Vehical Act"
+    assert "Tax Matters" in names
+    assert "Eviction Matters" in names

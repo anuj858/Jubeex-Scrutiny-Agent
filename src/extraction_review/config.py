@@ -6,7 +6,7 @@ Adapted for JubeeX Core Filing Record schema with deep descriptive context.
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -224,35 +224,18 @@ class Party(BaseModel):
 
 
 FRONT_PETITIONERS_DESCRIPTION = (
-    "Every numbered petitioner printed near IN THE MATTER OF, BETWEEN, VERSUS, "
-    "POSITION OF THE PARTIES, or MEMO OF PARTIES, including the lines under the name "
-    "and the same list continued on the next page. "
-    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the "
-    "following lines. Do not stop at a page break and do not skip a printed number. "
-    "A party may be only a name and a place; no S/o and no Through is still a party. "
-    "Presently at, Second Address, and Also at are more place lines of the party above, "
-    "not another party. R/o marks the place; do not put R/o or the S/o name into the party name. "
-    "A caption that only says '& Anr.' or '& Ors.' is a count, not a party. "
-    "When one page has two columns (Before High Court beside Before Supreme Court, or "
-    "Trial Court / High Court / In this Court), copy only the current-court column. "
-    "Not a Party and Dead are column roles, not people. A case number is not a party. "
-    "Do not stop after the first name. Record source_pages."
+    "Petitioners in the cause title, before Versus. "
+    "A name is a person or an office, not a sentence, a case number, or I.A. No. "
+    "S/o, age, and the place go in their own fields. "
+    "On a two-column list, use the current-court column. "
+    "The same name is not also a respondent."
 )
 FRONT_RESPONDENTS_DESCRIPTION = (
-    "Every numbered respondent printed on the other side of VERSUS, or under RESPONDENT, "
-    "in the same block as the petitioners (IN THE MATTER OF, BETWEEN, POSITION OF THE PARTIES, "
-    "or MEMO OF PARTIES), including the lines under the name and the same list continued on the next page. "
-    "Look for: 1. 2. 3. with the relation, guardian, age, occupation, and address on the following lines. "
-    "Do not stop at a page break and do not skip a printed number. "
-    "A party may be only a name and a place, such as Land Acquisition Collector. "
-    "No S/o and no Through is still a party. "
-    "Presently at, Second Address, and Also at are more place lines of the party above, "
-    "not another respondent. R/o marks the place; do not put R/o or the S/o name into the party name. "
-    "'& Ors.' is not a party. "
-    "When one page has two columns (Before High Court beside Before Supreme Court, or "
-    "Trial Court / High Court / In this Court), copy only the current-court column. "
-    "Not a Party and Dead are column roles, not people. A case number is not a party. "
-    "Do not stop after the first name. Record source_pages."
+    "Respondents after Versus in that same cause title. "
+    "A name is a person or an office, not a sentence, a case number, or I.A. No. "
+    "S/o, age, and the place go in their own fields. "
+    "On a two-column list, use the current-court column. "
+    "Do not repeat a petitioner."
 )
 FRONT_ADDRESS_DESCRIPTION = (
     "The place lines printed under this party's number, including a continuation on the next page. "
@@ -577,27 +560,28 @@ FRONT_SPECIAL_CATEGORIES: tuple[str, ...] = (
     "Transfer Petition",
 )
 
-FRONT_SPECIAL_CATEGORY_DESCRIPTION = (
-    "Read the Main Petition first, then the Synopsis. "
-    "Also read the impugned order when it names the case, such as Bail Application No. "
-    "A plain petition has no special category: leave null. "
-    "The petition type itself, such as Special Leave Petition, Writ Petition, "
-    "Review Petition, Civil Appeal, or Transfer Petition, is not a special category. "
-    "Use only these names when one is printed: "
-    + "; ".join(FRONT_SPECIAL_CATEGORIES)
-    + ". "
-    "A filing may name up to 3. Return those names comma-separated, in the order printed. "
-    "Leave null when the Main Petition, the Synopsis, and the impugned order do not state one. "
-    "Do not infer a category from the facts of the case. "
-    "Do not use the listing proforma subject list, and do not use the "
-    "Special Category (First Petitioner/Appellant Only) checkboxes "
-    "(Senior Citizen, SC/ST, Woman/Child, Disabled, Legal Aid, In Custody). "
-    "A checklist row such as 'Tax Matters: State the tax effect: N.A.' is not a match. "
-    "A question such as whether any bail application was preferred is not a match. "
-    "Motor Vehicles Act, 1988 is Motor Vehicle Act. "
-    "Bail Application No. is Bail Applications/Bail Matters. "
-    "Public interest litigation is PIL."
-)
+def front_special_category_description(names: Sequence[str]) -> str:
+    """LlamaExtract instruction. ``names`` are the exact database strings."""
+    listed = "; ".join(name.strip() for name in names if name and str(name).strip())
+    if not listed:
+        raise ValueError("special category description needs the database names")
+    return (
+        "Identify applicable special categories by reading the petition, "
+        "cause title, facts, grounds, impugned order, relief sought, "
+        "statutory provisions, and annexures. "
+        "Match synonymous terms, abbreviations, alternative legal expressions, "
+        "and contextual references against these stored categories: "
+        f"{listed}. "
+        "Return only these exact names, comma-separated, up to 3, "
+        "and only when a category is substantively applicable. "
+        "Do not match an isolated keyword, a generic reference, a checklist question, "
+        "or the listing proforma. "
+        "The petition type itself, such as Special Leave Petition, Writ Petition, "
+        "Review Petition, Civil Appeal, or Transfer Petition, is not a special category. "
+        "This field is a classification into the stored names, not a copy of the printed words. "
+        "Leave null when none applies or when applicability is unclear. "
+        "Do not write a review flag or any name that is not in the list."
+    )
 
 
 class FrontExtractRecord(LegalExtractRecord):
@@ -619,7 +603,7 @@ class FrontExtractRecord(LegalExtractRecord):
     )
     special_category: str | None = Field(
         default=None,
-        description=FRONT_SPECIAL_CATEGORY_DESCRIPTION,
+        description=front_special_category_description(FRONT_SPECIAL_CATEGORIES),
     )
     cause_title: CauseTitle | None = Field(
         default=None,

@@ -1755,7 +1755,13 @@ def extract_configuration(
     return dumped
 
 
-def build_front_extract_system_prompt() -> str:
+def _front_special_category_names() -> list[str]:
+    from .scrutiny.catalogue_db import fetch_special_category_names
+
+    return fetch_special_category_names()
+
+
+def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str:
     """Prompt for the full compiled filing. Split labels are not known yet."""
     from .config import (
         FRONT_ACTING_THROUGH_DESCRIPTION,
@@ -1766,7 +1772,11 @@ def build_front_extract_system_prompt() -> str:
         FRONT_PETITIONERS_DESCRIPTION,
         FRONT_RELATION_DESCRIPTION,
         FRONT_RESPONDENTS_DESCRIPTION,
-        FRONT_SPECIAL_CATEGORY_DESCRIPTION,
+        front_special_category_description,
+    )
+
+    category = front_special_category_description(
+        list(names) if names is not None else _front_special_category_names()
     )
 
     return "\n".join(
@@ -1774,6 +1784,7 @@ def build_front_extract_system_prompt() -> str:
             "You are extracting a compiled court filing before it has been split.",
             "The pack is labelled Compiled filing. Each heading page number is the compiled PDF page number.",
             "Search every page. Copy printed text only. If it is not printed, write N/A.",
+            "special_category is the exception: store a category name from the list, not the printed words.",
             "source_part is Compiled filing. source_pages are the heading page numbers.",
             "",
             "- court: the court heading, from whichever page prints it.",
@@ -1794,7 +1805,7 @@ def build_front_extract_system_prompt() -> str:
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
             "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
             "- confidence: percentage strings such as 95% or 65%.",
-            f"- special_category: {FRONT_SPECIAL_CATEGORY_DESCRIPTION}",
+            f"- special_category: {category}",
             "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
             "- documents stays empty.",
         ]
@@ -1807,9 +1818,10 @@ def build_front_extract_pack_markdown(
     opening_pages: int = 30,
 ) -> str:
     """Every parsed page of the compiled filing, with its own page number."""
-    from .config import FRONT_SPECIAL_CATEGORY_DESCRIPTION
+    from .config import front_special_category_description
 
     del opening_pages
+    category = front_special_category_description(_front_special_category_names())
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
     for page in sorted(page_markdown):
@@ -1825,7 +1837,7 @@ def build_front_extract_pack_markdown(
     preamble = (
         f"{_window_extract_preamble(whole_filing=True)}\n"
         "This pack is every page of the compiled filing.\n"
-        f"special_category: {FRONT_SPECIAL_CATEGORY_DESCRIPTION}\n"
+        f"special_category: {category}\n"
         "Do not copy checklist questions, Yes/NA answers, or index rows as parties."
     )
     return f"{preamble}\n\n{packed}"
@@ -1851,14 +1863,24 @@ def _schema_with_special_category_beside_petition_type(
 
 def front_extract_configuration(extract_config: Any) -> dict[str, Any]:
     """Current extract schema plus special_category, for this job only."""
-    from .config import FrontExtractRecord, dump_api_configuration
+    from .config import (
+        FrontExtractRecord,
+        dump_api_configuration,
+        front_special_category_description,
+    )
 
+    names = _front_special_category_names()
+    description = front_special_category_description(names)
     dumped = dump_api_configuration(extract_config)
     dumped.pop("configuration_id", None)
-    dumped["data_schema"] = _schema_with_special_category_beside_petition_type(
+    schema = _schema_with_special_category_beside_petition_type(
         FrontExtractRecord.model_json_schema()
     )
-    dumped["system_prompt"] = build_front_extract_system_prompt()
+    field = schema.get("properties", {}).get("special_category")
+    if isinstance(field, dict):
+        field["description"] = description
+    dumped["data_schema"] = schema
+    dumped["system_prompt"] = build_front_extract_system_prompt(names)
     return dumped
 
 
