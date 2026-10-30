@@ -119,6 +119,33 @@ class VisualMark(BaseModel):
     local_page: int | None = None
 
 
+class VisualFieldAssessment(BaseModel):
+    """Affirmative result of inspecting a labelled form field."""
+
+    page: int
+    document_type: str
+    field: str
+    label_found: bool
+    value_present: bool
+    readable: bool
+    confidence: float = 0.5
+    visible_text: str = ""
+    slot_id: str | None = None
+    local_page: int | None = None
+
+
+class VisualQualityAssessment(BaseModel):
+    """Vision assessment of whether the page can be read reliably."""
+
+    page: int
+    document_type: str
+    readable: bool
+    issue: str = ""
+    confidence: float = 0.5
+    slot_id: str | None = None
+    local_page: int | None = None
+
+
 class VisualPageTarget(BaseModel):
     """One formality page to render and send to vision."""
 
@@ -168,6 +195,8 @@ class VisualIndex(BaseModel):
         ),
     )
     marks: list[VisualMark] = Field(default_factory=list)
+    field_assessments: list[VisualFieldAssessment] = Field(default_factory=list)
+    quality_assessments: list[VisualQualityAssessment] = Field(default_factory=list)
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -198,4 +227,6 @@ def empty_visual_index(
         "targets": [],
         "failures": [],
         "marks": [],
+        "field_assessments": [],
+        "quality_assessments": [],
     }

@@ -4660,3 +4660,33 @@ def test_defect_002_stable_folios_bridge_annexure_p9_to_p10() -> None:
 
     assert all(repaired[page] == ["Annexure P-9"] for page in range(177, 182))
     assert repaired[182] == ["Annexure P-10"]
+
+
+def test_defect_002_pipe_folios_override_internal_page_one_of_one() -> None:
+    from extraction_review.split_repair import (
+        _restore_model_bracketed_annexure_continuations,
+    )
+
+    labels = {
+        177: ["Annexure P-9"],
+        178: ["Annexures"],
+        179: ["Annexures"],
+        180: ["Annexures"],
+        181: ["Annexures"],
+        182: ["Annexure P-10"],
+    }
+    texts = {
+        177: "ANNEXURE-P-9\nRTGS Message Type Details | 152",
+        178: "RTGS Message Type Details Page 1 of 1 | 153 Transaction Details",
+        179: "RTGS Message Type Details | Page 1 of 1 | 154 Transaction Details",
+        180: "RTGS Message Type Details | Page 1 of 1 | 155 Transaction Details",
+        181: "RTGS Message Type Details | Page 1 of 1 | 156 Transaction Details",
+        182: "ANNEXURE-P-10\nORDER OF THE COURT\n157",
+    }
+
+    repaired = _restore_model_bracketed_annexure_continuations(
+        labels, labels, texts, 182
+    )
+
+    assert all(repaired[page] == ["Annexure P-9"] for page in range(177, 182))
+    assert repaired[182] == ["Annexure P-10"]

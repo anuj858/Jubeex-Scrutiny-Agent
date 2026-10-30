@@ -95,7 +95,7 @@ Sd/-, or digitally signed. Do not treat absence of the word A4, a margin \
 measurement, or a font name in OCR as proof of a physical-layout defect.
 5. Do not add requirements that are not in this task.
 6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
-would mark defect_found or compliant but confidence is below 0.8, return \
+would mark defect_found or compliant but confidence is below 0.6, return \
 needs_review instead.
 7. evidence is a list of one or more independent items, each with \
 {{"chunk_id", "quote"}}. Use multiple items when the decision combines \
@@ -314,6 +314,19 @@ def _format_visual_observations(
         return "No stored visual observations are available."
     targets = catalogue_inspect_parts(defect)
     lines: list[str] = []
+    for item in visual_index.get("field_assessments") or []:
+        if not isinstance(item, dict):
+            continue
+        document_type = str(item.get("document_type") or "").strip()
+        if targets and not _visual_part_matches(document_type, targets):
+            continue
+        field = str(item.get("field") or "field").replace("_", " ")
+        state = "value present" if item.get("value_present") else "blank"
+        readable = "readable" if item.get("readable") else "unreadable"
+        page = item.get("local_page") or item.get("page")
+        lines.append(
+            f"- {document_type}, page {page}: inspected {field}; {state}; {readable}"
+        )
     for mark in visual_index.get("marks") or []:
         if not isinstance(mark, dict):
             continue
@@ -889,6 +902,11 @@ def fallback_reasoning(
             f"evidence does not safely prove compliance or a defect, so human review "
             f"is required.{page_bit}"
         )
+    if status == "rule_verification_pending":
+        return (
+            f"The filing evidence was assessed, but this catalogue rule is awaiting "
+            f"authoritative-source verification. The test is: {requirement}"
+        )
     if status == "not_applicable":
         return (
             f"This check does not apply to this filing. "
@@ -985,6 +1003,8 @@ def validated_summary(
             return f"Compliant: {requirement}."
         if status == "needs_review":
             return f"Needs review against this check: {requirement}."
+        if status == "rule_verification_pending":
+            return f"Rule verification pending for this catalogue check: {requirement}."
         if status == "not_applicable":
             return "This check does not apply to this filing."
         return f"This check could not be completed: {requirement}."
@@ -1372,6 +1392,13 @@ def compose_reasoning(
             "cannot be determined"
         )
 
+    if gap == "legal_rule_unverified":
+        return _finish(
+            "This catalogue check is awaiting verification against a current "
+            "authoritative legal source and applicability locator; the filing "
+            "evidence was not published as a dispositive result"
+        )
+
     if status == "defect_found":
         place = _inspected(part, pages, full=False)
         element_lines = _element_list_lines(response)
@@ -1429,6 +1456,18 @@ def location_for_finding(
 
 def _check_specific_guidance(defect: Defect) -> str | None:
     check_id = re.sub(r"[^A-Z0-9]", "", defect.check_id.upper())
+    if check_id == "D57":
+        return (
+            "This row owns the presence and chronology of the Vakalatnama's "
+            "execution date. When the complete Vakalatnama is present and its "
+            "execution-date field is blank, missing, or visibly illegible, return "
+            "defect_found. When the Main Petition's drafting date is blank, do not "
+            "duplicate D-54: return not_applicable for this row unless the "
+            "Vakalatnama's own execution date also fails. When both dates are "
+            "present, return defect_found if the Vakalatnama date is later and "
+            "compliant if it is the same or earlier. Use needs_review only when "
+            "the required page could not be retrieved or visually assessed."
+        )
     if check_id == "D81":
         return (
             "This is a visual-quality check. OCR text, OCR errors, or retrieval "
@@ -1451,6 +1490,52 @@ def _check_specific_guidance(defect: Defect) -> str | None:
             "this check; address completeness is a separate defect."
         )
     return None
+
+
+def _operational_ai_note(note: str) -> str:
+    """Remove catalogue-governance gates from operational model guidance.
+
+    Legal provenance remains available on the catalogue row for audit.  It is
+    not a filing fact and must not tell the evaluator to replace a grounded
+    Defect/Compliant result with Needs Review.
+    """
+    text = note.strip()
+    text = re.sub(
+        r"\n*Legal-source gate\s*[—-].*?(?=\n\nInspection\s*[—-])",
+        "\n",
+        text,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"^Legal status:\s*Needs legal verification\..*?"
+        r"Also return needs_review when any prerequisite evidence is unavailable\.\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"\s*Apply this outcome only after the Legal-source gate has been "
+        r"satisfied; otherwise return Need Review\.",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\s*This is also the required result while the Legal-source gate "
+        r"remains unsatisfied\.",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\bAfter legal verification is completed,\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _format_parent(defect: Defect) -> str | None:
@@ -1515,12 +1600,31 @@ def build_defect_prompt(
             "exact failure, return needs_review. Return defect_found only for "
             "a grounded blank, incorrect value, inconsistency, or incomplete "
             "clause. If you suspect a defect but "
-            "confidence is below 0.8, return needs_review."
+            "confidence is below 0.6, return needs_review."
         ),
     ]
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
-        sections.extend(["", "## Note for AI", ai_note.strip()])
+        operational_note = _operational_ai_note(ai_note)
+        if operational_note:
+            sections.extend(["", "## Note for AI", operational_note])
+    if any(chunk.get("complete_part_retry") for chunk in chunks):
+        sections.extend(
+            [
+                "",
+                "## Complete-evidence retry",
+                (
+                    "Every parsed page of each required document part is supplied below. "
+                    "Do not return needs_review merely because a mandatory paragraph, "
+                    "field, endorsement, signature block, or companion document is absent "
+                    "from the excerpts: its absence from this complete set is positive "
+                    "evidence. Return defect_found when an applicable mandatory element is "
+                    "absent, compliant when every applicable element is satisfied, and "
+                    "not_applicable when the rule's prerequisite is not established. Use "
+                    "needs_review only for genuinely unreadable or contradictory evidence."
+                ),
+            ]
+        )
     check_guidance = _check_specific_guidance(defect)
     if check_guidance:
         sections.extend(["", "## Decision guardrail", check_guidance])

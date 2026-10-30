@@ -112,6 +112,47 @@ def test_defect_prompt_includes_relevant_stored_visual_observations() -> None:
     assert "Annexure P-1" not in prompt
 
 
+def test_unverified_catalogue_note_does_not_gate_operational_outcome() -> None:
+    catalogue = rules_mod._load_file_catalogue()
+    defect = catalogue.defect("D-57").model_copy(
+        update={
+            "ai_note": (
+                "Legal-source gate — This obligation is marked unverified. "
+                "Until verified, return Need Review.\n\n"
+                "Inspection — Inspect the Vakalatnama date.\n\n"
+                "Defect — A blank execution date is a defect. Apply this outcome "
+                "only after the Legal-source gate has been satisfied; otherwise "
+                "return Need Review."
+            )
+        }
+    )
+
+    prompt = build_defect_prompt(defect, record={}, chunks=[], catalogue=catalogue)
+
+    assert "Legal-source gate" not in prompt
+    assert "otherwise return Need Review" not in prompt
+    assert "blank, missing, or visibly illegible" in prompt
+
+
+def test_duplicate_global_date_checks_are_suppressed(monkeypatch) -> None:
+    rows = [
+        _defect("D-55", "General/Global"),
+        _defect("D-84", "General/Global"),
+        _defect("D-57", "General/Global"),
+        _defect("D-85", "General/Global"),
+    ]
+    monkeypatch.setattr(
+        "extraction_review.scrutiny_workflow.defects_for_filing_type",
+        lambda *_args, **_kwargs: rows,
+    )
+
+    selected = _defects_for_special_categories(
+        "SLP_CIVIL", special_categories=[], court=None
+    )
+
+    assert [row.check_id for row in selected] == ["D-55", "D-57"]
+
+
 def test_trigger_words_are_used_for_retrieval_but_not_sent_to_model() -> None:
     defect = _defect("D-TEST", "General/Global").model_copy(
         update={
@@ -596,6 +637,23 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert d061.inspect_parts == ["Advocate's Checklist"]
     assert d061.manifest_absence_proves_defect
     assert not catalogue.defect("D-59").manifest_absence_proves_defect
+
+    document_presence_parts = {
+        "D-64": ["Affidavit"],
+        "D-73": ["Vakalatnama"],
+        "D-74": ["Memo of Appearance"],
+        "D-93": ["Memo of Parties"],
+        "D-110": ["Synopsis", "List of Dates & Events"],
+        "D-128": ["Listing Proforma"],
+        "D-181": ["Affidavit"],
+        "D-324": ["AOR's Certificate"],
+        "D-325": ["Impugned Order"],
+        "D-326": ["Filing Memo"],
+    }
+    for check_id, owned_parts in document_presence_parts.items():
+        presence = catalogue.defect(check_id)
+        assert presence.manifest_absence_proves_defect, check_id
+        assert presence.inspect_parts == owned_parts, check_id
     assert "SCI_CHECKLIST_2025" in d061.location_source
     assert "Defect List.pdf" not in d061.location_source
 
@@ -632,14 +690,16 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     ]
     assert catalogue.defect("D-55").inspect_parts == ["Affidavit", "Main Petition"]
     assert catalogue.defect("D-56").inspect_parts == ["Affidavit", "Main Petition"]
-    assert "Return needs_review" in (catalogue.defect("D-56").ai_note or "")
+    assert catalogue.defect("D-56").legal_verification_status == "needs_verification"
+    assert "Legal-source gate" not in (catalogue.defect("D-56").ai_note or "")
     assert "FILED ON" in (catalogue.defect("D-83").ai_note or "")
     assert catalogue.defect("D-102").inspect_parts == ["Application"]
     assert catalogue.defect("D-59").inspect_parts == ["Advocate's Checklist"]
     assert catalogue.defect("D-63").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-64").inspect_parts == ["Affidavit"]
     assert catalogue.defect("D-68").inspect_parts == ["Annexures"]
-    assert catalogue.defect("D-69").inspect_parts == ["Annexures"]
+    assert catalogue.defect("D-69").inspect_parts == ["Annexures", "Application"]
+    assert catalogue.defect("D-69").context_parts == ["Affidavit", "Court Fees"]
     assert catalogue.defect("D-74").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-72").inspect_parts == [
         "Main Petition",
@@ -699,14 +759,12 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     ]
     d180 = catalogue.defect("D-180")
     assert "TRUE COPY" in (d180.ai_note or "")
-    assert "both parts of the exemption route" in (d180.ai_note or "")
+    assert "exemption route is treated as compliant only when" in (d180.ai_note or "")
     assert catalogue.defect("D-194").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-223").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-324").inspect_parts == ["AOR's Certificate"]
-    assert catalogue.defect("D-325").inspect_parts == [
-        "Impugned Order",
-        "Main Petition",
-    ]
+    assert catalogue.defect("D-325").inspect_parts == ["Impugned Order"]
+    assert catalogue.defect("D-325").context_parts == ["Main Petition"]
     assert catalogue.defect("D-327").inspect_parts == ["List of Dates & Events"]
     rules_pdf = (
         "https://cdnbbsr.s3waas.gov.in/s3ec0490f1f4972d133619a60c30f3559e/"
@@ -793,18 +851,17 @@ def test_legal_reviewed_catalogue_guards_and_corrected_rules() -> None:
     unverified = [
         defect
         for defect in catalogue.defects
-        if (defect.ai_note or "").startswith("Legal status: Needs legal verification.")
+        if defect.legal_verification_status == "needs_verification"
     ]
-    assert len(unverified) == 112
+    assert len(unverified) == 104
+    for check_id in ("D-54", "D-112", "D-113", "D-114", "D-115", "D-116", "D-127", "D-327"):
+        verified = catalogue.defect(check_id)
+        assert verified.legal_verification_status == "verified"
+        assert "Legal-source gate" not in (verified.ai_note or "")
     for defect in unverified:
-        assert not defect.requirement.startswith("Needs legal verification:")
-        assert (defect.ai_note or "").startswith(
-            "Legal status: Needs legal verification."
-        )
         note = defect.ai_note or ""
-        assert "does not prevent a compliant finding" in note
-        assert "Return compliant according to the compliance instruction below" in note
-        assert "convert any otherwise defect_found outcome to needs_review" in note
+        assert "Legal-source gate" not in note
+        assert "otherwise return Need Review" not in note
 
     d025 = catalogue.defect("D-25")
     assert "Section 67" in d025.requirement

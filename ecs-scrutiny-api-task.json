@@ -66,6 +66,10 @@
           "value": "180"
         },
         {
+          "name": "OPENROUTER_MAX_ATTEMPTS",
+          "value": "4"
+        },
+        {
           "name": "VISION_REQUEST_TIMEOUT_S",
           "value": "120"
         },
@@ -84,6 +88,10 @@
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
           "value": "json"
+        },
+        {
+          "name": "SCRUTINY_REVIEW_CONFIDENCE",
+          "value": "0.6"
         },
         {
           "name": "OPENROUTER_VISION_ENABLED",

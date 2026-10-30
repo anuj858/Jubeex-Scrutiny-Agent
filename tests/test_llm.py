@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from botocore.exceptions import ClientError
+from pydantic import BaseModel
 
 from extraction_review.llm import (
     LLMError,
@@ -16,7 +17,10 @@ from extraction_review.llm import (
     _reserve_shared_vertex_slot,
     _shared_vertex_cooldown_remaining,
     _vertex_retry_after_seconds,
+    gemini_max_attempts,
+    gemini_request_timeout_seconds,
     get_genai_client,
+    genai_shared_rate_limit_enabled,
     llm_requests_per_minute,
     openrouter_requests_per_minute,
     vertex_max_attempts,
@@ -115,19 +119,33 @@ def test_openrouter_requests_per_minute_env(monkeypatch: pytest.MonkeyPatch) -> 
     assert openrouter_requests_per_minute() == 0
 
 
-def test_llm_provider_defaults_to_vertex(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_provider_defaults_to_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
     from extraction_review.llm import llm_provider, openrouter_model
 
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
-    monkeypatch.setenv("VERTEX_MODEL", "gemini-3.8-flash")
-    assert llm_provider() == "vertex"
-    assert openrouter_model() == "gemini-3.8-flash"
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-4-argon")
+    assert llm_provider() == "openrouter"
+    assert openrouter_model() == "google/gemini-4-argon"
+
+
+def test_gemini_provider_uses_unprefixed_developer_api_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.llm import llm_provider, openrouter_enabled, openrouter_model
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "developer-api-key")
+    monkeypatch.setenv("GEMINI_MODEL", "google/gemini-4-argon")
+
+    assert llm_provider() == "gemini"
+    assert openrouter_enabled() is True
+    assert openrouter_model() == "gemini-4-argon"
 
 
 def test_openrouter_limit_does_not_throttle_vertex(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "vertex")
     monkeypatch.delenv("LLM_REQUESTS_PER_MINUTE", raising=False)
     monkeypatch.delenv("VERTEX_REQUESTS_PER_MINUTE", raising=False)
     monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "25")
@@ -151,6 +169,18 @@ def test_vertex_shared_rate_limit_defaults_on_for_sqs_with_bucket(
     assert vertex_shared_rate_limit_enabled() is True
     monkeypatch.setenv("VERTEX_SHARED_RATE_LIMIT", "false")
     assert vertex_shared_rate_limit_enabled() is False
+
+
+def test_gemini_shared_rate_limit_defaults_on_for_sqs_with_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.delenv("GEMINI_SHARED_RATE_LIMIT", raising=False)
+    monkeypatch.setenv("JUBEEX_SQS_ENABLED", "true")
+    monkeypatch.setenv("AWS_S3_BUCKET", "artifacts")
+    assert genai_shared_rate_limit_enabled() is True
+    monkeypatch.setenv("GEMINI_SHARED_RATE_LIMIT", "false")
+    assert genai_shared_rate_limit_enabled() is False
 
 
 def test_shared_vertex_limiter_reserves_sequential_s3_slots(
@@ -331,12 +361,43 @@ def test_genai_client_disables_sdk_retries(monkeypatch: pytest.MonkeyPatch) -> N
         return object()
 
     monkeypatch.setattr(llm_module, "_genai_client", None)
+    monkeypatch.setenv("LLM_PROVIDER", "vertex")
     monkeypatch.setenv("VERTEX_REQUEST_TIMEOUT_S", "900")
     monkeypatch.setattr(genai, "Client", fake_client)
     get_genai_client()
     http_options = captured["http_options"]
     assert http_options.retry_options.attempts == 1
     assert http_options.timeout == 900000
+
+
+def test_gemini_developer_client_uses_api_key_not_vertex_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google import genai
+
+    import extraction_review.llm as llm_module
+
+    captured: dict[str, object] = {}
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(llm_module, "_genai_client", None)
+    monkeypatch.setattr(llm_module, "_genai_client_key", None)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "developer-api-key")
+    monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT_S", "600")
+    monkeypatch.setattr(genai, "Client", fake_client)
+
+    get_genai_client()
+
+    assert captured["api_key"] == "developer-api-key"
+    assert "project" not in captured
+    assert "location" not in captured
+    assert "credentials" not in captured
+    assert captured["http_options"].retry_options.attempts == 1
+    assert captured["http_options"].timeout == 600000
 
 
 def test_vertex_request_timeout_must_be_bounded(
@@ -356,6 +417,60 @@ def test_vertex_retry_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert vertex_max_attempts() == 4
     assert _is_retryable_vertex_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
     assert not _is_retryable_vertex_error(RuntimeError("invalid request"))
+
+
+def test_gemini_retry_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_MAX_ATTEMPTS", raising=False)
+    monkeypatch.delenv("GEMINI_REQUEST_TIMEOUT_S", raising=False)
+    assert gemini_max_attempts() == 4
+    assert gemini_request_timeout_seconds() == 900
+    monkeypatch.setenv("GEMINI_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT_S", "600")
+    assert gemini_max_attempts() == 2
+    assert gemini_request_timeout_seconds() == 600
+
+
+@pytest.mark.asyncio
+async def test_call_structured_uses_gemini_developer_api_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    response = type(
+        "Response",
+        (),
+        {
+            "text": '{"value":"ok"}',
+            "parsed": None,
+            "candidates": [],
+            "usage_metadata": None,
+        },
+    )()
+    generate = AsyncMock(return_value=response)
+    models = type("Models", (), {"generate_content": generate})()
+    client = type("Client", (), {"aio": type("Aio", (), {"models": models})()})()
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "developer-api-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-4-argon")
+    monkeypatch.setattr(llm_module, "get_genai_client", lambda: client)
+    monkeypatch.setattr(llm_module, "acquire_openrouter_slot", AsyncMock())
+
+    result, usage = await llm_module.call_structured(
+        system_prompt="Return JSON.",
+        user_prompt="Return ok.",
+        response_model=Result,
+    )
+
+    assert result.value == "ok"
+    assert usage.calls == 1
+    assert generate.await_args.kwargs["model"] == "gemini-4-argon"
+    config = generate.await_args.kwargs["config"]
+    assert config.response_mime_type == "application/json"
+    assert config.response_json_schema is not None
 
 
 def test_vertex_retry_after_header_is_honoured() -> None:
@@ -396,6 +511,8 @@ def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
     assert scrutiny_model() == "gemini-3.8-flash"
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     assert scrutiny_model() == "google/gemini-3.8-flash"
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert scrutiny_model() == "gemini-3.8-flash"
 
 
 @pytest.mark.asyncio

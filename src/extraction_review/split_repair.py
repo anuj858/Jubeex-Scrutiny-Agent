@@ -46,6 +46,7 @@ from .split_audit import (
     collect_index_annexure_entries,
 )
 from .split_pdf_layout import annexure_cited_page_ranges
+from .split_pdf_layout import index_printed_folio as _index_printed_folio
 from .split_pdf_layout import printed_folio as _printed_folio
 
 _SCI_CAPTION_RE = re.compile(
@@ -5097,6 +5098,20 @@ def _restore_model_bracketed_annexure_continuations(
                     value = int(line)
                     if not 1900 <= value <= 2099:
                         candidates.add(value)
+            # LlamaParse can keep the viewer's internal ``Page 1 of 1`` and
+            # the outer paper-book folio in one visual row, for example:
+            # ``RTGS ... Page 1 of 1 | 153 Transaction Details``.  The generic
+            # folio detector sees the internal 1 first.  Recover only the
+            # pipe-separated outer value next to that exact viewer phrase;
+            # the existing three-page stable-offset requirement below still
+            # guards against transaction amounts and dates.
+            for match in re.finditer(
+                r"(?i)\bpage\s+1\s+of\s+1\s*\|\s*(\d{2,4})\b",
+                "\n".join(lines[:12]),
+            ):
+                value = int(match.group(1))
+                if not 1900 <= value <= 2099:
+                    candidates.add(value)
             for candidate in candidates:
                 offset_pages.setdefault(page - candidate, set()).add(page)
         if not offset_pages:
@@ -5821,7 +5836,7 @@ def _apply_indexed_annexure_ranges(
     # If OCR produced overlapping Annexure rows, leave those folios alone
     # rather than picking an arbitrary owner.
     folios = {
-        page: _printed_folio(page_text.get(page, ""))
+        page: _index_printed_folio(page_text.get(page, ""))
         for page in range(1, page_count + 1)
     }
     stamped_intervals = _consecutive_stamped_annexure_folios(page_text, folios)
@@ -6166,7 +6181,7 @@ def _apply_indexed_outer_document_ranges(
     if not rows:
         return page_parts
     folios = {
-        page: _printed_folio(page_text.get(page, ""))
+        page: _index_printed_folio(page_text.get(page, ""))
         for page in range(1, page_count + 1)
     }
     volume_hints = _master_volume_offsets(page_text, folios, page_count)

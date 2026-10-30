@@ -1337,10 +1337,13 @@ def _stabilize_document_continuity(
             active_labels = labels
             active_has_opening = candidate_has_opening or structurally_distinct_opening
         else:
-            # The current document has a verified opening, while the proposed
-            # new label has only page-body similarity.  Keep the page with the
-            # open document until a real next-document boundary appears.
-            updated[page] = list(active_labels)
+            # Both owners came from the Llama page map. Absence of a second
+            # local heading is not evidence that Llama's transition is wrong:
+            # continuation pages and one-page court documents often have no
+            # independently classifiable opening. Preserve the proposed Llama
+            # owner and let guarded reconciliation adjudicate any conflict.
+            active_labels = labels
+            active_has_opening = False
         previous_page = page
 
     return updated
@@ -1536,6 +1539,7 @@ def reconcile_compiled_split(
     proposal_generator: Callable[[PagePartMap, int], PagePartMap] | None = None,
     page_units: Sequence[PageUnit] = (),
     authoritative_boundary_pages: Sequence[int] = (),
+    include_index_evidence: bool = True,
 ) -> tuple[PagePartMap, list[ReconciliationChange]]:
     """Apply repair proposals only to missing or strongly evidenced ranges.
 
@@ -1618,6 +1622,24 @@ def reconcile_compiled_split(
             )
         return _labels_match_type(labels, item.document_type)
 
+    def segment_has_supported_opening(
+        page: int, labels: Sequence[str]
+    ) -> bool:
+        """Whether the current owner is a coherent, directly opened segment.
+
+        An Index range is useful evidence, but page-number namespaces are often
+        repeated inside compiled filings.  Once a Llama-owned segment begins
+        with a matching petition/document opening, a bare folio collision must
+        not carve pages out of its interior.
+        """
+        segment_range = _contiguous_segment_range(
+            page, result, labels, page_count=page_count
+        )
+        if not segment_range:
+            return False
+        opening = strong_by_page.get(segment_range[0])
+        return bool(opening and classification_supports_labels(opening, labels))
+
     seen_states = {repr(sorted((p, tuple(v)) for p, v in result.items()))}
     iteration_limit = max(1, min(int(max_iterations), 3))
     operation_limit = 500
@@ -1632,7 +1654,11 @@ def reconcile_compiled_split(
         # Page). Once the first pass restores its ownership, later passes must
         # see its folio evidence. A map frozen from the initial Llama labels
         # would keep all of those annexure corrections "left_for_review".
-        indexed = _index_supported_map(pass_input, page_text, page_count)
+        indexed = (
+            _index_supported_map(pass_input, page_text, page_count)
+            if include_index_evidence
+            else _copy_page_parts(pass_input)
+        )
         pass_start = len(changes)
         changed_in_iteration = False
         candidate_validation = validate_reconciliation_page_map(
@@ -1705,7 +1731,8 @@ def reconcile_compiled_split(
 
         for page in range(1, page_count + 1):
             old = tuple(parts_on_page(result.get(page)))
-            new = tuple(parts_on_page(candidate.get(page)))
+            candidate_labels = tuple(parts_on_page(candidate.get(page)))
+            new = candidate_labels
             indexed_labels = tuple(parts_on_page(indexed.get(page)))
             if indexed_labels and indexed_labels != old and indexed_labels != new:
                 # Master-Index + folio ranges override ambiguous page proposals.
@@ -1735,7 +1762,10 @@ def reconcile_compiled_split(
             direct = strong_by_page.get(page)
             if direct and classification_supports_labels(direct, new):
                 evidence.append("explicit_outer_boundary")
-            elif span_policy.get(page):
+            # ``span_policy`` describes the repair candidate.  An Index map
+            # may replace that candidate below; it must not inherit unrelated
+            # anchored-continuation evidence from the pre-override labels.
+            elif span_policy.get(page) and new == candidate_labels:
                 evidence.append("anchored_continuation")
             if _confirmed_application_continuation(page, old, new, result, page_text):
                 evidence.append("application_continuation")
@@ -1750,14 +1780,50 @@ def reconcile_compiled_split(
             proposed_segment_range = _contiguous_segment_range(
                 page, candidate, new, page_count=page_count
             )
-            protected_boundary = bool(
-                original_segment_range
-                and original_segment_range[0] in authoritative_starts
-            )
             annexure_to_other_document = bool(
                 old
                 and all(family_split_name(label) == ANNEXURE_FAMILY for label in old)
                 and any(family_split_name(label) != ANNEXURE_FAMILY for label in new)
+            )
+            proposed_opening = (
+                strong_by_page.get(proposed_segment_range[0])
+                if proposed_segment_range
+                else None
+            )
+            verified_internal_opening = bool(
+                original_segment_range
+                and proposed_segment_range
+                and proposed_segment_range[0] > original_segment_range[0]
+                and proposed_opening
+                and classification_supports_labels(proposed_opening, new)
+            )
+            verified_annexure_nesting = bool(
+                original_segment_range
+                and proposed_segment_range
+                and proposed_segment_range[0] < original_segment_range[0]
+                and new
+                and all(
+                    family_split_name(label) == ANNEXURE_FAMILY for label in new
+                )
+                and original_segment_range[0] > 1
+                and tuple(
+                    parts_on_page(result.get(original_segment_range[0] - 1))
+                )
+                == new
+            )
+            # Protect an established Llama range except when the proposed new
+            # span itself begins later in that range with a strong matching
+            # outer opening. This lets LIST OF DATES on page 9 split a coarse
+            # Listing-Proforma range while preventing a weak continuation from
+            # being pulled back into a previous document.
+            protected_boundary = bool(
+                (page in authoritative_starts and not verified_annexure_nesting)
+                or (
+                    original_segment_range
+                    and original_segment_range[0] in authoritative_starts
+                    and not verified_internal_opening
+                    and not verified_annexure_nesting
+                )
             )
             independent_annexure_exit = bool(
                 page in authoritative_starts
@@ -1774,6 +1840,73 @@ def reconcile_compiled_split(
                     and span_policy.get(page)
                 )
             )
+            index_only_relabel = bool(
+                old
+                and new
+                and old != new
+                and set(evidence) == {"master_index_and_folio"}
+                and not (
+                    direct
+                    and classification_supports_labels(direct, new)
+                )
+            )
+            if index_only_relabel:
+                baseline_is_coherent = segment_has_supported_opening(page, old)
+                # A verified Llama boundary is itself outer-document evidence.
+                # When that complete range is owned by Annexures, a master
+                # Index/folio lookup may describe the enclosed record (for
+                # example, a reported judgment) but cannot by itself change
+                # the outer owner to Impugned Order.  This remains deliberately
+                # narrower than the ordinary Index fallback: it applies only
+                # to a range beginning at an authoritative Llama boundary and
+                # only when the proposal exits the Annexure family.
+                llama_annexure_owner = bool(
+                    protected_boundary and annexure_to_other_document
+                )
+                third_way_conflict = bool(
+                    direct
+                    and not classification_supports_labels(direct, old)
+                    and not classification_supports_labels(direct, new)
+                )
+                if baseline_is_coherent or llama_annexure_owner or third_way_conflict:
+                    operations.append(
+                        ReconciliationOperation(
+                            operation_id=op_id,
+                            operation_type=op_type,
+                            original_pages=(page,),
+                            proposed_pages=(page,),
+                            original_labels=old,
+                            proposed_labels=new,
+                            original_segment_range=original_segment_range,
+                            proposed_segment_range=proposed_segment_range,
+                            evidence=tuple(evidence),
+                            classification_before=direct.document_type if direct else None,
+                            classification_after=direct.document_type if direct else None,
+                            validation={"structural": before_validation},
+                            status=(
+                                "dismissed"
+                                if baseline_is_coherent or llama_annexure_owner
+                                else "left_for_review"
+                            ),
+                            reason=(
+                                "Index/folio-only proposal was dismissed because it would "
+                                "carve a page from a coherently opened Llama segment without "
+                                "an independent new-document boundary"
+                                if baseline_is_coherent
+                                else (
+                                    "Index/folio content evidence cannot change an "
+                                    "authoritative Llama-owned Annexure range into the "
+                                    "enclosed document type without an independent outer "
+                                    "boundary"
+                                    if llama_annexure_owner
+                                    else "Index, Llama ownership, and page-local classification "
+                                    "indicate three different owners"
+                                )
+                            ),
+                            pass_index=pass_number,
+                        )
+                    )
+                    continue
             if annexure_to_other_document and not independent_annexure_exit:
                 operations.append(
                     ReconciliationOperation(
@@ -1789,7 +1922,7 @@ def reconcile_compiled_split(
                         classification_before=direct.document_type if direct else None,
                         classification_after=direct.document_type if direct else None,
                         validation={"structural": before_validation},
-                        status="left_for_review",
+                        status="dismissed",
                         reason=(
                             "A heading inside an established Annexure is not "
                             "independent evidence of a new document boundary"
@@ -1798,11 +1931,26 @@ def reconcile_compiled_split(
                     )
                 )
                 continue
-            if protected_boundary and not {
+            unambiguous_boundary_correction = bool(
+                len(new) == 1
+                and (
+                    (
+                        new[0] == "Index"
+                        and _outer_anchor_label(page_text.get(page, "")) == "Index"
+                    )
+                    or (
+                        new[0] == "Cover Page"
+                        and direct
+                        and classification_supports_labels(direct, new)
+                        and "outer_anchor" in direct.signals
+                    )
+                )
+            )
+            if protected_boundary and not unambiguous_boundary_correction and not {
                 "master_index_and_folio",
-                "explicit_outer_boundary",
                 "application_continuation",
             }.intersection(evidence):
+                baseline_is_coherent = segment_has_supported_opening(page, old)
                 operations.append(
                     ReconciliationOperation(
                         operation_id=op_id,
@@ -1817,10 +1965,13 @@ def reconcile_compiled_split(
                         classification_before=direct.document_type if direct else None,
                         classification_after=direct.document_type if direct else None,
                         validation={"structural": before_validation},
-                        status="left_for_review",
+                        status=(
+                            "dismissed" if baseline_is_coherent else "left_for_review"
+                        ),
                         reason=(
-                            "Proposal would erase a dedicated boundary without "
-                            "independent boundary evidence"
+                            "Proposal conflicts with the owner selected at a dedicated "
+                            "Llama boundary; one page-local heading is not sufficient "
+                            "to relabel that boundary"
                         ),
                         pass_index=pass_number,
                     )
@@ -1828,6 +1979,7 @@ def reconcile_compiled_split(
                 continue
             direct_type = direct.document_type if direct else None
             if not evidence:
+                baseline_is_coherent = segment_has_supported_opening(page, old)
                 operations.append(
                     ReconciliationOperation(
                         operation_id=op_id,
@@ -1842,8 +1994,16 @@ def reconcile_compiled_split(
                         classification_before=direct_type,
                         classification_after=direct_type,
                         validation={"structural": before_validation},
-                        status="left_for_review",
-                        reason="No independent boundary, Index, or continuity evidence supports this change",
+                        status=(
+                            "dismissed" if baseline_is_coherent else "left_for_review"
+                        ),
+                        reason=(
+                            "Proposal was dismissed because the current owner has a "
+                            "supported opening and no independent boundary, Index, or "
+                            "continuity evidence supports the change"
+                            if baseline_is_coherent
+                            else "No independent boundary, Index, or continuity evidence supports this change"
+                        ),
                         pass_index=pass_number,
                     )
                 )
@@ -1879,7 +2039,7 @@ def reconcile_compiled_split(
                 and (folio := _printed_folio(page_text.get(page, "")))
                 and folio[0] == "number"
             )
-            semantic_ok = (
+            semantic_ok = verified_annexure_nesting or (
                 not (
                     direct
                     and direct.confidence >= 0.85
@@ -2154,6 +2314,85 @@ def _restore_annexed_lower_court_petitions(
     return updated, evidence_by_page
 
 
+def _restore_explicit_llama_owned_segments(
+    page_parts: PagePartMap,
+    llama_page_parts: Mapping[int, Sequence[str] | str | None],
+    page_text: Mapping[int, str],
+    authoritative_boundary_pages: Sequence[int],
+) -> PagePartMap:
+    """Reassert Annexure-family ownership selected at a model boundary.
+
+    The first Llama pass owns physical segmentation.  Later deterministic
+    repair may refine a generic Annexures owner to a numbered Annexure, but it
+    must not repaint that outer range as the type of a record enclosed inside
+    it.  An exact printed A/P/R label reasserts the complete identity; otherwise
+    this guard only prevents leaving the Annexure family.  It never derives a
+    boundary from a printed page number or a local OCR pass.
+    """
+    updated = _copy_page_parts(page_parts)
+    starts = {int(page) for page in authoritative_boundary_pages}
+    for start in sorted(starts):
+        original = parts_on_page(llama_page_parts.get(start))
+        if len(original) != 1 or family_split_name(original[0]) != ANNEXURE_FAMILY:
+            continue
+        printed_owner = annexure_label_from_text(page_text.get(start, ""))
+        page = start
+        while parts_on_page(llama_page_parts.get(page)) == original:
+            current = parts_on_page(updated.get(page))
+            exact_owner = bool(printed_owner and printed_owner == original[0])
+            left_annexure_family = bool(
+                current
+                and any(
+                    family_split_name(label) != ANNEXURE_FAMILY
+                    for label in current
+                )
+            )
+            if exact_owner or left_annexure_family:
+                updated[page] = list(original)
+            page += 1
+    return updated
+
+
+def _preserve_directly_opened_parent_segments(
+    baseline: PagePartMap,
+    candidate: PagePartMap,
+    classifications: Sequence[PageClassification],
+    *,
+    page_count: int,
+) -> PagePartMap:
+    """Keep a strong outer document from being absorbed into an Annexure.
+
+    Nesting is useful for headings reproduced inside exhibits, but it cannot
+    repaint the continuation/signature page of a directly opened outer Record
+    of Proceedings, petition, application, or other controlled document.
+    """
+    updated = _copy_page_parts(candidate)
+    by_page = {item.page: item for item in classifications}
+    for page in range(1, page_count + 1):
+        old = parts_on_page(baseline.get(page))
+        new = parts_on_page(updated.get(page))
+        if (
+            len(old) != 1
+            or not new
+            or old == new
+            or family_split_name(old[0]) == ANNEXURE_FAMILY
+            or any(family_split_name(label) != ANNEXURE_FAMILY for label in new)
+        ):
+            continue
+        segment_range = _contiguous_segment_range(
+            page, baseline, old, page_count=page_count
+        )
+        opening = by_page.get(segment_range[0]) if segment_range else None
+        if (
+            opening
+            and opening.confidence >= 0.85
+            and _labels_match_type(old, opening.document_type)
+            and set(opening.signals) & _STRONG_RECONCILIATION_SIGNALS
+        ):
+            updated[page] = list(old)
+    return updated
+
+
 def structure_aware_split(
     pdf_bytes: bytes,
     *,
@@ -2338,28 +2577,42 @@ def structure_aware_split(
             ),
             None,
         )
-        reconciliation_summary = {
-            "status": "completed",
-            "max_iterations": 3,
-            "iterations": sum(
-                item.operation_type == "reconciliation_pass"
-                and item.status == "evaluated"
-                for item in reconciliation_operations
-            ),
-            "model_call_budget": 0,
-            "model_calls": 0,
-            "stop_reason": stop_operation.reason if stop_operation else "no_operations",
-            "accepted": sum(
-                item.status == "accepted" for item in reconciliation_operations
-            ),
-            "rejected": sum(
-                item.status in {"rejected", "rolled_back"}
-                for item in reconciliation_operations
-            ),
-            "left_for_review": sum(
-                item.status == "left_for_review" for item in reconciliation_operations
-            ),
-        }
+        def apply_guarded_post_map(
+            stage: str,
+            candidate: PagePartMap,
+            *,
+            reason: str,
+            evidence: Sequence[str],
+            evidence_by_page: Mapping[int, Sequence[str]] | None = None,
+            include_index_evidence: bool = False,
+        ) -> None:
+            """Route post-repair rules through the same ownership adjudicator.
+
+            These rules used to mutate ``page_parts`` after reconciliation,
+            bypassing every Llama-protection check. They now remain proposals:
+            explicit openings and anchored continuations can be accepted, while
+            unsupported conflicts retain the baseline and enter targeted review.
+            """
+            guarded, guarded_changes = reconcile_compiled_split(
+                page_parts,
+                candidate,
+                classifications,
+                texts,
+                page_count=len(units),
+                operation_log=reconciliation_operations,
+                max_iterations=1,
+                page_units=units,
+                authoritative_boundary_pages=authoritative_boundary_pages,
+                include_index_evidence=include_index_evidence,
+            )
+            reconciliation_changes.extend(guarded_changes)
+            apply_map(
+                stage,
+                guarded,
+                reason=reason,
+                evidence=evidence,
+                evidence_by_page=evidence_by_page,
+            )
         # Reconciliation is intentionally conservative and may reject a
         # multi-page correction when several Llama page labels disagree at
         # once. Reapply only the hard structural invariants afterwards:
@@ -2367,7 +2620,7 @@ def structure_aware_split(
         # and stamp-to-next-stamp annexure ownership. These are deterministic
         # document boundaries, not another model guess.
         blocked_outer_decisions: list[dict[str, Any]] = []
-        apply_map(
+        apply_guarded_post_map(
             "post_reconciliation_outer_anchors",
             _apply_outer_anchors(
                 page_parts,
@@ -2385,9 +2638,20 @@ def structure_aware_split(
         )
         for decision in blocked_outer_decisions:
             assignment_events.setdefault(decision["source_page"], []).append(decision)
+        front_candidate = _restore_front_impugned_judgment(
+            page_parts, texts, len(units)
+        )
+        # The front-judgment recovery rule exists to fill pages omitted by the
+        # model between LOD and the petition. It must not repaint pages which
+        # Llama already assigned to a different coherent document.
+        front_fill_only = _copy_page_parts(page_parts)
+        for page, labels in front_candidate.items():
+            original_labels = parts_on_page((llama_page_parts or {}).get(page))
+            if not original_labels or original_labels == ["Impugned Order"]:
+                front_fill_only[page] = list(parts_on_page(labels))
         apply_map(
             "front_impugned_judgment",
-            _restore_front_impugned_judgment(page_parts, texts, len(units)),
+            front_fill_only,
             reason="bounded_challenged_judgment_before_petition",
             evidence=("judgment_opening", "following_petition_boundary"),
         )
@@ -2396,15 +2660,33 @@ def structure_aware_split(
             for change in reconciliation_changes
             if "master_index_and_folio" in change.evidence
         ]
+        annexure_candidate = _force_annexure_nesting(
+            page_parts,
+            texts,
+            len(units),
+            strict_continuity=True,
+            preserve_pages=index_supported_pages,
+        )
+        for page in authoritative_boundary_pages:
+            old_labels = parts_on_page(page_parts.get(page))
+            new_labels = parts_on_page(annexure_candidate.get(page))
+            if (
+                len(old_labels) == len(new_labels) == 1
+                and family_split_name(old_labels[0]) == ANNEXURE_FAMILY
+                and family_split_name(new_labels[0]) == ANNEXURE_FAMILY
+                and old_labels != new_labels
+                and annexure_label_from_text(texts.get(page, "")) is None
+            ):
+                annexure_candidate[page] = list(old_labels)
+        annexure_candidate = _preserve_directly_opened_parent_segments(
+            page_parts,
+            annexure_candidate,
+            classifications,
+            page_count=len(units),
+        )
         apply_map(
             "annexure_nesting",
-            _force_annexure_nesting(
-                page_parts,
-                texts,
-                len(units),
-                strict_continuity=True,
-                preserve_pages=index_supported_pages,
-            ),
+            annexure_candidate,
             reason="stamped_annexure_continues_until_independent_boundary",
             evidence=("annexure_stamp", "next_document_boundary"),
         )
@@ -2423,6 +2705,16 @@ def structure_aware_split(
             reason="record_of_proceedings_continuation_before_next_heading",
             evidence=("record_of_proceedings_opening", "next_document_heading"),
         )
+        apply_map(
+            "cited_annexure_ranges",
+            _apply_cited_annexure_ranges(page_parts, texts, len(units)),
+            reason="index_inventory_and_two_sided_folio_corroboration",
+            evidence=(
+                "explicit_annexure_page_range_citation",
+                "index_inventory",
+                "two_sided_folio_offset",
+            ),
+        )
         lower_court_map, lower_court_evidence = _restore_annexed_lower_court_petitions(
             page_parts, texts, len(units)
         )
@@ -2438,11 +2730,66 @@ def structure_aware_split(
         # offset is more reliable than that single-page reading. Reassert this
         # guarded invariant after stamp-based nesting so the bad OCR label
         # cannot reclaim the first page of the correct indexed Annexure.
-        apply_map(
+        final_index_candidate = _apply_indexed_annexure_ranges(
+            page_parts, texts, len(units)
+        )
+        apply_guarded_post_map(
             "final_indexed_annexure_ranges",
-            _apply_indexed_annexure_ranges(page_parts, texts, len(units)),
+            final_index_candidate,
             reason="master_index_and_folio_override_conflicting_handwritten_stamp",
             evidence=("master_index_range", "printed_folio_offset"),
+            include_index_evidence=True,
+        )
+        # Two high-specificity Index repairs may safely override a weak Llama
+        # owner: a real SCI application opening, or an outer annexure stamp
+        # whose number alone conflicts with a verified Index/folio span. Apply
+        # the complete candidate run, never an isolated continuation page.
+        trusted_index_map = _copy_page_parts(page_parts)
+        candidate_pages = sorted(final_index_candidate)
+        cursor = 0
+        while cursor < len(candidate_pages):
+            start = candidate_pages[cursor]
+            candidate_labels = tuple(parts_on_page(final_index_candidate[start]))
+            end = start
+            while (
+                cursor + 1 < len(candidate_pages)
+                and candidate_pages[cursor + 1] == end + 1
+                and candidate_pages[cursor + 1]
+                not in {int(page) for page in authoritative_boundary_pages}
+                and tuple(
+                    parts_on_page(final_index_candidate[candidate_pages[cursor + 1]])
+                )
+                == candidate_labels
+            ):
+                cursor += 1
+                end = candidate_pages[cursor]
+            changed = any(
+                tuple(parts_on_page(page_parts.get(page))) != candidate_labels
+                for page in range(start, end + 1)
+            )
+            trusted_opening = bool(
+                changed
+                and len(candidate_labels) == 1
+                and (
+                    (
+                        family_split_name(candidate_labels[0]) == "Application"
+                        and page_starts_application(texts.get(start, ""))
+                    )
+                    or (
+                        family_split_name(candidate_labels[0]) == ANNEXURE_FAMILY
+                        and annexure_label_from_text(texts.get(start, "")) is not None
+                    )
+                )
+            )
+            if trusted_opening:
+                for page in range(start, end + 1):
+                    trusted_index_map[page] = list(candidate_labels)
+            cursor += 1
+        apply_map(
+            "verified_index_opening_ranges",
+            trusted_index_map,
+            reason="verified_index_span_with_explicit_outer_opening",
+            evidence=("master_index_range", "printed_folio_offset", "outer_opening"),
         )
         apply_map(
             "final_explicit_master_index_pages",
@@ -2461,6 +2808,53 @@ def structure_aware_split(
             reason="consecutive_annexure_boundaries_and_stable_folio_offset",
             evidence=("model_annexure_boundaries", "printed_folio_offset"),
         )
+        apply_map(
+            "explicit_llama_outer_ownership",
+            _restore_explicit_llama_owned_segments(
+                page_parts,
+                llama_page_parts or {},
+                texts,
+                authoritative_boundary_pages,
+            ),
+            reason="model_range_opening_prints_exact_outer_annexure_owner",
+            evidence=(
+                "llama_physical_boundary",
+                "explicit_outer_annexure_label",
+            ),
+        )
+        stop_operation = next(
+            (
+                item
+                for item in reversed(reconciliation_operations)
+                if item.operation_type == "reconciliation_stop"
+            ),
+            None,
+        )
+        reconciliation_summary = {
+            "status": "completed",
+            "max_iterations": 3,
+            "iterations": sum(
+                item.operation_type == "reconciliation_pass"
+                and item.status == "evaluated"
+                for item in reconciliation_operations
+            ),
+            "model_call_budget": 0,
+            "model_calls": 0,
+            "stop_reason": stop_operation.reason if stop_operation else "no_operations",
+            "accepted": sum(
+                item.status == "accepted" for item in reconciliation_operations
+            ),
+            "dismissed": sum(
+                item.status == "dismissed" for item in reconciliation_operations
+            ),
+            "rejected": sum(
+                item.status in {"rejected", "rolled_back"}
+                for item in reconciliation_operations
+            ),
+            "left_for_review": sum(
+                item.status == "left_for_review" for item in reconciliation_operations
+            ),
+        }
     # With repair disabled, preserve the supplied Llama ownership map. The
     # extracted page analysis and structural audit still run; this is the
     # compatibility path, not a way to bypass mandatory parsing.

@@ -9,20 +9,24 @@ from typing import Any
 from ..document_parts import MAIN_PETITION_PART, family_split_name
 from .schema import VisualPageTarget
 
-# Last page of each D093 Split type that is present, plus Affidavit last
-# for notary. Impugned Order and Court Fees are OCR-only.
+# Inspect every page of short execution/formality documents; retain boundary
+# sampling for long bodies such as the Main Petition and Annexures.
 FORMALITY_PAGE_POLICY: dict[str, str] = {
-    "Advocate's Checklist": "last",
-    "Listing Proforma": "last",
-    MAIN_PETITION_PART: "last",
-    "AOR's Certificate": "last",
-    "Application": "last",
-    "Filing Memo": "last",
-    "Memo of Parties": "last",
-    "Vakalatnama": "last",
-    "Memo of Appearance": "last",
-    "Annexures": "last",
-    "Affidavit": "last",
+    "Index": "all",
+    "Synopsis": "all",
+    "List of Dates": "all",
+    "Impugned Order": "all",
+    "Advocate's Checklist": "all",
+    "Listing Proforma": "all",
+    MAIN_PETITION_PART: "all",
+    "AOR's Certificate": "all",
+    "Application": "all",
+    "Filing Memo": "all",
+    "Memo of Parties": "all",
+    "Vakalatnama": "all",
+    "Memo of Appearance": "all",
+    "Annexures": "all",
+    "Affidavit": "all",
 }
 
 
@@ -128,7 +132,7 @@ def select_formality_pages(
     page_markdown: Mapping[int, str] | None = None,
     policy: Mapping[str, str] | None = None,
 ) -> list[VisualPageTarget]:
-    """Return unique last pages of present D093 types (and Affidavit last)."""
+    """Return unique pages selected by the formality inspection policy."""
     rules = dict(policy or FORMALITY_PAGE_POLICY)
     last_by_part: dict[str, PageSource] = {}
     all_hits: dict[int, PageSource] = {}

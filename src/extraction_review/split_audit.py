@@ -19,7 +19,11 @@ from .document_parts import (
     family_split_name,
     parts_on_page,
 )
-from .split_pdf_layout import letter_folio_number, printed_folio
+from .split_pdf_layout import (
+    letter_folio_number,
+    printed_folio,
+    printed_folio_evidence,
+)
 
 # Parts that commonly sit outside the Part-I Index table.
 _INDEX_OPTIONAL_PARTS = frozenset(
@@ -1999,6 +2003,7 @@ def audit_compiled_split(
         text = page_text.get(page, "") or ""
         compact_text = re.sub(r"\s+", " ", text).strip()
         folio = printed_folio(text)
+        folio_evidence = printed_folio_evidence(text)
         classification = classification_by_page.get(page)
         change = changes_by_page.get(page)
         raw_labels = (llama_page_parts or {}).get(
@@ -2008,6 +2013,12 @@ def audit_compiled_split(
             {
                 "source_page": page,
                 "printed_folio": list(folio) if folio else None,
+                "printed_folio_source": (
+                    folio_evidence.source if folio_evidence else None
+                ),
+                "printed_folio_authoritative_for_index": bool(
+                    folio_evidence and folio_evidence.authoritative_for_index
+                ),
                 "assigned_labels": parts_on_page(page_parts.get(page)),
                 "llama_labels": parts_on_page(raw_labels),
                 "annexure_labels_detected": sorted(
@@ -2084,7 +2095,17 @@ def audit_compiled_split(
         if boundary and getattr(boundary, "action", "") == "verify":
             reasons.append("uncertain_boundary")
         classification = classification_by_page.get(page)
-        if classification and float(getattr(classification, "confidence", 0.0)) < 0.55:
+        # Continuation pages commonly have no standalone heading and therefore
+        # a weak page-local classification. That is expected inside a resolved
+        # segment and must not turn the whole filing into Needs Review.
+        boundary_requires_verification = bool(
+            boundary and getattr(boundary, "action", "") == "verify"
+        )
+        if (
+            classification
+            and float(getattr(classification, "confidence", 0.0)) < 0.55
+            and (not labels or boundary_requires_verification)
+        ):
             reasons.append("low_classification_confidence")
         if unit and getattr(unit, "text_quality", "") == "empty":
             reasons.append("text_unavailable")

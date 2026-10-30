@@ -24,11 +24,15 @@ from extraction_review.visual.attach import (
     visual_needs_for_defect,
 )
 from extraction_review.visual.detect import (
+    _field_assessments_for_page,
     _parse_vision_json,
     detect_visual_marks,
     parse_vision_elements,
     safe_normalized_bbox,
+    vision_model,
+    vision_provider,
     vision_request_timeout_s,
+    visual_detection_enabled,
 )
 from extraction_review.visual.pages import (
     global_page_sources,
@@ -36,7 +40,7 @@ from extraction_review.visual.pages import (
 )
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
-from extraction_review.visual.schema import empty_visual_index
+from extraction_review.visual.schema import VisualPageTarget, empty_visual_index
 from extraction_review.visual.store import (
     coerce_visual_index,
     dump_visual_index,
@@ -52,6 +56,21 @@ def _allow_visual_test_download_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("extraction_review.remote_download.validate_remote_url", allow)
 
 
+def test_blank_labelled_date_field_is_recorded_affirmatively() -> None:
+    target = VisualPageTarget(
+        page=105,
+        slot_id="memo",
+        local_page=1,
+        document_types=["Memo of Appearance"],
+        markdown="Dated:\n(AJIT SHARMA) Advocate for the Petitioner",
+    )
+    assessments = _field_assessments_for_page(target, [])
+    assert len(assessments) == 1
+    assert assessments[0].field == "execution_date"
+    assert assessments[0].readable is True
+    assert assessments[0].value_present is False
+
+
 def _part(
     slot_id: str,
     names: list[str],
@@ -65,6 +84,20 @@ def _part(
         file_url=file_url,
         file_id=file_id,
     )
+
+
+def test_vision_can_use_openrouter_while_scrutiny_uses_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("VISION_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    monkeypatch.setenv("OPENROUTER_VISION_MODEL", "google/gemini-4-argon")
+
+    assert vision_provider() == "openrouter"
+    assert vision_model() == "google/gemini-4-argon"
+    assert visual_detection_enabled() is True
 
 
 def _defect(
@@ -87,7 +120,7 @@ def _defect(
     )
 
 
-def test_formality_pages_last_page_only_when_present() -> None:
+def test_visual_sensitive_document_classes_select_every_page() -> None:
     parts = [
         _part("checklist", ["Advocate's Checklist"]),
         _part("petition", [MAIN_PETITION_PART]),
@@ -113,17 +146,13 @@ def test_formality_pages_last_page_only_when_present() -> None:
     pages = {target.page: target.document_types for target in targets}
     # checklist 1-2, petition 3-5, affidavit 6-7, P-1 8-10, P-2 11-12,
     # vakalatnama 13, fees 14, order 15-16
-    assert 2 in pages
-    assert 1 not in pages
-    assert 5 in pages
-    assert 3 not in pages and 4 not in pages
-    assert 7 in pages
-    assert 6 not in pages
-    assert 10 in pages and 8 not in pages and 9 not in pages
-    assert 12 in pages and 11 not in pages
+    assert {1, 2}.issubset(pages)
+    assert {3, 4, 5}.issubset(pages)
+    assert {6, 7}.issubset(pages)
+    assert {8, 9, 10, 11, 12}.issubset(pages)
     assert 13 in pages
     assert 14 not in pages
-    assert 15 not in pages and 16 not in pages
+    assert 15 in pages and 16 in pages
     assert MAIN_PETITION_PART in pages[5]
     assert "Affidavit" in pages[7]
     assert "Annexure P-1" in pages[10]

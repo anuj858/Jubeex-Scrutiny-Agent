@@ -1,4 +1,4 @@
-"""OpenRouter page-image detector for legally relevant ink marks."""
+"""Provider-neutral page-image detector for legally relevant ink marks."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ from ..llm import (
     _headers,
     acquire_openrouter_slot,
     generate_vision_json,
+    llm_enabled,
+    llm_model,
     llm_provider,
-    mask_openrouter_api_key,
-    openrouter_enabled,
-    openrouter_model,
+    openrouter_api_key,
     parse_openrouter_usage,
 )
 from ..process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
@@ -43,8 +43,10 @@ from .schema import (
     SUPPORTED_TYPES,
     TYPE_ALIASES,
     VISUAL_SCHEMA,
+    VisualFieldAssessment,
     VisualMark,
     VisualPageTarget,
+    VisualQualityAssessment,
     empty_visual_index,
 )
 
@@ -68,23 +70,64 @@ NOTARY_WORDS = re.compile(
 
 
 def visual_detection_enabled() -> bool:
-    raw = (os.getenv("OPENROUTER_VISION_ENABLED") or "").strip().lower()
+    raw = (
+        (os.getenv("VISION_ENABLED") or os.getenv("OPENROUTER_VISION_ENABLED") or "")
+        .strip()
+        .lower()
+    )
     if raw in {"0", "false", "no", "off"}:
         return False
     if raw in {"1", "true", "yes", "on"}:
-        return openrouter_enabled()
-    return openrouter_enabled()
+        return _vision_provider_enabled()
+    return _vision_provider_enabled()
+
+
+def vision_provider() -> str:
+    """Allow vision to use OpenRouter independently of scrutiny text."""
+    raw = (os.getenv("VISION_PROVIDER") or "").strip().casefold()
+    if not raw:
+        return llm_provider()
+    if raw in {"openrouter", "or"}:
+        return "openrouter"
+    if raw in {"gemini", "genai", "google_ai", "ai_studio"}:
+        return "gemini"
+    if raw in {"vertex", "vertex_ai", "vertexai"}:
+        return "vertex"
+    return llm_provider()
+
+
+def _vision_provider_enabled() -> bool:
+    provider = vision_provider()
+    if provider == "openrouter":
+        return bool(openrouter_api_key())
+    return provider == llm_provider() and llm_enabled()
 
 
 def vision_model() -> str:
-    raw = (os.getenv("OPENROUTER_VISION_MODEL") or openrouter_model()).strip()
-    if llm_provider() == "vertex" and raw.startswith("google/"):
+    provider = vision_provider()
+    if provider == "openrouter":
+        return (
+            os.getenv("OPENROUTER_VISION_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or "google/gemini-4-argon"
+        ).strip()
+    raw = (
+        os.getenv("VISION_MODEL")
+        or (os.getenv("GEMINI_VISION_MODEL") if provider == "gemini" else None)
+        or os.getenv("OPENROUTER_VISION_MODEL")
+        or llm_model()
+    ).strip()
+    if provider in {"vertex", "gemini"} and raw.startswith("google/"):
         return raw[len("google/") :]
     return raw
 
 
 def vision_fallback_model() -> str | None:
-    raw = (os.getenv("OPENROUTER_VISION_FALLBACK_MODEL") or "").strip()
+    raw = (
+        os.getenv("VISION_FALLBACK_MODEL")
+        or os.getenv("OPENROUTER_VISION_FALLBACK_MODEL")
+        or ""
+    ).strip()
     return raw or None
 
 
@@ -388,6 +431,33 @@ def parse_vision_elements(
     return marks
 
 
+def parse_vision_quality(
+    parsed: Any,
+    *,
+    target: VisualPageTarget,
+) -> VisualQualityAssessment | None:
+    """Parse the complete-page legibility assessment returned by vision."""
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("page_quality"), dict):
+        return None
+    raw = parsed["page_quality"]
+    readable = raw.get("readable")
+    if not isinstance(readable, bool):
+        return None
+    try:
+        confidence = float(raw.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    return VisualQualityAssessment(
+        page=target.page,
+        document_type=_document_type_for_page(target),
+        readable=readable,
+        issue=str(raw.get("issue") or "")[:300],
+        confidence=max(0.0, min(1.0, confidence)),
+        slot_id=target.slot_id,
+        local_page=target.local_page,
+    )
+
+
 def _document_type_for_page(target: VisualPageTarget) -> str:
     if target.document_types:
         return target.document_types[0]
@@ -484,7 +554,7 @@ async def analyze_page_image(
     references: Sequence[Any],
     model: str,
     http: httpx.AsyncClient,
-) -> tuple[list[VisualMark], LlmUsage]:
+) -> tuple[list[VisualMark], VisualQualityAssessment | None, LlmUsage]:
     prompt = user_prompt(
         page_number=target.page,
         document_types=target.document_types,
@@ -492,7 +562,7 @@ async def analyze_page_image(
     )
     max_tokens = _int_env("VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS)
 
-    if llm_provider() == "vertex":
+    if vision_provider() in {"vertex", "gemini"}:
         images: list[tuple[bytes, str]] = [(page_image, "image/jpeg")]
         ref_notes: list[str] = []
         for reference in references:
@@ -530,7 +600,7 @@ async def analyze_page_image(
             slot_id=target.slot_id,
             local_page=target.local_page,
         )
-        return marks, usage
+        return marks, parse_vision_quality(parsed, target=target), usage
 
     content_parts: list[dict[str, Any]] = [
         {"type": "text", "text": prompt},
@@ -649,7 +719,7 @@ async def analyze_page_image(
         slot_id=target.slot_id,
         local_page=target.local_page,
     )
-    return marks, usage
+    return marks, parse_vision_quality(parsed, target=target), usage
 
 
 async def _analyze_with_fallback(
@@ -658,7 +728,9 @@ async def _analyze_with_fallback(
     target: VisualPageTarget,
     references: Sequence[Any],
     http: httpx.AsyncClient,
-) -> tuple[list[VisualMark], Exception | None, LlmUsage]:
+) -> tuple[
+    list[VisualMark], VisualQualityAssessment | None, Exception | None, LlmUsage
+]:
     models = [vision_model()]
     fallback = vision_fallback_model()
     if fallback and fallback not in models:
@@ -667,14 +739,14 @@ async def _analyze_with_fallback(
     combined = LlmUsage()
     for model in models:
         try:
-            found, usage = await analyze_page_image(
+            found, quality, usage = await analyze_page_image(
                 page_image=page_image,
                 target=target,
                 references=_references_for_target(references, target.document_types),
                 model=model,
                 http=http,
             )
-            return found, None, combined.plus(usage)
+            return found, quality, None, combined.plus(usage)
         except LLMFatalError as exc:
             last_error = exc
             combined = combined.plus(exc.usage)
@@ -713,15 +785,64 @@ async def _analyze_with_fallback(
             "Skipping visual marks for page %s after vision failures",
             target.page,
         )
-    return [], last_error, combined
+    return [], None, last_error, combined
 
 
 @dataclass(frozen=True)
 class _PageVisionResult:
     marks: list[VisualMark]
+    quality: VisualQualityAssessment | None = None
     reason: str | None = None
     detail: str | None = None
     usage: LlmUsage | None = None
+
+
+_DATE_FIELD = re.compile(
+    r"(?im)^\s*(?:dated|date)\s*[:\-]\s*(?P<value>[^\r\n]{0,60})$"
+)
+_DATE_VALUE = re.compile(
+    r"\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|"
+    r"\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _field_assessments_for_page(
+    target: VisualPageTarget, marks: list[VisualMark]
+) -> list[VisualFieldAssessment]:
+    """Record inspected labelled fields, including reliable blank fields."""
+    match = _DATE_FIELD.search(target.markdown or "")
+    if not match:
+        return []
+    raw_value = " ".join((match.group("value") or "").split()).strip(" .")
+    typed_value = bool(_DATE_VALUE.search(raw_value))
+    visual_values = [
+        mark
+        for mark in marks
+        if mark.marking_type == "handwritten_field_value"
+        and "date" in (mark.associated_label or "").casefold()
+    ]
+    visible = raw_value or next(
+        (mark.visible_text for mark in visual_values if mark.visible_text), ""
+    )
+    value_present = typed_value or bool(visual_values)
+    document_type = target.document_types[0] if target.document_types else "unknown"
+    return [
+        VisualFieldAssessment(
+            page=target.page,
+            document_type=document_type,
+            field="execution_date",
+            label_found=True,
+            value_present=value_present,
+            readable=True,
+            confidence=0.95 if value_present else 0.9,
+            visible_text=visible[:200],
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+    ]
 
 
 def _usage_payload(usage: LlmUsage | None) -> dict[str, Any] | None:
@@ -808,8 +929,8 @@ async def detect_visual_marks(
     await _emit_log(
         on_log,
         (
-            f"Visual detection enabled={enabled} model={vision_model() or '-'} "
-            f"api_key={mask_openrouter_api_key()}"
+            f"Visual detection enabled={enabled} provider={vision_provider()} "
+            f"model={vision_model() or '-'}"
         ),
     )
     if not enabled:
@@ -828,6 +949,8 @@ async def detect_visual_marks(
             "targets": [],
             "failures": [],
             "marks": [],
+            "field_assessments": [],
+            "quality_assessments": [],
         }
 
     await _emit_log(
@@ -850,6 +973,8 @@ async def detect_visual_marks(
     pdf_errors: dict[str, tuple[str, str]] = {}
     fetch_file = download_file_id or _default_download_file_id
     marks: list[VisualMark] = []
+    field_assessments: list[VisualFieldAssessment] = []
+    quality_assessments: list[VisualQualityAssessment] = []
     analyzed_pages: list[int] = []
     failures: list[dict[str, Any]] = []
 
@@ -934,7 +1059,7 @@ async def detect_visual_marks(
                         detail=str(exc)[:300],
                     )
                 try:
-                    found, vision_error, usage = await asyncio.wait_for(
+                    analyzed = await asyncio.wait_for(
                         _analyze_with_fallback(
                             page_image=image,
                             target=target,
@@ -943,6 +1068,11 @@ async def detect_visual_marks(
                         ),
                         timeout=vision_timeout,
                     )
+                    if len(analyzed) == 3:
+                        found, vision_error, usage = analyzed
+                        quality = None
+                    else:
+                        found, quality, vision_error, usage = analyzed
                 except TimeoutError:
                     detail = (
                         f"Vision request exceeded {vision_timeout:g}s; "
@@ -965,6 +1095,7 @@ async def detect_visual_marks(
                 )
             return _PageVisionResult(
                 marks=_expand_marks_for_parts(found, target),
+                quality=quality,
                 usage=usage,
             )
 
@@ -1004,6 +1135,9 @@ async def detect_visual_marks(
             continue
         succeeded += 1
         marks.extend(result.marks)
+        field_assessments.extend(_field_assessments_for_page(target, result.marks))
+        if result.quality is not None:
+            quality_assessments.append(result.quality)
         await _emit_log(
             on_log,
             (
@@ -1035,6 +1169,12 @@ async def detect_visual_marks(
         ],
         "failures": failures,
         "marks": [mark.model_dump() for mark in marks],
+        "field_assessments": [
+            assessment.model_dump() for assessment in field_assessments
+        ],
+        "quality_assessments": [
+            assessment.model_dump() for assessment in quality_assessments
+        ],
     }
     if usage_payload:
         payload["usage"] = usage_payload

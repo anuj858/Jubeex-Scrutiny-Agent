@@ -19,7 +19,9 @@ from ..scrutiny.schema import LlmUsage
 from .schema import (
     PROMPT_VERSION,
     VISUAL_SCHEMA,
+    VisualFieldAssessment,
     VisualMark,
+    VisualQualityAssessment,
     coerce_visual_status,
     empty_visual_index,
 )
@@ -93,6 +95,8 @@ def dump_visual_index(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     blob.setdefault("targets", [])
     blob.setdefault("failures", [])
     blob.setdefault("marks", [])
+    blob.setdefault("field_assessments", [])
+    blob.setdefault("quality_assessments", [])
     blob["status"] = coerce_visual_status(str(blob.get("status") or "ok"))
     return blob
 
@@ -128,6 +132,28 @@ def coerce_visual_index(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         ]
         targets.append({"page": page, "document_types": types})
     blob["marks"] = marks
+    assessments: list[dict[str, Any]] = []
+    for item in blob.get("field_assessments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            assessments.append(
+                VisualFieldAssessment.model_validate(dict(item)).model_dump()
+            )
+        except ValidationError:
+            continue
+    blob["field_assessments"] = assessments
+    quality: list[dict[str, Any]] = []
+    for item in blob.get("quality_assessments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            quality.append(
+                VisualQualityAssessment.model_validate(dict(item)).model_dump()
+            )
+        except ValidationError:
+            continue
+    blob["quality_assessments"] = quality
     blob["pages"] = pages
     blob["targets"] = targets
     blob["failures"] = _coerce_failures(blob.get("failures"))
@@ -163,6 +189,8 @@ def visual_summary(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         "error": coerced.get("error"),
         "mark_count": len(marks),
         "marks": marks,
+        "field_assessment_count": len(coerced.get("field_assessments") or []),
+        "quality_assessment_count": len(coerced.get("quality_assessments") or []),
         "target_count": len(coerced.get("targets") or []),
         "failures": list(coerced.get("failures") or []),
         "targets": list(coerced.get("targets") or []),

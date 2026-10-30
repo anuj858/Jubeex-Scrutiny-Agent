@@ -90,11 +90,11 @@ def test_prepare_release_will_not_overwrite_existing_output(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [
-        ("VERTEX_SHARED_RATE_LIMIT", "false", "shared Vertex rate limit"),
-        ("VERTEX_REQUESTS_PER_MINUTE", "0", "must be positive"),
-        ("VERTEX_REQUESTS_PER_MINUTE", "bad", "invalid Vertex request limit"),
-        ("AWS_S3_BUCKET", "", "requires an S3 bucket"),
-        ("LLM_REQUESTS_PER_MINUTE", "16", "overrides the Vertex limit"),
+        ("LLM_PROVIDER", "vertex", "OpenRouter or Gemini Developer API"),
+        ("OPENROUTER_MODEL", "gemini-4-argon", "OpenRouter Gemini model"),
+        ("OPENROUTER_REQUESTS_PER_MINUTE", "0", "must be positive"),
+        ("OPENROUTER_REQUESTS_PER_MINUTE", "bad", "invalid openrouter request"),
+        ("LLM_REQUESTS_PER_MINUTE", "16", "overrides the provider limit"),
     ],
 )
 @pytest.mark.parametrize(

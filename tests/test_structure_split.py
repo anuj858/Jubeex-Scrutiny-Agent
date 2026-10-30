@@ -11,6 +11,7 @@ from extraction_review.structure_split import (
     classify_page,
     detect_boundaries,
     extract_page_units,
+    _preserve_directly_opened_parent_segments,
     reconcile_compiled_split,
     structure_aware_split,
 )
@@ -198,13 +199,15 @@ def test_reconciliation_rejects_internal_cover_heading_in_annexure() -> None:
     assert changes == []
     assert any(
         operation.original_pages == (2,)
-        and operation.status == "left_for_review"
+        and operation.status == "dismissed"
         and "not independent evidence" in operation.reason
         for operation in operations
     )
 
 
-def test_targeted_reconciliation_uses_index_range_over_main_span(monkeypatch) -> None:
+def test_targeted_reconciliation_does_not_carve_anchored_llama_segment_from_index_only(
+    monkeypatch,
+) -> None:
     import extraction_review.structure_split as structure_split_module
 
     monkeypatch.setattr(
@@ -217,22 +220,223 @@ def test_targeted_reconciliation_uses_index_range_over_main_span(monkeypatch) ->
         },
     )
     baseline = {page: ["Main Petition"] for page in range(1, 4)}
+    classifications = [
+        PageClassification(
+            page=1,
+            document_type="Main Petition",
+            confidence=0.95,
+            signals=("outer_anchor",),
+        )
+    ]
+    operations = []
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        baseline,
+        classifications,
+        {1: "IN THE SUPREME COURT OF INDIA\nPETITION", 2: "GROUNDS", 3: "PRAYER"},
+        page_count=3,
+        operation_log=operations,
+    )
+
+    assert result == baseline
+    assert changes == []
+    dismissed = [item for item in operations if item.status == "dismissed"]
+    assert [item.original_pages for item in dismissed] == [(2,), (3,)]
+    assert all("master_index_and_folio" in item.evidence for item in dismissed)
+
+
+def test_targeted_reconciliation_uses_verified_index_when_baseline_has_no_opening(
+    monkeypatch,
+) -> None:
+    import extraction_review.structure_split as structure_split_module
+
+    monkeypatch.setattr(
+        structure_split_module,
+        "_index_supported_map",
+        lambda baseline, page_text, page_count: {1: ["Annexure P-12"]},
+    )
+    operations = []
+    baseline = {1: ["Main Petition"]}
 
     result, changes = reconcile_compiled_split(
         baseline,
         baseline,
         [],
-        {},
+        {1: "Unreadable body text\n12"},
+        page_count=1,
+        operation_log=operations,
+    )
+
+    assert result == {1: ["Annexure P-12"]}
+    assert [change.page for change in changes] == [1]
+    assert any(item.status == "accepted" for item in operations)
+
+
+def test_index_content_cannot_repaint_authoritative_llama_annexure_range(
+    monkeypatch,
+) -> None:
+    import extraction_review.structure_split as structure_split_module
+
+    baseline = {page: ["Annexures"] for page in range(38, 46)}
+    index_candidate = {**baseline, 38: ["Impugned Order"]}
+    monkeypatch.setattr(
+        structure_split_module,
+        "_index_supported_map",
+        lambda baseline, page_text, page_count: index_candidate,
+    )
+    operations = []
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        baseline,
+        [],
+        {38: "SCC ONLINE True Print | Page 1\nAnnexure - PJ | 22"},
+        page_count=45,
+        operation_log=operations,
+        authoritative_boundary_pages=[38],
+    )
+
+    assert result == baseline
+    assert changes == []
+    assert any(
+        item.original_pages == (38,)
+        and item.status == "dismissed"
+        and "enclosed document type" in item.reason
+        for item in operations
+    )
+
+
+def test_generic_llama_annexure_boundary_can_join_verified_numbered_owner(
+    monkeypatch,
+) -> None:
+    import extraction_review.structure_split as structure_split_module
+
+    def repair(page_parts, page_text, *, page_count):
+        return {1: ["Annexure P-2"], 2: ["Annexure P-2"]}, []
+
+    monkeypatch.setattr(structure_split_module, "repair_compiled_split", repair)
+    monkeypatch.setattr(
+        structure_split_module,
+        "_index_supported_map",
+        lambda page_parts, page_text, page_count: {
+            1: ["Annexure P-2"],
+            2: ["Annexure P-2"],
+        },
+    )
+    result = structure_aware_split(
+        _blank_pdf(2),
+        page_units=[
+            PageUnit(pdf_page=1, text="ANNEXURE P-2\nTransfer deed\n75"),
+            PageUnit(pdf_page=2, text="Transfer deed continuation\n76"),
+        ],
+        llama_page_parts={1: ["Annexure P-2"], 2: ["Annexures"]},
+        authoritative_boundary_pages=[2],
+    )
+
+    assert result.page_parts == {
+        1: ["Annexure P-2"],
+        2: ["Annexure P-2"],
+    }
+
+
+def test_explicit_opening_can_split_inside_coarse_llama_range() -> None:
+    baseline = {page: ["Listing Proforma"] for page in range(1, 6)}
+    proposed = {
+        1: ["Listing Proforma"],
+        2: ["Listing Proforma"],
+        3: ["List of Dates & Events"],
+        4: ["List of Dates & Events"],
+        5: ["List of Dates & Events"],
+    }
+    classifications = [
+        PageClassification(
+            page=3,
+            document_type="List of Dates & Events",
+            confidence=0.95,
+            signals=("outer_anchor", "centered_title"),
+        )
+    ]
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        classifications,
+        {
+            1: "PROFORMA FOR FIRST LISTING",
+            2: "Listing fields continued",
+            3: "LIST OF DATES, EVENTS AND FACTS OF THE CASE",
+            4: "01.01.2024 Event continued",
+            5: "02.01.2024 Event continued",
+        },
+        page_count=5,
+        authoritative_boundary_pages=[1],
+        include_index_evidence=False,
+    )
+
+    assert result == proposed
+    assert [change.page for change in changes] == [3, 4, 5]
+
+
+def test_annexure_nesting_cannot_take_direct_outer_document_continuation() -> None:
+    baseline = {
+        1: ["Annexure P-18"],
+        2: ["Record of Proceedings"],
+        3: ["Record of Proceedings"],
+    }
+    candidate = {
+        1: ["Annexure P-18"],
+        2: ["Record of Proceedings"],
+        3: ["Annexure P-17"],
+    }
+    classifications = [
+        PageClassification(
+            page=2,
+            document_type="Record of Proceedings",
+            confidence=0.88,
+            signals=("outer_anchor",),
+        )
+    ]
+
+    restored = _preserve_directly_opened_parent_segments(
+        baseline,
+        candidate,
+        classifications,
         page_count=3,
     )
 
-    assert result == {
-        1: ["Main Petition"],
-        2: ["Annexure P-12"],
-        3: ["Annexure P-12"],
+    assert restored == baseline
+
+
+def test_certificate_and_affidavit_split_from_coarse_main_petition_range() -> None:
+    texts = {
+        1: "PRAYER\nAND FOR THIS ACT OF KINDNESS\nFILED BY ADVOCATE",
+        2: (
+            "IN THE SUPREME COURT OF INDIA\nC E R T I F I C A T E\n"
+            "Certified that this Petition is confined only to the pleadings "
+            "before the Court whose Order is challenged.\nFILED BY ADVOCATE"
+        ),
+        3: (
+            "IN THE SUPREME COURT OF INDIA\nAFFIDAVIT\n"
+            "I solemnly affirm and declare as under"
+        ),
+        4: "The contents are true and correct.\nDEPONENT\nVERIFICATION",
     }
-    assert [change.page for change in changes] == [2, 3]
-    assert all("master_index_and_folio" in change.evidence for change in changes)
+    result = structure_aware_split(
+        _blank_pdf(4),
+        page_units=[
+            PageUnit(pdf_page=page, text=text) for page, text in texts.items()
+        ],
+        llama_page_parts={page: ["Main Petition"] for page in range(1, 5)},
+        authoritative_boundary_pages=[1],
+    )
+
+    assert result.page_parts == {
+        1: ["Main Petition"],
+        2: ["AOR's Certificate"],
+        3: ["Affidavit"],
+        4: ["Affidavit"],
+    }
 
 
 def test_application_prayer_mentioning_impugned_order_is_not_new_order() -> None:
