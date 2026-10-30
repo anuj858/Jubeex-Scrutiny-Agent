@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import pymupdf
 import pytest
 
-from extraction_review.config import ExtractConfig, FrontExtractRecord, LegalExtractRecord
+from extraction_review.config import (
+    FRONT_SPECIAL_CATEGORIES,
+    ExtractConfig,
+    FrontExtractRecord,
+    LegalExtractRecord,
+)
+from extraction_review.scrutiny.catalogue_db import special_category_names_from_rows
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
@@ -29,6 +35,14 @@ from extraction_review.split_upload import (
     front_extract_configuration,
     load_source_book,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_catalogue_special_categories(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_special_category_names",
+        lambda: list(FRONT_SPECIAL_CATEGORIES),
+    )
 
 
 def _pdf_bytes(page_count: int) -> bytes:
@@ -126,11 +140,16 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "petition_date" in prompt
     assert "special_category" in prompt
     assert "Look for:" in prompt
-    assert "IN THE MATTER OF" in prompt
-    assert "Synopsis" in prompt
-    assert "Main Petition" in prompt
+    assert "before Versus" in prompt
+    assert "Do not repeat a petitioner" in prompt
+    assert "substantively applicable" in prompt
     assert "up to 3" in prompt
+    assert "Tax Matters" in prompt
+    assert "Matters involving/pertaining to minors" in prompt
     assert "stay null" not in prompt
+    description = front["data_schema"]["properties"]["special_category"]["description"]
+    assert description.startswith("Identify applicable special categories")
+    assert "Bail Applications/Bail Matters" in description
     assert "configuration_id" not in front
     legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
     front_party = front["data_schema"]["$defs"]["FrontParty"]["properties"]
@@ -534,7 +553,7 @@ def test_plain_petition_has_no_special_category() -> None:
     done = finalize_front_extract(
         {
             "petition_type": "REVIEW PETITION (CIVIL)",
-            "special_category": "Tax Matters",
+            "special_category": None,
         },
         page_markdown={
             8: (
@@ -555,6 +574,104 @@ def test_plain_petition_has_no_special_category() -> None:
         },
     )
     assert done["special_category"] is None
+
+
+def test_cause_title_table_keeps_each_person_on_one_side() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (C)",
+            "petitioners": [
+                {"name": "| Anoop Kumar @ Anup Kumar"},
+                {"name": "| Rajeev Lakhanpal"},
+                {"name": "| Gautam Khanna"},
+            ],
+            "respondents": [
+                {"name": "| Anoop Kumar @ Anup Kumar"},
+                {"name": "| Rajeev Lakhanpal"},
+                {"name": "| Gautam Khanna"},
+            ],
+        },
+        page_markdown={
+            20: """
+            IN THE SUPREME COURT OF INDIA
+            BETWEEN:
+            | | IN THE HIGH COURT | IN THIS HON'BLE COURT |
+            | --- | --- | --- |
+            | Anoop Kumar @ Anup Kumar<br/>S/o Ragya Parsad<br/>R/o 28 behind Lawrence road hotel, Lawrence Road, Amritsar. | Petitioner No. 1 | Petitioner No. 1 |
+            | Rajeev Lakhanpal<br/>S/o Naranjan Dass<br/>R/o 28 behind Lawrence road hotel, Lawrence Road, Amritsar. | Petitioner No. 2 | Petitioner No. 2 |
+            | VERSUS | | |
+            | Gautam Khanna<br/>Registered Address at<br/>IFFCO House, 34, Nehru Place, New Delhi- 110019 | Respondent No. 1 | Respondent No. 1 |
+            MOST RESPECTFULLY SHOWETH:
+            """,
+        },
+    )
+    assert [party["name"] for party in done["petitioners"]] == [
+        "Anoop Kumar @ Anup Kumar",
+        "Rajeev Lakhanpal",
+    ]
+    assert [party["name"] for party in done["respondents"]] == ["Gautam Khanna"]
+    assert done["petitioners"][0]["relation"] == "S/o"
+    assert "Lawrence Road" in done["petitioners"][0]["address"]
+    assert "|" not in done["petitioners"][0]["name"]
+    assert done["cause_title"]["formatted_title"].startswith("Anoop Kumar @ Anup Kumar and Anr. VS")
+
+
+def test_high_court_memo_does_not_replace_the_supreme_court_parties() -> None:
+    done = finalize_front_extract(
+        {
+            "petition_type": "SPECIAL LEAVE PETITION (CIVIL)",
+            "petitioners": [{"name": "Col. Pawan Kumar Gopinath Sharma"}],
+            "respondents": [
+                {"name": "K.D.R. Farms Co-op Housing Society Ltd"},
+                {"name": "Rajendra Madhukarrao Kulkarni"},
+            ],
+        },
+        page_markdown={
+            104: """
+            IN THE SUPREME COURT OF INDIA
+            IN THE MATTER OF:
+            COL. PAWAN KUMAR GOPINATH SHARMA ......PETITIONER
+            VERSUS
+            K.D.R. FARMS CO OP HOUSING SOCIETY LTD ....RESPONDENT
+            """,
+            107: """
+            HON'BLE HIGH COURT OF JUDICATURE OF BOMBAY
+            MEMO OF PARTIES BEFORE THE HIGH COURT
+            1. K.D.R. Farms Co. op Housing Society Ltd., Gut No. 79, Sharnaur, Aurangabad ...PETITIONER 1
+            VERSUS
+            1. The State of Maharashtra, Mantralaya, Mumbai ...Respondent No. 1
+            """,
+        },
+    )
+    assert done["petitioners"][0]["name"].casefold() == "col. pawan kumar gopinath sharma"
+    names = [party["name"].casefold() for party in done["respondents"]]
+    assert names[0].startswith("k.d.r. farms")
+    assert "rajendra madhukarrao kulkarni" in names
+    assert all("state of maharashtra" not in name for name in names)
+
+
+def test_application_sentences_are_not_party_names() -> None:
+    done = finalize_front_extract(
+        {"petition_type": "SPECIAL LEAVE PETITION (CIVIL)"},
+        page_markdown={
+            91: """
+            IN THE SUPREME COURT OF INDIA
+            IN THE MATTER OF: -
+            BHOOLAN CHAUDHARY ...PETITIONER
+            -VERSUS-
+            SONIYA DEVI & ORS. ...RESPONDENTS
+            I. A. NO. OF 2025
+            IN
+            1. The present Leave Petition under Article 136 of the Constitution of India.
+            MOST RESPECTFULLY SHOWETH:
+            """,
+            92: "5. The present application is made bonafide in the interest of justice.\n",
+        },
+    )
+    assert [party["name"] for party in done["petitioners"]] == ["BHOOLAN CHAUDHARY"]
+    assert [party["name"] for party in done["respondents"]] == ["SONIYA DEVI"]
+    assert not done["respondents"][0].get("address")
+    assert done["cause_title"]["main_petitioner"] != done["cause_title"]["main_respondent"]
 
 
 def test_bail_application_in_the_impugned_order_is_a_special_category() -> None:
@@ -659,6 +776,100 @@ def test_aadhaar_line_is_not_the_petitioner_name() -> None:
         "National Testing Agency",
         "Ministry of Education",
     ]
+
+
+def test_model_category_is_kept_and_rewritten_to_the_database_spelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_special_category_names",
+        lambda: ["TAX MATTERS", "Eviction Matters"],
+    )
+    kept = finalize_front_extract(
+        {"special_category": "Tax Matters"},
+        page_markdown={
+            8: "SYNOPSIS\nThe petitioners seek review of the judgment dated 09.03.2022.\n",
+        },
+    )
+    review = finalize_front_extract({"special_category": "flag for human review"})
+    assert kept["special_category"] == "TAX MATTERS"
+    assert review["special_category"] is None
+
+
+def test_catalogue_rows_keep_active_names_in_display_order() -> None:
+    names = special_category_names_from_rows(
+        [
+            {
+                "special_category": "Miscellaneous Application",
+                "is_active": False,
+                "display_order": 1,
+            },
+            {
+                "special_category": "Tax Matters",
+                "is_active": True,
+                "display_order": 3,
+            },
+            {
+                "special_category": "Tax Matters",
+                "is_active": True,
+                "display_order": 3,
+            },
+            {
+                "special_category": "Eviction Matters",
+                "is_active": True,
+                "display_order": 2,
+            },
+        ],
+        ["special_category", "is_active", "display_order"],
+    )
+    assert names == ["Eviction Matters", "Tax Matters"]
+
+
+def test_tax_and_eviction_orders_map_to_the_catalogue_names() -> None:
+    tax = finalize_front_extract(
+        {
+            "special_category": None,
+            "impugned_orders": [
+                {
+                    "raw_text": (
+                        "Arising from the impugned order dated 01.02.2024 "
+                        "passed in Tax Appeal No. 18 of 2023"
+                    )
+                }
+            ],
+        }
+    )
+    eviction = finalize_front_extract(
+        {
+            "special_category": None,
+            "impugned_orders": [
+                {
+                    "case_number": "Eviction Petition No. 44 of 2021",
+                    "raw_text": "order of eviction dated 14.05.2022",
+                }
+            ],
+        }
+    )
+    demolition = finalize_front_extract(
+        {
+            "special_category": None,
+            "impugned_orders": [{"raw_text": "Demolition Order dated 11.11.2022"}],
+        }
+    )
+    passing = finalize_front_extract(
+        {"special_category": None},
+        page_markdown={
+            4: "SYNOPSIS\nThe tenant paid the tax and feared eviction from the shop.\n",
+        },
+    )
+    old_act = finalize_front_extract(
+        {"special_category": "Consumer Protection Act, 1986"}
+    )
+    assert tax["special_category"] == "Tax Matters"
+    assert eviction["special_category"] == "Eviction Matters"
+    assert demolition["special_category"] == "Demolition Matters"
+    assert passing["special_category"] is None
+    assert old_act["special_category"] is None
 
 
 def test_synopsis_tax_matters_fills_an_empty_special_category() -> None:
