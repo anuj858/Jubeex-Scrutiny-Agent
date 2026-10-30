@@ -500,14 +500,16 @@ def compact_sidecar_pages(
     return layout
 
 
-def _word_center_inside(word: Mapping[str, Any], host: Mapping[str, Any]) -> bool:
-    center_x = _num(word.get("x")) + _num(word.get("w")) / 2
-    center_y = _num(word.get("y")) + _num(word.get("h")) / 2
-    left = _num(host.get("x"))
-    top = _num(host.get("y"))
-    return left <= center_x <= left + _num(
-        host.get("w")
-    ) and top <= center_y <= top + _num(host.get("h"))
+def _reading_order(
+    words: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    return sorted(words, key=lambda word: (_num(word.get("y")), _num(word.get("x"))))
+
+
+def _markup_token(text: str) -> bool:
+    """A markdown slice such as ``| S.No`` or ``r/>MAT`` is not a page word."""
+    raw = str(text or "")
+    return any(mark in raw for mark in ("|", "<", ">", "r/>"))
 
 
 def _pdf_page_words(page: Any) -> list[dict[str, Any]]:
@@ -543,10 +545,12 @@ def _pdf_page_words(page: Any) -> list[dict[str, Any]]:
 
 
 def merge_pdf_text_words(layout: LayoutIndex, pdf_bytes: bytes) -> LayoutIndex:
-    """Add text-layer words the sidecar did not already box.
+    """Use the PDF text layer as the words a quote is matched against.
 
-    Scan-sized pages are left alone. A PDF word whose center sits inside a
-    sidecar word is not added again.
+    A markdown slice does not hide a PDF word, and it is not kept once the
+    text layer has words. Scan-sized pages stay on their sidecar words. A
+    page with no text layer keeps those sidecar words too, without markup
+    slices. The whole-table rectangle is never turned into a word here.
     """
     if not pdf_bytes:
         return layout
@@ -562,8 +566,19 @@ def merge_pdf_text_words(layout: LayoutIndex, pdf_bytes: bytes) -> LayoutIndex:
             if local_page in scans:
                 continue
             page = document[index]
-            incoming = _pdf_page_words(page)
+            incoming = _reading_order(_pdf_page_words(page))
             entry = page_entry(layout, local_page)
+            if not incoming:
+                if entry is None:
+                    continue
+                existing = entry.get("words")
+                if isinstance(existing, list):
+                    entry["words"] = [
+                        word
+                        for word in existing
+                        if isinstance(word, Mapping) and not _markup_token(word.get("t"))
+                    ]
+                continue
             if entry is None:
                 layout[local_page] = {
                     "width": float(page.rect.width) or 1.0,
@@ -572,17 +587,7 @@ def merge_pdf_text_words(layout: LayoutIndex, pdf_bytes: bytes) -> LayoutIndex:
                     "words": incoming,
                 }
                 continue
-            existing = entry.get("words")
-            if not isinstance(existing, list):
-                existing = []
-                entry["words"] = existing
-            for word in incoming:
-                if any(
-                    isinstance(host, Mapping) and _word_center_inside(word, host)
-                    for host in existing
-                ):
-                    continue
-                existing.append(word)
+            entry["words"] = incoming
     finally:
         document.close()
     return layout
@@ -1204,10 +1209,14 @@ def _words_on_band(
     return [word for word in words if _same_visual_line(word, top, bottom)]
 
 
-def _row_words(
+def _row_cells(
     cells: Sequence[str], words: Sequence[Mapping[str, Any]]
-) -> list[Mapping[str, Any]]:
-    """Match one table row. Short cells stay on the anchor cell's line."""
+) -> list[list[Mapping[str, Any]]]:
+    """Match one table row, one word list per cell.
+
+    Short cells stay on the anchor cell's line. Each cell is boxed on its
+    own, so a narrow column gutter cannot merge the serial with the particulars.
+    """
     lengths = [len(_norm_text(cell).split()) for cell in cells]
     ranked = sorted(range(len(cells)), key=lambda index: lengths[index], reverse=True)
     longest = lengths[ranked[0]] if ranked else 0
@@ -1229,6 +1238,8 @@ def _row_words(
     if anchor_at is None:
         return []
     chosen = {id(word) for word in anchor}
+    groups: list[list[Mapping[str, Any]] | None] = [None] * len(cells)
+    groups[anchor_at] = anchor
     top, bottom = _top_line_band(anchor)
     band = _words_on_band(words, top, bottom)
     for index, cell in enumerate(cells):
@@ -1238,9 +1249,9 @@ def _row_words(
         hit = _matched_words(cell, pool)
         if not hit:
             continue
-        anchor.extend(hit)
+        groups[index] = hit
         chosen.update(id(word) for word in hit)
-    return anchor
+    return [group for group in groups if group]
 
 
 def _boxes_on_page(
@@ -1266,12 +1277,16 @@ def _boxes_on_page(
         # A one-word row such as "Versus" must sit under the party row.
         if index > 0 and floor is None:
             return [], "page_only"
-        hit = _row_words(row, scoped)
-        if not hit:
+        groups = _row_cells(row, scoped)
+        if not groups:
             if index == 0:
                 return [], "page_only"
             continue
-        boxes = union_line_boxes(hit, page)
+        boxes = [
+            box
+            for group in groups
+            for box in union_line_boxes(group, page)
+        ]
         collected.extend(boxes)
         bottom = max(_num(box.get("y")) + _num(box.get("h")) for box in boxes)
         floor = bottom if floor is None else max(floor, bottom)

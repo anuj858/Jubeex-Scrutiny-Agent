@@ -1278,14 +1278,17 @@ def test_pdf_words_box_a_table_page_that_has_no_cell_words() -> None:
 
 def test_a_sidecar_word_is_not_added_again_from_the_pdf() -> None:
     hello_pdf = _hello_world_pdf()
-    discovered = merge_pdf_text_words({1: {"words": [], "local_page": 1}}, hello_pdf)
-    hello = next(word for word in discovered[1]["words"] if word["t"] == "Hello")
-    layout = {1: {"words": [hello], "local_page": 1}}
+    layout = {
+        1: {
+            "words": [_placed("Hello", 0.07, 0.28, 0.08)],
+            "local_page": 1,
+        }
+    }
     merged = merge_pdf_text_words(layout, hello_pdf)
     texts = [word["t"] for word in merged[1]["words"]]
-    assert merged[1]["words"][0] is hello
     assert texts.count("Hello") == 1
     assert "World" in texts
+    assert texts.index("Hello") < texts.index("World")
 
 
 def _hello_world_pdf() -> bytes:
@@ -1317,3 +1320,76 @@ def test_a_scan_page_does_not_receive_pdf_words() -> None:
     layout = {1: {"words": [], "local_page": 1}}
     merged = merge_pdf_text_words(layout, pdf)
     assert merged[1]["words"] == []
+
+
+_FILING_PDF = (
+    "/Users/laptopbazaar/Documents/Petition_Folder/Defect File _001.pdf"
+)
+
+_NOTE_SHEET_QUOTE = (
+    "S.No.: 7.\n"
+    "PARTICULARS: Note Sheet\n"
+    "Page No. of part to which it belongs — Part – II\n"
+    "(Contents\n"
+    "of Paper\n"
+    "Book): NS1 to"
+)
+
+
+def _filing_pdf():
+    from pathlib import Path
+
+    path = Path(_FILING_PDF)
+    if not path.is_file():
+        pytest.skip(f"filing PDF is not on this machine: {path}")
+    return path.read_bytes()
+
+
+def test_a_markup_slice_does_not_hide_the_pdf_word() -> None:
+    import pymupdf
+
+    document = pymupdf.open()
+    try:
+        page = document.new_page(width=600, height=400)
+        page.insert_text((80, 160), "Note", fontsize=12)
+        pdf = document.tobytes()
+    finally:
+        document.close()
+    layout = {
+        1: {
+            "words": [_placed("| P", 0.10, 0.35, 0.20)],
+            "local_page": 1,
+        }
+    }
+    merged = merge_pdf_text_words(layout, pdf)
+    texts = [word["t"] for word in merged[1]["words"]]
+    assert "Note" in texts
+    assert "| P" not in texts
+    boxes, status = boxes_for_quote("Note", 1, merged)
+    assert status == "matched"
+    assert boxes
+
+
+def test_index_note_sheet_boxes_come_from_the_pdf_text_layer() -> None:
+    layout = merge_pdf_text_words({2: {"words": [], "local_page": 2}}, _filing_pdf())
+    boxes, status = boxes_for_quote(_NOTE_SHEET_QUOTE, 2, layout)
+    assert status == "matched"
+    row = [box for box in boxes if 0.55 <= box["y"] <= 0.65]
+    assert len(row) == 3
+    assert any(box["x"] < 0.16 for box in row)
+    assert any(0.16 <= box["x"] < 0.45 for box in row)
+    assert any(box["x"] >= 0.60 for box in row)
+    assert all(box["y"] > 0.20 for box in boxes)
+
+
+def test_petition_name_boxes_come_from_the_pdf_text_layer() -> None:
+    layout = merge_pdf_text_words({15: {"words": [], "local_page": 15}}, _filing_pdf())
+    boxes, status = boxes_for_quote(_PAWAN_LINES, 15, layout)
+    assert status == "matched"
+    first = [box for box in boxes if abs(box["y"] - 0.306) < 0.02 and box["x"] < 0.20]
+    jew = [box for box in boxes if abs(box["y"] - 0.356) < 0.02 and box["x"] < 0.25]
+    assert first
+    assert jew
+    assert first[0]["x"] < 0.15
+    assert all(box["x"] < 0.40 for box in boxes)
+
