@@ -33,6 +33,14 @@ Important boundaries:
   resolution, handwriting, or corruption prevents reliable inspection. Return
   JSON and nothing else."""
 
+VISION_BATCH_SYSTEM_PROMPT = VISION_SYSTEM_PROMPT + """
+
+Batch mode: the user may supply several complete DOCUMENT IMAGE pages in one
+request. Inspect each independently. Return `pages`, with exactly one object per
+requested physical page; each object contains `page`, `elements`, and
+`page_quality`. Bounding boxes remain relative to the corresponding complete
+page. Never move, merge, or infer an element across pages."""
+
 
 def user_prompt(
     *, page_number: int, document_types: list[str], nearby_text: str
@@ -54,4 +62,33 @@ def user_prompt(
         "positive and hard-negative examples. They are not evidence from this PDF, "
         "must never produce output elements, and must never be used to infer identity, "
         "authenticity, or validity."
+    )
+
+
+def batch_user_prompt(pages: list[dict[str, object]]) -> str:
+    """Prompt for one synchronous request containing several filing pages."""
+    types = ", ".join(sorted(SUPPORTED_TYPES))
+    inventory: list[str] = []
+    for image_number, page in enumerate(pages, start=1):
+        document_types = page.get("document_types") or []
+        parts = ", ".join(str(item) for item in document_types) or "unknown"
+        nearby = str(page.get("nearby_text") or "").strip()[:2500]
+        inventory.append(
+            f"DOCUMENT IMAGE {image_number}: physical page={page.get('page')}; "
+            f"document parts={parts}; nearby OCR (untrusted)={nearby}"
+        )
+    return (
+        "Inspect every DOCUMENT IMAGE in the exact order listed below. Each image is a "
+        "different complete legal-document page. Return one JSON object with a `pages` "
+        "array and exactly one result per listed physical page. Each result must contain "
+        "`page`, `elements`, and `page_quality`. Do not combine evidence between pages. "
+        "Every element must contain probable_type, bbox_normalized, legal_relevance, a "
+        "short relevance_reason, associated_label, field_role, visible_text, near_label, "
+        "signature_role, confidence (0..1), and reason. page_quality must contain readable, "
+        "issue, and confidence. "
+        f"Allowed element types: {types}. Never identify a signer or claim authenticity "
+        "or legal validity. Images following the DOCUMENT IMAGE sequence, if any, are "
+        "explicitly labelled reference sheets; they are guidance only and must not produce "
+        "elements or page-quality results.\n\n"
+        + "\n\n".join(inventory)
     )

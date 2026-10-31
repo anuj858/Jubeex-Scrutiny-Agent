@@ -1,6 +1,7 @@
 """Ink-mark detector schema, formality page targeting, and defect attachment."""
 
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -40,7 +41,11 @@ from extraction_review.visual.pages import (
 )
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
-from extraction_review.visual.schema import VisualPageTarget, empty_visual_index
+from extraction_review.visual.schema import (
+    VisualPageTarget,
+    VisualQualityAssessment,
+    empty_visual_index,
+)
 from extraction_review.visual.store import (
     coerce_visual_index,
     dump_visual_index,
@@ -890,6 +895,7 @@ def _one_page_pdf() -> bytes:
 
 
 def _enable_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "1")
     monkeypatch.setattr(
         "extraction_review.visual.detect.visual_detection_enabled",
         lambda: True,
@@ -1249,9 +1255,60 @@ async def test_detect_empty_array_body_is_ok_not_vision_failed(
 
 
 @pytest.mark.asyncio
+async def test_detect_parses_multi_page_openrouter_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "4")
+
+    async def no_wait(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.acquire_openrouter_slot", no_wait
+    )
+    content = json.dumps(
+        {
+            "pages": [
+                {
+                    "page": page,
+                    "elements": [],
+                    "page_quality": {
+                        "readable": True,
+                        "issue": "",
+                        "confidence": 0.95,
+                    },
+                }
+                for page in (1, 2)
+            ]
+        }
+    )
+    _stub_openrouter_post(monkeypatch, [_openrouter_body(content, 0.01)])
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("petition", [MAIN_PETITION_PART], file_id="petition"),
+            _part("affidavit", ["Affidavit"], file_id="affidavit"),
+        ],
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+
+    assert index["status"] == "ok"
+    assert index["pages"] == [1, 2]
+    assert len(index["quality_assessments"]) == 2
+    assert index["usage"]["calls"] == 1
+    assert index["usage"]["cost_usd"] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
 async def test_detect_sums_openrouter_cost_across_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "1")
     _stub_openrouter_post(
         monkeypatch,
         [
@@ -1277,3 +1334,64 @@ async def test_detect_sums_openrouter_cost_across_pages(
     assert index["usage"]["calls"] == 2
     summary = visual_summary(index)
     assert summary["usage"]["cost_usd"] == pytest.approx(0.03)
+
+
+@pytest.mark.asyncio
+async def test_detect_groups_four_pages_per_synchronous_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "4")
+    monkeypatch.setenv("VISION_CONCURRENCY", "2")
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_provider", lambda: "openrouter"
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.render_page_jpeg",
+        lambda *_args, **_kwargs: b"jpeg",
+    )
+    batches: list[list[int]] = []
+
+    async def fake_batch(*, page_images, **_kwargs):
+        pages = [target.page for target, _image in page_images]
+        batches.append(pages)
+        return (
+            {
+                target.page: (
+                    [],
+                    VisualQualityAssessment(
+                        page=target.page,
+                        document_type=target.document_types[0],
+                        readable=True,
+                        confidence=0.9,
+                        slot_id=target.slot_id,
+                        local_page=target.local_page,
+                    ),
+                )
+                for target, _image in page_images
+            },
+            None,
+            LlmUsage(calls=1, cost_usd=0.01),
+        )
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._analyze_batch_with_fallback", fake_batch
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return b"%PDF-1.7\n"
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="petition")],
+        pages_by_slot={"petition": {page: f"page {page}" for page in range(1, 9)}},
+        page_parts={page: [MAIN_PETITION_PART] for page in range(1, 9)},
+        download_file_id=fake_download,
+    )
+
+    assert batches == [[1, 2, 3, 4], [5, 6, 7, 8]]
+    assert index["pages"] == list(range(1, 9))
+    assert len(index["quality_assessments"]) == 8
+    assert index["usage"]["calls"] == 2
+    assert index["usage"]["cost_usd"] == pytest.approx(0.02)

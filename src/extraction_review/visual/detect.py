@@ -34,7 +34,12 @@ from ..llm import (
 from ..process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from ..scrutiny.schema import LlmUsage
 from .pages import coerce_pages_by_slot, global_page_sources, select_formality_pages
-from .prompt import VISION_SYSTEM_PROMPT, user_prompt
+from .prompt import (
+    VISION_BATCH_SYSTEM_PROMPT,
+    VISION_SYSTEM_PROMPT,
+    batch_user_prompt,
+    user_prompt,
+)
 from .references import load_reference_assets
 from .render import jpeg_data_url, preview_dpi, render_page_jpeg
 from .schema import (
@@ -54,6 +59,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VISION_CONCURRENCY = 4
 DEFAULT_VISION_RENDER_CONCURRENCY = 1
+DEFAULT_VISION_PAGES_PER_REQUEST = 4
 DEFAULT_VISION_MAX_TOKENS = 2800
 DEFAULT_VISION_REQUEST_TIMEOUT_S = 120.0
 ADVOCATE_LABELS = re.compile(
@@ -137,6 +143,24 @@ def _int_env(name: str, default: int) -> int:
         return int(raw) if raw else default
     except ValueError:
         return default
+
+
+def vision_pages_per_request() -> int:
+    """Number of document pages carried by one synchronous vision request.
+
+    OpenRouter accepts multiple image content parts in one request. Keep the
+    bound deliberately small: it cuts request count while preserving per-page
+    output, manageable payloads, and a cheap single-page fallback.
+    """
+    if vision_provider() != "openrouter":
+        return 1
+    return max(
+        1,
+        min(
+            4,
+            _int_env("VISION_PAGES_PER_REQUEST", DEFAULT_VISION_PAGES_PER_REQUEST),
+        ),
+    )
 
 
 def vision_request_timeout_s() -> float:
@@ -722,6 +746,204 @@ async def analyze_page_image(
     return marks, parse_vision_quality(parsed, target=target), usage
 
 
+async def analyze_page_images(
+    *,
+    page_images: Sequence[tuple[VisualPageTarget, bytes]],
+    references: Sequence[Any],
+    model: str,
+    http: httpx.AsyncClient,
+) -> tuple[dict[int, tuple[list[VisualMark], VisualQualityAssessment | None]], LlmUsage]:
+    """Inspect several pages in one synchronous OpenRouter request.
+
+    This is deliberately different from OpenRouter's asynchronous Batch API:
+    the live job waits for one ordinary response containing several image
+    parts, so it preserves interactive latency and private base64 inputs.
+    """
+    if not page_images:
+        return {}, LlmUsage(model=model)
+    pages = [
+        {
+            "page": target.page,
+            "document_types": list(target.document_types),
+            "nearby_text": target.markdown,
+        }
+        for target, _image in page_images
+    ]
+    content_parts: list[dict[str, Any]] = [
+        {"type": "text", "text": batch_user_prompt(pages)}
+    ]
+    for target, image in page_images:
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": jpeg_data_url(image)},
+            }
+        )
+    for reference in references:
+        content_parts.append(
+            {
+                "type": "text",
+                "text": (
+                    f"REFERENCE SHEET {reference.reference_id}: "
+                    f"{reference.description} This is not filing evidence."
+                ),
+            }
+        )
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": jpeg_data_url(reference.content)},
+            }
+        )
+    max_tokens_per_page = _int_env(
+        "VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS
+    )
+    max_tokens = min(8000, max_tokens_per_page * len(page_images))
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": VISION_BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": content_parts},
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    await acquire_openrouter_slot(
+        model_name=model,
+        request_label=(
+            "vision-pages:" + ",".join(str(target.page) for target, _ in page_images)
+        ),
+    )
+    response = await http.post(
+        f"{base_url}/chat/completions",
+        headers=_headers(),
+        json=payload,
+    )
+    if response.status_code in (408, 409, 429) or response.status_code >= 500:
+        raise LLMError(
+            f"Retryable batched vision status {response.status_code}: "
+            f"{response.text[:300]}"
+        )
+    if response.status_code == 402:
+        body_text = response.text[:2000]
+        if "in_flight_budget_exhausted" in body_text:
+            raise LLMError(f"OpenRouter vision budget exhausted: {body_text[:300]}")
+        raise LLMFatalError(f"OpenRouter 402 (billing): {body_text[:300]}")
+    if response.status_code in (401, 403):
+        raise LLMFatalError(
+            f"OpenRouter {response.status_code}: {response.text[:300]}"
+        )
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise LLMError("Batched vision response was not a JSON object")
+    usage = parse_openrouter_usage(body, model=model)
+    try:
+        parsed = _parse_vision_json(_extract_content(body))
+    except LLMError as exc:
+        raise LLMError(str(exc), usage=usage) from exc
+    raw_pages = parsed.get("pages") if isinstance(parsed, dict) else None
+    if not isinstance(raw_pages, list):
+        raise LLMError("Batched vision response omitted the pages array", usage=usage)
+    by_page: dict[int, Mapping[str, Any]] = {}
+    for item in raw_pages:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            continue
+        by_page[page] = item
+    expected = {target.page for target, _image in page_images}
+    if not expected.issubset(by_page):
+        missing = sorted(expected - set(by_page))
+        raise LLMError(
+            f"Batched vision response omitted physical page(s) {missing}", usage=usage
+        )
+    results: dict[
+        int, tuple[list[VisualMark], VisualQualityAssessment | None]
+    ] = {}
+    for target, _image in page_images:
+        item = by_page[target.page]
+        marks = parse_vision_elements(
+            item,
+            page_number=target.page,
+            document_type=_document_type_for_page(target),
+            page_text=target.markdown,
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+        results[target.page] = (
+            marks,
+            parse_vision_quality(item, target=target),
+        )
+    logger.info(
+        "Vision pages=%s model=%s tokens=%s cost=%s",
+        sorted(results),
+        usage.model or model,
+        usage.total_tokens,
+        usage.cost_usd,
+    )
+    return results, usage
+
+
+async def _analyze_batch_with_fallback(
+    *,
+    page_images: Sequence[tuple[VisualPageTarget, bytes]],
+    references: Sequence[Any],
+    http: httpx.AsyncClient,
+) -> tuple[
+    dict[int, tuple[list[VisualMark], VisualQualityAssessment | None]],
+    Exception | None,
+    LlmUsage,
+]:
+    models = [vision_model()]
+    fallback = vision_fallback_model()
+    if fallback and fallback not in models:
+        models.append(fallback)
+    combined = LlmUsage()
+    last_error: Exception | None = None
+    document_types = [
+        name
+        for target, _image in page_images
+        for name in target.document_types
+    ]
+    selected_references = _references_for_target(references, document_types)
+    for model in models:
+        try:
+            found, usage = await analyze_page_images(
+                page_images=page_images,
+                references=selected_references,
+                model=model,
+                http=http,
+            )
+            return found, None, combined.plus(usage)
+        except LLMFatalError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            break
+        except LLMError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.warning(
+                "Batched vision failed pages=%s model=%s: %s",
+                [target.page for target, _image in page_images],
+                model,
+                str(exc)[:300],
+            )
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError) as exc:
+            last_error = exc
+            logger.warning(
+                "Batched vision failed pages=%s model=%s: %s",
+                [target.page for target, _image in page_images],
+                model,
+                str(exc)[:300],
+            )
+    return {}, last_error, combined
+
+
 async def _analyze_with_fallback(
     *,
     page_image: bytes,
@@ -1030,6 +1252,50 @@ async def detect_visual_marks(
         request_semaphore = asyncio.Semaphore(concurrency)
         render_semaphore = asyncio.Semaphore(render_concurrency)
 
+        async def analyze_rendered(
+            target: VisualPageTarget, image: bytes
+        ) -> _PageVisionResult:
+            try:
+                analyzed = await asyncio.wait_for(
+                    _analyze_with_fallback(
+                        page_image=image,
+                        target=target,
+                        references=references,
+                        http=http,
+                    ),
+                    timeout=vision_timeout,
+                )
+                if len(analyzed) == 3:
+                    found, vision_error, usage = analyzed
+                    quality = None
+                else:
+                    found, quality, vision_error, usage = analyzed
+            except TimeoutError:
+                detail = (
+                    f"Vision request exceeded {vision_timeout:g}s; "
+                    "continuing without marks for this page"
+                )
+                logger.warning(
+                    "Vision timeout page=%s timeout=%ss",
+                    target.page,
+                    vision_timeout,
+                )
+                return _PageVisionResult(
+                    marks=[], reason="vision_timeout", detail=detail
+                )
+            if vision_error is not None:
+                return _PageVisionResult(
+                    marks=[],
+                    reason="vision_failed",
+                    detail=str(vision_error)[:300],
+                    usage=usage,
+                )
+            return _PageVisionResult(
+                marks=_expand_marks_for_parts(found, target),
+                quality=quality,
+                usage=usage,
+            )
+
         async def run_one(target: VisualPageTarget) -> _PageVisionResult:
             pdf_bytes = pdf_by_slot.get(target.slot_id)
             if not pdf_bytes:
@@ -1058,51 +1324,108 @@ async def detect_visual_marks(
                         reason="render_failed",
                         detail=str(exc)[:300],
                     )
+                return await analyze_rendered(target, image)
+
+        async def run_many(
+            batch: Sequence[VisualPageTarget],
+        ) -> list[_PageVisionResult]:
+            output: dict[int, _PageVisionResult] = {}
+            rendered: list[tuple[VisualPageTarget, bytes]] = []
+            async with request_semaphore:
+                for target in batch:
+                    pdf_bytes = pdf_by_slot.get(target.slot_id)
+                    if not pdf_bytes:
+                        reason, detail = pdf_errors.get(
+                            target.slot_id, ("missing_pdf", "PDF not loaded")
+                        )
+                        output[target.page] = _PageVisionResult(
+                            marks=[], reason=reason, detail=detail
+                        )
+                        continue
+                    try:
+                        async with render_semaphore:
+                            image = await asyncio.to_thread(
+                                render_page_jpeg,
+                                pdf_bytes,
+                                target.local_page,
+                                dpi=dpi,
+                            )
+                    except (ValueError, OSError, RuntimeError) as exc:
+                        output[target.page] = _PageVisionResult(
+                            marks=[], reason="render_failed", detail=str(exc)[:300]
+                        )
+                        continue
+                    rendered.append((target, image))
+                if not rendered:
+                    return [output[target.page] for target in batch]
+                if len(rendered) == 1:
+                    target, image = rendered[0]
+                    output[target.page] = await analyze_rendered(target, image)
+                    return [output[target.page] for target in batch]
                 try:
-                    analyzed = await asyncio.wait_for(
-                        _analyze_with_fallback(
-                            page_image=image,
-                            target=target,
+                    found_by_page, batch_error, usage = await asyncio.wait_for(
+                        _analyze_batch_with_fallback(
+                            page_images=rendered,
                             references=references,
                             http=http,
                         ),
                         timeout=vision_timeout,
                     )
-                    if len(analyzed) == 3:
-                        found, vision_error, usage = analyzed
-                        quality = None
-                    else:
-                        found, quality, vision_error, usage = analyzed
                 except TimeoutError:
-                    detail = (
-                        f"Vision request exceeded {vision_timeout:g}s; "
-                        "continuing without marks for this page"
+                    found_by_page = {}
+                    batch_error = TimeoutError(
+                        f"Batched vision exceeded {vision_timeout:g}s"
                     )
+                    usage = LlmUsage()
+                if batch_error is None:
+                    first_page = rendered[0][0].page
+                    for target, _image in rendered:
+                        found, quality = found_by_page[target.page]
+                        output[target.page] = _PageVisionResult(
+                            marks=_expand_marks_for_parts(found, target),
+                            quality=quality,
+                            # Count one request once, rather than once per page.
+                            usage=usage if target.page == first_page else None,
+                        )
+                else:
                     logger.warning(
-                        "Vision timeout page=%s timeout=%ss",
-                        target.page,
-                        vision_timeout,
+                        "Falling back to single-page vision for pages=%s: %s",
+                        [target.page for target, _image in rendered],
+                        str(batch_error)[:300],
                     )
-                    return _PageVisionResult(
-                        marks=[], reason="vision_timeout", detail=detail
-                    )
-            if vision_error is not None:
-                return _PageVisionResult(
-                    marks=[],
-                    reason="vision_failed",
-                    detail=str(vision_error)[:300],
-                    usage=usage,
-                )
-            return _PageVisionResult(
-                marks=_expand_marks_for_parts(found, target),
-                quality=quality,
-                usage=usage,
-            )
+                    for target, image in rendered:
+                        output[target.page] = await analyze_rendered(target, image)
+                return [output[target.page] for target in batch]
 
-        results = await asyncio.gather(
-            *(run_one(target) for target in targets),
-            return_exceptions=True,
-        )
+        pages_per_request = vision_pages_per_request()
+        if pages_per_request <= 1:
+            results = await asyncio.gather(
+                *(run_one(target) for target in targets),
+                return_exceptions=True,
+            )
+        else:
+            batches = [
+                targets[index : index + pages_per_request]
+                for index in range(0, len(targets), pages_per_request)
+            ]
+            await _emit_log(
+                on_log,
+                (
+                    f"Visual: grouping {len(targets)} page(s) into "
+                    f"{len(batches)} synchronous request(s), up to "
+                    f"{pages_per_request} page(s) each"
+                ),
+            )
+            grouped = await asyncio.gather(
+                *(run_many(batch) for batch in batches),
+                return_exceptions=True,
+            )
+            results = []
+            for batch, item in zip(batches, grouped, strict=True):
+                if isinstance(item, Exception):
+                    results.extend([item] * len(batch))
+                else:
+                    results.extend(item)
 
     succeeded = 0
     combined_usage = LlmUsage()
