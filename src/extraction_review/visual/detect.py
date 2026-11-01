@@ -33,7 +33,12 @@ from ..llm import (
 )
 from ..process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from ..scrutiny.schema import LlmUsage
-from .pages import coerce_pages_by_slot, global_page_sources, select_formality_pages
+from .pages import (
+    coerce_pages_by_slot,
+    eligible_formality_page_count,
+    global_page_sources,
+    select_formality_pages,
+)
 from .prompt import (
     VISION_BATCH_SYSTEM_PROMPT,
     VISION_SYSTEM_PROMPT,
@@ -1160,8 +1165,9 @@ async def detect_visual_marks(
     slot_pages = coerce_pages_by_slot(pages_by_slot)
     sources = global_page_sources(parts, slot_pages, omit_empty=omit_empty)
     targets = select_formality_pages(sources, page_markdown=page_markdown)
+    eligible_count = eligible_formality_page_count(sources)
     if not targets:
-        await _emit_log(on_log, "Visual: no formality last pages present; skipping")
+        await _emit_log(on_log, "Visual: no visual-relevant formality pages; skipping")
         return {
             "schema": VISUAL_SCHEMA,
             "prompt_version": PROMPT_VERSION,
@@ -1177,7 +1183,10 @@ async def detect_visual_marks(
 
     await _emit_log(
         on_log,
-        f"Visual: {len(targets)} formality page(s) selected",
+        (
+            f"Visual: {len(targets)} of {eligible_count} eligible formality page(s) "
+            f"selected ({max(0, eligible_count - len(targets))} page(s) avoided)"
+        ),
     )
     for target in targets:
         await _emit_log(on_log, f"Visual target {_target_label(target)}")

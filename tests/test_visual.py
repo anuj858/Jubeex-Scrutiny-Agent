@@ -125,7 +125,7 @@ def _defect(
     )
 
 
-def test_visual_sensitive_document_classes_select_every_page() -> None:
+def test_visual_page_selection_keeps_short_forms_and_samples_long_bodies() -> None:
     parts = [
         _part("checklist", ["Advocate's Checklist"]),
         _part("petition", [MAIN_PETITION_PART]),
@@ -154,15 +154,99 @@ def test_visual_sensitive_document_classes_select_every_page() -> None:
     assert {1, 2}.issubset(pages)
     assert {3, 4, 5}.issubset(pages)
     assert {6, 7}.issubset(pages)
-    assert {8, 9, 10, 11, 12}.issubset(pages)
+    assert 8 in pages and 11 in pages
+    assert {9, 10, 12}.isdisjoint(pages)
     assert 13 in pages
     assert 14 not in pages
     assert 15 in pages and 16 in pages
     assert MAIN_PETITION_PART in pages[5]
     assert "Affidavit" in pages[7]
-    assert "Annexure P-1" in pages[10]
-    assert "Annexure P-2" in pages[12]
+    assert "Annexure P-1" in pages[8]
+    assert "Annexure P-2" in pages[11]
     assert "Vakalatnama" in pages[13]
+
+
+def test_large_filing_visual_selection_avoids_at_least_seventy_percent() -> None:
+    parts = [
+        _part("petition", [MAIN_PETITION_PART]),
+        _part("order", ["Impugned Order"]),
+        _part("index", ["Index"]),
+        _part("affidavit", ["Affidavit"]),
+    ]
+    pages_by_slot = {
+        "petition": {page: f"petition {page}" for page in range(1, 21)},
+        "order": {page: f"order {page}" for page in range(1, 11)},
+        "index": {page: f"index {page}" for page in range(1, 5)},
+        "affidavit": {1: "affidavit", 2: "verification"},
+    }
+    for number in range(1, 11):
+        slot = f"annexure_p{number}"
+        parts.append(_part(slot, [f"Annexure P-{number}"]))
+        pages_by_slot[slot] = {
+            page: f"annexure {number} page {page}" for page in range(1, 9)
+        }
+
+    sources = global_page_sources(parts, pages_by_slot)
+    targets = select_formality_pages(sources, max_page_fraction=0.30)
+    eligible_pages = {
+        source.page
+        for source in sources
+        if any(
+            name == MAIN_PETITION_PART
+            or name in {"Impugned Order", "Index", "Affidavit"}
+            or name.startswith("Annexure P-")
+            for name in source.document_parts
+        )
+    }
+
+    assert len(targets) <= len(eligible_pages) * 0.30 + 1
+    targeted_types = {name for target in targets for name in target.document_types}
+    assert MAIN_PETITION_PART in targeted_types
+    assert "Impugned Order" in targeted_types
+    assert "Index" in targeted_types
+    assert "Affidavit" in targeted_types
+    for number in range(1, 11):
+        assert f"Annexure P-{number}" in targeted_types
+
+
+def test_annexure_visual_cue_adds_relevant_page_without_full_scan() -> None:
+    parts = [_part("annexure_p1", ["Annexure P-1"])]
+    pages_by_slot = {
+        "annexure_p1": {
+            1: "ANNEXURE P-1",
+            2: "ordinary body",
+            3: "ordinary body",
+            4: "Signed and certified true copy",
+            5: "ordinary body",
+        }
+    }
+    sources = global_page_sources(parts, pages_by_slot)
+    markdown = {
+        source.page: pages_by_slot[source.slot_id][source.local_page]
+        for source in sources
+    }
+
+    targets = select_formality_pages(sources, page_markdown=markdown)
+
+    assert [target.local_page for target in targets] == [1, 4]
+
+
+def test_repeated_annexure_family_keeps_one_page_per_source_slot() -> None:
+    parts = [
+        _part("annexure_p7_part_1", ["Annexure P-7"]),
+        _part("annexure_p7_part_2", ["Annexure P-7"]),
+    ]
+    pages_by_slot = {
+        "annexure_p7_part_1": {1: "ANNEXURE P-7", 2: "body"},
+        "annexure_p7_part_2": {1: "ANNEXURE P-7 continued", 2: "body"},
+    }
+
+    targets = select_formality_pages(global_page_sources(parts, pages_by_slot))
+
+    assert {(target.slot_id, target.local_page) for target in targets} == {
+        ("annexure_p7_part_1", 1),
+        ("annexure_p7_part_2", 1),
+    }
 
 
 def test_missing_d093_part_is_not_sent() -> None:
@@ -1384,9 +1468,28 @@ async def test_detect_groups_four_pages_per_synchronous_request(
         return b"%PDF-1.7\n"
 
     index = await detect_visual_marks(
-        parts=[_part("petition", [MAIN_PETITION_PART], file_id="petition")],
-        pages_by_slot={"petition": {page: f"page {page}" for page in range(1, 9)}},
-        page_parts={page: [MAIN_PETITION_PART] for page in range(1, 9)},
+        parts=[
+            _part("checklist", ["Advocate's Checklist"], file_id="checklist"),
+            _part("listing", ["Listing Proforma"], file_id="listing"),
+            _part("certificate", ["AOR's Certificate"], file_id="certificate"),
+            _part("affidavit", ["Affidavit"], file_id="affidavit"),
+        ],
+        pages_by_slot={
+            "checklist": {1: "page 1", 2: "page 2"},
+            "listing": {1: "page 1", 2: "page 2"},
+            "certificate": {1: "page 1", 2: "page 2"},
+            "affidavit": {1: "page 1", 2: "page 2"},
+        },
+        page_parts={
+            1: ["Advocate's Checklist"],
+            2: ["Advocate's Checklist"],
+            3: ["Listing Proforma"],
+            4: ["Listing Proforma"],
+            5: ["AOR's Certificate"],
+            6: ["AOR's Certificate"],
+            7: ["Affidavit"],
+            8: ["Affidavit"],
+        },
         download_file_id=fake_download,
     )
 
