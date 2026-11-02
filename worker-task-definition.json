@@ -97,6 +97,18 @@
           "value": "google/gemini-4-argon"
         },
         {
+          "name": "SCRUTINY_MODEL_LOW",
+          "value": "google/gemini-4-argon"
+        },
+        {
+          "name": "SCRUTINY_MODEL_MEDIUM",
+          "value": "google/gemini-4-argon"
+        },
+        {
+          "name": "SCRUTINY_MODEL_HIGH",
+          "value": "google/gemini-4-argon"
+        },
+        {
           "name": "OPENROUTER_BASE_URL",
           "value": "https://openrouter.ai/api/v1"
         },

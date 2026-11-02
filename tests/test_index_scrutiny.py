@@ -282,6 +282,7 @@ async def test_run_nested_scrutiny_wraps_openrouter_failure(
 
     state = _index_state()
     state.special_category = "Appeal (Armed Forces)"
+    state.model_tier = "high"
     streamed: list[object] = []
     ctx = SimpleNamespace(
         store=_Store(state),
@@ -293,6 +294,7 @@ async def test_run_nested_scrutiny_wraps_openrouter_failure(
     assert err.value.agent_data_id == "agd-index"
     assert captured["event"].agent_data_id == "agd-index"
     assert captured["event"].special_category == "Appeal (Armed Forces)"
+    assert captured["event"].model_tier == "high"
 
 
 def test_extract_path_does_not_nest_scrutiny() -> None:

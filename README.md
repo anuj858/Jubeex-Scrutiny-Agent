@@ -84,11 +84,15 @@ not yet been benchmarked.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 
-Registry defect checks use the dedicated `SCRUTINY_MODEL` setting, which
-defaults to Gemini 4 Argon (`gemini-4-argon` on Vertex AI and
-`google/gemini-4-argon` on OpenRouter). `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
-`OPENROUTER_VISION_MODEL` remain independent, so changing the scrutiny model
-does not silently change extraction or visual-mark detection.
+Registry defect checks use the model selected by the required `model_tier`
+request field on index, reindex, and defects-only scrutiny. `low`, `medium`,
+and `high` read `SCRUTINY_MODEL_LOW`, `SCRUTINY_MODEL_MEDIUM`, and
+`SCRUTINY_MODEL_HIGH`. A missing tier or an empty tier model is rejected
+before the job starts. `SCRUTINY_MODEL` remains in config and is not a
+fallback for these requests. Vertex and the Gemini Developer API strip a
+`google/` prefix; OpenRouter keeps it. `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+`OPENROUTER_VISION_MODEL` remain independent, so changing a defect-check model
+does not change extraction or visual-mark detection.
 For ECS queue, lease, callback, and rollout checks see
 [`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
 Argon must be validated for project access, latency, 429 rate, cost, and defect

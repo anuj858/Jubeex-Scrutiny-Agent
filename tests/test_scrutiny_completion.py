@@ -97,11 +97,13 @@ async def test_uncertain_first_pass_is_not_forced_to_compliant(monkeypatch) -> N
         record={},
         chunks=[],
         filing_type="SLP_CIVIL",
+        model="google/gemini-test",
     )
 
     assert result.status == "needs_review"
     assert call.await_count == 1
     assert call.await_args.kwargs["request_label"] == "scrutiny:D-1"
+    assert call.await_args.kwargs["model"] == "google/gemini-test"
 
 
 @pytest.mark.asyncio
@@ -139,6 +141,7 @@ async def test_unverified_rule_is_evaluated_from_filing_evidence(monkeypatch) ->
         record={},
         chunks=[],
         filing_type="SLP_CIVIL",
+        model="google/gemini-test",
     )
 
     assert result.status == "defect_found"
@@ -165,6 +168,7 @@ async def test_d324_missing_aor_certificate_is_defect_without_legal_gate(
         filing_type="SLP_CIVIL",
         layout={1: {"document_part": "Main Petition"}},
         absence_defect_parts=["AOR's Certificate"],
+        model="google/gemini-test",
     )
 
     assert result.status == "defect_found"
@@ -189,6 +193,7 @@ async def test_d55_is_na_when_affidavit_prerequisite_is_absent(monkeypatch) -> N
         chunks=[],
         filing_type="SLP_CIVIL",
         layout={1: {"document_part": "Main Petition"}},
+        model="google/gemini-test",
     )
 
     assert result.status == "not_applicable"
