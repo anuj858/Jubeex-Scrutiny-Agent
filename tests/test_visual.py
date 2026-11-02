@@ -1,6 +1,7 @@
 """Ink-mark detector schema, formality page targeting, and defect attachment."""
 
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -40,7 +41,11 @@ from extraction_review.visual.pages import (
 )
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
-from extraction_review.visual.schema import VisualPageTarget, empty_visual_index
+from extraction_review.visual.schema import (
+    VisualPageTarget,
+    VisualQualityAssessment,
+    empty_visual_index,
+)
 from extraction_review.visual.store import (
     coerce_visual_index,
     dump_visual_index,
@@ -120,7 +125,7 @@ def _defect(
     )
 
 
-def test_visual_sensitive_document_classes_select_every_page() -> None:
+def test_visual_page_selection_keeps_short_forms_and_samples_long_bodies() -> None:
     parts = [
         _part("checklist", ["Advocate's Checklist"]),
         _part("petition", [MAIN_PETITION_PART]),
@@ -149,15 +154,99 @@ def test_visual_sensitive_document_classes_select_every_page() -> None:
     assert {1, 2}.issubset(pages)
     assert {3, 4, 5}.issubset(pages)
     assert {6, 7}.issubset(pages)
-    assert {8, 9, 10, 11, 12}.issubset(pages)
+    assert 8 in pages and 11 in pages
+    assert {9, 10, 12}.isdisjoint(pages)
     assert 13 in pages
     assert 14 not in pages
     assert 15 in pages and 16 in pages
     assert MAIN_PETITION_PART in pages[5]
     assert "Affidavit" in pages[7]
-    assert "Annexure P-1" in pages[10]
-    assert "Annexure P-2" in pages[12]
+    assert "Annexure P-1" in pages[8]
+    assert "Annexure P-2" in pages[11]
     assert "Vakalatnama" in pages[13]
+
+
+def test_large_filing_visual_selection_avoids_at_least_seventy_percent() -> None:
+    parts = [
+        _part("petition", [MAIN_PETITION_PART]),
+        _part("order", ["Impugned Order"]),
+        _part("index", ["Index"]),
+        _part("affidavit", ["Affidavit"]),
+    ]
+    pages_by_slot = {
+        "petition": {page: f"petition {page}" for page in range(1, 21)},
+        "order": {page: f"order {page}" for page in range(1, 11)},
+        "index": {page: f"index {page}" for page in range(1, 5)},
+        "affidavit": {1: "affidavit", 2: "verification"},
+    }
+    for number in range(1, 11):
+        slot = f"annexure_p{number}"
+        parts.append(_part(slot, [f"Annexure P-{number}"]))
+        pages_by_slot[slot] = {
+            page: f"annexure {number} page {page}" for page in range(1, 9)
+        }
+
+    sources = global_page_sources(parts, pages_by_slot)
+    targets = select_formality_pages(sources, max_page_fraction=0.30)
+    eligible_pages = {
+        source.page
+        for source in sources
+        if any(
+            name == MAIN_PETITION_PART
+            or name in {"Impugned Order", "Index", "Affidavit"}
+            or name.startswith("Annexure P-")
+            for name in source.document_parts
+        )
+    }
+
+    assert len(targets) <= len(eligible_pages) * 0.30 + 1
+    targeted_types = {name for target in targets for name in target.document_types}
+    assert MAIN_PETITION_PART in targeted_types
+    assert "Impugned Order" in targeted_types
+    assert "Index" in targeted_types
+    assert "Affidavit" in targeted_types
+    for number in range(1, 11):
+        assert f"Annexure P-{number}" in targeted_types
+
+
+def test_annexure_visual_cue_adds_relevant_page_without_full_scan() -> None:
+    parts = [_part("annexure_p1", ["Annexure P-1"])]
+    pages_by_slot = {
+        "annexure_p1": {
+            1: "ANNEXURE P-1",
+            2: "ordinary body",
+            3: "ordinary body",
+            4: "Signed and certified true copy",
+            5: "ordinary body",
+        }
+    }
+    sources = global_page_sources(parts, pages_by_slot)
+    markdown = {
+        source.page: pages_by_slot[source.slot_id][source.local_page]
+        for source in sources
+    }
+
+    targets = select_formality_pages(sources, page_markdown=markdown)
+
+    assert [target.local_page for target in targets] == [1, 4]
+
+
+def test_repeated_annexure_family_keeps_one_page_per_source_slot() -> None:
+    parts = [
+        _part("annexure_p7_part_1", ["Annexure P-7"]),
+        _part("annexure_p7_part_2", ["Annexure P-7"]),
+    ]
+    pages_by_slot = {
+        "annexure_p7_part_1": {1: "ANNEXURE P-7", 2: "body"},
+        "annexure_p7_part_2": {1: "ANNEXURE P-7 continued", 2: "body"},
+    }
+
+    targets = select_formality_pages(global_page_sources(parts, pages_by_slot))
+
+    assert {(target.slot_id, target.local_page) for target in targets} == {
+        ("annexure_p7_part_1", 1),
+        ("annexure_p7_part_2", 1),
+    }
 
 
 def test_missing_d093_part_is_not_sent() -> None:
@@ -890,6 +979,7 @@ def _one_page_pdf() -> bytes:
 
 
 def _enable_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "1")
     monkeypatch.setattr(
         "extraction_review.visual.detect.visual_detection_enabled",
         lambda: True,
@@ -1249,9 +1339,60 @@ async def test_detect_empty_array_body_is_ok_not_vision_failed(
 
 
 @pytest.mark.asyncio
+async def test_detect_parses_multi_page_openrouter_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "4")
+
+    async def no_wait(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.acquire_openrouter_slot", no_wait
+    )
+    content = json.dumps(
+        {
+            "pages": [
+                {
+                    "page": page,
+                    "elements": [],
+                    "page_quality": {
+                        "readable": True,
+                        "issue": "",
+                        "confidence": 0.95,
+                    },
+                }
+                for page in (1, 2)
+            ]
+        }
+    )
+    _stub_openrouter_post(monkeypatch, [_openrouter_body(content, 0.01)])
+
+    async def fake_download(_file_id: str) -> bytes:
+        return _one_page_pdf()
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("petition", [MAIN_PETITION_PART], file_id="petition"),
+            _part("affidavit", ["Affidavit"], file_id="affidavit"),
+        ],
+        pages_by_slot={"petition": {1: "p"}, "affidavit": {1: "a"}},
+        page_parts={1: [MAIN_PETITION_PART], 2: ["Affidavit"]},
+        download_file_id=fake_download,
+    )
+
+    assert index["status"] == "ok"
+    assert index["pages"] == [1, 2]
+    assert len(index["quality_assessments"]) == 2
+    assert index["usage"]["calls"] == 1
+    assert index["usage"]["cost_usd"] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
 async def test_detect_sums_openrouter_cost_across_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "1")
     _stub_openrouter_post(
         monkeypatch,
         [
@@ -1277,3 +1418,83 @@ async def test_detect_sums_openrouter_cost_across_pages(
     assert index["usage"]["calls"] == 2
     summary = visual_summary(index)
     assert summary["usage"]["cost_usd"] == pytest.approx(0.03)
+
+
+@pytest.mark.asyncio
+async def test_detect_groups_four_pages_per_synchronous_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VISION_PAGES_PER_REQUEST", "4")
+    monkeypatch.setenv("VISION_CONCURRENCY", "2")
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_provider", lambda: "openrouter"
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.render_page_jpeg",
+        lambda *_args, **_kwargs: b"jpeg",
+    )
+    batches: list[list[int]] = []
+
+    async def fake_batch(*, page_images, **_kwargs):
+        pages = [target.page for target, _image in page_images]
+        batches.append(pages)
+        return (
+            {
+                target.page: (
+                    [],
+                    VisualQualityAssessment(
+                        page=target.page,
+                        document_type=target.document_types[0],
+                        readable=True,
+                        confidence=0.9,
+                        slot_id=target.slot_id,
+                        local_page=target.local_page,
+                    ),
+                )
+                for target, _image in page_images
+            },
+            None,
+            LlmUsage(calls=1, cost_usd=0.01),
+        )
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect._analyze_batch_with_fallback", fake_batch
+    )
+
+    async def fake_download(_file_id: str) -> bytes:
+        return b"%PDF-1.7\n"
+
+    index = await detect_visual_marks(
+        parts=[
+            _part("checklist", ["Advocate's Checklist"], file_id="checklist"),
+            _part("listing", ["Listing Proforma"], file_id="listing"),
+            _part("certificate", ["AOR's Certificate"], file_id="certificate"),
+            _part("affidavit", ["Affidavit"], file_id="affidavit"),
+        ],
+        pages_by_slot={
+            "checklist": {1: "page 1", 2: "page 2"},
+            "listing": {1: "page 1", 2: "page 2"},
+            "certificate": {1: "page 1", 2: "page 2"},
+            "affidavit": {1: "page 1", 2: "page 2"},
+        },
+        page_parts={
+            1: ["Advocate's Checklist"],
+            2: ["Advocate's Checklist"],
+            3: ["Listing Proforma"],
+            4: ["Listing Proforma"],
+            5: ["AOR's Certificate"],
+            6: ["AOR's Certificate"],
+            7: ["Affidavit"],
+            8: ["Affidavit"],
+        },
+        download_file_id=fake_download,
+    )
+
+    assert batches == [[1, 2, 3, 4], [5, 6, 7, 8]]
+    assert index["pages"] == list(range(1, 9))
+    assert len(index["quality_assessments"]) == 8
+    assert index["usage"]["calls"] == 2
+    assert index["usage"]["cost_usd"] == pytest.approx(0.02)
