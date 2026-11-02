@@ -567,12 +567,20 @@ def _stamp_explicit_applicability(catalogue: Catalogue) -> Catalogue:
             # Authority verification is structured policy. Let the model decide
             # the filing evidence first, then apply the authority gate in Python.
             note = re.sub(
-                r"\n?Legal-source gate — This obligation is marked unverified\..*?"
-                r"(?=\n\nInspection —)",
+                r"(?m)^Legal-source gate\b.*(?:\n(?!\n).*)*",
                 "",
                 note,
                 count=1,
-                flags=re.DOTALL,
+            )
+            note = note.replace(
+                ", the Legal-source gate is satisfied, and ",
+                ", ",
+            )
+            note = re.sub(
+                r"\s*Apply Defect Found only after the Legal-source gate has been "
+                r"satisfied\.",
+                "",
+                note,
             )
             note = re.sub(
                 r"^Legal status: Needs legal verification\..*?"

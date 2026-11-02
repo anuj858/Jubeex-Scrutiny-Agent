@@ -116,8 +116,8 @@ def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.Monkey
     get_catalogue.cache_clear()
     catalogue = refresh_catalogue()
     assert catalogue.schema_version != "db"
-    assert catalogue.catalogue_version == "3.2.0"
-    assert len(catalogue.defects) == 323
+    assert catalogue.catalogue_version == "3.3.0"
+    assert len(catalogue.defects) == 306
     assert catalogue.defect("D-179") is not None
     get_catalogue.cache_clear()
 
