@@ -156,12 +156,18 @@ class ScrutinyAfterIndexError(Exception):
 
 
 def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
-    """Reject a nominally complete run when any individual check failed."""
+    """Fail only when no check produced a usable result.
+
+    One model failure stays on that finding and the other findings are
+    returned. Every check failing means the model produced nothing to send.
+    """
+    usable = sum(not finding.error for finding in findings)
+    if usable:
+        return
     failed = sum(bool(finding.error) for finding in findings)
-    if failed:
-        raise RuntimeError(
-            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
-        )
+    raise RuntimeError(
+        f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
+    )
 
 
 class ScrutinyEvent(StartEvent):
@@ -2013,24 +2019,32 @@ class ScrutinyWorkflow(Workflow):
             cost_note = f", OpenRouter {report.usage.cost_usd:.6f} USD"
         elif report.usage and report.usage.total_tokens:
             cost_note = f", {report.usage.total_tokens} tokens"
+        failed_checks = sum(bool(finding.error) for finding in findings)
+        failed_note = (
+            f", {failed_checks} check(s) could not be completed"
+            if failed_checks
+            else ""
+        )
         if stopped_early:
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
                     message=(
                         f"Stopped early after {len(findings)} of {planned} "
-                        f"checks{cost_note}. Results below are what completed."
+                        f"checks{failed_note}{cost_note}. "
+                        "Results below are what completed."
                     ),
                 )
             )
         else:
             ctx.write_event_to_stream(
                 Status(
-                    level="info",
+                    level="warning" if failed_checks else "info",
                     message=(
                         f"Scrutiny complete: {report.summary.defects_found} defect(s), "
                         f"{report.summary.needs_review} needing review, "
-                        f"{report.summary.not_determined} undetermined{cost_note}"
+                        f"{report.summary.not_determined} undetermined"
+                        f"{failed_note}{cost_note}"
                     ),
                 )
             )
