@@ -170,7 +170,7 @@
         },
         {
           "name": "SCRUTINY_CATALOGUE_SOURCE",
-          "value": "json"
+          "value": "db"
         },
         {
           "name": "SCRUTINY_REVIEW_CONFIDENCE",

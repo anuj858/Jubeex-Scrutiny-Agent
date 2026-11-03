@@ -67,8 +67,8 @@ def prepare(
             raise ValueError(f"{filename}: expected exactly one container")
         container = containers[0]
         env = _environment(container)
-        if env.get("SCRUTINY_CATALOGUE_SOURCE") != "json":
-            raise ValueError(f"{filename}: release requires the JSON catalogue")
+        if env.get("SCRUTINY_CATALOGUE_SOURCE") != "db":
+            raise ValueError(f"{filename}: release requires the database catalogue")
         if env.get("SCRUTINY_DEFECTS", "").lower() != "all":
             raise ValueError(f"{filename}: production cannot use a defect allowlist")
         vision_enabled = env.get("VISION_ENABLED") or env.get(

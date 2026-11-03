@@ -70,6 +70,6 @@ def test_workers_use_openrouter_gemini_pacing(definition_name: str) -> None:
     assert environment["OPENROUTER_REQUESTS_PER_MINUTE"] == "25"
     assert environment["OPENROUTER_MAX_ATTEMPTS"] == "4"
     assert environment["SCRUTINY_CONCURRENCY"] == "8"
-    assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "json"
+    assert environment["SCRUTINY_CATALOGUE_SOURCE"] == "db"
     assert environment["SCRUTINY_DEFECTS"] == "all"
     assert environment["OPENROUTER_VISION_ENABLED"] == "true"
