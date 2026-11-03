@@ -614,7 +614,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     catalogue = rules_mod._load_file_catalogue()
     monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
-    assert catalogue.catalogue_version == "3.3.0"
+    assert catalogue.catalogue_version == "3.4.0"
     assert len(catalogue.defects) == 306
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
