@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .scrutiny.rules import Defect, normalize_filing_type
+from .scrutiny.rules import Defect, check_requirement, normalize_filing_type
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
@@ -2133,7 +2133,7 @@ def _presence_queries_for_defect(defect: Defect) -> list[str]:
     blob = " ".join(
         [
             str(getattr(defect, "defect", "") or ""),
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).lower()
@@ -2149,7 +2149,7 @@ def _evidence_payload_hint(defect: Defect) -> str:
 
     wording = " ".join(
         [
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).casefold()
@@ -2208,7 +2208,7 @@ def retrieval_strategy_for_defect(defect: Defect) -> str:
     wording = " ".join(
         [
             str(getattr(defect, "defect", "") or ""),
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).casefold()
@@ -2238,9 +2238,7 @@ def _query_text_for_part(
     phrases: list[str],
 ) -> str:
     location = part or "the filing"
-    requirement = re.sub(
-        r"\s+", " ", str(getattr(defect, "requirement", "") or "")
-    ).strip()
+    requirement = re.sub(r"\s+", " ", check_requirement(defect)).strip()
     sections = [
         f"Document part: {location}.",
         f"Evidence sought: {_evidence_payload_hint(defect)}.",
@@ -2271,7 +2269,7 @@ def retrieval_plan_for_defect(defect: Defect) -> RetrievalPlan:
         " ".join(
             [
                 str(getattr(defect, "defect", "") or ""),
-                str(getattr(defect, "requirement", "") or ""),
+                check_requirement(defect),
                 *list(getattr(defect, "where_to_look", None) or []),
             ]
         )
@@ -2304,7 +2302,7 @@ def retrieval_plan_for_defect(defect: Defect) -> RetrievalPlan:
                     EvidenceQuery(
                         text=(
                             f"Form or heading: {heading}. Legal requirement: "
-                            f"{getattr(defect, 'requirement', '') or ''}"
+                            f"{check_requirement(defect)}"
                         ),
                         purpose="heading",
                     )
@@ -2486,7 +2484,7 @@ def _requires_annexure_collection_coverage(defect: Defect) -> bool:
     if not any(family_split_name(part) == ANNEXURE_FAMILY for part in targets):
         return False
     wording = " ".join(
-        [defect.defect, defect.requirement, *defect.where_to_look]
+        [defect.defect, check_requirement(defect), *defect.where_to_look]
     ).casefold()
     return bool(
         re.search(r"\b(?:each|every|all)\s+annexure", wording)
@@ -2503,7 +2501,7 @@ def _requires_index_collection_coverage(defect: Defect) -> bool:
     if "Index" not in targets:
         return False
     wording = " ".join(
-        [defect.defect, defect.requirement, *defect.where_to_look]
+        [defect.defect, check_requirement(defect), *defect.where_to_look]
     ).casefold()
     return "common index" in wording and bool(
         re.search(r"\b(?:running|complete|continuous)?\s*pagination\b", wording)

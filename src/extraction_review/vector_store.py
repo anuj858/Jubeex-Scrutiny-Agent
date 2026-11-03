@@ -1277,6 +1277,7 @@ def search_filing_chunks(
     top_k: int | None = None,
     chunk_kind: str | None = None,
     document_part: str | None = None,
+    part_labels: list[str] | None = None,
     document_subtype_id: str | None = None,
     organization_id: str | None = None,
     workspace_id: str | None = None,
@@ -1314,6 +1315,9 @@ def search_filing_chunks(
         metadata_filter["document_part_id"] = {
             "$eq": canonical_document_part_id(document_part)
         }
+    labels = [label.strip() for label in (part_labels or []) if str(label).strip()]
+    if labels:
+        metadata_filter["document_part"] = {"$in": labels}
     if document_subtype_id:
         metadata_filter["document_subtype_id"] = {"$eq": document_subtype_id}
 

@@ -42,6 +42,7 @@ from .rules import (
     Catalogue,
     CatalogueSource,
     Defect,
+    check_requirement,
     get_catalogue,
     source_match_tokens,
 )
@@ -1102,7 +1103,7 @@ def apply_internal_contradiction_policy(
     """Treat an affirmative filing contradiction as a defect, not uncertainty."""
     if response.status != "needs_review" or response.gap != "conflict":
         return response
-    wording = f"{defect.defect} {defect.requirement}".casefold()
+    wording = f"{defect.defect} {check_requirement(defect)}".casefold()
     if not any(term in wording for term in ("specify whether", "inconsistent", "correctly")):
         return response
     roles = {
@@ -1130,7 +1131,7 @@ def apply_visual_field_policy(
     """Resolve owned date-presence failures from completed field review."""
     if not isinstance(visual_index, dict):
         return response
-    wording = f"{defect.defect} {defect.requirement}".casefold()
+    wording = f"{defect.defect} {check_requirement(defect)}".casefold()
     simple_date_presence = (
         "date" in wording
         and any(term in wording for term in ("mention the date", "does not mention", "date is blank"))
@@ -1394,7 +1395,7 @@ def apply_conditional_manifest_policy(
     (``Where ...``) and catalogue-provided trigger phrases. It never turns an
     incomplete or unlabelled manifest into an absence finding.
     """
-    if not str(defect.requirement or "").lstrip().casefold().startswith("where "):
+    if not check_requirement(defect).lstrip().casefold().startswith("where "):
         return response
     if response.status == "defect_found":
         return response
@@ -1474,7 +1475,7 @@ _OMITTED_PHRASE = re.compile(
 
 
 def _claim_text(defect: Defect, response: DefectResponse) -> str:
-    parts = [defect.defect, defect.requirement, defect.ai_note or ""]
+    parts = [defect.defect, check_requirement(defect), defect.ai_note or ""]
     parts.extend(item.name for item in response.elements)
     parts.extend(item.detail for item in response.elements)
     return " ".join(parts)
@@ -1608,7 +1609,7 @@ def apply_visual_conflict_policy(
     # conflict.  Only a confirmed absence claim can conflict with vision.
     if response.status != "defect_found":
         return response
-    wording = f"{defect.defect} {defect.requirement}".casefold()
+    wording = f"{defect.defect} {check_requirement(defect)}".casefold()
     missing_claim = " ".join(
         [
             response.observed or "",

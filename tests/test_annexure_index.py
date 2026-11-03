@@ -11,13 +11,20 @@ from fastapi.testclient import TestClient
 from extraction_review.annexure_index import (
     AnnexureDescription,
     AnnexureIndexResponse,
+    _mentions_annexure,
+    annexure_query_terms,
     clean_index_description,
     describe_annexures,
     resolve_annexure_token,
+    resolve_page_base_id,
 )
 from extraction_review.api import JOBS, app
 from extraction_review.scrutiny.schema import LlmUsage
-from extraction_review.vector_store import fetch_page_texts, page_record_id
+from extraction_review.vector_store import (
+    fetch_page_texts,
+    page_record_id,
+    scoped_record_base_id,
+)
 
 LOD_PAGE = """
 29.11.2020 ANNEXURE P-1: A true copy of the Facility Agreement dated 29.11.2020 executed between the Petitioner and Respondent No. 2 to 4. (Pg. 37-48)
@@ -109,6 +116,17 @@ def test_clean_index_description_drops_label_and_pages() -> None:
     assert "Petitioner and Respondent No. 2 to 4" in cleaned
 
 
+def test_annexure_query_accepts_the_rule_spellings() -> None:
+    terms = annexure_query_terms("Annexure P-3")
+    assert "Annexure P-3" in terms
+    assert "Annexure P3" in terms
+    assert "annexure 3" in terms
+    for wording in ("annexure p3", "annexure p-3", "annexure 3", "ANNEXURE-P/3"):
+        assert _mentions_annexure(wording, "Annexure P-3", "annexure_p3")
+    assert not _mentions_annexure("annexure 30", "Annexure P-3", "annexure_p3")
+    assert not _mentions_annexure("annexure r-3", "Annexure P-3", "annexure_p3")
+
+
 def test_resolve_annexure_token_accepts_slot_and_label() -> None:
     slot, label, names = resolve_annexure_token("Annexure P-1")
     assert slot == "annexure_p1"
@@ -142,6 +160,51 @@ def test_fetch_page_texts_follows_a_thin_first_window(monkeypatch) -> None:
     assert len(pages[10]) > 500
 
 
+def _metadata_chunks(query: str, **kwargs: object) -> list[dict[str, object]]:
+    assert query
+    subtype = kwargs.get("document_subtype_id")
+    part = kwargs.get("document_part")
+    labels = kwargs.get("part_labels") or []
+    if part == "Synopsis" or "Synopsis" in labels:
+        assert kwargs.get("document_subtype_id") is None
+        return [
+            {
+                "text": LOD_PAGE,
+                "page": 5,
+                "document_part": ["Synopsis", "List of Dates & Events"],
+                "document_part_id": "synopsis",
+            }
+        ]
+    pages = {
+        "annexure_p1": [
+            ("Facility Agreement dated 29.11.2020.", 37),
+            ("End of the facility agreement.", 48),
+        ],
+        "annexure_p2": [
+            (P2_FIRST_PAGE, 49),
+            ("Last page of the order.", 61),
+        ],
+        "annexure_p3": [
+            ("BOARD RESOLUTION dated 15.08.2021.", 70),
+            ("Certified as a true copy.", 72),
+        ],
+    }
+    rows = pages.get(str(subtype or ""))
+    if not rows:
+        return []
+    return [
+        {
+            "text": text,
+            "page": page,
+            "document_part": f"Annexure {str(subtype)[-2:].upper()}",
+            "document_part_id": "annexures",
+            "document_subtype_id": subtype,
+            "document_subtype_ids": [subtype],
+        }
+        for text, page in rows
+    ]
+
+
 @pytest.mark.asyncio
 async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -152,7 +215,7 @@ async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> Non
         annexures=["annexure_p1", "annexure_p2", "annexure_p3"],
         documents=DOCUMENTS,
         file_hash="abc123",
-        fetch_pages=_pages,
+        search_chunks=_metadata_chunks,
     )
     assert [row.annexure for row in rows] == [
         "annexure_p1",
@@ -188,6 +251,79 @@ async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> Non
         }
 
 
+def test_resolve_page_base_id_prefers_the_active_generation() -> None:
+    file_hash = "a" * 64
+    active = scoped_record_base_id(
+        file_hash=file_hash,
+        organization_id="org",
+        workspace_id="ws",
+        index_generation="active-gen",
+    )
+    payload = {
+        "file_hash": file_hash,
+        "metadata": {
+            "vector_index": {
+                "file_hash": file_hash,
+                "organization_id": "org",
+                "workspace_id": "ws",
+                "generation": "active-gen",
+            }
+        },
+    }
+
+    def fetch(*, base_id: str, pages: list[int]) -> dict[int, str]:
+        if base_id == active:
+            return {pages[0]: "indexed page"}
+        return {}
+
+    def search(**_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("search is not used when the active generation has text")
+
+    assert (
+        resolve_page_base_id(
+            payload,
+            probe_pages=[33],
+            fetch_pages=fetch,
+            search_pages=search,
+        )
+        == active
+    )
+
+
+def test_resolve_page_base_id_uses_the_generation_that_has_pages() -> None:
+    file_hash = "a" * 64
+    live = "b" * 64
+    payload = {
+        "file_hash": file_hash,
+        "metadata": {
+            "vector_index": {
+                "file_hash": file_hash,
+                "organization_id": "org",
+                "workspace_id": "ws",
+                "generation": "empty-gen",
+            }
+        },
+    }
+
+    def fetch(*, base_id: str, pages: list[int]) -> dict[int, str]:
+        if base_id == live:
+            return {pages[0]: "annexure text"}
+        return {}
+
+    def search(**_kwargs: object) -> list[dict[str, object]]:
+        return [{"record_id": f"{live}:page:33:0"}]
+
+    assert (
+        resolve_page_base_id(
+            payload,
+            probe_pages=[33],
+            fetch_pages=fetch,
+            search_pages=search,
+        )
+        == live
+    )
+
+
 @pytest.mark.asyncio
 async def test_describe_annexures_rejects_unknown_id() -> None:
     with pytest.raises(ValueError, match="annexure_p9"):
@@ -195,7 +331,7 @@ async def test_describe_annexures_rejects_unknown_id() -> None:
             annexures=["annexure_p9"],
             documents=DOCUMENTS,
             file_hash="abc123",
-            fetch_pages=_pages,
+            search_chunks=lambda *_args, **_kwargs: [],
         )
 
 

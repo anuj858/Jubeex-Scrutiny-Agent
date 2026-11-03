@@ -73,6 +73,7 @@ from .scrutiny.rules import (
     Catalogue,
     Defect,
     check_id_sort_key,
+    check_requirement,
     defects_for_filing_type,
     enabled_defect_ids,
     normalize_filing_type,
@@ -636,7 +637,7 @@ async def _run_defect(
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     visual_required = any(
         term
-        in f"{defect.defect} {defect.requirement} {defect.ai_note or ''}".casefold()
+        in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
         for term in _VISUAL_TERMS
     )
     visual_pages = (
@@ -992,7 +993,7 @@ def _layout_anchor_phrases(defect: Defect) -> list[str]:
     """
     wording = " ".join(
         [
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     )
@@ -1044,7 +1045,7 @@ def _anchor_score(text: str, anchors: list[str]) -> int:
 def _paragraph_numbers_for_defect(defect: Defect) -> list[str]:
     wording = " ".join(
         [
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     )
@@ -1272,7 +1273,7 @@ def _add_layout_fallback_chunks(
     wording = " ".join(
         [
             str(getattr(defect, "defect", "") or ""),
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             *list(getattr(defect, "where_to_look", None) or []),
         ]
     ).casefold()

@@ -173,6 +173,7 @@ def load_catalogue_from_db(revision: int | None = None) -> Catalogue:
         defect_cols = [desc.name for desc in cur.description]
         defect_rows = [dict(zip(defect_cols, row, strict=True)) for row in cur.fetchall()]
         _attach_remediation_config(cur, defect_rows)
+        _attach_requirement_ai(cur, defect_rows)
         cur.execute("SELECT * FROM v_parse_sources")
         source_cols = [desc.name for desc in cur.description]
         source_rows = [dict(zip(source_cols, row, strict=True)) for row in cur.fetchall()]
@@ -253,6 +254,37 @@ def _attach_remediation_config(cur: Any, defect_rows: list[dict[str, Any]]) -> N
             row["remediation_config"] = by_code[code]
 
 
+def _attach_requirement_ai(cur: Any, defect_rows: list[dict[str, Any]]) -> None:
+    """Copy hub_defects.requirement_ai onto rows the view left behind."""
+    if not defect_rows or "requirement_ai" in defect_rows[0]:
+        return
+    codes = [
+        str(row.get("check_id") or "").strip()
+        for row in defect_rows
+        if str(row.get("check_id") or "").strip()
+    ]
+    if not codes:
+        return
+    try:
+        with cur.connection.transaction():
+            cur.execute(
+                "SELECT code, requirement_ai FROM hub_defects WHERE code = ANY(%s)",
+                (codes,),
+            )
+            by_code = {str(code): text for code, text in cur.fetchall()}
+    except (errors.InsufficientPrivilege, errors.UndefinedColumn) as exc:
+        logger.warning(
+            "[Scrutiny] Catalogue reader could not load requirement_ai (%s); "
+            "defect checks will use requirement until the column is available",
+            exc.__class__.__name__,
+        )
+        return
+    for row in defect_rows:
+        code = str(row.get("check_id") or "").strip()
+        if code in by_code:
+            row["requirement_ai"] = by_code[code]
+
+
 def _remediation_config(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
@@ -318,6 +350,7 @@ def _defect_from_row(row: dict[str, Any]) -> Defect:
         overlap_note=_text(row.get("overlap_note")),
         defect=str(row.get("defect") or ""),
         requirement=str(row.get("requirement") or ""),
+        requirement_ai=_text(row.get("requirement_ai")),
         trigger_words=_trigger_words(row.get("trigger_words")),
         where_to_look=_string_list(row.get("where_to_look")),
         inspect_parts=_string_list(row.get("inspect_parts")),

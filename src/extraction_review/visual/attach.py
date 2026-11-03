@@ -17,7 +17,7 @@ from ..document_parts import (
     family_split_name,
     parts_named_in_text,
 )
-from ..scrutiny.rules import Defect
+from ..scrutiny.rules import Defect, check_requirement
 from ..scrutiny.schema import BoundingBox, VisualLocalization
 from .pages import pages_for_part, policy_selector
 from .schema import VisualMark
@@ -85,7 +85,9 @@ class VisualNeed:
 
 def _defect_text(defect: Defect) -> str:
     where = " ".join(defect.where_to_look or [])
-    return " ".join(part for part in (defect.defect, defect.requirement, where) if part)
+    return " ".join(
+        part for part in (defect.defect, check_requirement(defect), where) if part
+    )
 
 
 def _in_policy(name: str) -> bool:

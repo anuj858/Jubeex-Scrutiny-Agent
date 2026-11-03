@@ -23,6 +23,7 @@ from extraction_review.scrutiny.prompts import (
     _filing_phrase,
     build_defect_prompt,
     build_system_prompt,
+    fallback_reasoning,
     finding_title,
 )
 from extraction_review.scrutiny.rules import (
@@ -37,7 +38,13 @@ from extraction_review.scrutiny.rules import (
     rewrite_location_source,
     special_categories_for_catalog,
 )
-from extraction_review.scrutiny.schema import official_source_locations
+from extraction_review.scrutiny.schema import (
+    Coverage,
+    DefectResponse,
+    build_finding,
+    failed_finding,
+    official_source_locations,
+)
 from extraction_review.scrutiny_workflow import (
     _defects_for_special_categories,
     _special_categories_for_filing,
@@ -223,6 +230,81 @@ def test_query_plan_groups_distinctive_triggers_and_drops_generic_terms() -> Non
     assert "Copying Section" in queries[0]
     assert "New Delhi" not in queries[0]
     assert distinctive_trigger_phrases(defect) == ["TRUE COPY", "Copying Section"]
+
+
+def test_requirement_ai_drives_the_check_and_json_keeps_requirement(
+    monkeypatch,
+) -> None:
+    official = "The user must see this official requirement."
+    ai = "The checker must apply the public injury disclosure test."
+    defect = _defect("D-318", "Writ Petition (Civil)").model_copy(
+        update={
+            "requirement": official,
+            "requirement_ai": ai,
+            "inspect_parts": ["Main Petition"],
+            "where_to_look": ["Check the Main Petition."],
+        }
+    )
+
+    prompt = build_defect_prompt(defect, record={}, chunks=[])
+    query = pinecone_queries_for_defect(defect)[0]
+    reasoning = fallback_reasoning(
+        defect, "defect_found", document_parts=["Main Petition"]
+    )
+
+    assert "public injury disclosure test" in prompt
+    assert official not in prompt
+    assert ai in query
+    assert official not in query
+    assert "public injury disclosure test" in reasoning
+    assert official not in reasoning
+
+    catalogue = Catalogue(
+        catalogue_id="sci_registry_defects",
+        schema_version="test",
+        catalogue_version="test",
+        jurisdiction="sci",
+        defects=[defect],
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.schema.get_catalogue",
+        lambda: catalogue,
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="needs_review",
+        confidence=0.65,
+        summary="The disclosure cannot be verified.",
+        observed="The grounds were not shown.",
+        conclusion="Compliance cannot be determined.",
+        gap="element_page_not_in_excerpts",
+        evidence=[],
+    )
+    finding = build_finding(
+        defect,
+        response,
+        evidence_ids=[],
+        coverage=Coverage(),
+    )
+    failed = failed_finding(defect, "not run")
+
+    assert finding.requirement == official
+    assert failed.requirement == official
+    assert "requirement_ai" not in finding.model_dump()
+    assert "requirement_ai" not in failed.model_dump()
+
+
+def test_blank_requirement_ai_falls_back_to_requirement() -> None:
+    official = "The required form or endorsement must be filed."
+    defect = _defect("D-BLANK", "General/Global").model_copy(
+        update={"requirement": official, "requirement_ai": "   "}
+    )
+
+    prompt = build_defect_prompt(defect, record={}, chunks=[])
+    query = pinecone_queries_for_defect(defect)[0]
+
+    assert "required form or endorsement must be filed" in prompt.casefold()
+    assert official in query
 
 
 def test_long_requirement_is_preserved_without_mid_sentence_clipping() -> None:
