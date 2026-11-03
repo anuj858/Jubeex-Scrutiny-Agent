@@ -633,6 +633,14 @@ class AnnexureMark:
         return f"annexure_{self.series.lower()}{self.number}"
 
 
+def _strip_heading_markup(raw_line: str) -> str:
+    """Remove LlamaParse presentation markup without changing heading text."""
+    line = re.sub(r"^\s{0,3}#{1,6}\s*", "", raw_line or "")
+    line = re.sub(r"</?[^>\n]+>", "", line)
+    line = re.sub(r"^\s*(?:[*_~]{1,3}\s*)+", "", line)
+    return re.sub(r"(?:\s*[*_~]{1,3})+\s*$", "", line).strip()
+
+
 # OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
 # Filing stamps also commonly quote the label: Annexure “P-1”.
 _ANNEXURE_HEADING_RE = re.compile(
@@ -680,7 +688,9 @@ _APPLICATION_CAUSE_RE = re.compile(
     re.IGNORECASE,
 )
 _AFFIDAVIT_HEADING_RE = re.compile(
-    r"(?m)^\s*(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"(?m)^\s*(?:#{1,6}\s*)?(?:<[^>\n]+>\s*)*(?:[*_]{1,3}\s*)?"
+    r"(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"(?:\s*[*_]{1,3})?(?:\s*</[^>\n]+>)*"
     r"\s*(?:$|[:\-–—]|(?:OF|ON\s+BEHALF\s+OF|BY)\b)",
     re.IGNORECASE,
 )
@@ -818,7 +828,11 @@ def _annexure_mark_from_title_or_stamp(
     text: str, *, require_series: bool = False
 ) -> AnnexureMark | None:
     """Series+number from a title line near the top or a short foot stamp line."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
     if not lines:
         return None
     nested_exhibits = _looks_like_lower_court_exhibit_list(text)
@@ -1084,7 +1098,11 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     # it. Apply this to every explicit filing-document heading, not only Index
     # and LOD. Preserve a genuine outer stamp when it occurs before the enclosed
     # heading (``ANNEXURE P-1`` followed by a reproduced AFFIDAVIT, for example).
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
     protected_heading_at = next(
         (
             index
@@ -1247,7 +1265,8 @@ def page_starts_application(text: str) -> bool:
 
 
 def _heading_window(text: str, lines: int = 12) -> str:
-    return "\n".join((text or "").splitlines()[:lines])[:1200]
+    raw_lines = (text or "").splitlines()[:lines]
+    return "\n".join(_strip_heading_markup(line) for line in raw_lines)[:1200]
 
 
 def _is_sci_application_start(text: str) -> bool:

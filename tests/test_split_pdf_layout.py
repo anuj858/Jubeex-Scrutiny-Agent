@@ -174,3 +174,15 @@ def test_isolated_outer_folio_remains_authoritative_for_index_alignment():
     assert evidence is not None
     assert evidence.source == "isolated_outer_folio"
     assert evidence.authoritative_for_index is True
+
+
+def test_llamaparse_leading_outer_folio_can_align_master_index():
+    text = "179\nANNEXURE-P7\nIN THE HIGH COURT OF DELHI\nApplication body"
+
+    assert index_printed_folio(text) == ("number", 179, "")
+
+
+def test_leading_reporter_page_is_not_treated_as_outer_folio():
+    text = "581\nSCC ONLINE True Print\nUNITED INDIA INSURANCE CO. LTD."
+
+    assert index_printed_folio(text) is None

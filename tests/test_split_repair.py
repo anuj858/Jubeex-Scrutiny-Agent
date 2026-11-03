@@ -1651,7 +1651,7 @@ def test_ocr_noisy_listing_notice_main_and_false_impugned() -> None:
         "pleadings before The Hon'ble High Court\n"
     )
     assert _outer_anchor_label(listing) == "Listing Proforma"
-    assert _outer_anchor_label(notice) == "Record of Proceedings"
+    assert _outer_anchor_label(notice) is None
     assert _outer_anchor_label(main) == "Main Petition"
     assert _outer_anchor_label(questions) == "Main Petition"
     assert _outer_anchor_label(aor) == "AOR's Certificate"
@@ -1668,7 +1668,7 @@ def test_ocr_noisy_listing_notice_main_and_false_impugned() -> None:
         texts.setdefault(page, "body")
     repaired, _ = repair_compiled_split(page_parts, texts, page_count=34)
     assert repaired[11] == ["Listing Proforma"]
-    assert repaired[13] == ["Record of Proceedings"]
+    assert repaired.get(13) != ["Record of Proceedings"]
     assert repaired[23] == ["Main Petition"]
     assert repaired[25] == ["Main Petition"]
     assert repaired[32] == ["AOR's Certificate"]
@@ -2279,6 +2279,44 @@ def test_curative_affidavit_is_not_aor_certificate() -> None:
     repaired, _ = repair_compiled_split(page_parts, texts, page_count=9)
     assert repaired[9] == ["Affidavit"]
     assert repaired.get(9) != ["AOR's Certificate"]
+
+
+def test_llamaparse_markdown_affidavit_heading_keeps_verification_page() -> None:
+    """Defect File_015 physical pages 49–50 are one outer Affidavit."""
+    page_parts = {
+        1: ["Annexure A-118"],
+        48: ["AOR's Certificate"],
+        49: ["Cover Page"],
+        50: ["Cover Page"],
+        51: ["Appendix"],
+    }
+    texts = {
+        1: "ANNEXURE A-118\nEarlier independently filed exhibit",
+        48: "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\nFiled by AOR",
+        49: (
+            "## IN THE SUPREME COURT OF INDIA\n\n"
+            "### CRIMINAL APPELLATE JURISDICTION\n\n"
+            "CRIMINAL APPEAL NO. OF 2023\n\n"
+            "#### <u>IN THE MATTER OF :</u>\n\n"
+            "SATHISH -- APPELLANT\n\nVersus\n\nTHE STATE -- RESPONDENTS\n\n"
+            "#### <u>AFFIDAVIT</u>\n\n"
+            "I, Sathish, do hereby state on solemn affirmation as follows:\n\n"
+            "1. That I am the Appellant and competent to swear this affidavit."
+        ),
+        50: (
+            "3. That the contents of this Criminal Appeal have been explained to me.\n"
+            "4. That the Annexures are true copies of their originals.\n"
+            "DEPONENT\n## <u>VERIFICATION</u>\n"
+            "The contents of the above affidavit are true to my knowledge and belief."
+        ),
+        51: "## APPENDIX\nSection 147 Whoever is guilty of rioting",
+    }
+
+    repaired, _ = repair_compiled_split(page_parts, texts, page_count=51)
+
+    assert repaired[49] == ["Affidavit"]
+    assert repaired[50] == ["Affidavit"]
+    assert repaired[51] == ["Appendix"]
 
 
 def test_impugned_order_does_not_expand_backward_into_writ_body() -> None:
@@ -4690,3 +4728,40 @@ def test_defect_002_pipe_folios_override_internal_page_one_of_one() -> None:
 
     assert all(repaired[page] == ["Annexure P-9"] for page in range(177, 182))
     assert repaired[182] == ["Annexure P-10"]
+
+
+def test_bracketed_annexure_bridge_stops_at_conflicting_explicit_stamp() -> None:
+    from extraction_review.split_repair import (
+        _restore_model_bracketed_annexure_continuations,
+    )
+
+    labels = {
+        177: ["Annexure P-9"],
+        178: ["Undefined"],
+        179: ["Annexure P-8"],
+        180: ["Undefined"],
+        181: ["Undefined"],
+        182: ["Annexure P-10"],
+    }
+    model = {
+        177: ["Annexure P-9"],
+        178: ["Undefined"],
+        179: ["Undefined"],
+        180: ["Undefined"],
+        181: ["Undefined"],
+        182: ["Annexure P-10"],
+    }
+    texts = {
+        177: "ANNEXURE P-9\nRTGS MESSAGE\n152",
+        178: "TRANSACTION DETAILS\n153",
+        179: "ANNEXURE P-8\nTRUE COPY OF ORDER\n154",
+        180: "TRANSACTION DETAILS\n155",
+        181: "TRANSACTION DETAILS\n156",
+        182: "ANNEXURE P-10\nORDER OF THE COURT\n157",
+    }
+
+    repaired = _restore_model_bracketed_annexure_continuations(
+        labels, model, texts, 182
+    )
+
+    assert repaired == labels

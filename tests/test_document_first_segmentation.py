@@ -10,8 +10,8 @@ from extraction_review.bundle_slicer import (
 from extraction_review.document_parts import annexure_ref_in_heading
 from extraction_review.process_file import (
     _document_first_page_ownership,
-    _refine_boundary_proposals_with_explicit_annexures,
     _refine_boundary_proposals_with_classified_openings,
+    _refine_boundary_proposals_with_explicit_annexures,
     attach_split_output_trace,
 )
 from extraction_review.split_audit import audit_compiled_split
@@ -67,6 +67,15 @@ def test_llamaparse_noisy_header_exposes_explicit_annexure_owner() -> None:
     )
 
 
+def test_llamaparse_markdown_heading_exposes_explicit_annexure_owner() -> None:
+    text = "179\n## **ANNEXURE-P7**\nIN THE HIGH COURT OF DELHI"
+
+    mark = annexure_ref_in_heading(text)
+
+    assert mark is not None
+    assert mark.label == "Annexure P-7"
+
+
 def test_explicit_annexure_owner_overrides_enclosed_judgment_type() -> None:
     pages = list(range(153, 209))
     page_parts, segments, issues = _document_first_page_ownership(
@@ -86,7 +95,9 @@ def test_explicit_annexure_owner_overrides_enclosed_judgment_type() -> None:
     assert owned["category"] == "Annexure A-21"
     assert owned["contained_document_type"] == "Impugned Order"
     assert "explicit_outer_annexure_label" in owned["type_evidence"]
-    assert not any(item["code"] == "boundary_classification_conflict" for item in issues)
+    assert not any(
+        item["code"] == "boundary_classification_conflict" for item in issues
+    )
 
 
 def test_local_repairs_cannot_repaint_explicit_llama_owned_annexure_range() -> None:
@@ -111,7 +122,7 @@ def test_local_repairs_cannot_repaint_explicit_llama_owned_annexure_range() -> N
     assert all(restored[page] == ["Annexure A-21"] for page in range(153, 209))
 
 
-def test_noisy_generic_llama_annexure_owner_beats_enclosed_judgment_type() -> None:
+def test_generic_llama_annexure_owner_cannot_override_without_exact_stamp() -> None:
     llama = {page: ["Annexures"] for page in range(38, 46)}
     locally_repainted = {**llama, 38: ["Impugned Order"]}
 
@@ -127,7 +138,98 @@ def test_noisy_generic_llama_annexure_owner_beats_enclosed_judgment_type() -> No
         [38],
     )
 
-    assert all(restored[page] == ["Annexures"] for page in range(38, 46))
+    assert restored[38] == ["Impugned Order"]
+    assert all(restored[page] == ["Annexures"] for page in range(39, 46))
+
+
+def test_generic_annexure_agreement_is_not_a_protected_document_identity() -> None:
+    pages = [54, 55]
+    page_parts, segments, _issues = _document_first_page_ownership(
+        [_proposal(1, 54, 55)],
+        _report(("Annexures", pages)),
+        page_count=55,
+        page_texts={
+            54: "Sale notice continued from the preceding Annexure P-4",
+            55: "Schedule of property and authorised officer signature",
+        },
+    )
+
+    assert page_parts[54] == ["Annexures"]
+    assert page_parts[55] == ["Annexures"]
+    owned = next(item for item in segments if item["segment_id"] == "boundary-1")
+    assert owned["category"] == "Annexures"
+    assert owned["protected"] is False
+
+
+@pytest.mark.parametrize(
+    "notice",
+    [
+        (
+            "Take Further Notice that this Court has passed an interim order "
+            "pending disposal of SLP. You may file your affidavit in opposition.\n"
+            "ASSISTANT REGISTRAR"
+        ),
+        (
+            "Delivery Mode: Registered\nIN THE SUPREME COURT OF INDIA\n"
+            "Petition for Special Leave to Appeal (Civil) No. 5253 OF 2021\n"
+            "To, M/S REEMA PAPERS PVT. LTD.\nPID: 51792/2021 FOR R[3]"
+        ),
+        (
+            "IN THE SUPREME COURT OF INDIA\n"
+            "PETITION(S) FOR SPECIAL LEAVE TO APPEAL (CIVIL) NO. 5253/2021\n"
+            "Take Further Notice that this Court has passed an interim order "
+            "pending disposal of the SLP. You may file your affidavit in opposition.\n"
+            "ASSISTANT REGISTRAR"
+        ),
+    ],
+)
+def test_registry_notice_does_not_become_record_of_proceedings(notice: str) -> None:
+    page_parts, segments, _issues = _document_first_page_ownership(
+        [_proposal(1, 1, 1)],
+        _report(("uncategorized", [1])),
+        page_count=1,
+        page_texts={1: notice},
+    )
+
+    assert page_parts[1] == ["uncategorized"]
+    assert segments[0]["category"] == "uncategorized"
+    assert segments[0]["protected"] is False
+
+
+def test_rop_order_sheet_layout_can_resolve_classifier_abstention() -> None:
+    order_sheet = (
+        "ITEM NO.42 COURT NO.1 SECTION IV-D\n"
+        "S U P R E M E  C O U R T  O F  I N D I A\n"
+        "SPECIAL LEAVE PETITION (CIVIL) NO. 5253/2021\n"
+        "CORAM: HON'BLE MR. JUSTICE A\nIssue notice."
+    )
+    page_parts, segments, _issues = _document_first_page_ownership(
+        [_proposal(1, 1, 1)],
+        _report(("uncategorized", [1])),
+        page_count=1,
+        page_texts={1: order_sheet},
+    )
+
+    assert page_parts[1] == ["Record of Proceedings"]
+    assert segments[0]["category"] == "Record of Proceedings"
+    assert (
+        "explicit_outer_heading_after_classifier_abstention"
+        in segments[0]["type_evidence"]
+    )
+
+
+def test_generic_llama_annexure_range_uses_exact_printed_outer_owner() -> None:
+    llama = {page: ["Annexures"] for page in range(38, 46)}
+    locally_repainted = {page: ["Impugned Order"] for page in range(38, 46)}
+
+    restored = _restore_explicit_llama_owned_segments(
+        locally_repainted,
+        llama,
+        {38: "ANNEXURE P-1\nTRUE COPY OF THE IMPUGNED ORDER"},
+        [38],
+    )
+
+    assert all(restored[page] == ["Annexure P-1"] for page in range(38, 46))
 
 
 def test_consecutive_explicit_annexure_stamp_refines_model_physical_range() -> None:
@@ -196,6 +298,90 @@ def test_classifier_does_not_refine_without_matching_outer_opening() -> None:
     assert events == []
 
 
+def test_one_unsupported_transition_does_not_block_later_verified_boundaries() -> None:
+    proposals, events = _refine_boundary_proposals_with_classified_openings(
+        [_proposal(1, 1, 7)],
+        _report(
+            ("Cover Page", [1]),
+            ("Record of Proceedings", [2]),
+            ("Index", [3, 4]),
+            ("Main Petition", [5]),
+            ("List of Dates & Events", [6, 7]),
+        ),
+        {
+            1: "SUPREME COURT OF INDIA\nPAPER BOOK",
+            2: "RECORD OF PROCEEDINGS\nITEM NO. 1",
+            3: "INDEX\nS.No. Particulars Page No.",
+            4: "Index continuation",
+            # The classifier calls this Main Petition, but the page does not
+            # contain a matching outer opening, so page 5 stays in the prior
+            # range without suppressing the valid LOD boundary on page 6.
+            5: "Narrative continuation without a petition heading",
+            6: "LIST OF DATES AND EVENTS\n01.01.2020 Cause of action",
+            7: "02.01.2020 Appeal filed",
+        },
+    )
+
+    assert [(item["start_page"], item["end_page"]) for item in proposals] == [
+        (1, 1),
+        (2, 2),
+        (3, 5),
+        (6, 7),
+    ]
+    assert [item["source_page"] for item in events] == [2, 3, 6]
+
+
+def test_singleton_cover_classification_cannot_own_following_annexure_range() -> None:
+    proposals, events = _refine_boundary_proposals_with_classified_openings(
+        [_proposal(1, 443, 658)],
+        _report(
+            ("Cover Page", [443]),
+            ("Annexures", list(range(444, 659))),
+        ),
+        {443: "IN THE SUPREME COURT OF INDIA\nPAPER BOOK\nVOL-II"},
+    )
+
+    assert [(item["start_page"], item["end_page"]) for item in proposals] == [
+        (443, 443),
+        (444, 658),
+    ]
+    assert events == [
+        {
+            "parent_segment_id": "boundary-1",
+            "source_page": 444,
+            "category": "Annexures",
+            "evidence": [
+                "complete_classification_coverage",
+                "singleton_cover_page_termination",
+            ],
+        }
+    ]
+
+
+def test_long_conflicting_boundary_never_propagates_cover_page_owner() -> None:
+    pages = list(range(443, 659))
+    page_parts, segments, issues = _document_first_page_ownership(
+        [_proposal(1, 443, 658)],
+        _report(
+            ("Cover Page", [443]),
+            ("Annexures", list(range(444, 659))),
+        ),
+        page_count=658,
+    )
+
+    assert all(page_parts[page] == ["Annexures"] for page in pages)
+    owned = next(item for item in segments if item["segment_id"] == "boundary-1")
+    assert owned["category"] == "Annexures"
+    assert (
+        "long_cover_span_rejected_by_dominant_classification" in owned["type_evidence"]
+    )
+    conflict = next(
+        item for item in issues if item["code"] == "boundary_classification_conflict"
+    )
+    assert conflict["selected_category"] == "Annexures"
+    assert "cover_page_cannot_own_long_conflicting_range" in conflict["reasons"]
+
+
 def test_explicit_opening_types_boundary_when_classifier_abstains() -> None:
     page_parts, segments, issues = _document_first_page_ownership(
         [_proposal(1, 1, 2)],
@@ -213,9 +399,9 @@ def test_explicit_opening_types_boundary_when_classifier_abstains() -> None:
     assert page_parts[1] == page_parts[2] == ["Record of Proceedings"]
     owned = next(item for item in segments if item["start_page"] == 1)
     assert owned["category"] == "Record of Proceedings"
-    assert "explicit_outer_heading_after_classifier_abstention" in owned[
-        "type_evidence"
-    ]
+    assert (
+        "explicit_outer_heading_after_classifier_abstention" in owned["type_evidence"]
+    )
     assert not issues
 
 
@@ -365,7 +551,9 @@ def test_outer_annexure_stamp_before_enclosed_document_remains_boundary(
     assert annexure_ref_in_heading(text).label == "Annexure P-7"
 
 
-def test_annexure_heading_inside_captionless_petition_continuation_keeps_parent() -> None:
+def test_annexure_heading_inside_captionless_petition_continuation_keeps_parent() -> (
+    None
+):
     texts = {
         1: (
             "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
@@ -398,7 +586,9 @@ def test_bare_p22_folio_in_testimony_does_not_create_annexure_pdf() -> None:
         5: "Judgment continues",
     }
     assert annexure_ref_in_heading(texts[2]) is None
-    assert annexure_ref_in_heading("P22\nTRUE COPY OF THE ORDER").label == "Annexure P-22"
+    assert (
+        annexure_ref_in_heading("P22\nTRUE COPY OF THE ORDER").label == "Annexure P-22"
+    )
     with pymupdf.open() as source:
         for page in range(1, 6):
             source.new_page().insert_text((72, 72), f"SOURCE PAGE {page}")
@@ -422,7 +612,9 @@ def test_bare_p22_folio_in_testimony_does_not_create_annexure_pdf() -> None:
         4: ["Annexure A-21"],
         5: ["Annexure A-21"],
     }
-    slices = slice_bundle_pdf(pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts)
+    slices = slice_bundle_pdf(
+        pdf_bytes, type_catalog("CRIMINAL_APPEAL"), result.page_parts
+    )
     outputs = {item.slot_id: item for item in slices}
     assert outputs["annexure_a20"].pages == (1, 2, 3)
     assert outputs["annexure_a21"].pages == (4, 5)
@@ -507,8 +699,7 @@ def test_restored_index_rechecks_folio_ranges_after_first_reconciliation_pass() 
         140: "P22\n_ are any criminal cases against the deceased I do not remember",
         147: "Deposition continuation\n139",
         219: (
-            "IN THE SUPREME COURT OF INDIA\nI.A. NO. OF 2023\n"
-            "APPLICATION FOR EXEMPTION"
+            "IN THE SUPREME COURT OF INDIA\nI.A. NO. OF 2023\nAPPLICATION FOR EXEMPTION"
         ),
     }
     llama = {
@@ -528,8 +719,7 @@ def test_restored_index_rechecks_folio_ranges_after_first_reconciliation_pass() 
         pdf_bytes,
         llama_page_parts=llama,
         page_units=[
-            PageUnit(pdf_page=page, text=texts.get(page, ""))
-            for page in range(1, 229)
+            PageUnit(pdf_page=page, text=texts.get(page, "")) for page in range(1, 229)
         ],
         authoritative_boundary_pages=[4, 51, 53, 133, 137, 153, 209, 219],
     )
@@ -674,7 +864,10 @@ def test_annexure_internal_cover_heading_never_reaches_cover_pdf() -> None:
     """Exercise boundary, repair, audit, and actual generated PDF ranges."""
     texts = {
         1: "SUPREME COURT OF INDIA\nPAPERBOOK\nFOR THE INDEX PLEASE SEE INSIDE",
-        2: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nMOST RESPECTFULLY SHOWETH",
+        2: (
+            "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\n"
+            "MOST RESPECTFULLY SHOWETH"
+        ),
         3: "Grounds in the petition",
         4: "PRAYER",
         5: "True copy of a lower-court record, first page",
@@ -690,8 +883,11 @@ def test_annexure_internal_cover_heading_never_reaches_cover_pdf() -> None:
         11: "AFFIDAVIT\nDEPONENT",
     }
     proposals = [
-        _proposal(1, 1, 1), _proposal(2, 2, 4), _proposal(3, 5, 8),
-        _proposal(4, 9, 10), _proposal(5, 11, 11),
+        _proposal(1, 1, 1),
+        _proposal(2, 2, 4),
+        _proposal(3, 5, 8),
+        _proposal(4, 9, 10),
+        _proposal(5, 11, 11),
     ]
     raw_report = _report(
         ("Cover Page", [1]),
@@ -750,13 +946,11 @@ def test_annexure_internal_cover_heading_never_reaches_cover_pdf() -> None:
     )
     assert any(
         event.get("candidate_type") == "Cover Page"
-        and event.get("reason")
-        == "heading_conflicts_with_reconciled_annexure_owner"
+        and event.get("reason") == "heading_conflicts_with_reconciled_annexure_owner"
         for event in page_seven["assignment_trace"]
     )
     assert not any(
-        event.get("status") == "committed"
-        and event.get("to_labels") == ["Cover Page"]
+        event.get("status") == "committed" and event.get("to_labels") == ["Cover Page"]
         for event in page_seven["assignment_trace"]
     )
 
@@ -827,7 +1021,9 @@ def test_verified_new_boundary_after_annexure_can_open_cover_document() -> None:
     assert result.page_parts[3] == ["Cover Page"]
     assert result.page_parts[4] == ["Annexure P-2"]
     slices = slice_bundle_pdf(
-        pdf_bytes, type_catalog("SLP_CIVIL"), result.page_parts,
+        pdf_bytes,
+        type_catalog("SLP_CIVIL"),
+        result.page_parts,
         split_segments=segments,
     )
     assert {item.slot_id: item.pages for item in slices}["cover_page"] == (3,)
@@ -895,16 +1091,15 @@ def test_honble_high_court_petition_inside_annexure_stays_out_of_main_pdf(
         1: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nPOSITION OF PARTIES",
         2: "GROUNDS OF THE SPECIAL LEAVE PETITION\n49",
         3: "True copy of the earlier writ petition\n50",
-        4: (
-            f"{heading}\nWRIT PETITION NO. 15 OF 2020\n"
-            "MOST RESPECTFULLY SHOWETH\n51"
-        ),
+        4: (f"{heading}\nWRIT PETITION NO. 15 OF 2020\nMOST RESPECTFULLY SHOWETH\n51"),
         5: "Grounds of the earlier High Court writ petition\n52",
         6: "ANNEXURE P-2\nTrue copy of the next order\n53",
     }
     proposals = [
-        _proposal(1, 1, 2), _proposal(2, 3, 3),
-        _proposal(3, 4, 5), _proposal(4, 6, 6),
+        _proposal(1, 1, 2),
+        _proposal(2, 3, 3),
+        _proposal(3, 4, 5),
+        _proposal(4, 6, 6),
     ]
     initial, segments, _ = _document_first_page_ownership(
         proposals,
@@ -923,16 +1118,15 @@ def test_honble_high_court_petition_inside_annexure_stays_out_of_main_pdf(
     before_outputs = {
         item.slot_id: item.pages
         for item in slice_bundle_pdf(
-            pdf_bytes, type_catalog("SLP_CIVIL"), initial,
+            pdf_bytes,
+            type_catalog("SLP_CIVIL"),
+            initial,
             split_segments=segments,
         )
     }
-    assert (
-        before_outputs.get("petition") == (1, 2, 4, 5)
-        or (
-            before_outputs.get("petition_1") == (1, 2)
-            and before_outputs.get("petition_2") == (4, 5)
-        )
+    assert before_outputs.get("petition") == (1, 2, 4, 5) or (
+        before_outputs.get("petition_1") == (1, 2)
+        and before_outputs.get("petition_2") == (4, 5)
     )
     assert before_outputs["annexure_p1"] == (3,)
     result = structure_aware_split(
@@ -949,7 +1143,9 @@ def test_honble_high_court_petition_inside_annexure_stays_out_of_main_pdf(
         for event in result.assignment_events[4]
     )
     slices = slice_bundle_pdf(
-        pdf_bytes, type_catalog("SLP_CIVIL"), result.page_parts,
+        pdf_bytes,
+        type_catalog("SLP_CIVIL"),
+        result.page_parts,
         split_segments=segments,
     )
     outputs = {item.slot_id: item for item in slices}
@@ -957,8 +1153,11 @@ def test_honble_high_court_petition_inside_annexure_stays_out_of_main_pdf(
     assert outputs["annexure_p1"].pages == (3, 4, 5)
     assert outputs["annexure_p2"].pages == (6,)
     validate_sliced_page_ownership(
-        slices, page_count=6, page_parts=result.page_parts,
-        split_segments=segments, catalog=type_catalog("SLP_CIVIL"),
+        slices,
+        page_count=6,
+        page_parts=result.page_parts,
+        split_segments=segments,
+        catalog=type_catalog("SLP_CIVIL"),
     )
 
 
@@ -980,21 +1179,29 @@ def test_high_court_petition_without_annexure_evidence_is_not_main_petition() ->
     )
     assert result.page_parts[1] == ["Main Petition"]
     assert result.page_parts[2] == result.page_parts[3] == ["Undefined"]
-    assert "annexure_continuity_unconfirmed" in result.assignment_events[2][-1]["evidence"]
+    assert (
+        "annexure_continuity_unconfirmed" in result.assignment_events[2][-1]["evidence"]
+    )
     slices = slice_bundle_pdf(
-        pdf_bytes, type_catalog("SLP_CIVIL"), result.page_parts,
+        pdf_bytes,
+        type_catalog("SLP_CIVIL"),
+        result.page_parts,
     )
     assert {item.slot_id: item.pages for item in slices} == {
-        "petition": (1,), "undefined": (2, 3),
+        "petition": (1,),
+        "undefined": (2, 3),
     }
     audit = audit_compiled_split(
-        result.page_parts, texts, page_count=3,
+        result.page_parts,
+        texts,
+        page_count=3,
         classifications=result.classifications,
         assignment_events=result.assignment_events,
         page_units=result.page_units,
     )
-    assert "lower_court_petition_owner_unconfirmed" in (
-        audit["page_manifest"]["pages"][1]["review_reasons"]
+    assert (
+        "lower_court_petition_owner_unconfirmed"
+        in (audit["page_manifest"]["pages"][1]["review_reasons"])
     )
     assert audit["page_manifest"]["pages"][1]["review_status"] == "needs_review"
 

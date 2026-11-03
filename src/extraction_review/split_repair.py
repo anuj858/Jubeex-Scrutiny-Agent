@@ -638,11 +638,34 @@ def _looks_like_sci_court_rop_extract(text: str) -> bool:
     # that text, but an explicit High Court/tribunal caption rules out SCI RoP.
     if _is_lower_court_caption(text):
         return False
-    if not (_RECORD_RE.search(head) or _SCI_COURT_ROP_RE.search(head)):
-        return False
     if _looks_like_rop_index_form(text):
         return False
-    return bool(_SCI_COURT_ROP_RE.search(head))
+    # An explicit heading is conclusive.  Without it, require the distinctive
+    # Supreme Court order-sheet header.  A service/registry notice also says
+    # ``PETITION(S) FOR SPECIAL LEAVE`` and may name a Registry section, so
+    # those phrases alone must never establish Record of Proceedings ownership.
+    if _RECORD_RE.search(_heading_window(text, lines=16)):
+        return True
+    folded = _fold(head)
+    has_item_number = bool(
+        re.search(r"\b(?:item|tel)\W*n[o0]\W*\d+", folded, re.IGNORECASE)
+    )
+    has_court_number = bool(
+        re.search(r"\bcourt\W*n[o0]\W*\d+", folded, re.IGNORECASE)
+    )
+    has_section = bool(
+        re.search(r"\bsection\s+[a-z0-9-]{1,12}\b", folded, re.IGNORECASE)
+    )
+    compact_head = re.sub(r"[^a-z]", "", folded)
+    has_supreme_court = bool(
+        re.search(r"\bsupreme\s+court\s+of\s+india\b", folded, re.IGNORECASE)
+        or "supremecourtofindia" in compact_head
+    )
+    return bool(
+        has_item_number
+        and has_supreme_court
+        and (has_court_number or has_section)
+    )
 
 
 def _looks_like_court_notice_or_rop(text: str) -> bool:
@@ -667,6 +690,15 @@ def _looks_like_court_notice_or_rop(text: str) -> bool:
             or "pid:" in folded
         )
     return False
+
+
+def _has_explicit_record_of_proceedings_identity(text: str) -> bool:
+    """Require an RoP-specific heading/layout, not generic registry notice prose."""
+    return bool(
+        _looks_like_rop_index_form(text)
+        or _looks_like_sci_court_rop_extract(text)
+        or _RECORD_RE.search(_heading_window(text, lines=10))
+    )
 
 
 def _is_near_blank_page(text: str) -> bool:
@@ -1182,6 +1214,33 @@ def _looks_like_index_continuation(text: str) -> bool:
         r"i\.?\s*a\.?\s+no\.?|filing\s+memo|memo\s+of\s+parties|vakalatnama)\b",
         head,
     )
+    markdown_catalogue_rows = re.findall(
+        r"(?mi)^\s*\|\s*\d{1,3}[.)]?\s*\|\s*[^|\n]*\b(?:"
+        r"annexure\s*[-~–—:.\s]*[per]?\s*[-~–—/:.\s]*\d+|appendix|"
+        r"i\.?\s*a\.?\s+no\.?|filing\s+memo|memo\s+of\s+parties|"
+        r"vakalatnama|application\s+for)\b[^|\n]*\|\s*"
+        r"(?:[A-Z]{1,3}\d*|\d{1,4})(?:\s*[-–—]\s*"
+        r"(?:[A-Z]{1,3}\d*|\d{1,4}))?\s*\|",
+        head,
+    )
+    # LlamaParse may insert blank lines inside a markdown cell.  In that form
+    # the serial/Annexure label and the page-range cell are not on one physical
+    # text line even though the layout fingerprint is still a table.
+    multiline_markdown_serials = re.findall(
+        r"(?mi)^\s*\|\s*\d{1,3}[.)]?\s*\|\s*(?:annexure|appendix|"
+        r"i\.?\s*a\.?|filing\s+memo|memo\s+of\s+parties|vakalatnama|"
+        r"application\s+for)\b",
+        head,
+    )
+    multiline_markdown_ranges = re.findall(
+        r"(?m)^\s*\|\s*(?:[A-Z]{1,3}\d*|\d{1,4})(?:\s*[-–—]\s*"
+        r"(?:[A-Z]{1,3}\d*|\d{1,4}))?\s*\|",
+        head,
+    )
+    if len(markdown_catalogue_rows) >= 2 or (
+        len(multiline_markdown_serials) >= 2 and len(multiline_markdown_ranges) >= 2
+    ):
+        return True
     if len(serials) >= 2 and len(document_rows) >= 2:
         return True
     # List of Dates pages also use serial-numbered rows and cite Annexures.
@@ -1438,7 +1497,7 @@ def _looks_like_sci_main_petition(text: str) -> bool:
     )
     if _is_lower_court_caption(text) and not sci_form28_opening:
         return False
-    if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)):
+    if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=40)):
         return False
     if _AOR_CERT_RE.search(text[:2500]):
         return False
@@ -1631,9 +1690,11 @@ def _outer_anchor_label(text: str) -> str | None:
         text[:2000]
     ):
         return "Listing Proforma"
-    if _looks_like_court_notice_or_rop(text):
-        return "Record of Proceedings"
-    if _RECORD_RE.search(_heading_window(text, lines=10)):
+    # A Registry notice can contain a Supreme Court caption, hearing date,
+    # "Issue notice", delivery mode and an Assistant Registrar signature.
+    # Those cues exclude Cover/Main Petition, but do not establish Record of
+    # Proceedings ownership. Only an RoP-specific heading/layout may do that.
+    if _has_explicit_record_of_proceedings_identity(text):
         return "Record of Proceedings"
     if _SYNOPSIS_RE.search(_heading_window(text, lines=8)):
         return "Synopsis"
@@ -1653,7 +1714,7 @@ def _outer_anchor_label(text: str) -> str | None:
         return "Appendix"
     # Affidavit before AOR: curative affidavits often say "confined only to the
     # pleadings" and would otherwise steal the AOR Certificate slot.
-    if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=20)) and (
+    if _AFFIDAVIT_HEADING_RE.search(_heading_window(text, lines=40)) and (
         _is_sci_caption(text)
         or "deponent" in _fold(text[:1500])
         or "solemnly affirm" in _fold(text[:1500])
@@ -3327,8 +3388,10 @@ def _demote_false_advocate_checklist(
                     text[:2000]
                 ):
                     updated[page] = ["Listing Proforma"]
-                elif _looks_like_court_notice_or_rop(text):
+                elif _has_explicit_record_of_proceedings_identity(text):
                     updated[page] = ["Record of Proceedings"]
+                elif _looks_like_court_notice_or_rop(text):
+                    updated.pop(page, None)
                 else:
                     updated[page] = ["Annexure P-1"]
             elif not _looks_like_sci_checklist(text):
@@ -3354,6 +3417,8 @@ def _demote_false_advocate_checklist(
             anchor = _outer_anchor_label(text)
             if anchor:
                 updated[page] = [anchor]
+            elif _looks_like_court_notice_or_rop(text):
+                updated.pop(page, None)
         if "Impugned Order" in labels and not _looks_like_impugned_order_start(text):
             anchor = _outer_anchor_label(text)
             if anchor and anchor != "Impugned Order":
@@ -4590,6 +4655,18 @@ def _demote_false_affidavit_between_annexures(
         if "Affidavit" not in names:
             continue
         text = page_text.get(page, "")
+        prior_names = set(parts_on_page(updated.get(page - 1)))
+        # The main filing affidavit normally follows the petition or its AOR
+        # certificate and then continues through a verification page.  An
+        # unrelated earlier Annexure must not make that direct outer-document
+        # transition look like an affidavit reproduced inside an exhibit.
+        if prior_names & {
+            MAIN_PETITION_PART,
+            "AOR's Declaration",
+            "AOR's Certificate",
+            "Affidavit",
+        }:
+            continue
         # An enclosed affidavit can reproduce a Supreme Court caption and all
         # the usual DEPONENT / VERIFICATION language.  That content does not
         # make it the paper-book's standalone Affidavit.  Preserve a late main
@@ -5123,8 +5200,10 @@ def _restore_model_bracketed_annexure_continuations(
         conflicted = False
         for page in range(start + 1, next_start):
             text = page_text.get(page, "")
-            mark = annexure_mark_in_heading(text)
-            if mark is not None and mark.label not in {label, _next_label}:
+            # Compare like-for-like series-aware label strings. The similarly
+            # named ``annexure_mark_in_heading`` returns only an integer.
+            mark_label = annexure_label_from_text(text)
+            if mark_label is not None and mark_label not in {label, _next_label}:
                 conflicted = True
                 break
             anchor = _outer_anchor_label(text)

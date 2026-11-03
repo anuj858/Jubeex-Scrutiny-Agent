@@ -55,7 +55,31 @@
         },
         {
           "name": "OPENROUTER_MODEL",
-          "value": "google/gemini-4-argon"
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "LLM_PROVIDER",
+          "value": "openrouter"
+        },
+        {
+          "name": "SCRUTINY_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "VISION_PROVIDER",
+          "value": "openrouter"
+        },
+        {
+          "name": "VISION_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "OPENROUTER_VISION_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "VISION_MAX_PAGE_FRACTION",
+          "value": "0.30"
         },
         {
           "name": "OPENROUTER_BASE_URL",
@@ -162,6 +186,18 @@
         {
           "name": "JUBEEX_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-api-key-3zVFXj:JUBEEX_API_KEY::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_LOW",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_LOW::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_MEDIUM",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_MEDIUM::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_HIGH",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_HIGH::"
         }
       ],
       "healthCheck": {

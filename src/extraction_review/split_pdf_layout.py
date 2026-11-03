@@ -408,6 +408,28 @@ def printed_folio(text: str) -> tuple[str, int, str] | None:
 def index_printed_folio(text: str) -> tuple[str, int, str] | None:
     """Return only an outer folio that may align a master Index range."""
     evidence = printed_folio_evidence(text)
-    if not evidence or not evidence.authoritative_for_index:
+    if evidence and evidence.authoritative_for_index:
+        return evidence.value
+
+    # LlamaParse's reading order can place a corner folio before the page body
+    # (``179\nANNEXURE-P7\n...``), even though PDF layout extraction reports the
+    # same mark at the top-right/bottom-right.  The legacy parser searched only
+    # backwards, so a complete consecutive folio run became invisible to the
+    # master-Index reconciler and nested applications split their outer
+    # Annexure.  Admit only an isolated first line here; range reconciliation
+    # still requires repeated equal offsets or matching endpoints before it can
+    # claim neighbouring physical pages.  Reporter counters remain excluded.
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines or _REPORTED_JUDGMENT_PAGE_RE.search(text or ""):
         return None
-    return evidence.value
+    prefixed = re.fullmatch(r"A(\d{1,2})", lines[0], re.IGNORECASE)
+    if prefixed:
+        return ("prefixed", int(prefixed.group(1)), "")
+    numbered = _FOLIO_NUM_RE.fullmatch(lines[0])
+    if numbered:
+        number = int(numbered.group("n"))
+        if not 1900 <= number <= 2099:
+            return ("number", number, (numbered.group("suffix") or "").upper())
+    if _FOLIO_LETTER_RE.fullmatch(lines[0]):
+        return ("letter", letter_folio_number(lines[0]), "")
+    return None

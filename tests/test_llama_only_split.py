@@ -206,11 +206,13 @@ def test_split_python_rules_flag(monkeypatch, value, enabled):
     ("configured", "legacy", "expected"),
     [
         ("llama_only", "true", "llama_only"),
-        ("targeted", "false", "targeted"),
-        ("legacy_full", "false", "legacy_full"),
-        ("invalid", "true", "targeted"),
+        ("guarded", "false", "guarded"),
+        ("legacy", "false", "legacy"),
+        ("targeted", "false", "guarded"),
+        ("legacy_full", "false", "legacy"),
+        ("invalid", "true", "guarded"),
         (None, "false", "llama_only"),
-        (None, None, "targeted"),
+        (None, None, "guarded"),
     ],
 )
 def test_split_reconciliation_mode(monkeypatch, configured, legacy, expected):
@@ -232,6 +234,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
 ):
     from extraction_review import split_audit, structure_split
 
+    monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", "guarded")
     monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", "true")
     monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
     pdf_bytes = _pdf_bytes()
@@ -353,7 +356,7 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     repair.assert_called_once()
     assert repair.call_args.kwargs["page_units"] is units
     assert repair.call_args.kwargs["run_hybrid_repair"] is True
-    assert repair.call_args.kwargs["reconciliation_mode"] == "targeted"
+    assert repair.call_args.kwargs["reconciliation_mode"] == "guarded"
     audit.assert_called_once_with(
         repaired,
         {unit.pdf_page: unit.text for unit in units},
@@ -384,14 +387,14 @@ async def test_enabled_mode_runs_local_pipeline_and_slices_repaired_assignments(
     assert saved["duplicate_parts"] == [duplicate]
     assert saved["split_audit"]["structure"] == structured.report()
     assert saved["split_audit"]["llama_boundary_detection"]["proposals"]
-    assert saved["split_audit"]["reconciliation_mode"] == "targeted"
+    assert saved["split_audit"]["reconciliation_mode"] == "guarded"
     assert saved["split_audit"]["flags"] == [{"code": "test_flag"}]
-    assert "mode=targeted" in caplog.text
+    assert "mode=guarded" in caplog.text
     assert "repair_and_audit=" in caplog.text
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["targeted", "legacy_full"])
+@pytest.mark.parametrize("mode", ["guarded", "legacy"])
 @pytest.mark.parametrize("output_filter", ["All", "Annexures"])
 async def test_reconciled_workflow_preserves_adjacent_remote_documents(
     monkeypatch, mode, output_filter
