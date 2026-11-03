@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from extraction_review.annexure_index import (
     AnnexureDescription,
     AnnexureIndexResponse,
+    _mentions_annexure,
+    annexure_query_terms,
     clean_index_description,
     describe_annexures,
     resolve_annexure_token,
@@ -114,6 +116,17 @@ def test_clean_index_description_drops_label_and_pages() -> None:
     assert "Petitioner and Respondent No. 2 to 4" in cleaned
 
 
+def test_annexure_query_accepts_the_rule_spellings() -> None:
+    terms = annexure_query_terms("Annexure P-3")
+    assert "Annexure P-3" in terms
+    assert "Annexure P3" in terms
+    assert "annexure 3" in terms
+    for wording in ("annexure p3", "annexure p-3", "annexure 3", "ANNEXURE-P/3"):
+        assert _mentions_annexure(wording, "Annexure P-3", "annexure_p3")
+    assert not _mentions_annexure("annexure 30", "Annexure P-3", "annexure_p3")
+    assert not _mentions_annexure("annexure r-3", "Annexure P-3", "annexure_p3")
+
+
 def test_resolve_annexure_token_accepts_slot_and_label() -> None:
     slot, label, names = resolve_annexure_token("Annexure P-1")
     assert slot == "annexure_p1"
@@ -147,6 +160,51 @@ def test_fetch_page_texts_follows_a_thin_first_window(monkeypatch) -> None:
     assert len(pages[10]) > 500
 
 
+def _metadata_chunks(query: str, **kwargs: object) -> list[dict[str, object]]:
+    assert query
+    subtype = kwargs.get("document_subtype_id")
+    part = kwargs.get("document_part")
+    labels = kwargs.get("part_labels") or []
+    if part == "Synopsis" or "Synopsis" in labels:
+        assert kwargs.get("document_subtype_id") is None
+        return [
+            {
+                "text": LOD_PAGE,
+                "page": 5,
+                "document_part": ["Synopsis", "List of Dates & Events"],
+                "document_part_id": "synopsis",
+            }
+        ]
+    pages = {
+        "annexure_p1": [
+            ("Facility Agreement dated 29.11.2020.", 37),
+            ("End of the facility agreement.", 48),
+        ],
+        "annexure_p2": [
+            (P2_FIRST_PAGE, 49),
+            ("Last page of the order.", 61),
+        ],
+        "annexure_p3": [
+            ("BOARD RESOLUTION dated 15.08.2021.", 70),
+            ("Certified as a true copy.", 72),
+        ],
+    }
+    rows = pages.get(str(subtype or ""))
+    if not rows:
+        return []
+    return [
+        {
+            "text": text,
+            "page": page,
+            "document_part": f"Annexure {str(subtype)[-2:].upper()}",
+            "document_part_id": "annexures",
+            "document_subtype_id": subtype,
+            "document_subtype_ids": [subtype],
+        }
+        for text, page in rows
+    ]
+
+
 @pytest.mark.asyncio
 async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -157,7 +215,7 @@ async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> Non
         annexures=["annexure_p1", "annexure_p2", "annexure_p3"],
         documents=DOCUMENTS,
         file_hash="abc123",
-        fetch_pages=_pages,
+        search_chunks=_metadata_chunks,
     )
     assert [row.annexure for row in rows] == [
         "annexure_p1",
@@ -273,7 +331,7 @@ async def test_describe_annexures_rejects_unknown_id() -> None:
             annexures=["annexure_p9"],
             documents=DOCUMENTS,
             file_hash="abc123",
-            fetch_pages=_pages,
+            search_chunks=lambda *_args, **_kwargs: [],
         )
 
 

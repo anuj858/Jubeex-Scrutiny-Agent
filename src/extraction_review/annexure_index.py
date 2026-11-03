@@ -20,7 +20,12 @@ from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource
 
 from .clients import get_llama_cloud_client
-from .document_parts import AnnexureMark, numbered_part_slot_id
+from .document_parts import (
+    _ANNEXURE_HEADING_RE,
+    AnnexureMark,
+    _annexure_mark_from_match,
+    numbered_part_slot_id,
+)
 from .llm import call_structured
 from .vector_store import (
     fetch_page_texts,
@@ -297,14 +302,186 @@ def _user_prompt(
     return "\n".join(sections)
 
 
+def _chunk_page(chunk: dict[str, Any]) -> int | None:
+    for key in ("page", "page_start", "primary_page", "page_end"):
+        try:
+            number = int(chunk.get(key))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return None
+
+
+def _ordered_chunk_texts(chunks: list[dict[str, Any]]) -> list[tuple[int | None, str]]:
+    rows: list[tuple[int | None, str]] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        text = str(chunk.get("text") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        rows.append((_chunk_page(chunk), text))
+    rows.sort(key=lambda item: (item[0] is None, item[0] or 0))
+    return rows
+
+
+def _mark_for_label(label: str) -> AnnexureMark | None:
+    match = _ANNEXURE_HEADING_RE.search(label or "")
+    if match is None:
+        return None
+    return _annexure_mark_from_match(match)
+
+
+def annexure_query_terms(label: str) -> list[str]:
+    """Spellings the annexure rules accept, sent as the Pinecone query.
+
+    ``Annexure P-3``, ``Annexure P3``, and, for the petitioner series,
+    ``Annexure 3``.
+    """
+    mark = _mark_for_label(label)
+    if mark is None:
+        return [label] if label else []
+    number = mark.number
+    series = mark.series
+    terms = [
+        f"Annexure {series}-{number}",
+        f"Annexure {series}{number}",
+        f"annexure {series.lower()}-{number}",
+        f"annexure {series.lower()}{number}",
+    ]
+    if series == "P":
+        terms.extend([f"Annexure {number}", f"annexure {number}"])
+    unique: list[str] = []
+    for term in terms:
+        if term not in unique:
+            unique.append(term)
+    return unique
+
+
+def _mentions_annexure(text: str, label: str, slot_id: str) -> bool:
+    """True when the chunk uses any spelling the annexure rules accept."""
+    del slot_id
+    wanted = _mark_for_label(label)
+    if wanted is None:
+        return False
+    for match in _ANNEXURE_HEADING_RE.finditer(text or ""):
+        found = _annexure_mark_from_match(match)
+        if (
+            found is not None
+            and found.number == wanted.number
+            and found.series == wanted.series
+        ):
+            return True
+    return False
+
+
+def _search_metadata_chunks(
+    search: Callable[..., list[dict[str, Any]]],
+    query: str,
+    **filters: Any,
+) -> list[dict[str, Any]]:
+    hits = search(query, **filters)
+    return [hit for hit in hits if isinstance(hit, dict)]
+
+
+_SYNOPSIS_PART_LABELS = (
+    "Synopsis",
+    "List of Dates & Events",
+    "Synopsis & List of Dates & Events",
+)
+
+
+def annexure_source_chunks(
+    *,
+    file_hash: str,
+    slot_id: str,
+    label: str,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    search_chunks: Callable[..., list[dict[str, Any]]] | None = None,
+) -> tuple[str, int | None, str, int | None, str]:
+    """Synopsis chunk first, then the annexure's own subtype chunks.
+
+    Returns ``(list_of_dates_text, first_page, first_text, last_page, last_text)``.
+    """
+    finder = search_chunks or search_filing_chunks
+    query = " ".join(annexure_query_terms(label)) or label
+    part_names = [
+        term for term in annexure_query_terms(label) if term[:1].isupper()
+    ]
+    scope = {
+        "file_hash": file_hash,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
+        "top_k": 12,
+        "vector_schema_version": None,
+    }
+    synopsis = _ordered_chunk_texts(
+        _search_metadata_chunks(
+            finder,
+            query,
+            document_part="Synopsis",
+            **scope,
+        )
+        + _search_metadata_chunks(
+            finder,
+            query,
+            part_labels=list(_SYNOPSIS_PART_LABELS),
+            **scope,
+        )
+    )
+    lod_parts = [
+        text for _page, text in synopsis if _mentions_annexure(text, label, slot_id)
+    ]
+    lod_text = "\n\n".join(lod_parts).strip()
+    annexure_hits = _ordered_chunk_texts(
+        _search_metadata_chunks(
+            finder,
+            query,
+            document_part="Annexures",
+            document_subtype_id=slot_id,
+            **scope,
+        )
+    )
+    if not annexure_hits:
+        annexure_hits = _ordered_chunk_texts(
+            _search_metadata_chunks(
+                finder,
+                query,
+                document_subtype_id=slot_id,
+                **scope,
+            )
+            + _search_metadata_chunks(
+                finder,
+                query,
+                part_labels=part_names,
+                **scope,
+            )
+        )
+    first_page, first_text = annexure_hits[0] if annexure_hits else (None, "")
+    last_page, last_text = annexure_hits[-1] if annexure_hits else (None, "")
+    if last_page == first_page:
+        last_page, last_text = None, ""
+    return lod_text, first_page, first_text, last_page, last_text
+
+
 async def describe_annexures(
     *,
     annexures: list[str],
-    documents: list[dict[str, Any]],
+    documents: list[dict[str, Any]] | None = None,
     file_hash: str,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
     fetch_pages: Callable[..., dict[int, str]] | None = None,
+    search_chunks: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> list[AnnexureDescription]:
-    """Describe each requested annexure, in request order."""
+    """Describe each requested annexure, in request order.
+
+    ``documents`` and ``fetch_pages`` remain accepted so older callers still
+    import. The text comes from Pinecone metadata, not from those page spans.
+    """
+    del documents, fetch_pages
     if not annexures:
         raise ValueError("annexures must contain at least one annexure id")
     if not file_hash:
@@ -313,41 +490,17 @@ async def describe_annexures(
         )
 
     resolved = [resolve_annexure_token(item) for item in annexures]
-    lod = _lod_span(documents)
-    lod_pages = _span_pages(lod)
-    needed: set[int] = set(lod_pages)
-    spans: list[dict[str, Any] | None] = []
-    for _slot, _label, names in resolved:
-        span = _annexure_span(documents, names)
-        spans.append(span)
-        pages = _span_pages(span)
-        if pages:
-            needed.add(pages[0])
-            needed.add(pages[-1])
-    missing = [
-        slot
-        for (slot, _label, _names), span in zip(resolved, spans, strict=True)
-        if span is None
-    ]
-    if missing:
-        joined = ", ".join(missing)
-        raise ValueError(f"Annexure not found in this filing: {joined}")
-
-    reader = fetch_pages or fetch_page_texts
-    page_text = reader(base_id=file_hash, pages=sorted(needed))
-    lod_text = _join_pages(page_text, lod_pages)
     semaphore = asyncio.Semaphore(annexure_index_concurrency())
 
-    async def _one(
-        slot_id: str,
-        label: str,
-        span: dict[str, Any],
-    ) -> AnnexureDescription:
-        pages = _span_pages(span)
-        first = pages[0] if pages else None
-        last = pages[-1] if pages else None
-        first_text = page_text.get(first, "") if first else ""
-        last_text = page_text.get(last, "") if last else ""
+    async def _one(slot_id: str, label: str) -> AnnexureDescription:
+        lod_text, first, first_text, last, last_text = annexure_source_chunks(
+            file_hash=file_hash,
+            slot_id=slot_id,
+            label=label,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            search_chunks=search_chunks,
+        )
         if not lod_text and not first_text.strip() and not last_text.strip():
             raise ValueError(f"No Pinecone text for {slot_id}.")
         async with semaphore:
@@ -384,11 +537,7 @@ async def describe_annexures(
 
     return list(
         await asyncio.gather(
-            *[
-                _one(slot, label, span)
-                for (slot, label, _names), span in zip(resolved, spans, strict=True)
-                if span is not None
-            ]
+            *[_one(slot, label) for slot, label, _names in resolved]
         )
     )
 
@@ -571,10 +720,14 @@ class AnnexureIndexWorkflow(Workflow):
             raise ValueError(
                 "Annexure index runs after scrutiny. Run index or scrutiny first."
             )
-        documents = document_spans(payload)
-        page_base_id = resolve_page_base_id(
-            payload, probe_pages=probe_pages_for(documents)
-        )
+        file_hash = str(payload.get("file_hash") or "").strip()
+        vector = _vector_index(payload)
+        organization_id = str(
+            vector.get("organization_id") or payload.get("organization_id") or ""
+        ).strip() or None
+        workspace_id = str(
+            vector.get("workspace_id") or payload.get("workspace_id") or ""
+        ).strip() or None
         async with ctx.store.edit_state() as state:
             state.agent_data_id = event.agent_data_id
         ctx.write_event_to_stream(
@@ -591,8 +744,9 @@ class AnnexureIndexWorkflow(Workflow):
         )
         rows = await describe_annexures(
             annexures=list(event.annexures),
-            documents=documents,
-            file_hash=page_base_id,
+            file_hash=file_hash,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
         )
         ctx.write_event_to_stream(
             Status(level="info", message="Annexure descriptions complete")
