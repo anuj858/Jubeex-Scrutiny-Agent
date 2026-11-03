@@ -10,6 +10,7 @@ from psycopg import errors
 
 from extraction_review.scrutiny.catalogue_db import (
     _attach_remediation_config,
+    _attach_requirement_ai,
     catalogue_from_rows,
 )
 from extraction_review.scrutiny.catalogue_export import legacy_selected_ids
@@ -30,6 +31,7 @@ def test_rows_become_an_explicit_catalogue() -> None:
                 "defect_version": 3,
                 "defect": "Missing index",
                 "requirement": "An index is required",
+                "requirement_ai": "Check whether the index pages are present",
                 "where_to_look": ["Index"],
                 "how_to_cure": ["Add an index"],
                 "trigger_words": ["index", "contents"],
@@ -70,6 +72,8 @@ def test_rows_become_an_explicit_catalogue() -> None:
     defect = catalogue.defect("D-9")
     assert defect.use_explicit_applicability is True
     assert defect.defect_version == 3
+    assert defect.requirement == "An index is required"
+    assert defect.requirement_ai == "Check whether the index pages are present"
     assert defect.trigger_words == "index; contents"
     assert defect.agent_filing_types == ["slp_civil"]
     assert catalogue.petition_specials["slp_civil"] == ["Tax Matters"]
@@ -101,6 +105,59 @@ def test_denied_optional_remediation_lookup_keeps_catalogue_rows(caplog: pytest.
     assert cursor.connection.rolled_back
     assert rows == [{"check_id": "D-1", "defect": "Sample"}]
     assert "without remediation actions" in caplog.text
+
+
+def test_requirement_ai_is_copied_when_the_view_omits_it() -> None:
+    class Connection:
+        @contextmanager
+        def transaction(self):
+            yield
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, query, params):
+            assert "requirement_ai" in query
+            assert params == (["D-1"],)
+
+        def fetchall(self):
+            return [("D-1", "Checker text")]
+
+    rows = [{"check_id": "D-1", "requirement": "User text"}]
+    _attach_requirement_ai(Cursor(), rows)
+
+    assert rows[0]["requirement"] == "User text"
+    assert rows[0]["requirement_ai"] == "Checker text"
+
+
+def test_missing_requirement_ai_column_keeps_catalogue_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Connection:
+        rolled_back = False
+
+        @contextmanager
+        def transaction(self):
+            try:
+                yield
+            except errors.UndefinedColumn:
+                self.rolled_back = True
+                raise
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, *_args):
+            raise errors.UndefinedColumn("column requirement_ai does not exist")
+
+    rows = [{"check_id": "D-1", "requirement": "User text"}]
+    cursor = Cursor()
+
+    _attach_requirement_ai(cursor, rows)
+
+    assert cursor.connection.rolled_back
+    assert rows == [{"check_id": "D-1", "requirement": "User text"}]
+    assert "requirement_ai" in caplog.text
 
 
 def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.MonkeyPatch) -> None:

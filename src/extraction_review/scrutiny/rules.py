@@ -306,6 +306,8 @@ class Defect(_Strict):
     overlap_note: str | None = None
     defect: str
     requirement: str
+    # Operational text for the defect check. Findings still publish requirement.
+    requirement_ai: str | None = None
     trigger_words: str | None = None
     where_to_look: list[str]
     inspect_parts: list[str] = Field(default_factory=list)
@@ -352,6 +354,7 @@ class Defect(_Strict):
         "ivan_comment",
         "notes_2",
         "ai_note",
+        "requirement_ai",
         "court_code",
         mode="before",
     )
@@ -393,6 +396,19 @@ class Defect(_Strict):
     @property
     def title(self) -> str:
         return self.defect
+
+
+def check_requirement(defect: object) -> str:
+    """Text the defect check uses.
+
+    Published findings still copy ``requirement``. A blank ``requirement_ai``
+    falls back to that column so the JSON catalogue keeps working.
+    """
+    ai = getattr(defect, "requirement_ai", None)
+    if isinstance(ai, str) and ai.strip():
+        return ai.strip()
+    official = getattr(defect, "requirement", None)
+    return official if isinstance(official, str) else str(official or "")
 
 
 def split_main_categories(main_category: str | list[str] | None) -> tuple[str, ...]:

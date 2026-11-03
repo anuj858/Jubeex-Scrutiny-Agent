@@ -24,6 +24,7 @@ from ..layout_index import page_entry
 from .rules import (
     Catalogue,
     Defect,
+    check_requirement,
     normalize_filing_type,
     split_main_categories,
 )
@@ -490,7 +491,7 @@ def _as_compliance_bar(text: str) -> str:
 
 def _format_standard(defect: Defect) -> str:
     """Turn Defect + Requirement cells into one decision brief."""
-    requirement = _polish_registry_text(defect.requirement)
+    requirement = _polish_registry_text(check_requirement(defect))
     failure = _polish_registry_text(defect.defect)
     bar = _as_compliance_bar(requirement)
 
@@ -874,7 +875,7 @@ def fallback_reasoning(
     document_parts: list[str] | None = None,
 ) -> str:
     """Plain-language reason tied to this catalogue row when the model copy is unusable."""
-    requirement = _polish_registry_text(defect.requirement)
+    requirement = _polish_registry_text(check_requirement(defect))
     page_bit = _filing_page_phrase(pages, evidence_pages, document_parts)
     part = ", ".join(document_parts or []) or "the inspected document part"
     quote = " ".join((evidence_quote or "").split())
@@ -958,7 +959,7 @@ def validated_reasoning(
         if not re.match(r"^Observed\s*:", cleaned, flags=re.IGNORECASE):
             cleaned = f"Observed: {cleaned}."
         if not re.search(r"\bRequired\s*:", cleaned, flags=re.IGNORECASE):
-            cleaned += f" Required: {_polish_registry_text(defect.requirement)}."
+            cleaned += f" Required: {_polish_registry_text(check_requirement(defect))}."
         if not re.search(r"\bConclusion\s*:", cleaned, flags=re.IGNORECASE):
             cleaned += (
                 " Conclusion: the cited filing content does not meet this requirement."
@@ -979,7 +980,7 @@ def _copy_is_weak(text: str, defect: Defect) -> bool:
         return True
     if defect.location_source and defect.location_source.lower() in text.lower():
         return True
-    topic = _content_tokens(defect.defect) | _content_tokens(defect.requirement)
+    topic = _content_tokens(defect.defect) | _content_tokens(check_requirement(defect))
     words = _content_tokens(text)
     return bool(
         topic and words and len(topic & words) / min(len(topic), len(words)) < 0.12
@@ -996,7 +997,7 @@ def validated_summary(
 ) -> str:
     cleaned = _strip_rulebook_noise(text)
     if _copy_is_weak(cleaned, defect):
-        requirement = _lc_first(_polish_registry_text(defect.requirement))
+        requirement = _lc_first(_polish_registry_text(check_requirement(defect)))
         if status == "defect_found":
             return f"Defect: {requirement}."
         if status == "compliant":
@@ -1174,7 +1175,7 @@ def _compliance_with(defect: Any) -> str:
     rule = str(getattr(defect, "applicable_rule", "") or "").strip()
     if rule and rule.casefold() not in {"n.a", "na", "n/a", "n.a."}:
         return rule
-    requirement = str(getattr(defect, "requirement", "") or "")
+    requirement = check_requirement(defect)
     match = re.search(
         r"Order\s+[IVXLC]+(?:\s*,?\s*Rule\s+[\d()A-Za-z]+)?"
         r"(?:\s+of\s+the\s+Supreme\s+Court\s+Rules,\s*\d{4})?",
@@ -1189,7 +1190,7 @@ def _compliance_with(defect: Any) -> str:
 def _allowed_citations(defect: Any) -> str:
     return " ".join(
         [
-            str(getattr(defect, "requirement", "") or ""),
+            check_requirement(defect),
             str(getattr(defect, "applicable_rule", "") or ""),
             str(getattr(defect, "defect", "") or ""),
         ]

@@ -115,7 +115,7 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
     applicability = derive_applicability(defect)
     label = _special_label(defect)
     special_code = category_code(catalog_special_name(label)) if label else None
-    return {
+    row = {
         "code": defect.check_id,
         "title": defect.defect,
         "requirement": defect.requirement,
@@ -148,6 +148,10 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
         "status": "reviewed_by_legal",
         "severity": "p2",
     }
+    ai_requirement = (defect.requirement_ai or "").strip()
+    if ai_requirement:
+        row["requirement_ai"] = ai_requirement
+    return row
 
 
 def build_seed(catalogue: Catalogue | None = None) -> dict[str, Any]:

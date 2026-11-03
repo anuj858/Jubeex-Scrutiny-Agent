@@ -11,7 +11,7 @@ from .document_parts import (
     parts_named_in_where_to_look,
     preferred_parts_for_defect,
 )
-from .scrutiny.rules import Defect
+from .scrutiny.rules import Defect, check_requirement
 from .vector_store import get_pinecone_client
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ def build_rerank_query(defect: Defect) -> str:
     parts = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
     values = [
         defect.defect,
-        defect.requirement,
+        check_requirement(defect),
         *(defect.where_to_look or []),
         *(parts or []),
         defect.trigger_words or "",
