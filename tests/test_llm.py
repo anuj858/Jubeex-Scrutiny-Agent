@@ -491,14 +491,32 @@ def test_llm_provider_openrouter_keeps_prefixed_model(
     assert openrouter_model() == "google/gemini-3.8-flash"
 
 
-def test_scrutiny_model_defaults_to_gemini_4_argon_for_vertex(
+def test_scrutiny_model_requires_a_tier_and_ignores_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.llm import ScrutinyModelError, scrutiny_model
+
+    monkeypatch.setenv("SCRUTINY_MODEL", "google/gemini-3.8-flash")
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    with pytest.raises(ValueError, match="model_tier is required"):
+        scrutiny_model("")
+    monkeypatch.delenv("SCRUTINY_MODEL_LOW", raising=False)
+    with pytest.raises(ScrutinyModelError, match="SCRUTINY_MODEL_LOW is not set"):
+        scrutiny_model("low")
+
+
+def test_scrutiny_model_resolves_each_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from extraction_review.llm import scrutiny_model
 
-    monkeypatch.setenv("LLM_PROVIDER", "vertex")
-    monkeypatch.delenv("SCRUTINY_MODEL", raising=False)
-    assert scrutiny_model() == "gemini-4-argon"
+    monkeypatch.setenv("SCRUTINY_MODEL_LOW", "google/gemini-low")
+    monkeypatch.setenv("SCRUTINY_MODEL_MEDIUM", "google/gemini-medium")
+    monkeypatch.setenv("SCRUTINY_MODEL_HIGH", "google/gemini-high")
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    assert scrutiny_model("Low") == "google/gemini-low"
+    assert scrutiny_model("medium") == "google/gemini-medium"
+    assert scrutiny_model("HIGH") == "google/gemini-high"
 
 
 def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
@@ -506,13 +524,13 @@ def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
 ) -> None:
     from extraction_review.llm import scrutiny_model
 
-    monkeypatch.setenv("SCRUTINY_MODEL", "google/gemini-3.8-flash")
+    monkeypatch.setenv("SCRUTINY_MODEL_HIGH", "google/gemini-3.8-flash")
     monkeypatch.setenv("LLM_PROVIDER", "vertex")
-    assert scrutiny_model() == "gemini-3.8-flash"
+    assert scrutiny_model("high") == "gemini-3.8-flash"
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
-    assert scrutiny_model() == "google/gemini-3.8-flash"
+    assert scrutiny_model("high") == "google/gemini-3.8-flash"
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
-    assert scrutiny_model() == "gemini-3.8-flash"
+    assert scrutiny_model("high") == "gemini-3.8-flash"
 
 
 @pytest.mark.asyncio

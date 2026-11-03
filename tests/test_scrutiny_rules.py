@@ -282,7 +282,7 @@ def test_catalogue_query_plan_stays_evidence_focused() -> None:
         len(retrieval_plan_for_defect(defect).queries) for defect in catalogue.defects
     ]
 
-    assert len(counts) == 323
+    assert len(counts) == 306
     assert statistics.median(counts) <= 2
     assert sum(count >= 5 for count in counts) <= 2
     assert max(counts) <= 6  # D-332 genuinely inspects six distinct document parts.
@@ -614,8 +614,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     catalogue = rules_mod._load_file_catalogue()
     monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
-    assert catalogue.catalogue_version == "3.2.0"
-    assert len(catalogue.defects) == 323
+    assert catalogue.catalogue_version == "3.4.0"
+    assert len(catalogue.defects) == 306
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
         json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
@@ -642,7 +642,6 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "D-64": ["Affidavit"],
         "D-73": ["Vakalatnama"],
         "D-74": ["Memo of Appearance"],
-        "D-93": ["Memo of Parties"],
         "D-110": ["Synopsis", "List of Dates & Events"],
         "D-128": ["Listing Proforma"],
         "D-181": ["Affidavit"],
@@ -657,13 +656,13 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert "SCI_CHECKLIST_2025" in d061.location_source
     assert "Defect List.pdf" not in d061.location_source
 
-    d159 = catalogue.defect("D-159")
-    assert d159.main_category == "SLP (Civil)"
-    assert "Main Petition" in d159.inspect_parts
-    assert "SCI_FORM_28" in d159.location_source
-    assert "SCI_RULES_2013" in d159.location_source
-    assert "Form 28 - SLP.pdf" not in d159.location_source
-    assert "2024011691-1.pdf" not in d159.location_source
+    d160 = catalogue.defect("D-160")
+    assert d160.main_category == "SLP (Civil)"
+    assert "Main Petition" in d160.inspect_parts
+    assert "SCI_FORM_28" in d160.location_source
+    assert "SCI_RULES_2013" in d160.location_source
+    assert "Form 28 - SLP.pdf" not in d160.location_source
+    assert "2024011691-1.pdf" not in d160.location_source
 
     assert catalogue.defect("D-60").inspect_parts == [
         "AOR's Certificate",
@@ -682,8 +681,6 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "Synopsis",
         "List of Dates & Events",
     ]
-    assert catalogue.defect("D-52").inspect_parts == ["Application"]
-    assert catalogue.defect("D-54").inspect_parts == ["Main Petition", "Vakalatnama"]
     assert catalogue.defect("D-57").inspect_parts == [
         "Vakalatnama",
         "Main Petition",
@@ -720,7 +717,6 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert catalogue.defect("D-115").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-120").inspect_parts == ["Vakalatnama"]
     assert catalogue.defect("D-123").inspect_parts == ["Vakalatnama", "Annexures"]
-    assert catalogue.defect("D-224").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-264").inspect_parts == [
         "Main Petition",
         "Affidavit",
@@ -776,11 +772,11 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     )
     d73_sources = official_source_locations(catalogue.defect("D-73"), catalogue)
     assert [(item.url, item.page) for item in d73_sources] == [(rules_pdf, 6)]
-    d159_sources = {
-        item.url: item.page for item in official_source_locations(d159, catalogue)
+    d160_sources = {
+        item.url: item.page for item in official_source_locations(d160, catalogue)
     }
-    assert d159_sources[rules_pdf] == 30
-    assert d159_sources[form_pdf] is None
+    assert d160_sources[rules_pdf] == 30
+    assert d160_sources[form_pdf] is None
 
     d001 = catalogue.defect("D-1")
     assert d001.special_category == "Appeal (Armed Forces)"
@@ -802,6 +798,23 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "D-92A",
         "D-115A",
         "D-225A",
+        "D-32",
+        "D-52",
+        "D-54",
+        "D-65",
+        "D-67",
+        "D-70",
+        "D-79",
+        "D-84",
+        "D-85",
+        "D-86",
+        "D-93",
+        "D-156",
+        "D-159",
+        "D-178",
+        "D-224",
+        "D-284",
+        "D-302",
     ):
         assert catalogue.defect_by_id(dropped) is None
     for category in catalogue.categories:
@@ -811,8 +824,8 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
 
     civil = {d.check_id for d in defects_for_filing_type("SLP_CIVIL")}
     criminal = {d.check_id for d in defects_for_filing_type("SLP_CRIMINAL")}
-    assert "D-159" in civil
-    assert "D-159" not in criminal
+    assert "D-160" in civil
+    assert "D-160" not in criminal
     assert "D-61" in civil
     assert "D-61" in criminal
     assert "D-1" not in civil
@@ -853,8 +866,8 @@ def test_legal_reviewed_catalogue_guards_and_corrected_rules() -> None:
         for defect in catalogue.defects
         if defect.legal_verification_status == "needs_verification"
     ]
-    assert len(unverified) == 104
-    for check_id in ("D-54", "D-112", "D-113", "D-114", "D-115", "D-116", "D-127", "D-327"):
+    assert len(unverified) == 103
+    for check_id in ("D-112", "D-113", "D-114", "D-115", "D-116", "D-127", "D-327"):
         verified = catalogue.defect(check_id)
         assert verified.legal_verification_status == "verified"
         assert "Legal-source gate" not in (verified.ai_note or "")

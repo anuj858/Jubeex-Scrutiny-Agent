@@ -33,8 +33,6 @@ DEFAULT_VERTEX_MODEL = "gemini-4-argon"
 DEFAULT_GEMINI_MODEL = "gemini-4-argon"
 # DEFAULT_MODEL kept for OpenRouter ids.
 DEFAULT_MODEL = "google/gemini-4-argon"
-DEFAULT_SCRUTINY_VERTEX_MODEL = "gemini-4-argon"
-DEFAULT_SCRUTINY_OPENROUTER_MODEL = "google/gemini-4-argon"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_VERTEX_REQUEST_TIMEOUT_S = 900
 DEFAULT_GEMINI_REQUEST_TIMEOUT_S = 900
@@ -171,12 +169,39 @@ def openrouter_model() -> str:
     return os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
 
 
-def scrutiny_model() -> str:
-    """Model used only for registry defect checks."""
-    raw = (os.getenv("SCRUTINY_MODEL") or "").strip()
+SCRUTINY_MODEL_TIERS = ("low", "medium", "high")
+_SCRUTINY_TIER_ENV = {
+    "low": "SCRUTINY_MODEL_LOW",
+    "medium": "SCRUTINY_MODEL_MEDIUM",
+    "high": "SCRUTINY_MODEL_HIGH",
+}
+
+
+class ScrutinyModelError(ValueError):
+    """A required defect-check tier has no configured model."""
+
+
+def normalize_model_tier(value: object) -> str:
+    """Return ``low``, ``medium``, or ``high``. Blank and unknown values fail."""
+    raw = str(value).strip().casefold() if value is not None else ""
+    if raw not in _SCRUTINY_TIER_ENV:
+        raise ValueError("model_tier is required and must be low, medium, or high")
+    return raw
+
+
+def scrutiny_model(tier: str) -> str:
+    """Model used only for registry defect checks at one required tier.
+
+    ``SCRUTINY_MODEL`` is not a fallback. An empty tier env value raises
+    ``ScrutinyModelError``.
+    """
+    env_name = _SCRUTINY_TIER_ENV[normalize_model_tier(tier)]
+    raw = (os.getenv(env_name) or "").strip()
+    if not raw:
+        raise ScrutinyModelError(f"{env_name} is not set")
     if llm_provider() in {"vertex", "gemini"}:
-        return _strip_google_model_prefix(raw or DEFAULT_SCRUTINY_VERTEX_MODEL)
-    return raw or DEFAULT_SCRUTINY_OPENROUTER_MODEL
+        return _strip_google_model_prefix(raw)
+    return raw
 
 
 def openrouter_enabled() -> bool:

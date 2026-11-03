@@ -40,6 +40,7 @@ from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
 from .extract_record import stamp_review_status
 from .job_progress import load_job_status, progress_for_status, save_job_status
+from .llm import ScrutinyModelError, normalize_model_tier, scrutiny_model
 from .logging_utils import silence_http_client_request_logs
 from .process_file import (
     CATALOG_JOB_TYPES,
@@ -280,6 +281,13 @@ class IndexFilingRequest(FilingDocumentsRequest):
     """
 
     edited: bool = False
+    model_tier: str = Field(
+        examples=["low"],
+        description=(
+            "Required defect-check tier. low, medium, and high select "
+            "SCRUTINY_MODEL_LOW, SCRUTINY_MODEL_MEDIUM, and SCRUTINY_MODEL_HIGH."
+        ),
+    )
     parsed_slots: list[str] = Field(default_factory=list)
     special_category: str | None = Field(
         default=None,
@@ -294,6 +302,11 @@ class IndexFilingRequest(FilingDocumentsRequest):
     @classmethod
     def _coerce_edited(cls, value: object) -> bool:
         return parse_edited_flag(value)
+
+    @field_validator("model_tier", mode="before")
+    @classmethod
+    def _require_model_tier(cls, value: object) -> str:
+        return normalize_model_tier(value)
 
     @field_validator("parsed_slots", mode="before")
     @classmethod
@@ -327,10 +340,17 @@ class UpdateFilingRequest(BaseModel):
 
 
 class CreateScrutinyRequest(BaseModel):
-    """Optional locators. The path already has agent_data_id; both fields may be sent."""
+    """Defects-only locators. ``model_tier`` is required."""
 
     model_config = ConfigDict(extra="ignore")
 
+    model_tier: str = Field(
+        examples=["medium"],
+        description=(
+            "Required defect-check tier. low, medium, and high select "
+            "SCRUTINY_MODEL_LOW, SCRUTINY_MODEL_MEDIUM, and SCRUTINY_MODEL_HIGH."
+        ),
+    )
     file_hash: str | None = Field(
         default=None,
         examples=["8adf76ba0ba44d4561ab5a4ad88e3d6e97e56a32010ac8c08f39b5f8c1d01340"],
@@ -364,6 +384,11 @@ class CreateScrutinyRequest(BaseModel):
             "catalogue defect that has a special_category."
         ),
     )
+
+    @field_validator("model_tier", mode="before")
+    @classmethod
+    def _require_model_tier(cls, value: object) -> str:
+        return normalize_model_tier(value)
 
     @field_validator(
         "file_hash",
@@ -1206,6 +1231,17 @@ async def update_filing(
     )
 
 
+def _require_configured_scrutiny_model(tier: str) -> str:
+    """Reject a tier whose env model is empty before any job side effect."""
+    try:
+        return scrutiny_model(tier)
+    except ScrutinyModelError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
 def _accept_scrutiny(
     *,
     event: ScrutinyEvent,
@@ -1281,6 +1317,7 @@ async def index_filing(
     Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
     ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
     """
+    _require_configured_scrutiny_model(body.model_tier)
     await _require_filing_for_index(
         agent_data_id,
         organization_id=body.organization_id,
@@ -1304,9 +1341,11 @@ async def reindex_filing(
 ) -> JobAccepted:
     """Delete this workspace's Pinecone records, then run the index job.
 
-    The filing is loaded before the delete. A missing ``workspace_id`` returns
-    422. A failed delete returns 502 and does not start the job.
+    The filing is loaded before the delete. A missing ``workspace_id`` or an
+    unconfigured ``model_tier`` returns 422. A failed delete returns 502 and
+    does not start the job.
     """
+    _require_configured_scrutiny_model(body.model_tier)
     if not body.workspace_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1341,27 +1380,29 @@ async def reindex_filing(
 async def create_scrutiny(
     agent_data_id: str,
     background_tasks: BackgroundTasks,
-    body: CreateScrutinyRequest | None = None,
+    body: CreateScrutinyRequest,
 ) -> JobAccepted:
     """Defects-only scrutiny (vectors already indexed)."""
+    _require_configured_scrutiny_model(body.model_tier)
     await prepare_extracted_filing_for_scrutiny(
         agent_data_id,
-        organization_id=(body.organization_id if body else None),
-        workspace_id=(body.workspace_id if body else None),
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
     )
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
-        file_hash=(body.file_hash if body else None),
-        file_url=(body.file_url if body else None),
-        organization_id=(body.organization_id if body else None),
-        workspace_id=(body.workspace_id if body else None),
-        filing_type=(body.filing_type if body else None),
-        special_category=(body.special_category if body else None),
-        court=(body.court if body else None),
+        file_hash=body.file_hash,
+        file_url=body.file_url,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+        filing_type=body.filing_type,
+        special_category=body.special_category,
+        court=body.court,
+        model_tier=body.model_tier,
     )
     return _accept_scrutiny(
         event=event,
-        callback_url=(body.callback_url if body else None),
+        callback_url=body.callback_url,
         background_tasks=background_tasks,
     )
 

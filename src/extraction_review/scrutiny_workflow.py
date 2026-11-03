@@ -156,12 +156,18 @@ class ScrutinyAfterIndexError(Exception):
 
 
 def require_successful_checks(findings: list[DefectFinding], planned: int) -> None:
-    """Reject a nominally complete run when any individual check failed."""
+    """Fail only when no check produced a usable result.
+
+    One model failure stays on that finding and the other findings are
+    returned. Every check failing means the model produced nothing to send.
+    """
+    usable = sum(not finding.error for finding in findings)
+    if usable:
+        return
     failed = sum(bool(finding.error) for finding in findings)
-    if failed:
-        raise RuntimeError(
-            f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
-        )
+    raise RuntimeError(
+        f"Scrutiny incomplete: {failed} of {planned} checks failed; rerun scrutiny"
+    )
 
 
 class ScrutinyEvent(StartEvent):
@@ -173,6 +179,7 @@ class ScrutinyEvent(StartEvent):
     special_category: str | None = None
     filing_type: str | None = None
     court: str | None = None
+    model_tier: str | None = None
 
 
 class Status(Event):
@@ -596,6 +603,7 @@ async def _run_defect(
     layout: dict[int, dict[str, Any]] | None = None,
     visual_index: dict[str, Any] | None = None,
     absence_defect_parts: list[str] | None = None,
+    model: str,
 ) -> DefectFinding:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
@@ -683,7 +691,7 @@ async def _run_defect(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         response_model=DefectResponse,
-        model=scrutiny_model(),
+        model=model,
         request_label=f"scrutiny:{defect.check_id}",
     )
     response = _sanitize_response(defect, raw, chunks, check_visual_index, layout)
@@ -735,7 +743,7 @@ async def _run_defect(
                     system_prompt=system_prompt,
                     user_prompt=retry_prompt,
                     response_model=DefectResponse,
-                    model=scrutiny_model(),
+                    model=model,
                     request_label=(
                         f"scrutiny:{defect.check_id}:complete-evidence-retry:"
                         f"{batch_number}-of-{len(complete_batches)}"
@@ -1571,11 +1579,16 @@ class ScrutinyWorkflow(Workflow):
             raise ValueError(
                 "OPENROUTER_API_KEY is not set, so defect checks cannot run"
             )
+        try:
+            defect_model = scrutiny_model(event.model_tier or "")
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         logger.info(
-            "LLM provider=%s key=%s model=%s rpm=%s",
+            "LLM provider=%s key=%s model=%s tier=%s rpm=%s",
             llm_provider(),
             mask_llm_credential(),
-            scrutiny_model(),
+            defect_model,
+            event.model_tier,
             llm_requests_per_minute() or "unlimited",
         )
 
@@ -1839,13 +1852,13 @@ class ScrutinyWorkflow(Workflow):
                 agent_data_id=str(getattr(item, "id", "") or "") or event.agent_data_id,
                 file_hash=file_hash,
                 petition_type=filing_type,
-                model=scrutiny_model(),
+                model=defect_model,
                 index_generation=index_generation,
                 vector_schema_version=str(VECTOR_SCHEMA_VERSION),
                 disclaimer=catalogue.disclaimer,
                 findings=snapshot,
                 summary=summarize(snapshot),
-                usage=summarize_usage(snapshot, model=scrutiny_model()),
+                usage=summarize_usage(snapshot, model=defect_model),
                 planned_checks=planned,
                 stopped_early=stopped_early,
             )
@@ -1917,6 +1930,7 @@ class ScrutinyWorkflow(Workflow):
                     layout=layout,
                     visual_index=visual_index,
                     absence_defect_parts=absence_owners.get(defect.check_id),
+                    model=defect_model,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
@@ -2005,24 +2019,32 @@ class ScrutinyWorkflow(Workflow):
             cost_note = f", OpenRouter {report.usage.cost_usd:.6f} USD"
         elif report.usage and report.usage.total_tokens:
             cost_note = f", {report.usage.total_tokens} tokens"
+        failed_checks = sum(bool(finding.error) for finding in findings)
+        failed_note = (
+            f", {failed_checks} check(s) could not be completed"
+            if failed_checks
+            else ""
+        )
         if stopped_early:
             ctx.write_event_to_stream(
                 Status(
                     level="warning",
                     message=(
                         f"Stopped early after {len(findings)} of {planned} "
-                        f"checks{cost_note}. Results below are what completed."
+                        f"checks{failed_note}{cost_note}. "
+                        "Results below are what completed."
                     ),
                 )
             )
         else:
             ctx.write_event_to_stream(
                 Status(
-                    level="info",
+                    level="warning" if failed_checks else "info",
                     message=(
                         f"Scrutiny complete: {report.summary.defects_found} defect(s), "
                         f"{report.summary.needs_review} needing review, "
-                        f"{report.summary.not_determined} undetermined{cost_note}"
+                        f"{report.summary.not_determined} undetermined"
+                        f"{failed_note}{cost_note}"
                     ),
                 )
             )

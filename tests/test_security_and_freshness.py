@@ -157,6 +157,7 @@ async def test_missing_layout_part_skips_dependent_check_without_switch(
         chunks=[],
         filing_type="SLP_CIVIL",
         layout={1: {"document_part": "Main Petition"}},
+        model="google/gemini-test",
     )
 
     assert finding.status == "not_applicable"

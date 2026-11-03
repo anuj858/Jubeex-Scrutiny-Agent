@@ -48,6 +48,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         "extraction_review.api._require_filing_for_index",
         _existing_filing,
     )
+    monkeypatch.setenv("SCRUTINY_MODEL_LOW", "google/gemini-low")
+    monkeypatch.setenv("SCRUTINY_MODEL_MEDIUM", "google/gemini-medium")
+    monkeypatch.setenv("SCRUTINY_MODEL_HIGH", "google/gemini-high")
     return TestClient(app)
 
 
@@ -320,7 +323,10 @@ def test_create_scrutiny(client: TestClient, monkeypatch: pytest.MonkeyPatch) ->
         "extraction_review.api.scrutiny_workflow.run",
         lambda start_event: ImmediateHandler(result),
     )
-    response = client.post("/v1/filings/agd-scr-1/scrutiny", json={})
+    response = client.post(
+        "/v1/filings/agd-scr-1/scrutiny",
+        json={"model_tier": "low"},
+    )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
     polled = None
@@ -355,12 +361,14 @@ def test_create_scrutiny_accepts_hash_and_url(
     response = client.post(
         "/v1/filings/agd-scr-2/scrutiny",
         json={
+            "model_tier": "Medium",
             "file_hash": "abc123hash",
             "file_url": "https://example.com/Defect_SLP_Civil.pdf",
         },
     )
     assert response.status_code == 202
     event = captured["event"]
+    assert getattr(event, "model_tier") == "medium"
     assert getattr(event, "file_hash") == "abc123hash"
     assert getattr(event, "file_url") == "https://example.com/Defect_SLP_Civil.pdf"
 
@@ -383,7 +391,10 @@ def test_create_scrutiny_accepts_download_url_alias(
     )
     response = client.post(
         "/v1/filings/agd-scr-4/scrutiny",
-        json={"download_url": "https://example.com/compiled.pdf"},
+        json={
+            "model_tier": "high",
+            "download_url": "https://example.com/compiled.pdf",
+        },
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "file_url") == "https://example.com/compiled.pdf"
@@ -407,7 +418,11 @@ def test_create_scrutiny_drops_swagger_placeholders(
     )
     response = client.post(
         "/v1/filings/agd-scr-3/scrutiny",
-        json={"file_hash": "string", "file_url": "string"},
+        json={
+            "model_tier": "low",
+            "file_hash": "string",
+            "file_url": "string",
+        },
     )
     assert response.status_code == 202
     event = captured["event"]
@@ -752,6 +767,7 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
         json={
             "filing_type": "SLP_CIVIL",
             "edited": "yes",
+            "model_tier": "Low",
             "parsed_slots": ["cover_page", "petition"],
             "special_category": "Eviction Matters",
             "documents": [
@@ -775,6 +791,7 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     assert getattr(event, "job_type") == "index_parsed"
     assert getattr(event, "agent_data_id") == "agd-index-1"
     assert getattr(event, "edited") is True
+    assert getattr(event, "model_tier") == "low"
     assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
     assert notified.get("kind") == "scrutiny"
 
@@ -795,6 +812,7 @@ def test_index_edited_false(
         json={
             "filing_type": "SLP_CIVIL",
             "edited": False,
+            "model_tier": "medium",
             "parsed_slots": ["petition"],
             "documents": [
                 {**_doc("01_Petition.pdf"), "file_hash": "a" * 64},
@@ -813,6 +831,7 @@ def test_index_rejects_malformed_document_hash(client: TestClient) -> None:
         "/v1/filings/agd-index-invalid-hash/index",
         json={
             "filing_type": "SLP_CIVIL",
+            "model_tier": "high",
             "workspace_id": "workspace-invalid-hash",
             "organization_id": "organization-invalid-hash",
             "documents": [
@@ -851,6 +870,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         "/v1/filings/agd-reindex-1/reindex",
         json={
             "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
             "documents": [_doc("01_Petition.pdf")],
         },
     )
@@ -868,6 +888,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         "/v1/filings/agd-reindex-1/reindex",
         json={
             "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -895,6 +916,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         "/v1/filings/agd-reindex-1/reindex",
         json={
             "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -907,6 +929,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         "/v1/filings/agd-reindex-1/reindex",
         json={
             "filing_type": "SLP_CIVIL",
+            "model_tier": "high",
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -925,7 +948,46 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
     assert getattr(event, "job_type") == "index_parsed"
     assert getattr(event, "agent_data_id") == "agd-reindex-1"
     assert getattr(event, "workspace_id") == "ws-reindex-1"
+    assert getattr(event, "model_tier") == "high"
     assert notified.get("kind") == "scrutiny"
+
+
+@pytest.mark.parametrize("model_tier", [None, "", "   ", "turbo"])
+def test_index_rejects_missing_or_invalid_model_tier(
+    client: TestClient, model_tier: str | None
+) -> None:
+    payload = {
+        "filing_type": "SLP_CIVIL",
+        "documents": [_doc("01_Petition.pdf")],
+    }
+    if model_tier is not None:
+        payload["model_tier"] = model_tier
+    response = client.post("/v1/filings/agd-index-tier/index", json=payload)
+    assert response.status_code == 422
+    assert "model_tier" in response.text
+
+
+def test_reindex_rejects_unset_tier_model_before_delete(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deleted: list[str] = []
+    monkeypatch.delenv("SCRUTINY_MODEL_MEDIUM", raising=False)
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        lambda workspace_id: deleted.append(workspace_id),
+    )
+    response = client.post(
+        "/v1/filings/agd-reindex-tier/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "medium",
+            "workspace_id": "ws-reindex-tier",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 422
+    assert "SCRUTINY_MODEL_MEDIUM" in response.text
+    assert deleted == []
 
 
 def test_job_record_out_has_duplicates() -> None:

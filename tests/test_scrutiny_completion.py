@@ -11,9 +11,17 @@ from extraction_review.scrutiny.schema import (
 from extraction_review.scrutiny_workflow import _run_defect, require_successful_checks
 
 
-def test_failed_defect_check_rejects_completed_scrutiny() -> None:
+def test_one_failed_check_keeps_the_completed_report() -> None:
     findings = [SimpleNamespace(error=None), SimpleNamespace(error="Vertex 429")]
-    with pytest.raises(RuntimeError, match="1 of 2 checks failed"):
+    require_successful_checks(findings, planned=2)
+
+
+def test_every_failed_check_rejects_the_report() -> None:
+    findings = [
+        SimpleNamespace(error="OpenRouter timeout"),
+        SimpleNamespace(error="Vertex 429"),
+    ]
+    with pytest.raises(RuntimeError, match="2 of 2 checks failed"):
         require_successful_checks(findings, planned=2)
 
 
@@ -97,11 +105,13 @@ async def test_uncertain_first_pass_is_not_forced_to_compliant(monkeypatch) -> N
         record={},
         chunks=[],
         filing_type="SLP_CIVIL",
+        model="google/gemini-test",
     )
 
     assert result.status == "needs_review"
     assert call.await_count == 1
     assert call.await_args.kwargs["request_label"] == "scrutiny:D-1"
+    assert call.await_args.kwargs["model"] == "google/gemini-test"
 
 
 @pytest.mark.asyncio
@@ -139,6 +149,7 @@ async def test_unverified_rule_is_evaluated_from_filing_evidence(monkeypatch) ->
         record={},
         chunks=[],
         filing_type="SLP_CIVIL",
+        model="google/gemini-test",
     )
 
     assert result.status == "defect_found"
@@ -165,6 +176,7 @@ async def test_d324_missing_aor_certificate_is_defect_without_legal_gate(
         filing_type="SLP_CIVIL",
         layout={1: {"document_part": "Main Petition"}},
         absence_defect_parts=["AOR's Certificate"],
+        model="google/gemini-test",
     )
 
     assert result.status == "defect_found"
@@ -189,6 +201,7 @@ async def test_d55_is_na_when_affidavit_prerequisite_is_absent(monkeypatch) -> N
         chunks=[],
         filing_type="SLP_CIVIL",
         layout={1: {"document_part": "Main Petition"}},
+        model="google/gemini-test",
     )
 
     assert result.status == "not_applicable"
