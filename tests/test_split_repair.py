@@ -20,6 +20,30 @@ def test_trailing_index_description_is_not_an_application_start() -> None:
     assert _outer_anchor_label(text) == "Index"
 
 
+def test_defect_003_index_continuation_is_not_filing_memo() -> None:
+    """A listed Filing Memo is a row, not the identity of physical page 5."""
+    from extraction_review.split_repair import (
+        _looks_like_filing_inventory_index,
+        _outer_anchor_label,
+    )
+
+    text = (
+        "INDEX\n"
+        "S.No. Particulars Page No.\n"
+        "20. Annexure P-8 193-202\n"
+        "21. Annexure P-9 203-210\n"
+        "22. Annexure P-10 211-212\n"
+        "23. Application for Additional Documents 213-216\n"
+        "24. Annexure P-11 217-285\n"
+        "25. Annexure P-12 286-303\n"
+        "26. Filing Memo 304\n"
+        "27. Vakalatnama & Appearance 305-306\n"
+    )
+
+    assert not _looks_like_filing_inventory_index(text)
+    assert _outer_anchor_label(text) == "Index"
+
+
 def test_defect_011_honble_sci_pages_keep_their_specific_boundaries() -> None:
     """The optional HON'BLE token must not hide this filing's outer headings."""
     from extraction_review.document_parts import page_starts_application

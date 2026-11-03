@@ -183,6 +183,20 @@ def _looks_like_filing_inventory_index(text: str) -> bool:
     folded = _fold(text[:3500])
     if "master index" in folded or "page no. of part" in folded:
         return False
+    # A paper-book Index maps each listed document to its printed folios.
+    # Those rows may themselves contain ``Filing Memo``, ``Application``,
+    # ``Annexure`` and ``Vakalatnama``; treating the row values as the page's
+    # identity incorrectly turns an Index continuation into Filing Memo.  The
+    # short filing-stage inventory uses COPY / COURT FEE columns instead and
+    # does not assign document page ranges.
+    has_page_number_column = bool(
+        re.search(r"\b(?:page|pages)\s+no\.?\b", folded[:1200])
+    )
+    printed_folio_ranges = re.findall(
+        r"\b\d{1,4}\s*[-–—]\s*\d{1,4}\b", text[:3500]
+    )
+    if has_page_number_column and len(printed_folio_ranges) >= 2:
+        return False
     cues = sum(
         bool(re.search(pattern, folded))
         for pattern in (
