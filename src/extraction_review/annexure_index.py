@@ -22,7 +22,11 @@ from workflows.resource import Resource
 from .clients import get_llama_cloud_client
 from .document_parts import AnnexureMark, numbered_part_slot_id
 from .llm import call_structured
-from .vector_store import fetch_page_texts
+from .vector_store import (
+    fetch_page_texts,
+    scoped_record_base_id,
+    search_filing_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +393,150 @@ async def describe_annexures(
     )
 
 
+def _vector_index(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    vector = metadata.get("vector_index")
+    return vector if isinstance(vector, dict) else {}
+
+
+def _scoped_base_id(
+    *,
+    file_hash: str,
+    organization_id: str,
+    workspace_id: str,
+    generation: str,
+) -> str | None:
+    if not all((file_hash, organization_id, workspace_id, generation)):
+        return None
+    return scoped_record_base_id(
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=generation,
+    )
+
+
+def _record_base_id(record_id: str) -> str:
+    for marker in (":page:", ":manifest:", ":summary"):
+        if marker in record_id:
+            return record_id.split(marker, 1)[0]
+    return ""
+
+
+def probe_pages_for(documents: list[dict[str, Any]]) -> list[int]:
+    """A few document edges, enough to tell whether a Pinecone id has this filing."""
+    pages: list[int] = []
+    for span in documents:
+        for key in ("start_page", "end_page"):
+            number = span.get(key)
+            if isinstance(number, int) and number > 0 and number not in pages:
+                pages.append(number)
+            if len(pages) >= 8:
+                return pages
+    return pages
+
+
+def _pages_have_text(
+    base_id: str,
+    pages: list[int],
+    fetch_pages: Callable[..., dict[int, str]],
+) -> bool:
+    wanted = [page for page in pages if page > 0][:8]
+    if not base_id or not wanted:
+        return False
+    found = fetch_pages(base_id=base_id, pages=wanted)
+    return any(str(text or "").strip() for text in found.values())
+
+
+def _search_page_hits(
+    *,
+    file_hash: str,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> list[dict[str, Any]]:
+    return search_filing_chunks(
+        "annexure",
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        top_k=3,
+        vector_schema_version=None,
+    )
+
+
+def resolve_page_base_id(
+    payload: dict[str, Any],
+    *,
+    probe_pages: list[int],
+    fetch_pages: Callable[..., dict[int, str]] | None = None,
+    search_pages: Callable[..., list[dict[str, Any]]] | None = None,
+) -> str:
+    """Pinecone id prefix for this filing's page text.
+
+    Indexing stores pages under a scoped id, not the raw file hash. When the
+    active vector generation has no pages, use the id on the records that do.
+    """
+    file_hash = str(payload.get("file_hash") or "").strip()
+    vector = _vector_index(payload)
+    organization_id = str(
+        vector.get("organization_id") or payload.get("organization_id") or ""
+    ).strip()
+    workspace_id = str(
+        vector.get("workspace_id") or payload.get("workspace_id") or ""
+    ).strip()
+    reader = fetch_pages or fetch_page_texts
+    candidates: list[str] = []
+    active = _scoped_base_id(
+        file_hash=str(vector.get("file_hash") or file_hash).strip(),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        generation=str(vector.get("generation") or "").strip(),
+    )
+    if active:
+        candidates.append(active)
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    report = metadata.get("scrutiny_report")
+    report_generation = (
+        str(report.get("index_generation") or "").strip()
+        if isinstance(report, dict)
+        else ""
+    )
+    reported = _scoped_base_id(
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        generation=report_generation,
+    )
+    if reported and reported not in candidates:
+        candidates.append(reported)
+    if file_hash and file_hash not in candidates:
+        candidates.append(file_hash)
+
+    for base_id in candidates:
+        if _pages_have_text(base_id, probe_pages, reader):
+            return base_id
+
+    finder = search_pages or _search_page_hits
+    if file_hash:
+        hits = finder(
+            file_hash=file_hash,
+            organization_id=organization_id or None,
+            workspace_id=workspace_id or None,
+        )
+        for hit in hits:
+            prefix = _record_base_id(str(hit.get("record_id") or ""))
+            if prefix and prefix not in candidates and _pages_have_text(
+                prefix, probe_pages, reader
+            ):
+                logger.warning(
+                    "Annexure pages for workspace %s are stored under a Pinecone "
+                    "generation other than the active vector index",
+                    workspace_id or file_hash[:12],
+                )
+                return prefix
+    return candidates[0] if candidates else file_hash
+
+
 def _payload_dict(item: Any) -> dict[str, Any]:
     data = getattr(item, "data", None)
     if hasattr(data, "model_dump"):
@@ -423,7 +571,10 @@ class AnnexureIndexWorkflow(Workflow):
             raise ValueError(
                 "Annexure index runs after scrutiny. Run index or scrutiny first."
             )
-        file_hash = str(payload.get("file_hash") or "").strip()
+        documents = document_spans(payload)
+        page_base_id = resolve_page_base_id(
+            payload, probe_pages=probe_pages_for(documents)
+        )
         async with ctx.store.edit_state() as state:
             state.agent_data_id = event.agent_data_id
         ctx.write_event_to_stream(
@@ -440,8 +591,8 @@ class AnnexureIndexWorkflow(Workflow):
         )
         rows = await describe_annexures(
             annexures=list(event.annexures),
-            documents=document_spans(payload),
-            file_hash=file_hash,
+            documents=documents,
+            file_hash=page_base_id,
         )
         ctx.write_event_to_stream(
             Status(level="info", message="Annexure descriptions complete")

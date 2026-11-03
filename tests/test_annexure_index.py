@@ -14,10 +14,15 @@ from extraction_review.annexure_index import (
     clean_index_description,
     describe_annexures,
     resolve_annexure_token,
+    resolve_page_base_id,
 )
 from extraction_review.api import JOBS, app
 from extraction_review.scrutiny.schema import LlmUsage
-from extraction_review.vector_store import fetch_page_texts, page_record_id
+from extraction_review.vector_store import (
+    fetch_page_texts,
+    page_record_id,
+    scoped_record_base_id,
+)
 
 LOD_PAGE = """
 29.11.2020 ANNEXURE P-1: A true copy of the Facility Agreement dated 29.11.2020 executed between the Petitioner and Respondent No. 2 to 4. (Pg. 37-48)
@@ -186,6 +191,79 @@ async def test_describe_annexures_lod_copy_type_and_fallback(monkeypatch) -> Non
             "confidence",
             "description",
         }
+
+
+def test_resolve_page_base_id_prefers_the_active_generation() -> None:
+    file_hash = "a" * 64
+    active = scoped_record_base_id(
+        file_hash=file_hash,
+        organization_id="org",
+        workspace_id="ws",
+        index_generation="active-gen",
+    )
+    payload = {
+        "file_hash": file_hash,
+        "metadata": {
+            "vector_index": {
+                "file_hash": file_hash,
+                "organization_id": "org",
+                "workspace_id": "ws",
+                "generation": "active-gen",
+            }
+        },
+    }
+
+    def fetch(*, base_id: str, pages: list[int]) -> dict[int, str]:
+        if base_id == active:
+            return {pages[0]: "indexed page"}
+        return {}
+
+    def search(**_kwargs: object) -> list[dict[str, object]]:
+        raise AssertionError("search is not used when the active generation has text")
+
+    assert (
+        resolve_page_base_id(
+            payload,
+            probe_pages=[33],
+            fetch_pages=fetch,
+            search_pages=search,
+        )
+        == active
+    )
+
+
+def test_resolve_page_base_id_uses_the_generation_that_has_pages() -> None:
+    file_hash = "a" * 64
+    live = "b" * 64
+    payload = {
+        "file_hash": file_hash,
+        "metadata": {
+            "vector_index": {
+                "file_hash": file_hash,
+                "organization_id": "org",
+                "workspace_id": "ws",
+                "generation": "empty-gen",
+            }
+        },
+    }
+
+    def fetch(*, base_id: str, pages: list[int]) -> dict[int, str]:
+        if base_id == live:
+            return {pages[0]: "annexure text"}
+        return {}
+
+    def search(**_kwargs: object) -> list[dict[str, object]]:
+        return [{"record_id": f"{live}:page:33:0"}]
+
+    assert (
+        resolve_page_base_id(
+            payload,
+            probe_pages=[33],
+            fetch_pages=fetch,
+            search_pages=search,
+        )
+        == live
+    )
 
 
 @pytest.mark.asyncio
