@@ -185,6 +185,29 @@ def test_index_row_keeps_page_span_printed_on_following_line() -> None:
     )
 
 
+def test_sandwiched_annexure_range_repairs_dropped_leading_digits() -> None:
+    """Defect 003: 32-66 OCR'd as 11-16 cannot overlap the prior rows."""
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "11.\tSpecial Leave Petition along with Affidavit\t10-30\n"
+        "12.\tAppendix: Section 10 and 11 CPC\t31\n"
+        "13.\tAnnexure P-1: plaint in CS(OS) 1251/2009\t11-16\n"
+        "14.\tAnnexure P-2: order in CS(OS) 1251/2009\t67-68\n"
+    )
+
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: text})
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert (by_part["Annexure P-1"].start, by_part["Annexure P-1"].end) == (
+        32,
+        66,
+    )
+    assert (by_part["Annexure P-2"].start, by_part["Annexure P-2"].end) == (
+        67,
+        68,
+    )
+
+
 def test_sequence_flags_out_of_order_main_petition_before_index() -> None:
     spans = [
         {"name": "Main Petition", "start_page": 10, "end_page": 20},

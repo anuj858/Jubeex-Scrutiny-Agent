@@ -166,6 +166,21 @@ def test_isolated_scc_reporter_counter_is_not_an_outer_index_folio():
     assert evidence.authoritative_for_index is False
 
 
+def test_scc_counter_without_of_suffix_is_not_an_outer_index_folio():
+    text = (
+        "SCC ONLINE True Print | Page 1 Friday, September 15, 2023\n"
+        "UNITED INDIA INSURANCE CO. LTD. v. RAJENDRA SINGH\n"
+        "1"
+    )
+
+    assert printed_folio(text) == ("number", 1, "")
+    assert index_printed_folio(text) is None
+    evidence = printed_folio_evidence(text)
+    assert evidence is not None
+    assert evidence.source == "reported_judgment_page_counter"
+    assert evidence.authoritative_for_index is False
+
+
 def test_isolated_outer_folio_remains_authoritative_for_index_alignment():
     text = "SCC ONLINE True Print | Page 1 of 8\nJudgment body\n22"
 

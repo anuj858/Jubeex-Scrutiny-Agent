@@ -62,6 +62,18 @@ def test_geometry_reference_is_not_an_annexure_start() -> None:
     assert annexure_ref_in_heading(reference) is None
 
 
+def test_pipe_cell_annexure_pi_ocr_is_an_explicit_p1_stamp() -> None:
+    text = (
+        "SCC ONLINE True Print | Page 1 Friday, September 15, 2023 | "
+        "Annexure - PI | 22\nUNITED INDIA INSURANCE CO. LTD. v. RAJENDRA SINGH"
+    )
+
+    mark = annexure_ref_in_heading(text)
+
+    assert mark is not None
+    assert mark.label == "Annexure P-1"
+
+
 def test_native_complete_reference_is_not_appended_twice() -> None:
     with pymupdf.open() as pdf:
         page = pdf.new_page()

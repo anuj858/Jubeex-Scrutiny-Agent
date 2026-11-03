@@ -40,6 +40,7 @@ from .split_ocr import ocr_sparse_pages, pages_with_large_images
 from .split_pdf_layout import extract_split_layout
 from .split_pdf_layout import printed_folio as _printed_folio
 from .split_repair import (
+    _annexure_run_bounds,
     _apply_cited_annexure_ranges,
     _apply_indexed_annexure_ranges,
     _apply_indexed_outer_document_ranges,
@@ -52,8 +53,8 @@ from .split_repair import (
     _is_lower_court_caption,
     _is_near_blank_page,
     _is_sci_caption,
-    _looks_like_index_continuation,
     _looks_like_court_notice_or_rop,
+    _looks_like_index_continuation,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
     _restore_early_record_of_proceedings,
@@ -100,6 +101,24 @@ _ANNEXURE_HEADING_RE = re.compile(
     r"(?m)^\s*(?:annexure|exhibit)\s*[-–—:]?\s*[a-z]?\s*-?\s*p?-?\s*\d+\b",
     re.I,
 )
+
+
+def _has_explicit_annexure_heading(text: str) -> bool:
+    """True only for a physical outer stamp, including flattened table cells."""
+    if _ANNEXURE_HEADING_RE.search(text or ""):
+        return True
+    for line in (text or "").splitlines()[:6]:
+        cells = [cell.strip() for cell in line.split("|")]
+        for position, cell in enumerate(cells[:-1]):
+            if position and re.fullmatch(r"\d{1,3}[.)]", cells[position - 1]):
+                continue
+            if re.fullmatch(
+                r"(?i)annexure\s*[-–—:.~\s]*[PRE]\s*[-–—/:.~\s]*"
+                r"(?:\d+|[Il])",
+                cell,
+            ) and re.fullmatch(r"\d{1,4}", cells[position + 1]):
+                return True
+    return False
 _CENTERED_TITLE_RE = re.compile(
     r"(?m)^\s{0,40}(ANNEXURE|EXHIBIT|VAKALATNAMA|AFFIDAVIT|SYNOPSIS|"
     r"LIST OF DATES|MEMO OF PARTIES|FILING MEMO|IMPUGNED)\b",
@@ -1983,12 +2002,12 @@ def reconcile_compiled_split(
                 and len(new) == 1
                 and family_split_name(new[0]) == ANNEXURE_FAMILY
                 and envelope_opening
-                and _ANNEXURE_HEADING_RE.search(
+                and _has_explicit_annexure_heading(
                     page_text.get(proposed_segment_range[0], "")
                 )
                 and envelope_opening.label == new[0]
                 and envelope_following
-                and _ANNEXURE_HEADING_RE.search(
+                and _has_explicit_annexure_heading(
                     page_text.get(proposed_segment_range[1] + 1, "")
                 )
                 and envelope_following.series == envelope_opening.series
@@ -2092,8 +2111,23 @@ def reconcile_compiled_split(
                 )
             )
             independent_annexure_exit = bool(
-                page in authoritative_starts
-                or "master_index_and_folio" in evidence
+                # Starting an authoritative *Annexure* segment proves the old
+                # owner; it is not evidence that an Index-derived non-Annexure
+                # label may replace it.  Likewise, printed folios corroborate
+                # physical ownership but never independently override it.
+                verified_exact_outer_relabel
+                # A candidate may repair the continuation of an Impugned
+                # Order whose independently classified opening is on the
+                # preceding physical page.  This is stronger than a matching
+                # printed folio and does not permit a one-page carve-out.
+                or (
+                    original_segment_range
+                    and proposed_segment_range
+                    and proposed_segment_range[0] < original_segment_range[0]
+                    and new == ("Impugned Order",)
+                    and page > proposed_segment_range[0]
+                    and tuple(parts_on_page(result.get(page - 1))) == new
+                )
                 or (
                     any(family_split_name(label) == "Application" for label in new)
                     and _is_sci_caption(page_text.get(page, ""))
@@ -3054,6 +3088,12 @@ def structure_aware_split(
             strict_continuity=True,
             preserve_pages=index_supported_pages,
         )
+        stamped_annexure_owner: dict[int, str] = {}
+        for run_start, run_end, run_label in _annexure_run_bounds(
+            texts, len(units)
+        ):
+            for source_page in range(run_start, run_end + 1):
+                stamped_annexure_owner[source_page] = run_label
         protected_boundary_starts = {
             int(segment.get("start_page") or 0)
             for segment in authoritative_segments
@@ -3072,6 +3112,10 @@ def structure_aware_split(
                 and family_split_name(new_labels[0]) == ANNEXURE_FAMILY
                 and old_labels != new_labels
                 and annexure_label_from_text(texts.get(page, "")) is None
+                and not (
+                    old_labels[0] in {"Annexure", "Annexures"}
+                    and stamped_annexure_owner.get(page) == new_labels[0]
+                )
             ):
                 annexure_candidate[page] = list(old_labels)
         annexure_candidate = _preserve_directly_opened_parent_segments(

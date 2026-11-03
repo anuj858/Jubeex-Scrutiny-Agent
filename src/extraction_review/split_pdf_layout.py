@@ -353,6 +353,26 @@ def printed_folio_evidence(text: str) -> PrintedFolioEvidence | None:
                 authoritative_for_index=False,
             )
             break
+    # Reporter exports also use an internal counter such as ``Page 1 Friday,
+    # September 15, 2023`` without an ``of N`` suffix.  A footnote/citation at
+    # the bottom can then leave an isolated ``1`` which used to be mistaken
+    # for the paper-book folio and aligned to master-Index page 1.  Record the
+    # reporter counter as non-authoritative so only a distinct outer folio
+    # (for example 22) may participate in Index-to-physical-page alignment.
+    if page_counter is None and _REPORTED_JUDGMENT_PAGE_RE.search(text or ""):
+        for line in lines[:18]:
+            match = re.search(
+                r"\b(?:page|pg\.?)\s*(?:no\.?\s*)?(\d{1,4})\b",
+                line,
+                re.IGNORECASE,
+            )
+            if match:
+                page_counter = PrintedFolioEvidence(
+                    ("number", int(match.group(1)), ""),
+                    source="reported_judgment_page_counter",
+                    authoritative_for_index=False,
+                )
+                break
     skipped_word = False
     for line in reversed(lines):
         if re.fullmatch(r"[\W_]+", line):

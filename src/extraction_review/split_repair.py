@@ -1988,10 +1988,12 @@ def _force_annexure_nesting(
             ):
                 continue
             names = parts_on_page(updated.get(page))
-            # Keep other outer-document body pages unless this sheet itself
-            # prints an Annexure stamp. A model-assigned Main Petition is not
-            # protected inside a stamped Annexure run: reproduced old-case
-            # petitions commonly have the same pleading structure.
+            # Keep genuine *current-SCI* outer documents unless this sheet
+            # itself prints an Annexure stamp.  A lower-court Affidavit,
+            # Certificate or Declaration inside a stamp-to-next-stamp
+            # Annexure envelope is enclosed content, not a filing boundary.
+            # A model-assigned Main Petition is likewise not protected inside
+            # the envelope: reproduced old-case pleadings have that structure.
             if names and not annexure_ref_in_heading(text):
                 if any(
                     name
@@ -2001,7 +2003,7 @@ def _force_annexure_nesting(
                         "Affidavit",
                     }
                     for name in names
-                ):
+                ) and _is_sci_caption(text) and not _is_lower_court_caption(text):
                     continue
             existing_annex = next(
                 (name for name in names if family_split_name(name) == ANNEXURE_FAMILY),
@@ -2026,6 +2028,9 @@ def _force_annexure_nesting(
                 and all(name in _CARRY_BLOCKING_PARTS for name in names)
                 and "Index" not in names
             ):
+                if _is_lower_court_caption(text):
+                    updated[page] = [label]
+                    continue
                 if not strict_continuity or _outer_anchor_label(text) is not None:
                     continue
             if not names or any(

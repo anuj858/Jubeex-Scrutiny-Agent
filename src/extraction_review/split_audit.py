@@ -849,6 +849,57 @@ def aligned_index_printed_rows(
                     end=end,
                 )
                 unique[("Appendix", "number", start, end, "")] = recovered
+
+    # Repair one narrowly bounded OCR-corrupted Annexure range.  A scanned
+    # page-number cell can lose its leading digit (``32-66`` -> ``11-16``),
+    # placing the complete Annexure span inside the preceding petition range.
+    # Infer the replacement only when the bad row is fully swallowed by the
+    # immediately preceding numeric row and the immediately following row is
+    # the next Annexure in the same series.  The two neighbours then leave one
+    # exact, contiguous gap; no page range is guessed from numbering alone.
+    ordered_rows = list(unique.values())
+    for position in range(1, len(ordered_rows) - 1):
+        previous = ordered_rows[position - 1]
+        current = ordered_rows[position]
+        following = ordered_rows[position + 1]
+        current_key = annexure_key(current)
+        following_key = annexure_key(following)
+        if (
+            current_key is None
+            or following_key != (current_key[0], current_key[1] + 1)
+            or previous.kind != "number"
+            or current.kind != "number"
+            or following.kind != "number"
+            or previous.end <= 0
+            or current.start <= 0
+            or current.end > previous.end
+            or current.start > previous.end
+            or following.start <= previous.end + 1
+        ):
+            continue
+        repaired_start = previous.end + 1
+        repaired_end = following.start - 1
+        if repaired_end < repaired_start:
+            continue
+        old_key = (
+            current.mapped_part,
+            current.kind,
+            current.start,
+            current.end,
+            current.end_suffix,
+        )
+        unique.pop(old_key, None)
+        repaired = replace(current, start=repaired_start, end=repaired_end)
+        unique[
+            (
+                repaired.mapped_part,
+                repaired.kind,
+                repaired.start,
+                repaired.end,
+                repaired.end_suffix,
+            )
+        ] = repaired
+        ordered_rows[position] = repaired
     annexure_rows = sorted(
         (row for row in unique.values() if annexure_key(row)),
         key=lambda row: (annexure_key(row) or ("", 0), row.start, row.end),
