@@ -113,6 +113,7 @@ from .scrutiny.schema import (
     failed_finding,
     manifest_absence_proven,
     missing_dependency_finding,
+    missing_dependency_parts_in_layout,
     missing_document_finding,
     missing_parts_in_layout,
     summarize,
@@ -306,9 +307,9 @@ def _sanitize_response(
     response = apply_presence_only_policy(defect, response, chunks, layout)
     response = apply_status_policy(response)
     response = apply_review_reason_consistency_policy(response)
-    response = apply_undetermined_policy(defect, response, chunks)
+    response = apply_undetermined_policy(defect, response, chunks, layout)
     if enforce_retrieval:
-        response = apply_retrieval_policy(defect, response, chunks)
+        response = apply_retrieval_policy(defect, response, chunks, layout)
     response = apply_reviewed_document_policy(defect, response, chunks)
     response = apply_margin_layout_policy(defect, response, layout)
     response = apply_supported_evidence_policy(defect, response)
@@ -327,8 +328,6 @@ def _retrieval_evidence_complete(
 ) -> bool:
     """Do not equate a successful semantic sample with exhaustive inspection."""
 
-    if not chunks or missing_required_parts(defect, chunks):
-        return False
     if not layout:
         return False
 
@@ -353,7 +352,10 @@ def _retrieval_evidence_complete(
             )
         ]
         if not part_pages:
-            return False
+            # The complete layout proves this optional inspection target is
+            # absent. Dependency and presence-owner outcomes are handled
+            # before evaluation; absence here is not a retrieval failure.
+            continue
         complete_retry = any(chunk.get("complete_part_retry") for chunk in chunks)
         if complete_retry or strategy == "exhaustive_part":
             required_pages = set(part_pages)
@@ -425,11 +427,6 @@ def _aggregate_complete_batch_responses(
     defects = [item for item in responses if item.status == "defect_found"]
     if defects:
         return max(defects, key=lambda item: item.confidence)
-    governed = [
-        item for item in responses if item.status == "rule_verification_pending"
-    ]
-    if governed:
-        return governed[0]
     if responses and all(item.status == "compliant" for item in responses):
         chosen = max(responses, key=lambda item: item.confidence)
         chosen.summary = "Every complete-evidence batch satisfied the requirement."
@@ -440,7 +437,8 @@ def _aggregate_complete_batch_responses(
     chosen.status = "needs_review"
     chosen.gap = chosen.gap or "ambiguous"
     chosen.gap_detail = chosen.gap_detail or (
-        "The exhaustive evidence batches did not produce one consistent outcome."
+        "The complete evidence batches produced inconsistent filing outcomes. "
+        "Catalogue legal-verification metadata was not used as a filing status."
     )
     return chosen
 
@@ -624,7 +622,8 @@ async def _run_defect(
     # short-circuit retrieval or replace the filing outcome.  The operational
     # requirement, applicability, manifest and filing evidence determine the
     # result; source verification can be audited separately.
-    missing_parts = missing_parts_in_layout(defect, layout)
+    presence_missing = missing_parts_in_layout(defect, layout)
+    dependency_missing = missing_dependency_parts_in_layout(defect, layout)
     required_now = required_parts_for_defect(defect)
     certificate_check = (
         "AOR's Certificate" in required_now
@@ -634,12 +633,12 @@ async def _run_defect(
     # certificate. A checklist signature on a different document is not.
     if (
         certificate_check
-        and missing_parts
-        and "AOR's Certificate" in missing_parts
+        and presence_missing
+        and "AOR's Certificate" in presence_missing
         and _layout_contains_aor_certificate(layout)
     ):
-        missing_parts = [
-            part for part in missing_parts if part != "AOR's Certificate"
+        presence_missing = [
+            part for part in presence_missing if part != "AOR's Certificate"
         ]
     if (
         getattr(defect, "manifest_absence_proves_defect", False)
@@ -654,17 +653,17 @@ async def _run_defect(
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
-    if missing_parts and absence_defect_parts:
+    if presence_missing and absence_defect_parts:
         return missing_document_finding(
             defect,
-            [part for part in missing_parts if part in absence_defect_parts],
+            [part for part in presence_missing if part in absence_defect_parts],
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
-    if missing_parts:
+    if dependency_missing:
         return missing_dependency_finding(
             defect,
-            missing_parts,
+            dependency_missing,
             record=record if isinstance(record, dict) else None,
         )
     if manifest_absence_proven(defect, layout) and not (
@@ -672,10 +671,19 @@ async def _run_defect(
     ):
         return missing_document_finding(
             defect,
-            missing_parts or required_parts_for_defect(defect),
+            presence_missing or required_parts_for_defect(defect),
             visual_index=visual_index,
             record=record if isinstance(record, dict) else None,
         )
+
+    # Complete the required evidence set before the first evaluation. Semantic
+    # retrieval is only a locator; it must not decide which pages the model is
+    # allowed to inspect. Oversized complete sets are handled by the existing
+    # page-preserving batch retry below.
+    if layout and not _retrieval_evidence_complete(defect, chunks, layout):
+        complete_chunks = _complete_layout_chunks_for_defect(defect, chunks, layout)
+        if complete_chunks:
+            chunks = complete_chunks
 
     check_visual_index = _visual_index_for_defect(defect, visual_index)
     # The model, the follow-up, and the full-part retry all see the same
@@ -1034,6 +1042,9 @@ async def _chunks_for_defect(
         )
 
     missing = missing_required_parts(defect, pool)
+    manifest_missing = missing_parts_in_layout(defect, layout)
+    if manifest_missing is not None:
+        missing = [part for part in missing if part not in manifest_missing]
     if missing:
         missing_plan = tuple(
             query
@@ -2197,7 +2208,11 @@ class ScrutinyWorkflow(Workflow):
             )
             try:
                 retrieval_started = time.perf_counter()
-                manifest_missing = missing_parts_in_layout(defect, layout)
+                manifest_missing = (
+                    missing_parts_in_layout(defect, layout)
+                    if defect.manifest_absence_proves_defect
+                    else missing_dependency_parts_in_layout(defect, layout)
+                )
                 chunks = (
                     []
                     if manifest_missing
