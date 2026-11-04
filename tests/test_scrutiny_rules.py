@@ -419,6 +419,39 @@ def test_writ_pil_with_application_runs_both_special_overlays(monkeypatch) -> No
     assert {"D-206", "D-317", "D-319", "D-320", "D-322"} <= check_ids
 
 
+def test_index_array_is_the_selection_and_stored_text_is_not() -> None:
+    selected = _special_categories_for_filing(
+        supplied="Tax Matters, PIL, Commercial",
+        supplied_categories=["Tax Matters", "PIL", "Eviction Matters"],
+        metadata={},
+        record={"special_category": "Demolition Matters, Jail Petition"},
+        layout={},
+        filing_type="SLP_CRIMINAL",
+    )
+    empty = _special_categories_for_filing(
+        supplied=None,
+        supplied_categories=[],
+        metadata={},
+        record={"special_category": "Tax Matters, PIL"},
+        layout={},
+        filing_type="SLP_CRIMINAL",
+    )
+    stored = _special_categories_for_filing(
+        supplied=None,
+        metadata={},
+        record={
+            "special_category": "Tax Matters, PIL",
+            "special_categories": ["Tax Matters", "PIL"],
+        },
+        layout={},
+        filing_type="SLP_CRIMINAL",
+    )
+
+    assert selected == ["Tax Matters", "PIL", "Eviction Matters"]
+    assert empty == []
+    assert stored == ["Tax Matters", "PIL"]
+
+
 def test_comma_separated_special_categories_are_split() -> None:
     categories = _special_categories_for_filing(
         supplied="Tax Matters, Eviction Matters",

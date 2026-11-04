@@ -179,6 +179,7 @@ class ScrutinyEvent(StartEvent):
     organization_id: str | None = None
     workspace_id: str | None = None
     special_category: str | None = None
+    special_categories: list[str] | None = None
     filing_type: str | None = None
     court: str | None = None
     model_tier: str | None = None
@@ -1489,15 +1490,25 @@ def _add_layout_fallback_chunks(
 def _special_categories_for_filing(
     *,
     supplied: str | None,
+    supplied_categories: list[str] | None = None,
     metadata: dict[str, Any] | None,
     record: dict[str, Any] | None,
     layout: dict[int, dict[str, Any]] | None,
     filing_type: str | None,
 ) -> list[str]:
-    """Combine explicit and structurally certain special-category overlays."""
+    """Combine explicit and structurally certain special-category overlays.
+
+    Index and reindex pass ``supplied_categories``, the array from the
+    request. The comma-separated ``special_category`` string is only the
+    value stored on the matter, used when the request did not send the array.
+    """
     found: list[str] = []
 
     def add(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                add(item)
+            return
         text = str(value or "").strip()
         names = match_front_special_categories(text, limit=None)
         if not names and normalize_special_category(text):
@@ -1506,9 +1517,14 @@ def _special_categories_for_filing(
             if name not in found:
                 found.append(name)
 
-    add(supplied)
-    add((metadata or {}).get("special_category"))
-    add((record or {}).get("special_category"))
+    if supplied_categories is not None:
+        add(supplied_categories)
+    else:
+        add(supplied)
+        add((metadata or {}).get("special_categories"))
+        add((record or {}).get("special_categories"))
+        add((metadata or {}).get("special_category"))
+        add((record or {}).get("special_category"))
 
     pages = layout or {}
     part_names = {
@@ -1830,6 +1846,7 @@ class ScrutinyWorkflow(Workflow):
         )
         special_categories = _special_categories_for_filing(
             supplied=event.special_category,
+            supplied_categories=event.special_categories,
             metadata=metadata if isinstance(metadata, dict) else None,
             record=record if isinstance(record, dict) else None,
             layout=layout,
