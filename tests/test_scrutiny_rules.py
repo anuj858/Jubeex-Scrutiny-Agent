@@ -452,6 +452,48 @@ def test_index_array_is_the_selection_and_stored_text_is_not() -> None:
     assert stored == ["Tax Matters", "PIL"]
 
 
+def test_comma_separated_specials_run_every_listed_category(monkeypatch) -> None:
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
+    catalogue = rules_mod._load_file_catalogue()
+    monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
+    supplied = "Bail Applications/Bail Matters, Eviction Matters"
+    categories = _special_categories_for_filing(
+        supplied=supplied,
+        metadata={},
+        record={},
+        layout={},
+        filing_type="SLP_CRIMINAL",
+    )
+    defects = _defects_for_special_categories(
+        "SLP_CRIMINAL",
+        special_categories=categories,
+        court=None,
+    )
+    check_ids = {defect.check_id for defect in defects}
+    bail_only = {
+        defect.check_id
+        for defect in _defects_for_special_categories(
+            "SLP_CRIMINAL",
+            special_categories=["Bail Applications/Bail Matters"],
+            court=None,
+        )
+    }
+    eviction_only = {
+        defect.check_id
+        for defect in _defects_for_special_categories(
+            "SLP_CRIMINAL",
+            special_categories=["Eviction Matters"],
+            court=None,
+        )
+    }
+
+    assert categories == ["Bail Applications/Bail Matters", "Eviction Matters"]
+    assert "D-273" in check_ids
+    assert "D-246" in check_ids
+    assert "D-273" in bail_only and "D-246" not in bail_only
+    assert "D-246" in eviction_only and "D-273" not in eviction_only
+
+
 def test_comma_separated_special_categories_are_split() -> None:
     categories = _special_categories_for_filing(
         supplied="Tax Matters, Eviction Matters",

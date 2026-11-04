@@ -789,6 +789,72 @@ def categories_for_filing_type(filing_type: str | None) -> frozenset[str]:
     return frozenset(keys)
 
 
+def _special_label_displays() -> dict[str, str]:
+    """Folded phrase to the label scrutiny should keep.
+
+    Case-type and front labels win over the lowercase alias keys, so
+    ``Bail Applications/Bail Matters`` stays one category and is not split
+    on the slash.
+    """
+    from ..config import FRONT_SPECIAL_CATEGORIES
+
+    ordered: list[str] = []
+    for spec in get_case_types().values():
+        for label in spec.get("special_categories") or []:
+            text = str(label).strip()
+            if text:
+                ordered.append(text)
+    ordered.extend(FRONT_SPECIAL_CATEGORIES)
+    ordered.extend(_SPECIAL_ALIASES)
+    by_phrase: dict[str, str] = {}
+    for label in ordered:
+        phrase = _fold_special_phrase(label)
+        if phrase and phrase not in by_phrase:
+            by_phrase[phrase] = label
+    return by_phrase
+
+
+def split_special_category_list(value: str | None) -> list[str]:
+    """Split a comma-separated request into known special categories.
+
+    A label that itself contains a comma, such as ``Advocates Act, 1961``,
+    stays whole. A slash inside one label, such as
+    ``Bail Applications/Bail Matters``, is not a separator.
+    """
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if not text or text.casefold() in _EMPTY_SPECIAL_TOKENS:
+        return []
+    displays = _special_label_displays()
+    labels = sorted(displays.values(), key=len, reverse=True)
+    found: list[str] = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index] in " ,;":
+            index += 1
+        if index >= len(text):
+            break
+        rest = text[index:]
+        matched: str | None = None
+        for label in labels:
+            if not rest.casefold().startswith(label.casefold()):
+                continue
+            after = rest[len(label) :]
+            if after and after[0] not in " ,;":
+                continue
+            matched = displays[_fold_special_phrase(label)]
+            index += len(label)
+            break
+        if matched:
+            if matched not in found:
+                found.append(matched)
+            continue
+        comma = rest.find(",")
+        if comma < 0:
+            break
+        index += comma + 1
+    return found
+
+
 def normalize_special_category(value: str | None) -> str:
     """Map a frontend or catalogue special-category label onto one key.
 

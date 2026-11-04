@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from ..document_parts import (
     _part_match,
     allows_index_evidence,
+    catalogue_context_parts,
     chunks_cover_part,
     missing_required_parts,
     parts_named_in_where_to_look,
@@ -2048,6 +2049,40 @@ def apply_manifest_absence_policy(
     response.conclusion = sentence
     response.gap = None
     response.evidence = []
+    return response
+
+
+def apply_reviewed_document_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
+    """Do not report a document as missing when its pages were reviewed.
+
+    A second pass can repeat ``part_not_in_excerpts`` from a batch or a model
+    answer even though the same chunks already used for a defect contain that
+    document. Only a part that is actually absent keeps that gap.
+    """
+    if response.status != "needs_review" or response.gap != "part_not_in_excerpts":
+        return response
+    known = list(
+        dict.fromkeys(
+            [
+                *required_parts_for_defect(defect),
+                *catalogue_context_parts(defect),
+            ]
+        )
+    )
+    detail = response.gap_detail or ""
+    named = [part for part in known if part.casefold() in detail.casefold()]
+    if not named:
+        named = list(required_parts_for_defect(defect))
+    absent = [part for part in named if not chunks_cover_part(chunks, part)]
+    if absent:
+        response.gap_detail = ", ".join(absent)
+        return response
+    response.gap = "element_page_not_in_excerpts"
+    response.gap_detail = "the element required to decide this check"
     return response
 
 

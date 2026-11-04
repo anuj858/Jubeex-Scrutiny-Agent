@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..document_parts import (
+    catalogue_context_parts,
     chunks_cover_part,
     required_parts_for_defect,
     slice_record_for_defect,
@@ -496,6 +497,36 @@ def load_context_chunks(
     return []
 
 
+def evidence_chunks_for_rerun(
+    defect: Defect,
+    chunks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only the inspect parts and context parts for a second look.
+
+    The first retrieval can include a neighbouring document. A rerun must
+    judge the check from the parts it was written to inspect, not from that
+    extra text.
+    """
+    allowed = list(
+        dict.fromkeys(
+            [
+                *required_parts_for_defect(defect),
+                *catalogue_context_parts(defect),
+            ]
+        )
+    )
+    if not allowed:
+        return list(chunks)
+    kept: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if chunk.get("chunk_kind") == "summary":
+            kept.append(chunk)
+            continue
+        if any(chunks_cover_part([chunk], part) for part in allowed):
+            kept.append(chunk)
+    return kept
+
+
 def _additional_chunks_fit(
     chunks: list[dict[str, Any]],
     added: list[dict[str, Any]],
@@ -574,10 +605,11 @@ async def serve_context_followup(
             [chunk.get("record_id") for chunk in added],
         )
         return None
+    shown = evidence_chunks_for_rerun(defect, chunks)
     follow_prompt = build_defect_prompt(
         defect,
         record=slice_record_for_defect(record, defect),
-        chunks=chunks,
+        chunks=shown,
         catalogue=catalogue,
         visual_index=visual_index,
         layout=layout,

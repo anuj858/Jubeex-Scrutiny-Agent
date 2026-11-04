@@ -29,6 +29,7 @@ from .document_parts import (
     _is_numbered_annexure,
     _requires_annexure_collection_coverage,
     _requires_complete_part_coverage,
+    catalogue_context_parts,
     chunks_cover_part,
     distinctive_trigger_phrases,
     expand_parts_for_retrieval,
@@ -64,7 +65,10 @@ from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
-from .scrutiny.context_followup import serve_context_followup
+from .scrutiny.context_followup import (
+    evidence_chunks_for_rerun,
+    serve_context_followup,
+)
 from .scrutiny.prompts import (
     MAX_EVIDENCE_CHARS,
     build_defect_prompt,
@@ -79,6 +83,7 @@ from .scrutiny.rules import (
     enabled_defect_ids,
     normalize_filing_type,
     normalize_special_category,
+    split_special_category_list,
     refresh_catalogue,
 )
 from .scrutiny.schema import (
@@ -96,6 +101,7 @@ from .scrutiny.schema import (
     apply_margin_layout_policy,
     apply_presence_only_policy,
     apply_retrieval_policy,
+    apply_reviewed_document_policy,
     apply_review_reason_consistency_policy,
     apply_scope_coverage_policy,
     apply_status_policy,
@@ -303,6 +309,7 @@ def _sanitize_response(
     response = apply_undetermined_policy(defect, response, chunks)
     if enforce_retrieval:
         response = apply_retrieval_policy(defect, response, chunks)
+    response = apply_reviewed_document_policy(defect, response, chunks)
     response = apply_margin_layout_policy(defect, response, layout)
     response = apply_supported_evidence_policy(defect, response)
     response = apply_grounded_defect_policy(response)
@@ -618,6 +625,35 @@ async def _run_defect(
     # requirement, applicability, manifest and filing evidence determine the
     # result; source verification can be audited separately.
     missing_parts = missing_parts_in_layout(defect, layout)
+    required_now = required_parts_for_defect(defect)
+    certificate_check = (
+        "AOR's Certificate" in required_now
+        and "Advocate's Checklist" not in required_now
+    )
+    # A certificate printed at the end of the Main Petition is still the
+    # certificate. A checklist signature on a different document is not.
+    if (
+        certificate_check
+        and missing_parts
+        and "AOR's Certificate" in missing_parts
+        and _layout_contains_aor_certificate(layout)
+    ):
+        missing_parts = [
+            part for part in missing_parts if part != "AOR's Certificate"
+        ]
+    if (
+        getattr(defect, "manifest_absence_proves_defect", False)
+        and certificate_check
+        and layout
+        and not _layout_contains_aor_certificate(layout)
+        and not _layout_has_blank_unlabeled_page(layout)
+    ):
+        return missing_document_finding(
+            defect,
+            ["AOR's Certificate"],
+            visual_index=visual_index,
+            record=record if isinstance(record, dict) else None,
+        )
     if missing_parts and absence_defect_parts:
         return missing_document_finding(
             defect,
@@ -631,7 +667,9 @@ async def _run_defect(
             missing_parts,
             record=record if isinstance(record, dict) else None,
         )
-    if manifest_absence_proven(defect, layout):
+    if manifest_absence_proven(defect, layout) and not (
+        certificate_check and _layout_contains_aor_certificate(layout)
+    ):
         return missing_document_finding(
             defect,
             missing_parts or required_parts_for_defect(defect),
@@ -640,6 +678,10 @@ async def _run_defect(
         )
 
     check_visual_index = _visual_index_for_defect(defect, visual_index)
+    # The model, the follow-up, and the full-part retry all see the same
+    # documents: the inspect parts and any context parts. A neighbouring
+    # document cannot decide the row.
+    chunks = evidence_chunks_for_rerun(defect, chunks)
 
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
     visual_required = any(
@@ -744,22 +786,20 @@ async def _run_defect(
     )
     if followup is not None:
         added = followup.added
-        chunks = [*chunks, *added]
+        # Same inspect-part rule as the first call. Pages from another
+        # document stay out of the second answer.
+        chunks = [*evidence_chunks_for_rerun(defect, chunks), *added]
         usage = usage.plus(followup.usage)
         response = _sanitize_response(
             defect, followup.response, chunks, check_visual_index, layout
         )
         follow_complete = _retrieval_evidence_complete(defect, chunks, layout)
-        # One or two extra chunks can decide a local element. They cannot
-        # prove an each/every/all check inspected the whole part.
-        policy_complete = (
-            follow_complete
-            if retrieval_plan_for_defect(defect).strategy == "exhaustive_part"
-            else True
-        )
+        # Same scope rule as the first call. One or two extra chunks of the
+        # right document can support a grounded defect. They do not make the
+        # inspection complete, so they cannot publish compliant.
         response = apply_scope_coverage_policy(
             response,
-            scope_complete=policy_complete,
+            scope_complete=follow_complete,
             prompt_truncated=False,
         )
         pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
@@ -854,6 +894,11 @@ async def _run_defect(
             pages = sorted(complete_pages)
             retry_truncated = False
             retry_complete = _retrieval_evidence_complete(defect, chunks, layout)
+            # Each batch skipped the retrieval check because one batch may not
+            # hold every inspect part. The combined pages are checked the same
+            # way as the first call.
+            response = apply_retrieval_policy(defect, response, chunks)
+            response = apply_reviewed_document_policy(defect, response, chunks)
             response = apply_scope_coverage_policy(
                 response,
                 scope_complete=retry_complete,
@@ -1152,6 +1197,126 @@ def _has_paragraph_marker(text: str, number: str) -> bool:
     )
 
 
+_AOR_CERTIFICATE_HEADING = re.compile(
+    r"(?m)^\s*[^A-Za-z0-9\s]{0,3}"
+    r"(?:c\s+e\s+r\s+t\s+i\s+f\s+i\s+c\s+a\s+t\s+e|certificate)\b",
+    re.IGNORECASE,
+)
+_AOR_CERTIFIED_THAT = re.compile(r"\bcertif(?:i|l)ed\s+that\b", re.IGNORECASE)
+_AOR_CONFINED_PLEADINGS = re.compile(
+    r"confined\s+on(?:ly|iy).{0,80}pleadings",
+    re.IGNORECASE,
+)
+
+
+def _folded_page_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").casefold()
+
+
+def _looks_like_aor_certificate_text(text: str) -> bool:
+    """The AOR filing certificate, not the checklist declaration or an affidavit."""
+    window = (text or "")[:2500]
+    if not window.strip():
+        return False
+    folded = _folded_page_text(window)
+    opening = folded[:400]
+    if "affidavit" in opening and "certificate" not in opening:
+        return False
+    if "check list" in opening or "checklist" in opening:
+        return False
+    heading = _AOR_CERTIFICATE_HEADING.search(window) is not None
+    certified = _AOR_CERTIFIED_THAT.search(folded) is not None
+    confined = _AOR_CONFINED_PLEADINGS.search(folded) is not None
+    advocate = "advocate-on-record" in folded or "advocate on record" in folded
+    if heading and (certified or confined or advocate):
+        return True
+    return certified and confined
+
+
+def _aor_certificate_text_pages(
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Certificate pages Split left on, or immediately after, the Main Petition.
+
+    The Advocate's Checklist has its own AOR signature. That page is not the
+    certificate filed after the petition.
+    """
+    if not layout:
+        return []
+    main_pages = [
+        int(number)
+        for number, page in layout.items()
+        if isinstance(page, dict)
+        and "Main Petition"
+        in _layout_document_parts(page.get("document_part"))
+    ]
+    last_main = max(main_pages) if main_pages else None
+    found: list[dict[str, Any]] = []
+    for number, page in sorted(layout.items()):
+        if not isinstance(page, dict):
+            continue
+        names = _layout_document_parts(page.get("document_part"))
+        if "Advocate's Checklist" in names or "AOR's Certificate" in names:
+            continue
+        if any(name.startswith("Annexure") or name == "Appendix" for name in names):
+            continue
+        text = _layout_page_text(page)
+        if not _looks_like_aor_certificate_text(text):
+            continue
+        near_petition = last_main is not None and abs(int(number) - last_main) <= 2
+        on_petition = "Main Petition" in names or not names
+        if not on_petition and not near_petition:
+            continue
+        found.append(
+            {
+                "record_id": f"layout:{number}:AOR's Certificate",
+                "score": 0.0,
+                "chunk_kind": "page",
+                "page": int(number),
+                "page_end": int(number),
+                "document_part": ["AOR's Certificate"],
+                "text": text,
+                "layout_fallback": True,
+            }
+        )
+    return found
+
+
+def _layout_contains_aor_certificate(
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    """True when a page is labeled as the certificate or carries its text."""
+    if not layout:
+        return False
+    for page in layout.values():
+        if not isinstance(page, dict):
+            continue
+        names = _layout_document_parts(page.get("document_part"))
+        if "AOR's Certificate" in names:
+            return True
+        if "Advocate's Checklist" in names:
+            continue
+        if _looks_like_aor_certificate_text(_layout_page_text(page)):
+            return True
+    return False
+
+
+def _layout_has_blank_unlabeled_page(
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    """A blank unlabeled page can still be the unscanned certificate."""
+    if not layout:
+        return False
+    for page in layout.values():
+        if not isinstance(page, dict):
+            return True
+        if _layout_document_parts(page.get("document_part")):
+            continue
+        if not _layout_page_text(page):
+            return True
+    return False
+
+
 def _add_layout_fallback_chunks(
     defect: Defect,
     chunks: list[dict[str, Any]],
@@ -1171,6 +1336,16 @@ def _add_layout_fallback_chunks(
     summary = [chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"][:1]
     pages = [chunk for chunk in chunks if chunk.get("chunk_kind") != "summary"]
     required = required_parts_for_defect(defect)
+    # The checklist names the Advocate-on-Record and prints a code. It is not
+    # the certificate filed after the Main Petition, so it must not fill this
+    # check's evidence when that certificate is the document under review.
+    if "AOR's Certificate" in required and "Advocate's Checklist" not in required:
+        pages = [
+            chunk
+            for chunk in pages
+            if "Advocate's Checklist"
+            not in _layout_document_parts(chunk.get("document_part"))
+        ]
     if not required:
         return chunks
 
@@ -1230,6 +1405,12 @@ def _add_layout_fallback_chunks(
                             break
                         first_run.append(row)
                     found = first_run
+        if part == "AOR's Certificate":
+            seen_pages = {int(row["page"]) for row in found}
+            for extra in _aor_certificate_text_pages(layout):
+                if int(extra["page"]) not in seen_pages:
+                    found.append(extra)
+                    seen_pages.add(int(extra["page"]))
         if found:
             candidates[part] = found
 
@@ -1478,10 +1659,12 @@ def _add_layout_fallback_chunks(
         if chunk not in chosen:
             chosen.append(chunk)
 
+    context_parts = catalogue_context_parts(defect)
     for chunk in other_pages:
-        if len(chosen) >= capacity:
+        if len(chosen) >= capacity or not context_parts:
             break
-        chosen.append(chunk)
+        if any(chunks_cover_part([chunk], part) for part in context_parts):
+            chosen.append(chunk)
 
     chosen.sort(key=lambda chunk: (chunk.get("page") is None, chunk.get("page") or 0))
     return summary + chosen
@@ -1510,7 +1693,13 @@ def _special_categories_for_filing(
                 add(item)
             return
         text = str(value or "").strip()
-        names = match_front_special_categories(text, limit=None)
+        names: list[str] = []
+        for name in split_special_category_list(text):
+            if name not in names:
+                names.append(name)
+        for name in match_front_special_categories(text, limit=None):
+            if name not in names:
+                names.append(name)
         if not names and normalize_special_category(text):
             names = [text]
         for name in names:
