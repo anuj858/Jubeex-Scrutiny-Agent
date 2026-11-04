@@ -405,6 +405,11 @@ def test_catalogue_ai_notes_use_canonical_operational_contract() -> None:
         assert "COMPLIANT:" in note
         assert "N/A:" in note
         assert "NEED REVIEW:" in note
+        need_review = note.split("NEED REVIEW:", 1)[1].split("\n\nGUARDRAILS", 1)[0]
+        assert "complete manifest or complete relevant document" in need_review
+        assert "return Defect, not Need Review" in need_review
+        assert "rendered evidence remains genuinely unreadable after visual inspection" in need_review
+        assert "A missing excerpt, failed keyword search, OCR silence or unrelated missing page does not justify Need Review" in need_review
         assert "legal-source gate" not in note.casefold()
         assert "rule verification pending" not in note.casefold()
         assert not any(fragment.casefold() in note.casefold() for fragment in forbidden), (
@@ -819,6 +824,9 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     assert catalogue.defect("D-63").inspect_parts == ["Main Petition"]
     assert catalogue.defect("D-64").inspect_parts == ["Affidavit"]
     assert catalogue.defect("D-68").inspect_parts == ["Annexures"]
+    assert "poor OCR does not make clearly visible vernacular text unreadable" in (
+        catalogue.defect("D-68").ai_note or ""
+    )
     assert catalogue.defect("D-69").inspect_parts == ["Annexures", "Application"]
     assert catalogue.defect("D-69").context_parts == ["Affidavit", "Court Fees"]
     assert catalogue.defect("D-74").inspect_parts == ["Memo of Appearance"]

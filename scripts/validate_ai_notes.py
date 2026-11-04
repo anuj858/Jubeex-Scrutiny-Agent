@@ -87,6 +87,19 @@ def _validate(row: dict[str, Any]) -> list[str]:
 
     requirement = str(row.get("requirement") or "").casefold()
     decision = note.split("DECISION\n", 1)[-1].split("\n\nGUARDRAILS", 1)[0]
+    need_review = decision.split("NEED REVIEW:", 1)[-1]
+    for required_policy in (
+        "complete manifest or complete relevant document",
+        "return Defect, not Need Review",
+        "rendered evidence remains genuinely unreadable after visual inspection",
+        "A missing excerpt, failed keyword search, OCR silence or unrelated missing page does not justify Need Review",
+    ):
+        if required_policy.casefold() not in need_review.casefold():
+            errors.append(
+                f"{code}: NEED REVIEW policy is missing {required_policy!r}"
+            )
+    if code == "D-68" and "poor OCR does not make clearly visible vernacular text unreadable" not in need_review:
+        errors.append("D-68: NEED REVIEW does not require visual verification of clear vernacular text")
     if (
         "main petition" in requirement
         and "impugned" in requirement
