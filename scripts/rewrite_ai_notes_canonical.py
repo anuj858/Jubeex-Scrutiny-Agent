@@ -51,6 +51,28 @@ BOILERPLATE_PATTERNS = tuple(
     )
 )
 
+NEED_REVIEW_POLICY = (
+    "Inspect all available material and retrieve the complete evidence scope "
+    "declared above before using Need Review. If a complete manifest or "
+    "complete relevant document shows that a required document, paragraph, "
+    "page, field, signature, date, certificate, translation or other element "
+    "is absent, return Defect, not Need Review. Use Need Review only when the "
+    "item may exist in the filing but the exact decisive page or region cannot "
+    "be retrieved, the rendered evidence remains genuinely unreadable after "
+    "visual inspection, or material controlling evidence conflicts. Identify "
+    "the exact evidence, page or region attempted and why the uncertainty "
+    "prevents Defect, Compliant or N/A. A missing excerpt, failed keyword "
+    "search, OCR silence or unrelated missing page does not justify Need Review."
+)
+
+D68_NEED_REVIEW_POLICY = (
+    NEED_REVIEW_POLICY
+    + " For this check, poor OCR does not make clearly visible vernacular text "
+    "unreadable. Inspect the rendered Annexure pages and their complete relevant "
+    "sequence. If vernacular content is visually clear and no corresponding "
+    "translation exists in that complete scope, return Defect."
+)
+
 
 def _clean_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
@@ -243,6 +265,12 @@ def _evidence(row: dict[str, Any]) -> str:
 
 
 def _decision_text(row: dict[str, Any], parsed: dict[str, str], status: str) -> str:
+    if status == "review":
+        return (
+            D68_NEED_REVIEW_POLICY
+            if row.get("check_id") == "D-68"
+            else NEED_REVIEW_POLICY
+        )
     existing = parsed.get(status, "") or _outcome_from_unstructured(row.get("ai_note", ""), status)
     limits = {"defect": 560, "compliant": 320, "not_applicable": 300, "review": 340}
     text = _compact(existing, limit=limits[status], keep=5)
