@@ -64,6 +64,7 @@ from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
 from .s3_artifacts import STEP_DEFECTS, upload_step_json
+from .scrutiny.context_followup import serve_context_followup
 from .scrutiny.prompts import (
     MAX_EVIDENCE_CHARS,
     build_defect_prompt,
@@ -605,6 +606,11 @@ async def _run_defect(
     visual_index: dict[str, Any] | None = None,
     absence_defect_parts: list[str] | None = None,
     model: str,
+    file_hash: str | None = None,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
+    use_pinecone: bool = False,
 ) -> DefectFinding:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
@@ -695,6 +701,16 @@ async def _run_defect(
         model=model,
         request_label=f"scrutiny:{defect.check_id}",
     )
+    model_status = raw.status
+    prior_decision = {
+        "status": raw.status,
+        "confidence": raw.confidence,
+        "gap": raw.gap,
+        "gap_detail": raw.gap_detail,
+        "summary": raw.summary,
+        "observed": raw.observed,
+        "conclusion": raw.conclusion,
+    }
     response = _sanitize_response(defect, raw, chunks, check_visual_index, layout)
     response = apply_scope_coverage_policy(
         response,
@@ -702,12 +718,82 @@ async def _run_defect(
         prompt_truncated=prompt_truncated,
     )
 
+    # At most one extra model call, owned by the context-followup tools.
+    # A confident or decided first answer is final. The follow-up sees only
+    # chunks those tools fetched, and it does not run with the full-part retry.
+    followed_up = False
+    followup = await serve_context_followup(
+        defect=defect,
+        catalogue=catalogue,
+        record=record,
+        chunks=chunks,
+        layout=layout,
+        visual_index=check_visual_index,
+        model=model,
+        system_prompt=system_prompt,
+        model_status=model_status,
+        response=response,
+        prior_decision=prior_decision,
+        prior_generation_id=usage.generation_id,
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=index_generation,
+        use_pinecone=use_pinecone,
+    )
+    if followup is not None:
+        added = followup.added
+        chunks = [*chunks, *added]
+        usage = usage.plus(followup.usage)
+        response = _sanitize_response(
+            defect, followup.response, chunks, check_visual_index, layout
+        )
+        follow_complete = _retrieval_evidence_complete(defect, chunks, layout)
+        # One or two extra chunks can decide a local element. They cannot
+        # prove an each/every/all check inspected the whole part.
+        policy_complete = (
+            follow_complete
+            if retrieval_plan_for_defect(defect).strategy == "exhaustive_part"
+            else True
+        )
+        response = apply_scope_coverage_policy(
+            response,
+            scope_complete=policy_complete,
+            prompt_truncated=False,
+        )
+        pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
+        added_pages = sorted(
+            {
+                int(chunk["page"])
+                for chunk in added
+                if chunk.get("page") is not None
+            }
+        )
+        coverage = coverage.model_copy(
+            update={
+                "chunks_reviewed": len(chunks),
+                "pages_reviewed": pages,
+                "document_found": bool(chunks)
+                and not missing_required_parts(defect, chunks),
+                "required_scope_found": follow_complete,
+                "scope_complete": follow_complete,
+                "prompt_truncated": False,
+                "evidence_complete": follow_complete,
+                "context_followup": True,
+                "context_followup_action": followup.action,
+                "context_followup_pages": added_pages,
+                "context_followup_query": followup.query,
+            }
+        )
+        followed_up = True
+
     # A needs-review result caused by sampled evidence is an internal retry
     # signal, not a final user journey.  Retry once with every parsed page of
     # the required document parts.  Genuine unreadable/contradictory evidence
     # remains unresolved; missing semantic excerpts do not.
     if (
-        response.status == "needs_review"
+        not followed_up
+        and response.status == "needs_review"
         and response.gap in {"part_not_in_excerpts", "element_page_not_in_excerpts"}
         and layout
     ):
@@ -1932,6 +2018,11 @@ class ScrutinyWorkflow(Workflow):
                     visual_index=visual_index,
                     absence_defect_parts=absence_owners.get(defect.check_id),
                     model=defect_model,
+                    file_hash=file_hash,
+                    organization_id=vector_organization_id,
+                    workspace_id=vector_workspace_id,
+                    index_generation=index_generation,
+                    use_pinecone=use_pinecone,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
