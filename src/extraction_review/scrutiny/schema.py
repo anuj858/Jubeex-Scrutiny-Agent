@@ -1899,6 +1899,29 @@ def missing_parts_in_layout(
     return [part for part in required if not chunks_cover_part(pages, part)]
 
 
+def missing_dependency_parts_in_layout(
+    defect: Defect,
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[str] | None:
+    """Absent explicit dependencies; inspect targets alone never qualify."""
+    from ..document_parts import dependency_parts_for_defect
+
+    dependencies = dependency_parts_for_defect(defect)
+    if not dependencies:
+        return []
+    if not layout:
+        return None
+    pages: list[dict[str, Any]] = []
+    for page in layout.values():
+        if not isinstance(page, dict):
+            return None
+        names = parts_on_page(page.get("document_part"))
+        if not names:
+            return None
+        pages.append({"document_part": names, "chunk_kind": "page"})
+    return [part for part in dependencies if not chunks_cover_part(pages, part)]
+
+
 def manifest_absence_proven(
     defect: Defect,
     layout: dict[int, dict[str, Any]] | None,
@@ -1960,11 +1983,17 @@ def apply_retrieval_policy(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Do not treat a missing document part in the excerpt set as a defect."""
     if response.status != "defect_found":
         return response
     missing = missing_required_parts(defect, chunks)
+    manifest_missing = missing_parts_in_layout(defect, layout)
+    if manifest_missing is not None:
+        # A complete manifest makes absence evidence. Optional comparison or
+        # alternative-route targets need not produce a page excerpt.
+        missing = [part for part in missing if part not in manifest_missing]
     if missing:
         return _move_to_review(
             response,
@@ -1978,11 +2007,15 @@ def apply_undetermined_policy(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Uncertain evidence must never be promoted into a published defect."""
     if response.status != "not_determined":
         return response
     missing = missing_required_parts(defect, chunks)
+    manifest_missing = missing_parts_in_layout(defect, layout)
+    if manifest_missing is not None:
+        missing = [part for part in missing if part not in manifest_missing]
     if missing:
         return _move_to_review(
             response,

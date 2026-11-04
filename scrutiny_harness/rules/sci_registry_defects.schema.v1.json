@@ -170,6 +170,7 @@
         },
         "ai_note": {
           "type": ["string", "null"],
+          "maxLength": 4000,
           "description": "Evidence interpretation guidance injected into this check's prompt"
         },
         "defect": {
@@ -201,7 +202,15 @@
             "type": "string",
             "minLength": 2
           },
-          "description": "LlamaSplit document_part labels that must be retrieved before defect_found is allowed. Use configs/config.json split.categories names."
+          "description": "Logical evidence targets to inspect. These are retrieval targets, not automatic mandatory dependencies."
+        },
+        "dependency_parts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "description": "Documents whose proven absence makes this dependent check not applicable."
         },
         "context_parts": {
           "type": "array",

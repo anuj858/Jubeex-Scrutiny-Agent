@@ -22,21 +22,21 @@ from .schema import VisualPageTarget
 # - boundary_cues: first/middle/last plus cue-bearing pages
 # - first_cues: first plus cue-bearing pages (used for annexure markings)
 FORMALITY_PAGE_POLICY: dict[str, str] = {
-    "Index": "all_short",
+    "Index": "all",
     # Synopsis and List of Dates are text-comparison documents. Their checks
     # use parsed text/layout and do not justify a standing vision scan.
     "Impugned Order": "first_last_cues",
-    "Advocate's Checklist": "all_short",
-    "Listing Proforma": "all_short",
+    "Advocate's Checklist": "all",
+    "Listing Proforma": "all",
     MAIN_PETITION_PART: "boundary_cues",
-    "AOR's Certificate": "all_short",
+    "AOR's Certificate": "all",
     "Application": "first_last_cues",
-    "Filing Memo": "all_short",
+    "Filing Memo": "all",
     "Memo of Parties": "first_last_cues",
-    "Vakalatnama": "all_short",
-    "Memo of Appearance": "all_short",
+    "Vakalatnama": "all",
+    "Memo of Appearance": "all",
     "Annexures": "first_cues",
-    "Affidavit": "all_short",
+    "Affidavit": "all",
 }
 
 SHORT_DOCUMENT_PAGE_LIMIT = 3
@@ -309,8 +309,11 @@ def select_formality_pages(
     # Preserve at least one high-value page for every document type before
     # spending the remaining budget on boundary samples and cue pages.
     essential_pages: set[int] = set()
-    for selected in candidates_by_part.values():
+    for key, selected in candidates_by_part.items():
         if not selected:
+            continue
+        if selector_by_part[key] == "all":
+            essential_pages.update(source.page for source, _priority in selected)
             continue
         source, _priority = max(selected, key=lambda item: (item[1], -item[0].page))
         essential_pages.add(source.page)

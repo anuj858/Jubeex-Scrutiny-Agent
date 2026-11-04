@@ -1502,11 +1502,13 @@ def _operational_ai_note(note: str) -> str:
     """
     text = note.strip()
     text = re.sub(
-        r"\n*Legal-source gate\s*[—-].*?(?=\n\nInspection\s*[—-])",
+        r"(?ims)^\s*legal-source gate\s*[:.—-].*?"
+        r"(?=^\s*(?:documents? and portions? to inspect|inspection|"
+        r"what the requirement means|defect found|compliant|not applicable|"
+        r"needs review|evidence to record)\s*[:.—-]|\n\s*\n|\Z)",
         "\n",
         text,
         count=1,
-        flags=re.IGNORECASE | re.DOTALL,
     )
     text = re.sub(
         r"^Legal status:\s*Needs legal verification\..*?"

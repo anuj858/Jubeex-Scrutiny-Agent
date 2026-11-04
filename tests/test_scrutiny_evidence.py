@@ -13,6 +13,7 @@ from extraction_review.document_parts import (
     max_chunks_for_defect,
     overlay_split_documents,
     page_parts_from_split,
+    parts_on_page,
     parts_named_in_text,
     pool_search_queries,
     select_chunks_for_defect,
@@ -41,6 +42,7 @@ from extraction_review.scrutiny.schema import (
     apply_margin_layout_policy,
     apply_manifest_absence_policy,
     apply_presence_only_policy,
+    apply_retrieval_policy,
     apply_review_reason_consistency_policy,
     apply_scope_coverage_policy,
     apply_status_policy,
@@ -72,6 +74,23 @@ def test_pool_queries_are_captions_not_legal_sentences() -> None:
     for query in queries:
         assert "does not follow" not in query.lower()
         assert len(query) < 120
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        (
+            "Synopsis, List of Dates & Events",
+            ["Synopsis", "List of Dates & Events"],
+        ),
+        (
+            "Memo of Appearance + Vakalatnama",
+            ["Memo of Appearance", "Vakalatnama"],
+        ),
+    ],
+)
+def test_combined_display_labels_expand_to_atomic_parts(label, expected) -> None:
+    assert parts_on_page(label) == expected
 
 
 def test_page_parts_from_split_maps_pages() -> None:
@@ -526,6 +545,27 @@ def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> Non
     assert _aggregate_complete_batch_responses([compliant, defect]) is defect
 
 
+def test_complete_batch_aggregation_does_not_publish_legal_gate_status() -> None:
+    compliant = DefectResponse(
+        check_id="D-324",
+        status="compliant",
+        confidence=0.9,
+        summary="The certificate is present.",
+        observed="Certificate inspected.",
+        conclusion="The filing satisfies the requirement.",
+        evidence=[EvidenceRef(page=35, quote="CERTIFICATE")],
+    )
+    governed = compliant.model_copy(
+        update={
+            "status": "rule_verification_pending",
+            "summary": "Catalogue authority is pending.",
+        }
+    )
+    result = _aggregate_complete_batch_responses([compliant, governed])
+    assert result.status == "needs_review"
+    assert result.status != "rule_verification_pending"
+
+
 def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     defect = SimpleNamespace(
         inspect_parts=["Main Petition"],
@@ -682,6 +722,45 @@ def test_exhaustive_check_is_complete_only_after_every_target_page_is_reviewed()
 
     assert not _retrieval_evidence_complete(defect, partial, layout)
     assert _retrieval_evidence_complete(defect, complete, layout)
+
+
+def test_absent_optional_inspect_target_is_not_an_incomplete_retrieval() -> None:
+    defect = _scrutiny_row(
+        check_id="D-180",
+        defect="Certified copy or matching exemption route is not filed",
+        requirement=(
+            "The Impugned Order must be certified, or an Application for "
+            "exemption must accompany its true copy."
+        ),
+        inspect_parts=["Impugned Order", "Application"],
+    )
+    layout = {
+        10: {"document_part": "Impugned Order", "words": [{"t": "CERTIFIED"}]},
+        11: {"document_part": "Impugned Order", "words": [{"t": "SEAL"}]},
+    }
+    chunks = [
+        {
+            "chunk_kind": "page",
+            "page": page,
+            "document_part": "Impugned Order",
+            "text": text,
+        }
+        for page, text in ((10, "CERTIFIED"), (11, "SEAL"))
+    ]
+
+    assert _retrieval_evidence_complete(defect, chunks, layout)
+    response = DefectResponse(
+        check_id="D-180",
+        status="defect_found",
+        confidence=0.98,
+        summary="The available order fails the requirement.",
+        observed="The order lacks the required endorsement.",
+        conclusion="The filing is defective.",
+        evidence=[EvidenceRef(page=10, quote="CERTIFIED")],
+    )
+    assert apply_retrieval_policy(defect, response, chunks, layout).status == (
+        "defect_found"
+    )
 
 
 def test_exact_signature_anchor_adds_same_part_neighbors_without_crossing_boundary() -> (
