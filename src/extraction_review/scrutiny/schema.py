@@ -1091,6 +1091,41 @@ def apply_scope_coverage_policy(
     )
 
 
+def apply_final_evidence_contract_policy(
+    response: DefectResponse,
+) -> DefectResponse:
+    """Keep exhausted retrieval failures out of the manual-review queue.
+
+    ``part_not_in_excerpts`` and ``element_page_not_in_excerpts`` are internal
+    retry signals.  The workflow expands them to the complete relevant parts
+    before this policy runs.  If either signal survives that retry, the check
+    did not complete technically; it is not genuine uncertainty in the filing
+    evidence and must not be presented to an AOR as ``Needs Review``.
+    """
+    if response.status != "needs_review" or response.gap not in {
+        "part_not_in_excerpts",
+        "element_page_not_in_excerpts",
+    }:
+        return response
+    original_detail = response.gap_detail.strip()
+    response.status = "not_determined"
+    response.confidence = 0.0
+    response.gap = None
+    response.gap_detail = ""
+    response.summary = (
+        "This check could not be completed because its required evidence was not "
+        "processed."
+    )
+    response.observed = (
+        "The evidence-retrieval contract remained incomplete after the "
+        "complete-document retry."
+    )
+    response.conclusion = "Retry this check after the required document pages are available to the evaluator."
+    if original_detail:
+        response.observed += f" Technical detail: {original_detail}"
+    return response
+
+
 _PARTY_ROLES = re.compile(
     r"\b(petitioner(?:s)?|appellant(?:s)?|respondent(?:s)?|intervenor(?:s)?)\b",
     re.IGNORECASE,

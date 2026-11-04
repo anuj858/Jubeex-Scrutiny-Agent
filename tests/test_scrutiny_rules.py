@@ -806,6 +806,9 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "Synopsis",
     ]
     assert catalogue.defect("D-89").inspect_parts == ["Main Petition", "Synopsis"]
+    d155 = catalogue.defect("D-155")
+    assert d155.dependency_parts == ["Impugned Order"]
+    assert "Absence of the exemption Application is not N/A" in (d155.ai_note or "")
     assert catalogue.defect("D-110").inspect_parts == [
         "Synopsis",
         "List of Dates & Events",

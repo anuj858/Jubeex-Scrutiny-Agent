@@ -124,6 +124,104 @@ def test_index_continuation_reference_is_not_an_annexure_boundary() -> None:
     assert "annexure_stamp" not in result.signals
 
 
+def test_defect_005_index_continuation_is_protected_without_llama_hint() -> None:
+    """Rows naming P-7 through P-11 are inventory, not outer Annexure stamps."""
+    unit = PageUnit(
+        pdf_page=7,
+        text=(
+            "| 18. | Annexure P-7\n\n"
+            "True translated copy of the notice dated 17.06.2015 published in "
+            "Amar Ujjala newspaper. | 54-56 | | |\n"
+            "| 19. | Annexure P-8\n\nTrue typed copy of the Letter dated "
+            "21.7.2015. | 57-59 | | |\n"
+            "| 20. | Annexure P-9\n\nTrue typed copy of the Sale Certificate. "
+            "| 60-62 | | |\n"
+            "| 21. | Annexure P-10\n\nTrue typed copy of the Order dated "
+            "08.05.2018. | 63-82 | | |\n"
+            "| 22. | Annexure P-11\n\nTrue copy of the order dated "
+            "13.3.2020. | 83-104 | | |"
+        ),
+        sentence_continues_previous=True,
+        paragraph_continues_previous=True,
+        layout_fingerprint=("table",),
+    )
+
+    result = classify_page(unit)
+
+    assert result.document_type == "Index"
+    assert result.confidence >= 0.9
+    assert result.signals == ("index_continuation",)
+
+
+def test_defect_005_reconciliation_cannot_split_index_into_annexure_p7() -> None:
+    page_7 = (
+        "| 18. | Annexure P-7\n\nTrue translated copy of the notice. | 54-56 | | |\n"
+        "| 19. | Annexure P-8\n\nTrue typed copy of the Letter. | 57-59 | | |\n"
+        "| 20. | Annexure P-9\n\nTrue typed copy of the Sale Certificate. "
+        "| 60-62 | | |"
+    )
+    page_8 = (
+        "| 24. | Application for exemption from filing official translation. "
+        "| 108-110 | | |\n"
+        "| 25. | Filing Memo | 111 | | |\n"
+        "| 26. | Memo of Parties | 112-114 | | |"
+    )
+    units = [
+        PageUnit(
+            pdf_page=7,
+            text=page_7,
+            sentence_continues_previous=True,
+            paragraph_continues_previous=True,
+            layout_fingerprint=("table",),
+        ),
+        PageUnit(
+            pdf_page=8,
+            text=page_8,
+            sentence_continues_previous=True,
+            paragraph_continues_previous=True,
+            layout_fingerprint=("table",),
+        ),
+    ]
+    classifications = [
+        classify_page(units[0]),
+        classify_page(units[1], llama_hint="Index"),
+    ]
+    baseline = {page: ["Index"] for page in range(5, 9)}
+    bad_proposal = {
+        5: ["Index"],
+        6: ["Index"],
+        7: ["Annexure P-7"],
+        8: ["Annexure P-7"],
+    }
+    operations = []
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        bad_proposal,
+        classifications,
+        {7: page_7, 8: page_8},
+        page_count=8,
+        operation_log=operations,
+        page_units=units,
+        authoritative_boundary_pages=[5],
+        protected_segments=[
+            {
+                "category": "Index",
+                "start_page": 5,
+                "end_page": 8,
+                "protected": True,
+            }
+        ],
+    )
+
+    assert result == baseline
+    assert changes == []
+    assert any(
+        item.status == "dismissed" and "protected_llama_segment" in item.evidence
+        for item in operations
+    )
+
+
 def test_classify_page_uses_llama_on_ocr_needed_empty_page() -> None:
     unit = PageUnit(pdf_page=5, text="  ", requires_ocr=True, char_count=0)
     result = classify_page(unit, llama_hint="Main Petition")

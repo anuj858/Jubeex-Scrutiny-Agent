@@ -13,8 +13,8 @@ from extraction_review.document_parts import (
     max_chunks_for_defect,
     overlay_split_documents,
     page_parts_from_split,
-    parts_on_page,
     parts_named_in_text,
+    parts_on_page,
     pool_search_queries,
     select_chunks_for_defect,
 )
@@ -32,15 +32,16 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
-    apply_evidence_capability_policy,
-    apply_deterministic_postclassification_policy,
     apply_conditional_manifest_policy,
+    apply_deterministic_postclassification_policy,
+    apply_evidence_capability_policy,
     apply_evidence_pages,
+    apply_final_evidence_contract_policy,
     apply_grounded_defect_policy,
     apply_internal_contradiction_policy,
     apply_legal_verification_policy,
-    apply_margin_layout_policy,
     apply_manifest_absence_policy,
+    apply_margin_layout_policy,
     apply_presence_only_policy,
     apply_retrieval_policy,
     apply_review_reason_consistency_policy,
@@ -58,9 +59,9 @@ from extraction_review.scrutiny.schema import (
 from extraction_review.scrutiny_workflow import (
     _absence_owner_check_ids,
     _add_layout_fallback_chunks,
-    _complete_layout_chunks_for_defect,
-    _complete_evidence_batches,
     _aggregate_complete_batch_responses,
+    _complete_evidence_batches,
+    _complete_layout_chunks_for_defect,
     _retrieval_evidence_complete,
     _visual_index_for_defect,
 )
@@ -2022,6 +2023,51 @@ def test_incomplete_scope_cannot_publish_compliance() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "element_page_not_in_excerpts"
     assert "evidence limit" in gated.gap_detail
+
+
+@pytest.mark.parametrize(
+    "gap",
+    ["part_not_in_excerpts", "element_page_not_in_excerpts"],
+)
+def test_exhausted_retrieval_gap_is_not_published_as_manual_review(gap: str) -> None:
+    response = DefectResponse(
+        check_id="D-63",
+        status="needs_review",
+        confidence=0.72,
+        summary="The complete party array was not shown.",
+        observed="Only one page was available.",
+        conclusion="The address requirement cannot be determined.",
+        gap=gap,
+        gap_detail="Main Petition continuation page",
+        evidence=[EvidenceRef(page=1, quote="POSITION OF PARTIES")],
+    )
+
+    decided = apply_final_evidence_contract_policy(response)
+
+    assert decided.status == "not_determined"
+    assert decided.gap is None
+    assert decided.confidence == 0.0
+    assert "retrieval contract" in decided.observed
+    assert "Main Petition continuation page" in decided.observed
+
+
+def test_genuine_visual_uncertainty_remains_manual_review() -> None:
+    response = DefectResponse(
+        check_id="D-176",
+        status="needs_review",
+        confidence=0.88,
+        summary="The affidavit paragraph is obscured by a seal.",
+        observed="The decisive words cannot be read beneath the seal.",
+        conclusion="Manual inspection of the original is required.",
+        gap="unreadable",
+        gap_detail="Affidavit paragraph 2",
+        evidence=[EvidenceRef(page=1, quote="That the contents...")],
+    )
+
+    decided = apply_final_evidence_contract_policy(response)
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_complete_visual_blank_date_is_a_defect() -> None:
