@@ -633,6 +633,14 @@ class AnnexureMark:
         return f"annexure_{self.series.lower()}{self.number}"
 
 
+def _strip_heading_markup(raw_line: str) -> str:
+    """Remove LlamaParse presentation markup without changing heading text."""
+    line = re.sub(r"^\s{0,3}#{1,6}\s*", "", raw_line or "")
+    line = re.sub(r"</?[^>\n]+>", "", line)
+    line = re.sub(r"^\s*(?:[*_~]{1,3}\s*)+", "", line)
+    return re.sub(r"(?:\s*[*_~]{1,3})+\s*$", "", line).strip()
+
+
 # OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
 # Filing stamps also commonly quote the label: Annexure “P-1”.
 _ANNEXURE_HEADING_RE = re.compile(
@@ -640,7 +648,10 @@ _ANNEXURE_HEADING_RE = re.compile(
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
     # Handwritten slash is commonly parsed as ``f`` (A/20 -> Af20).
     r"[-–—/:.~f\s\"'“”‘’]*)?"
-    r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
+    # OCR frequently renders the handwritten digit 1 as I/l (``P-I``/``PI``).
+    # This alternative exists only after the explicit ANNEXURE word and a
+    # series token; bare I/l tokens remain invalid.
+    r"(?P<num>\d+|[Il])[\"'“”‘’]?(?!\w)"
     r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
     r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
     re.IGNORECASE,
@@ -652,7 +663,7 @@ _ANNEXURE_TITLE_LINE_RE = re.compile(
     r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
     r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
     r"[-–—/:.~f\s\"'“”‘’]*)?"
-    r"(?P<num>\d+)[\"'“”‘’]?(?!\w)"
+    r"(?P<num>\d+|[Il])[\"'“”‘’]?(?!\w)"
     r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
     r")(?!\w)",
     re.IGNORECASE,
@@ -680,7 +691,9 @@ _APPLICATION_CAUSE_RE = re.compile(
     re.IGNORECASE,
 )
 _AFFIDAVIT_HEADING_RE = re.compile(
-    r"(?m)^\s*(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"(?m)^\s*(?:#{1,6}\s*)?(?:<[^>\n]+>\s*)*(?:[*_]{1,3}\s*)?"
+    r"(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"(?:\s*[*_]{1,3})?(?:\s*</[^>\n]+>)*"
     r"\s*(?:$|[:\-–—]|(?:OF|ON\s+BEHALF\s+OF|BY)\b)",
     re.IGNORECASE,
 )
@@ -740,7 +753,7 @@ def _annexure_mark_from_match(match: re.Match[str]) -> AnnexureMark | None:
         number_raw = next((g for g in match.groups() if g and str(g).isdigit()), None)
     if not number_raw:
         return None
-    number = int(number_raw)
+    number = 1 if str(number_raw).casefold() in {"i", "l"} else int(number_raw)
     if number < 1:
         return None
     series = _normalize_annexure_series(
@@ -818,7 +831,11 @@ def _annexure_mark_from_title_or_stamp(
     text: str, *, require_series: bool = False
 ) -> AnnexureMark | None:
     """Series+number from a title line near the top or a short foot stamp line."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
     if not lines:
         return None
     nested_exhibits = _looks_like_lower_court_exhibit_list(text)
@@ -858,6 +875,33 @@ def _annexure_mark_from_title_or_stamp(
             mark = _annexure_mark_from_match(first_line_match)
             if mark is not None:
                 return mark
+
+    # LlamaParse may flatten a visual stamp and the paper-book folio into
+    # table cells on one long reporter-header line:
+    # ``... | Annexure - PI | 22``.  Treat an exact Annexure cell followed by
+    # an isolated numeric cell as an outer stamp.  Index tables are excluded,
+    # so a catalogue row mentioning an annexure cannot become a boundary.
+    if not _looks_like_index_table(text):
+        for line in lines[:6]:
+            cells = [cell.strip() for cell in line.split("|")]
+            for position, cell in enumerate(cells[:-1]):
+                # Markdown Index rows use ``| 18. | Annexure P-7 | ...``.
+                # The serial cell proves that this is inventory, not a stamp.
+                if position and re.fullmatch(r"\d{1,3}[.)]", cells[position - 1]):
+                    continue
+                match = _ANNEXURE_TITLE_LINE_RE.match(cell)
+                if (
+                    match
+                    and match.end() == len(cell)
+                    and (
+                        match.groupdict().get("series")
+                        or match.groupdict().get("bare_series")
+                    )
+                    and re.fullmatch(r"\d{1,4}", cells[position + 1])
+                ):
+                    mark = _annexure_mark_from_match(match)
+                    if mark is not None:
+                        return mark
 
     # An outer paper-book stamp can sit above an enclosed tribunal document's
     # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
@@ -1084,7 +1128,11 @@ def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
     # it. Apply this to every explicit filing-document heading, not only Index
     # and LOD. Preserve a genuine outer stamp when it occurs before the enclosed
     # heading (``ANNEXURE P-1`` followed by a reproduced AFFIDAVIT, for example).
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
     protected_heading_at = next(
         (
             index
@@ -1247,7 +1295,8 @@ def page_starts_application(text: str) -> bool:
 
 
 def _heading_window(text: str, lines: int = 12) -> str:
-    return "\n".join((text or "").splitlines()[:lines])[:1200]
+    raw_lines = (text or "").splitlines()[:lines]
+    return "\n".join(_strip_heading_markup(line) for line in raw_lines)[:1200]
 
 
 def _is_sci_application_start(text: str) -> bool:

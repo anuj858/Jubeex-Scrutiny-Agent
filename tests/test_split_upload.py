@@ -882,48 +882,22 @@ def test_inject_where_to_look_petition_type_and_impugned_fallbacks() -> None:
 
 def test_extract_system_prompt_searches_the_opening_window() -> None:
     prompt = build_extract_system_prompt(type_catalog("SLP_CIVIL"))
+    assert "Opening pages are the first 30 pages" in prompt
     assert (
-        "petitioners: fill Main Petition, Cover Page, Listing Proforma; verify "
-        "Main Petition, Cover Page, Listing Proforma" in prompt
+        "Do not assume where the Cover Page, Main Petition, Vakalatnama, or any "
+        "other section is" in prompt
     )
-    assert "cause_title: fill Cover Page, Main Petition; verify Main Petition" in prompt
-    assert (
-        "petition_type: fill Main Petition, Cover Page; verify Cover Page, Main Petition"
-        in prompt
-    )
-    assert "Never use [And ors.] or other square brackets" in prompt
+    assert "- petitioners and respondents: every numbered party" in prompt
+    assert "- cause_title: the caption from whichever opening page prints it" in prompt
+    assert "- petition_type: the type as printed" in prompt
     assert "Copy printed text only" in prompt
     assert "write N/A" in prompt
-    assert "inconsistencies: one item per spelling" in prompt
-    assert (
-        "Always keep the Cause Title main petitioner/respondent letter mismatch"
-        in prompt
-    )
-    assert "Cover Page has only one name per side" in prompt
-    assert "Main Petition starting pages" in prompt
-    assert (
-        "Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources"
-        in prompt
-    )
-    assert (
-        "advocates_on_record: fill Vakalatnama, Memo of Appearance, Main Petition, Listing Proforma, AOR's Certificate, Advocate's Checklist"
-        in prompt
-    )
-    assert (
-        "If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition"
-        in prompt
-    )
-    assert (
-        "impugned_orders: fill Impugned Order, Main Petition, Cover Page, AOR's Certificate, Affidavit"
-        in prompt
-    )
-    assert "do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
-    assert "printed AOR chamber/office address mismatches" in prompt
-    assert "petition_date: fill Main Petition" in prompt
-    assert (
-        "If both Date Drafted and Date Filed on are printed, use only Date Drafted"
-        in prompt
-    )
+    assert "Do not stop after the first name" in prompt
+    assert "- advocates_on_record: the printed advocate footer" in prompt
+    assert "Do not invent name, code, email, mobile, firm, chamber, or PIN" in prompt
+    assert "- impugned_orders: court, date, and case number" in prompt
+    assert "- petition_date: after that prayer" in prompt
+    assert "Date Drafted wins when both are printed" in prompt
 
 
 def test_overlay_uses_stitched_document_parts() -> None:
@@ -2253,6 +2227,39 @@ def test_catchall_annexures_and_applications_promote_to_first_numbered_slot() ->
     assert slices["annexure_p1"].pages == (20, 21)
     assert slices["application_1"].filename == "Application 1.pdf"
     assert slices["application_1"].pages == (30, 31)
+
+
+def test_application_slots_group_continuations_then_number_by_physical_order() -> None:
+    catalog = type_catalog("SLP_CRIMINAL")
+    page_parts = {
+        **{page: ["Application"] for page in range(219, 222)},
+        222: ["Application 1"],
+        223: ["Application 1"],
+        224: ["Application"],
+        225: ["Application"],
+        226: ["Application 2"],
+        227: ["Application 2"],
+        228: ["Application"],
+    }
+    segments = [
+        {"category": "Application", "pages": [219, 220, 221]},
+        {"category": "Application", "pages": [222, 223, 224, 225]},
+        {"category": "Application", "pages": [226, 227, 228]},
+    ]
+
+    slices = {
+        item.slot_id: item
+        for item in slice_bundle_pdf(
+            _blank_pdf(228),
+            catalog,
+            page_parts,
+            split_segments=segments,
+        )
+    }
+
+    assert slices["application_1"].pages == (219, 220, 221)
+    assert slices["application_2"].pages == (222, 223, 224, 225)
+    assert slices["application_3"].pages == (226, 227, 228)
 
 
 def test_heading_split_annexures_each_get_their_own_slot_pdf() -> None:

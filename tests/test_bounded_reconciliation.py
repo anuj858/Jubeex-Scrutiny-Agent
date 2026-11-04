@@ -3,6 +3,7 @@
 from extraction_review.structure_split import (
     PageClassification,
     PageUnit,
+    classify_page,
     reconcile_compiled_split,
     validate_reconciliation_page_map,
 )
@@ -102,6 +103,42 @@ def test_moves_captionless_signature_continuation_to_anchored_segment() -> None:
     assert any(item.operation_type == "boundary_adjustment" for item in operations)
 
 
+def test_directly_opened_volume_cover_is_not_absorbed_into_prior_annexure() -> None:
+    operations = []
+    baseline = {
+        1: ["Annexure P-2"],
+        2: ["Cover Page"],
+        3: ["Index"],
+    }
+    proposed = {
+        1: ["Annexure P-2"],
+        2: ["Annexure P-2"],
+        3: ["Index"],
+    }
+
+    result, changes = reconcile_compiled_split(
+        baseline,
+        proposed,
+        [
+            _strong(2, "Cover Page", "outer_anchor"),
+            _strong(3, "Index", "outer_anchor"),
+        ],
+        {
+            1: "ANNEXURE P-2 continuation",
+            2: "IN THE SUPREME COURT OF INDIA\nPAPER BOOK\nVOL-II",
+            3: "INDEX\nS.No. Particulars Page No.",
+        },
+        page_count=3,
+        operation_log=operations,
+        authoritative_boundary_pages=[2, 3],
+    )
+
+    assert result == baseline
+    assert changes == []
+    rejected = next(item for item in operations if item.proposed_pages == (2,))
+    assert rejected.status in {"dismissed", "left_for_review"}
+
+
 def test_historical_order_heading_inside_annexure_is_not_split() -> None:
     operations = []
     baseline = {1: ["Annexure P-9"], 2: ["Annexure P-9"]}
@@ -120,6 +157,132 @@ def test_historical_order_heading_inside_annexure_is_not_split() -> None:
 
     assert result == baseline
     assert not [item for item in operations if item.status == "accepted"]
+
+
+def test_indexed_annexure_range_encloses_protected_nested_application() -> None:
+    operations = []
+    baseline = {
+        1: ["Annexure P-7"],
+        2: ["Application"],
+        3: ["Application"],
+    }
+    proposed = {page: ["Annexure P-7"] for page in range(1, 4)}
+    result, _ = reconcile_compiled_split(
+        baseline,
+        proposed,
+        [],
+        {
+            1: "ANNEXURE P-7\nLower-court application packet",
+            2: "APPLICATION UNDER SECTION 10 CPC",
+            3: "AFFIDAVIT IN SUPPORT OF THE SECTION 10 APPLICATION",
+        },
+        page_count=3,
+        operation_log=operations,
+        proposal_evidence_by_page={
+            2: ["master_index_and_folio"],
+            3: ["master_index_and_folio"],
+        },
+        protected_segments=[
+            {
+                "category": "Application",
+                "start_page": 2,
+                "end_page": 3,
+                "protected": True,
+            }
+        ],
+    )
+
+    assert result == proposed
+    assert not any(
+        item.status == "dismissed" and "protected_llama_segment" in item.evidence
+        for item in operations
+    )
+
+
+def test_consecutive_outer_annexure_envelope_contains_nested_documents() -> None:
+    operations = []
+    baseline = {
+        1: ["Annexure A-15"],
+        2: ["Index"],
+        3: ["Memo of Parties"],
+        4: ["Annexures"],
+        5: ["uncategorized"],
+        6: ["uncategorized"],
+        7: ["Annexure A-16"],
+    }
+    proposed = {
+        **{page: ["Annexure A-15"] for page in range(1, 7)},
+        7: ["Annexure A-16"],
+    }
+    texts = {
+        1: "303\nANNEXURE A-15\nBEFORE THE NCLAT",
+        2: "304\nBEFORE THE NCLAT\nINDEX\nS.NO PARTICULARS PAGE NO",
+        3: "305\nBEFORE THE NCLAT\nMEMO OF PARTIES",
+        4: "306\nMEMORANDUM OF APPEAL UNDER SECTION 61 IBC",
+        5: "307\nBEFORE THE NCLAT\nAFFIDAVIT",
+        6: "308\nVERIFICATION\nDEPONENT",
+        7: "309\nANNEXURE A-16\nRECORD OF PROCEEDINGS",
+    }
+
+    result, _ = reconcile_compiled_split(
+        baseline,
+        proposed,
+        [
+            _strong(2, "Index", "outer_anchor"),
+            _strong(3, "Memo of Parties", "outer_anchor"),
+        ],
+        texts,
+        page_count=7,
+        operation_log=operations,
+        authoritative_boundary_pages=[1, 2, 3, 4, 5, 7],
+        page_units=[PageUnit(pdf_page=page, text=texts[page]) for page in texts],
+        protected_segments=[
+            {"category": "Index", "start_page": 2, "end_page": 2, "protected": True},
+            {
+                "category": "Memo of Parties",
+                "start_page": 3,
+                "end_page": 3,
+                "protected": True,
+            },
+        ],
+    )
+
+    assert result == proposed
+    assert any(
+        "consecutive_outer_annexure_envelope" in item.evidence
+        and item.status == "accepted"
+        for item in operations
+    )
+
+
+def test_exact_filing_index_overrides_protected_generic_index() -> None:
+    text = (
+        "365\nIN THE HON'BLE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\nFILING INDEX\n"
+        "S.No. Particulars Court Fee\n1. Appeal with affidavit 5000\n"
+        "2. Stay Application 120\nTotal 5120"
+    )
+    direct = classify_page(PageUnit(pdf_page=1, text=text), llama_hint="Index")
+    operations = []
+
+    result, _ = reconcile_compiled_split(
+        {1: ["Index"]},
+        {1: ["Filing Memo"]},
+        [direct],
+        {1: text},
+        page_count=1,
+        operation_log=operations,
+        authoritative_boundary_pages=[1],
+        protected_segments=[
+            {"category": "Index", "start_page": 1, "end_page": 1, "protected": True}
+        ],
+        page_units=[PageUnit(pdf_page=1, text=text)],
+    )
+
+    assert direct.document_type == "Filing Memo"
+    assert "outer_anchor" in direct.signals
+    assert result == {1: ["Filing Memo"]}
+    assert any(item.status == "accepted" for item in operations)
 
 
 def test_page_map_validator_routes_missing_pages_and_rejects_overlap_or_range_errors() -> None:

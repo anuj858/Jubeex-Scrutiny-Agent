@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -194,6 +195,16 @@ def _map_repeatable_segments(
             slot_id = f"{prefix}_{counters[family]}"
         mapped[slot_id] = pages
 
+    def matching_numbered_application_slot(segment_pages: set[int]) -> str | None:
+        matches = [
+            slot_id
+            for slot_id, slot_pages in mapped.items()
+            if slot_id.startswith("application_")
+            and slot_id != "applications"
+            and segment_pages.intersection(slot_pages)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     for segment in segments:
         labels = parts_on_page(segment.get("category"))
         if len(labels) != 1:
@@ -201,9 +212,8 @@ def _map_repeatable_segments(
         family = family_split_name(labels[0])
         if family not in families:
             continue
-        pages = sorted(
-            {int(page) for page in segment.get("pages") or []} & generic_pages[family]
-        )
+        complete_segment_pages = {int(page) for page in segment.get("pages") or []}
+        pages = sorted(complete_segment_pages & generic_pages[family])
         if not pages:
             continue
         repeated = set(pages) & assigned[family]
@@ -215,6 +225,12 @@ def _map_repeatable_segments(
             pages = [page for page in pages if page not in unexpected_repeats]
         if not pages:
             continue
+        if family == APPLICATION_FAMILY:
+            numbered_slot = matching_numbered_application_slot(complete_segment_pages)
+            if numbered_slot:
+                mapped[numbered_slot] = sorted(set(mapped[numbered_slot]) | set(pages))
+                assigned[family].update(pages)
+                continue
         add_segment(family, pages)
         assigned[family].update(pages)
 
@@ -223,6 +239,38 @@ def _map_repeatable_segments(
         for span in page_ranges(remaining):
             add_segment(family, list(range(span["start"], span["end"] + 1)))
     return mapped
+
+
+def _renumber_application_slots_by_source_order(
+    pages_by_slot: dict[str, list[int]],
+) -> dict[str, list[int]]:
+    """Assign Application ordinals only after final physical grouping.
+
+    Application numbers are upload ordinals, not printed I.A. identifiers.
+    Provisional Index reconciliation can reserve Application 1/2 after an
+    earlier generic Application, producing UI order 3,1,2. Renumbering the
+    completed groups by their first physical page makes the labels stable
+    across all files without changing document ownership.
+    """
+    application_items = [
+        (slot_id, pages)
+        for slot_id, pages in pages_by_slot.items()
+        if re.fullmatch(r"application_\d+", slot_id) and pages
+    ]
+    if not application_items:
+        return pages_by_slot
+    ordered = sorted(
+        application_items,
+        key=lambda item: (min(item[1]), max(item[1]), item[0]),
+    )
+    normalized = {
+        slot_id: pages
+        for slot_id, pages in pages_by_slot.items()
+        if not re.fullmatch(r"application_\d+", slot_id)
+    }
+    for ordinal, (_old_slot, pages) in enumerate(ordered, start=1):
+        normalized[f"application_{ordinal}"] = sorted(set(pages))
+    return normalized
 
 
 def validate_shared_page_evidence(
@@ -578,6 +626,7 @@ def slice_bundle_pdf(
             segments,
             allowed_shared_pages=authorized_pages,
         )
+    pages_by_slot = _renumber_application_slots_by_source_order(pages_by_slot)
     if reader is not None:
         invalid_pages = {
             page

@@ -6,12 +6,12 @@ from extraction_review.structure_split import (
     DOCUMENT_TYPES,
     PageClassification,
     PageUnit,
+    _preserve_directly_opened_parent_segments,
     build_logical_documents,
     classify_complete_segments,
     classify_page,
     detect_boundaries,
     extract_page_units,
-    _preserve_directly_opened_parent_segments,
     reconcile_compiled_split,
     structure_aware_split,
 )
@@ -105,6 +105,23 @@ def test_classify_page_prefers_annexure_stamp() -> None:
     assert result.document_type == "Annexure P-1"
     assert result.confidence >= 0.9
     assert "annexure_stamp" in result.signals
+
+
+def test_index_continuation_reference_is_not_an_annexure_boundary() -> None:
+    unit = PageUnit(
+        pdf_page=7,
+        text=(
+            "| 17. | ANNEXURE P-7: True copy of order dated 04.03.2024 | 69-71 |\n"
+            "| 18. | ANNEXURE P-8: Certificate | 72 |"
+        ),
+    )
+
+    result = classify_page(unit, llama_hint="Index")
+
+    assert result.document_type == "Index"
+    assert result.confidence >= 0.9
+    assert "index_continuation" in result.signals
+    assert "annexure_stamp" not in result.signals
 
 
 def test_classify_page_uses_llama_on_ocr_needed_empty_page() -> None:
@@ -295,6 +312,8 @@ def test_index_content_cannot_repaint_authoritative_llama_annexure_range(
         page_count=45,
         operation_log=operations,
         authoritative_boundary_pages=[38],
+        include_index_evidence=True,
+        proposal_evidence=("index_row", "document_opening", "following_boundary"),
     )
 
     assert result == baseline
@@ -302,9 +321,77 @@ def test_index_content_cannot_repaint_authoritative_llama_annexure_range(
     assert any(
         item.original_pages == (38,)
         and item.status == "dismissed"
-        and "enclosed document type" in item.reason
+        and "established Annexure" in item.reason
         for item in operations
     )
+
+
+def test_reporter_page_one_cannot_become_second_impugned_order() -> None:
+    """Defect 018: vendor Page 1 is not master-Index folio 1."""
+    page_count = 46
+    texts = {page: f"Continuation sheet {page}" for page in range(1, 47)}
+    texts[2] = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "3.\tCopy of final Impugned Order dated 09.03.2022 in "
+        "Civil Appeal No. 3638 of 2007\t1\n"
+        "4.\tReview Petition with affidavit\t2-21\n"
+        "5.\tAnnexure P-1: judgment reported as (2000) 3 SCC 581\t22-29\n"
+        "6.\tAnnexure P-2: RTI reply dated 11.03.2015\t30"
+    )
+    texts[17] = (
+        "IN THE SUPREME COURT OF INDIA\nCIVIL APPEAL NO. 3638 OF 2007\n"
+        "ORDER\nThe civil appeal is dismissed."
+    )
+    texts[18] = (
+        "IN THE SUPREME COURT OF INDIA\nREVIEW PETITION (CIVIL) NO. OF 2022\n"
+        "MAIN PETITION"
+    )
+    texts[35] = "AOR'S CERTIFICATE\nCertified that the review petition is maintainable."
+    texts[36] = "AFFIDAVIT\nI solemnly affirm."
+    texts[37] = "VERIFICATION\nDEPONENT"
+    texts[38] = (
+        "SCC ONLINE True Print | Page 1 Friday, September 15, 2023 | "
+        "Annexure - PI | 22\n"
+        "UNITED INDIA INSURANCE CO. LTD. v. RAJENDRA SINGH 581\n1"
+    )
+    for page in range(39, 46):
+        texts[page] = (
+            f"SCC ONLINE True Print | Page {page - 37} Friday, September 15, 2023 "
+            f"| {page - 16}\nSUPREME COURT CASES (2000) 3 SCC\nJudgment continuation"
+        )
+    texts[46] = "ANNEXURE P-2\n30\nRTI reply dated 11.03.2015"
+
+    llama_parts = {
+        1: ["Cover Page"],
+        **{page: ["Index"] for page in range(2, 4)},
+        **{page: ["Synopsis"] for page in range(4, 17)},
+        17: ["Impugned Order"],
+        **{page: ["Main Petition"] for page in range(18, 35)},
+        35: ["AOR's Certificate"],
+        36: ["Affidavit"],
+        37: ["Affidavit"],
+        **{page: ["Annexures"] for page in range(38, 46)},
+        46: ["Annexure P-2"],
+    }
+
+    result = structure_aware_split(
+        _blank_pdf(page_count),
+        page_units=[PageUnit(pdf_page=page, text=texts[page]) for page in range(1, 47)],
+        llama_page_parts=llama_parts,
+        authoritative_boundary_pages=[1, 2, 4, 17, 18, 35, 36, 38, 46],
+    )
+
+    assert result.page_parts[17] == ["Impugned Order"]
+    annexure_owners = {page: result.page_parts[page] for page in range(38, 47)}
+    assert all(
+        result.page_parts[page] == ["Annexure P-1"] for page in range(38, 46)
+    ), annexure_owners
+    assert result.page_parts[46] == ["Annexure P-2"]
+    assert [
+        page
+        for page, labels in result.page_parts.items()
+        if labels == ["Impugned Order"]
+    ] == [17]
 
 
 def test_generic_llama_annexure_boundary_can_join_verified_numbered_owner(
@@ -338,6 +425,72 @@ def test_generic_llama_annexure_boundary_can_join_verified_numbered_owner(
         1: ["Annexure P-2"],
         2: ["Annexure P-2"],
     }
+
+
+def test_defect_003_p1_envelope_contains_internal_lower_court_documents() -> None:
+    """P-1 owns pages 56-90 despite internal affidavit/memo/pleading headings."""
+    page_count = 92
+    texts = {page: "" for page in range(1, page_count + 1)}
+    texts[4] = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "11.\tSpecial Leave Petition along with Affidavit\t10-30\n"
+        "12.\tAppendix: Section 10 and 11 CPC\t31\n"
+        "13.\tAnnexure P-1: plaint in CS(OS) 1251/2009\t11-16\n"
+        "14.\tAnnexure P-2: order in CS(OS) 1251/2009\t67-68\n"
+    )
+    texts[56] = (
+        "32\nANNEXURE-P1\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "C.S. (OS) No. 1251/2009\nINDEX\nS.No. Particulars Page No.\n"
+        "1. Urgent application A\n2. Memo of Parties B-K\n"
+        "3. Plaint 1-15\n4. Affidavits in support 16"
+    )
+    texts[57] = (
+        "33\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "C.S. (OS) No. 1251/2009\nAFFIDAVIT\nI solemnly affirm"
+    )
+    texts[58] = (
+        "34\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "C.S. (OS) No. 1251/2009\nMEMO OF PARTIES\nPlaintiffs versus Defendants"
+    )
+    texts[59] = (
+        "35\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "SUIT FOR DECLARATION, CANCELLATION, PARTITION AND ACCOUNTS"
+    )
+    for page in range(60, 91):
+        texts[page] = (
+            f"{page - 24}\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+            "C.S. (OS) No. 1251/2009\nLower-court plaint continuation"
+        )
+    texts[91] = (
+        "67\nANNEXURE-P2\nIN THE HIGH COURT OF DELHI AT NEW DELHI\n"
+        "ORDER DATED 15.07.2009"
+    )
+    texts[92] = "68\nOrder continuation"
+
+    llama_parts = {
+        **{page: ["Index"] for page in range(1, 6)},
+        **{page: ["Main Petition"] for page in range(39, 60)},
+        **{page: ["Annexures"] for page in range(60, 91)},
+        91: ["Annexure P-2"],
+        92: ["Annexure P-2"],
+    }
+    units = [PageUnit(pdf_page=page, text=texts[page]) for page in range(1, 93)]
+
+    result = structure_aware_split(
+        _blank_pdf(page_count),
+        page_units=units,
+        llama_page_parts=llama_parts,
+        authoritative_boundary_pages=[1, 39, 60, 75, 76, 77, 78, 91],
+    )
+
+    assert all(
+        result.page_parts[page] == ["Annexure P-1"] for page in range(56, 91)
+    )
+    assert all(result.page_parts[page] == ["Annexure P-2"] for page in (91, 92))
+    assert not any(
+        result.page_parts[page] in (["Annexure"], ["Annexures"])
+        for page in range(56, 91)
+    )
 
 
 def test_explicit_opening_can_split_inside_coarse_llama_range() -> None:
@@ -424,9 +577,7 @@ def test_certificate_and_affidavit_split_from_coarse_main_petition_range() -> No
     }
     result = structure_aware_split(
         _blank_pdf(4),
-        page_units=[
-            PageUnit(pdf_page=page, text=text) for page, text in texts.items()
-        ],
+        page_units=[PageUnit(pdf_page=page, text=text) for page, text in texts.items()],
         llama_page_parts={page: ["Main Petition"] for page in range(1, 5)},
         authoritative_boundary_pages=[1],
     )
@@ -656,7 +807,8 @@ def test_structure_aware_split_keeps_synopsis_out_of_main() -> None:
         7: "Grounds A. Because the High Court erred",
         8: (
             "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
-            "Certified that the Special Leave Petition is confined only to the pleadings"
+            "Certified that the Special Leave Petition is confined only to the "
+            "pleadings"
         ),
     }
     llama = {page: ["Main Petition"] for page in range(3, 8)}
@@ -963,13 +1115,20 @@ def test_scanned_index_evidence_survives_targeted_reconciliation() -> None:
         15: "AFFIDAVIT\nI verify the accompanying application.\nDEPONENT",
     }
     labels = {
-        1: ["Record of Proceedings"], 2: ["Record of Proceedings"],
-        3: ["Impugned Order"], 4: ["Index"],
-        5: ["Impugned Order"], 6: ["Annexure P-3"],
-        7: ["Main Petition"], 8: ["Main Petition"],
-        9: ["Affidavit"], 10: ["AOR's Certificate"],
-        11: ["Impugned Order"], 12: ["Main Petition"],
-        13: ["Application 5"], 14: ["Application 6"],
+        1: ["Record of Proceedings"],
+        2: ["Record of Proceedings"],
+        3: ["Impugned Order"],
+        4: ["Index"],
+        5: ["Impugned Order"],
+        6: ["Annexure P-3"],
+        7: ["Main Petition"],
+        8: ["Main Petition"],
+        9: ["Affidavit"],
+        10: ["AOR's Certificate"],
+        11: ["Impugned Order"],
+        12: ["Main Petition"],
+        13: ["Application 5"],
+        14: ["Application 6"],
         15: ["Application 6"],
     }
 
@@ -984,7 +1143,12 @@ def test_scanned_index_evidence_survives_targeted_reconciliation() -> None:
     assert result.page_parts[3] == ["Record of Proceedings"]
     assert result.page_parts[5] == result.page_parts[6] == ["Impugned Order"]
     assert result.page_parts[11] == result.page_parts[12] == ["Annexure P-1"]
-    assert result.page_parts[13] == result.page_parts[14] == result.page_parts[15] == ["Application 5"]
+    assert (
+        result.page_parts[13]
+        == result.page_parts[14]
+        == result.page_parts[15]
+        == ["Application 5"]
+    )
     assert any(
         event["stage"] == "strong_index_content_spans"
         and event["to_labels"] == ["Annexure P-1"]
@@ -998,7 +1162,8 @@ def test_application_prayer_continuation_does_not_become_new_application() -> No
         1: (
             "IN THE SUPREME COURT OF INDIA\nI. A. NO. OF 2026\n"
             "AN APPLICATION FOR EXEMPTION FROM FILING CERTIFIED COPY\n"
-            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner applies for exemption.\n208"
+            "MOST RESPECTFULLY SHOWETH:\n1. That the petitioner applies for "
+            "exemption.\n208"
         ),
         2: (
             "2. The certified copy is not readily available.\n"
@@ -1058,7 +1223,9 @@ def test_application_body_without_folio_is_not_a_confirmed_boundary_override() -
     )
 
 
-def test_scanned_old_case_petition_stays_in_stamped_annexure_until_outer_start() -> None:
+def test_scanned_old_case_petition_stays_in_stamped_annexure_until_outer_start() -> (
+    None
+):
     """Sparse scanned exhibit folios are not a new Main Petition island."""
     texts = {
         1: "IN THE SUPREME COURT OF INDIA\nSPECIAL LEAVE PETITION\nPRAYER\n214",

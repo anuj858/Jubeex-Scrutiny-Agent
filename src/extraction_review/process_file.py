@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import inspect
 import logging
 import os
 import re
 import uuid
 from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import unquote, urlparse
@@ -100,9 +102,17 @@ logger = logging.getLogger(__name__)
 
 DISCRIMINATOR_FIELD = "petition_type"
 _TRUTHY = frozenset({"1", "true", "yes"})
-_SPLIT_RECONCILIATION_MODES = frozenset({"llama_only", "targeted", "legacy_full"})
+_SPLIT_RECONCILIATION_MODES = frozenset({"llama_only", "guarded", "legacy"})
+_SPLIT_RECONCILIATION_ALIASES = {
+    "targeted": "guarded",
+    "legacy_full": "legacy",
+}
 DEFAULT_SLOT_UPLOAD_CONCURRENCY = 8
+DEFAULT_LLAMA_UPLOAD_MAX_ATTEMPTS = 6
+DEFAULT_LLAMA_LARGE_UPLOAD_BYTES = 20 * 1024 * 1024
 _FILE_BYTES: dict[str, bytes] = {}
+_UPLOAD_LOCKS = tuple(asyncio.Lock() for _ in range(64))
+_LARGE_UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def positive_int_env(name: str, default: int) -> int:
@@ -120,21 +130,39 @@ def slot_upload_concurrency() -> int:
     return positive_int_env("SLOT_UPLOAD_CONCURRENCY", DEFAULT_SLOT_UPLOAD_CONCURRENCY)
 
 
+def llama_upload_max_attempts() -> int:
+    """Bound upload recovery so transient gateways cannot fail a filing quickly."""
+    return min(
+        positive_int_env(
+            "LLAMA_CLOUD_UPLOAD_MAX_ATTEMPTS", DEFAULT_LLAMA_UPLOAD_MAX_ATTEMPTS
+        ),
+        10,
+    )
+
+
+def llama_large_upload_bytes() -> int:
+    """Serialize uploads above this size to avoid competing multipart streams."""
+    return positive_int_env(
+        "LLAMA_CLOUD_LARGE_UPLOAD_BYTES", DEFAULT_LLAMA_LARGE_UPLOAD_BYTES
+    )
+
+
 def split_reconciliation_mode() -> str:
     """Resolve the split mode; the staged boundary/review flow is the default.
 
     ``SPLIT_RECONCILIATION_MODE`` is authoritative when valid. The legacy
     boolean remains an explicit compatibility switch, while ``llama_only``
-    and ``legacy_full`` remain available for controlled rollback/comparison.
+    and ``legacy`` remain available for controlled rollback/comparison.
     """
     configured = (os.getenv("SPLIT_RECONCILIATION_MODE") or "").strip().lower()
+    configured = _SPLIT_RECONCILIATION_ALIASES.get(configured, configured)
     if configured in _SPLIT_RECONCILIATION_MODES:
         return configured
     legacy_value = os.getenv("SPLIT_PYTHON_RULES_ENABLED")
     if legacy_value is None:
-        return "targeted"
+        return "guarded"
     legacy_enabled = legacy_value.strip().lower() in _TRUTHY
-    return "targeted" if legacy_enabled else "llama_only"
+    return "guarded" if legacy_enabled else "llama_only"
 
 
 def split_python_rules_enabled() -> bool:
@@ -1748,14 +1776,14 @@ def _refine_boundary_proposals_with_classified_openings(
     classification_report: Mapping[str, Any],
     page_texts: Mapping[int, str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split an overbroad boundary only at classifier ranges with real openings.
+    """Split an overbroad boundary at independently verified classifier openings.
 
     The boundary pass remains authoritative unless the classification pass
-    covers the complete candidate range contiguously and every proposed
-    internal transition begins with matching outer-document evidence.  This
-    repairs coarse ranges such as ``Listing Proforma 7-8`` followed by an
-    explicit ``LIST OF DATES`` on page 9 without trusting body-text category
-    changes inside Annexures.
+    covers the complete candidate range contiguously. Each internal transition
+    is then evaluated independently: a weak transition stays inside its current
+    boundary, but it no longer suppresses other transitions that have matching
+    outer-document evidence. This avoids an all-or-nothing failure where one
+    uncertain page leaves an entire front matter bundle under Cover Page.
     """
     from .document_parts import annexure_ref_in_heading, family_split_name
     from .split_repair import _outer_anchor_label
@@ -1786,6 +1814,27 @@ def _refine_boundary_proposals_with_classified_openings(
             )
         )
 
+    def transition_supports(
+        previous: tuple[int, int, str], current: tuple[int, int, str]
+    ) -> bool:
+        """Return whether a classifier transition can refine a coarse boundary.
+
+        A one-page Cover is a self-contained document. When the complete
+        classification pass assigns the following physical pages to another
+        owner, the Cover must terminate even if the following continuation
+        page does not repeat that document's heading.
+        """
+        previous_start, previous_end, previous_category = previous
+        current_start, _current_end, current_category = current
+        if (
+            previous_category == "Cover Page"
+            and previous_start == previous_end
+            and current_category != "Cover Page"
+            and current_start == previous_end + 1
+        ):
+            return True
+        return opening_supports(current_category, current_start)
+
     refined: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     next_id = 1
@@ -1815,12 +1864,29 @@ def _refine_boundary_proposals_with_classified_openings(
             for start, end, _category in merged
             for page in range(start, end + 1)
         ]
-        safe_split = bool(
-            len(merged) > 1
-            and covered == pages
-            and all(opening_supports(category, start) for start, _end, category in merged[1:])
-        )
-        selected = merged if safe_split else [(pages[0], pages[-1], "")]
+        complete_coverage = covered == pages
+        accepted_starts: dict[int, tuple[str, str]] = {}
+        if complete_coverage and len(merged) > 1:
+            for previous, current in pairwise(merged):
+                if not transition_supports(previous, current):
+                    continue
+                start = current[0]
+                evidence = (
+                    "singleton_cover_page_termination"
+                    if previous[0] == previous[1]
+                    and previous[2] == "Cover Page"
+                    and start == previous[1] + 1
+                    else "matching_explicit_outer_opening"
+                )
+                accepted_starts[start] = (current[2], evidence)
+
+        starts = [pages[0], *sorted(accepted_starts)]
+        ends = [start - 1 for start in starts[1:]] + [pages[-1]]
+        selected = [
+            (start, end, accepted_starts.get(start, ("", ""))[0])
+            for start, end in zip(starts, ends, strict=True)
+        ]
+        refined_split = len(selected) > 1
         for start, end, category in selected:
             segment_pages = list(range(start, end + 1))
             refined.append(
@@ -1833,13 +1899,14 @@ def _refine_boundary_proposals_with_classified_openings(
                     "continuation_pages": segment_pages[1:],
                     "source": (
                         "llama_boundary_detection+classified_outer_opening"
-                        if safe_split
+                        if refined_split
                         else proposal.get("source", "llama_boundary_detection")
                     ),
                     "parent_segment_id": proposal.get("segment_id"),
                 }
             )
-            if safe_split and start != pages[0]:
+            if refined_split and start != pages[0]:
+                _event_category, event_evidence = accepted_starts[start]
                 events.append(
                     {
                         "parent_segment_id": proposal.get("segment_id"),
@@ -1847,7 +1914,7 @@ def _refine_boundary_proposals_with_classified_openings(
                         "category": category,
                         "evidence": [
                             "complete_classification_coverage",
-                            "matching_explicit_outer_opening",
+                            event_evidence,
                         ],
                     }
                 )
@@ -2229,6 +2296,37 @@ def _document_first_page_ownership(
             type_evidence.append("classification_unresolved")
             review_reasons.append("no_unambiguous_segment_classification")
 
+        # Defense in depth for legacy/incomplete refinement paths. A single
+        # Cover classification must never be multiplied across a long range
+        # when the classifier reports a different owner for nearly all pages.
+        if category == "Cover Page" and len(pages) > 4 and len(categories) > 1:
+            coverage_by_category = {
+                candidate: len(
+                    {
+                        page
+                        for item in overlapping
+                        if str(item["category"]).strip() == candidate
+                        for page in (item.get("source_pages") or ())
+                        if page in page_set
+                    }
+                )
+                for candidate in categories
+                if candidate != "Cover Page"
+            }
+            dominant_category, dominant_coverage = max(
+                coverage_by_category.items(), key=lambda item: item[1], default=("", 0)
+            )
+            if dominant_category and dominant_coverage / len(pages) >= 0.8:
+                category = dominant_category
+                confidence = 0.85
+                type_evidence.append("long_cover_span_rejected_by_dominant_classification")
+                review_reasons.append("cover_page_cannot_own_long_conflicting_range")
+            else:
+                category = "Undefined"
+                confidence = 0.0
+                type_evidence.append("long_cover_span_rejected_as_ambiguous")
+                review_reasons.append("cover_page_cannot_own_long_conflicting_range")
+
         # The classifier names a model-proposed range, but it must not defeat
         # deterministic opening-page evidence in the two common front-matter
         # failure modes below. Keep this deliberately contextual so an Index or
@@ -2324,6 +2422,23 @@ def _document_first_page_ownership(
             "review_reasons": review_reasons,
             "reported_categories": categories,
             "contained_document_type": contained_document_type,
+            # When the physical-boundary pass and complete-segment
+            # classification agree without a range conflict, later local
+            # rules must treat this range as a protected ownership baseline.
+            "protected": bool(
+                confidence >= 0.85
+                and not review_reasons
+                # ``Annexures`` is a family placeholder, not an independently
+                # identified outer document. Protecting it would freeze a
+                # model-created boundary inside a numbered Annexure even when
+                # continuity and the next explicit P/A/R opening prove that
+                # the generic range belongs to the preceding exhibit.
+                and category not in {ANNEXURE_FAMILY, "Undefined", "uncategorized"}
+                and {
+                    "exact_complete_segment_classification",
+                    "consistent_overlapping_classification",
+                }.intersection(type_evidence)
+            ),
         }
         segments.append(segment)
         if review_reasons:
@@ -2879,7 +2994,102 @@ async def _upload_slot_pdf(
     external_file_id: str | None = None,
 ) -> str:
     name = _upload_filename(filename)
-    external = (external_file_id or "").strip() or None
+    legacy_external = (external_file_id or "").strip() or None
+    content_digest = hashlib.sha256(pdf_bytes).hexdigest()
+    # Content identity survives workspace/document recreation. It lets every
+    # rerun reuse a previously accepted LlamaCloud object rather than sending
+    # the same large multipart body again.
+    content_external = f"sha256:{content_digest}"
+
+    async def reusable_file_id() -> str | None:
+        list_files = getattr(client.files, "list", None)
+        if not callable(list_files):
+            # Compatibility with older SDK clients and lightweight test
+            # adapters. Upload still works; only deduplication is unavailable.
+            return None
+        for candidate in dict.fromkeys(
+            value for value in (content_external, legacy_external) if value
+        ):
+            try:
+                listed = list_files(
+                    external_file_id=candidate,
+                    project_id=project_id,
+                    order_by="created_at",
+                    page_size=10,
+                )
+                if inspect.isawaitable(listed):
+                    listed = await listed
+                async for item in listed:
+                    file_id = str(getattr(item, "id", "") or "").strip()
+                    if file_id:
+                        logger.info(
+                            "Reusing LlamaCloud file_id=%s for %s bytes=%s "
+                            "external_file_id=%s",
+                            file_id,
+                            name,
+                            len(pdf_bytes),
+                            candidate,
+                        )
+                        return file_id
+            except (APIConnectionError, APIStatusError) as exc:
+                # Lookup is an optimization. A temporary list failure must not
+                # prevent the actual upload/retry path from running.
+                logger.warning(
+                    "LlamaCloud file reuse lookup failed for %s status=%s; "
+                    "continuing with upload",
+                    name,
+                    getattr(exc, "status_code", None),
+                )
+        # Compatibility for files uploaded before SHA-256 external IDs were
+        # introduced. For large PDFs only, inspect a few same-name objects and
+        # reuse one after byte-for-byte hash verification. Downloading an old
+        # accepted object is substantially more reliable than uploading the
+        # same 20–100 MB multipart body again.
+        if len(pdf_bytes) >= llama_large_upload_bytes():
+            try:
+                listed = list_files(
+                    file_name=name,
+                    project_id=project_id,
+                    order_by="created_at",
+                    page_size=5,
+                )
+                if inspect.isawaitable(listed):
+                    listed = await listed
+                checked = 0
+                async for item in listed:
+                    file_id = str(getattr(item, "id", "") or "").strip()
+                    if not file_id:
+                        continue
+                    checked += 1
+                    try:
+                        existing_bytes = await _download_file_bytes(client, file_id)
+                    except (
+                        APIConnectionError,
+                        APIStatusError,
+                        httpx.HTTPError,
+                        RuntimeError,
+                        ValueError,
+                    ):
+                        continue
+                    if hashlib.sha256(existing_bytes).hexdigest() == content_digest:
+                        logger.info(
+                            "Reusing legacy LlamaCloud file_id=%s for %s after "
+                            "SHA-256 verification bytes=%s",
+                            file_id,
+                            name,
+                            len(pdf_bytes),
+                        )
+                        return file_id
+                    if checked >= 5:
+                        break
+            except (APIConnectionError, APIStatusError) as exc:
+                logger.warning(
+                    "LlamaCloud legacy file lookup failed for %s status=%s; "
+                    "continuing with upload",
+                    name,
+                    getattr(exc, "status_code", None),
+                )
+        return None
 
     def create_kwargs(external_id: str | None) -> dict[str, Any]:
         # Multipart streams are consumed by an attempted request. Always build
@@ -2903,7 +3113,7 @@ async def _upload_slot_pdf(
         return status in {408, 409, 425, 429, 499} or bool(status and status >= 500)
 
     async def upload_with_retry(external_id: str | None) -> Any:
-        max_attempts = 3
+        max_attempts = llama_upload_max_attempts()
         for attempt in range(1, max_attempts + 1):
             try:
                 return await client.files.create(**create_kwargs(external_id))
@@ -2912,7 +3122,7 @@ async def _upload_slot_pdf(
                     raise
                 status = getattr(exc, "status_code", None)
                 request_id = getattr(exc, "request_id", None)
-                delay = float(2 ** (attempt - 1))
+                delay = float(min(2 ** (attempt - 1), 30))
                 logger.warning(
                     "LlamaCloud upload interrupted for %s bytes=%s "
                     "status=%s request_id=%s attempt=%s/%s; retrying in %.0fs",
@@ -2927,20 +3137,33 @@ async def _upload_slot_pdf(
                 await asyncio.sleep(delay)
         raise RuntimeError("unreachable upload retry state")
 
-    try:
-        uploaded = await upload_with_retry(external)
-    except BadRequestError:
-        if not external:
-            raise
-        logger.warning(
-            "LlamaCloud rejected upload with external_file_id=%s; retrying without it",
-            external,
-        )
-        uploaded = await upload_with_retry(None)
-    file_id = getattr(uploaded, "id", None)
-    if not file_id:
-        raise RuntimeError(f"Upload of {name} did not return a file id")
-    return str(file_id)
+    async def reuse_or_upload() -> str:
+        reusable = await reusable_file_id()
+        if reusable:
+            return reusable
+        try:
+            uploaded = await upload_with_retry(content_external)
+        except BadRequestError:
+            logger.warning(
+                "LlamaCloud rejected upload with external_file_id=%s; "
+                "retrying without it",
+                content_external,
+            )
+            uploaded = await upload_with_retry(None)
+        file_id = getattr(uploaded, "id", None)
+        if not file_id:
+            raise RuntimeError(f"Upload of {name} did not return a file id")
+        return str(file_id)
+
+    # The striped content lock closes the list-then-create race for identical
+    # files. Large, different PDFs also upload one at a time so they do not
+    # compete for the same outbound bandwidth and trigger gateway 499s.
+    content_lock = _UPLOAD_LOCKS[int(content_digest[:8], 16) % len(_UPLOAD_LOCKS)]
+    async with content_lock:
+        if len(pdf_bytes) >= llama_large_upload_bytes():
+            async with _LARGE_UPLOAD_SEMAPHORE:
+                return await reuse_or_upload()
+        return await reuse_or_upload()
 
 
 async def _upload_sliced_slots(
@@ -4165,6 +4388,7 @@ class ProcessFileWorkflow(Workflow):
             authoritative_boundary_pages=[
                 item["start_page"] for item in authoritative_boundary_segments[1:]
             ],
+            authoritative_segments=authoritative_boundary_segments,
         )
         page_parts = structured.page_parts
         reconciliation_changes = getattr(structured, "reconciliation_changes", [])

@@ -17,8 +17,8 @@ from extraction_review.process_file import (
     _load_bundle_pdf,
     _split_output_matches,
     _upload_filename,
-    _upload_slot_pdf,
     _upload_sliced_slots,
+    _upload_slot_pdf,
     clear_file_bytes_cache,
     compiled_catalog_override,
     compiled_source,
@@ -555,6 +555,18 @@ class _EmptyFileList:
         return _gen()
 
 
+class _FileList:
+    def __init__(self, *items: object) -> None:
+        self.items = items
+
+    def __aiter__(self):
+        async def _gen():
+            for item in self.items:
+                yield item
+
+        return _gen()
+
+
 @pytest.mark.asyncio
 async def test_compiled_extract_skips_required_slot_check(
     monkeypatch: pytest.MonkeyPatch,
@@ -649,9 +661,66 @@ async def test_ingest_remote_file_uploads_to_llamacloud(
     assert len(digest) == 64
     kwargs = client.files.create.await_args.kwargs
     assert kwargs["purpose"] == "extract"
-    assert kwargs["external_file_id"] == "backend-doc-99"
+    assert kwargs["external_file_id"].startswith("sha256:")
     assert kwargs["file"][0] == "My_Filing.pdf"
     assert take_file_bytes(file_id) is None
+
+
+@pytest.mark.asyncio
+async def test_upload_reuses_existing_llamacloud_file_by_content_hash() -> None:
+    pdf_bytes = b"%PDF-1.7 stable filing content"
+    client = MagicMock()
+    client.files.list = MagicMock(
+        return_value=_FileList(SimpleNamespace(id="dfl-existing-content"))
+    )
+    client.files.create = AsyncMock()
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="same-filing.pdf",
+        pdf_bytes=pdf_bytes,
+        external_file_id="new-workspace-document-id",
+    )
+
+    assert file_id == "dfl-existing-content"
+    assert client.files.list.call_args.kwargs["external_file_id"].startswith("sha256:")
+    client.files.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_large_upload_reuses_legacy_same_name_after_hash_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_bytes = b"%PDF-1.7 legacy large filing"
+    client = MagicMock()
+    client.files.list = MagicMock(
+        side_effect=[
+            _EmptyFileList(),
+            _EmptyFileList(),
+            _FileList(SimpleNamespace(id="dfl-legacy-same-content")),
+        ]
+    )
+    client.files.create = AsyncMock()
+    monkeypatch.setenv("LLAMA_CLOUD_LARGE_UPLOAD_BYTES", "1")
+    download = AsyncMock(return_value=pdf_bytes)
+    monkeypatch.setattr(
+        "extraction_review.process_file._download_file_bytes",
+        download,
+    )
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="Defect_File_003.pdf",
+        pdf_bytes=pdf_bytes,
+        external_file_id="old-workspace-document-id",
+    )
+
+    assert file_id == "dfl-legacy-same-content"
+    assert client.files.list.call_args_list[-1].kwargs["file_name"] == (
+        "Defect_File_003.pdf"
+    )
+    download.assert_awaited_once_with(client, "dfl-legacy-same-content")
+    client.files.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -773,6 +842,39 @@ async def test_large_upload_retries_client_closed_request_with_fresh_stream(
     assert first is not second
     assert first.getvalue() == second.getvalue() == b"%PDF-1.7 large filing"
     sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+async def test_upload_499_uses_configured_bounded_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llama_cloud import APIStatusError
+
+    response = MagicMock(status_code=499, headers={})
+    errors = [
+        APIStatusError(
+            "Client Closed Request",
+            response=response,
+            body={"detail": "Client Closed Request"},
+        )
+        for _ in range(4)
+    ]
+    client = MagicMock()
+    client.files.list = MagicMock(return_value=_EmptyFileList())
+    client.files.create = AsyncMock(side_effect=errors)
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setenv("LLAMA_CLOUD_UPLOAD_MAX_ATTEMPTS", "4")
+
+    with pytest.raises(APIStatusError, match="Client Closed Request"):
+        await _upload_slot_pdf(
+            client,
+            filename="large.pdf",
+            pdf_bytes=b"%PDF-1.7 retry budget",
+        )
+
+    assert client.files.create.await_count == 4
+    assert [call.args[0] for call in sleep.await_args_list] == [1.0, 2.0, 4.0]
 
 
 def test_positive_int_env_and_slot_upload_concurrency(
