@@ -201,11 +201,26 @@ def _scope(row: dict[str, Any], parsed: dict[str, str]) -> str:
 
 
 def _test(row: dict[str, Any], parsed: dict[str, str]) -> str:
+    if row.get("check_id") == "D-94":
+        return (
+            "1. Compare the court or tribunal identity stated in the Main "
+            "Petition’s opening cause title, including its ‘against’ or "
+            "‘arising out of’ description, with the heading on the actual "
+            "Impugned Order.\n"
+            "2. Compare the parties in both documents for identity, names, "
+            "order and description, allowing only legitimate changes of "
+            "litigation status."
+        )
     existing = parsed.get("test", "")
     candidates = [
         sentence
         for sentence in _sentences(existing)
-        if re.search(r"\b(test|element|compliance requires|requires? (?:both|all|either)|verify)\b", sentence, re.IGNORECASE)
+        if re.search(
+            r"\b(test|compare|element|compliance requires|"
+            r"requires? (?:both|all|either)|verify)\b",
+            sentence,
+            re.IGNORECASE,
+        )
     ]
     if candidates:
         detail = _compact(" ".join(candidates), limit=560, keep=3)
@@ -265,6 +280,14 @@ def _decision_text(row: dict[str, Any], parsed: dict[str, str], status: str) -> 
 
 
 def _guardrails(row: dict[str, Any], parsed: dict[str, str]) -> str:
+    if row.get("check_id") == "D-94":
+        return (
+            "The Supreme Court heading identifies the present forum, not the "
+            "court that passed the challenged decision. Compare only the "
+            "actual Impugned Order, not another judgment cited or reproduced "
+            "in an annexure. A correct reference elsewhere does not cure a "
+            "contradictory cause title."
+        )
     text = _compact(parsed.get("guardrails", ""), limit=280, keep=2)
     if text:
         return text

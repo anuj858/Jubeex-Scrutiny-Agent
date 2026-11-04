@@ -389,6 +389,13 @@ def test_catalogue_declares_dependency_parts_explicitly() -> None:
 def test_catalogue_ai_notes_use_canonical_operational_contract() -> None:
     catalogue = rules_mod._load_file_catalogue()
     headings = ("SCOPE", "TEST", "EVIDENCE", "DECISION", "GUARDRAILS", "RECORD")
+    forbidden = (
+        "Defect when the supplied filing evidence positively establishes failure of a required element.",
+        "Compliant only when complete relevant evidence establishes every applicable element.",
+        "when the shown excerpts establish.",
+        "when the excerpts establish the element.",
+        "any of the three documents",
+    )
 
     for defect in catalogue.defects:
         note = defect.ai_note or ""
@@ -400,6 +407,9 @@ def test_catalogue_ai_notes_use_canonical_operational_contract() -> None:
         assert "NEED REVIEW:" in note
         assert "legal-source gate" not in note.casefold()
         assert "rule verification pending" not in note.casefold()
+        assert not any(fragment.casefold() in note.casefold() for fragment in forbidden), (
+            defect.check_id
+        )
 
 
 def test_catalogue_has_complete_gemini_decision_inputs() -> None:
@@ -818,7 +828,12 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "Vakalatnama",
     ]
     assert catalogue.defect("D-73").inspect_parts == ["Vakalatnama"]
-    assert catalogue.defect("D-94").inspect_parts == ["Main Petition", "Impugned Order"]
+    d94 = catalogue.defect("D-94")
+    assert d94.inspect_parts == ["Main Petition", "Impugned Order"]
+    assert d94.dependency_parts == ["Main Petition", "Impugned Order"]
+    assert "different court or tribunal" in (d94.ai_note or "")
+    assert "High Court of Maharashtra" in (d94.ai_note or "")
+    assert "confirmed conflict is Defect, not Need Review" in (d94.ai_note or "")
     assert catalogue.defect("D-103").inspect_parts == [
         "Application",
         "Main Petition",
