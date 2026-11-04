@@ -4,7 +4,9 @@ from extraction_review.s3_artifacts import (
     STEP_DEFECTS,
     STEP_EXTRACT,
     STEP_LAYOUT,
+    STEP_PARSE,
     STEP_SPLIT,
+    STEP_VISUAL,
     artifact_key,
     recorded_artifacts,
     set_job_context,
@@ -43,6 +45,18 @@ def test_split_defect_and_layout_use_their_own_folders() -> None:
     assert artifact_key(STEP_LAYOUT, object_id=object_id, job_id=job_id) == (
         f"org/{org}/filing-workspace/{workspace}/layoutfiles/"
         f"{object_id}-v001-agent-layout-{job_id}.json"
+    )
+    assert artifact_key(STEP_PARSE, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/parsefiles/"
+        f"{object_id}-v001-agent-parse-{job_id}.json"
+    )
+    assert artifact_key(STEP_VISUAL, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/visualfiles/"
+        f"{object_id}-v001-agent-visual-{job_id}.json"
+    )
+    assert artifact_key(STEP_VISUAL, object_id=object_id, job_id=job_id) == (
+        f"org/{org}/filing-workspace/{workspace}/visualfiles/"
+        f"{object_id}-v001-agent-visual-{job_id}.json"
     )
 
 
@@ -197,7 +211,10 @@ def test_download_json_object_reads_s3_key(monkeypatch) -> None:
     class FakeS3:
         def get_object(self, **kwargs):
             assert kwargs["Bucket"] == "jubeex-893338224943-ap-south-1-an"
-            assert kwargs["Key"] == "org/llamacloud/filing-workspace/default/layoutfiles/x.json"
+            assert (
+                kwargs["Key"]
+                == "org/llamacloud/filing-workspace/default/layoutfiles/x.json"
+            )
             return {"Body": FakeBody()}
 
     monkeypatch.setenv("AWS_S3_BUCKET", "jubeex-893338224943-ap-south-1-an")

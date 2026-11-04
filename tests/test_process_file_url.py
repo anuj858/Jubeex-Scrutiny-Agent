@@ -2,22 +2,27 @@
 
 import asyncio
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
+from extraction_review.logging_utils import safe_url_for_log
 from extraction_review.process_file import (
     FileEvent,
     SourceDocument,
     _extract_sliced_parts,
     _filename_from_url,
     _load_bundle_pdf,
+    _split_output_matches,
     _upload_filename,
     _upload_sliced_slots,
+    _upload_slot_pdf,
     clear_file_bytes_cache,
     compiled_catalog_override,
     compiled_source,
+    filter_split_outputs,
     ingest_remote_file,
     intake_echo,
     intake_mode,
@@ -26,9 +31,39 @@ from extraction_review.process_file import (
     resolve_compiled_filing_type,
     slot_id_from_name,
     slot_upload_concurrency,
+    split_output_selection,
     take_file_bytes,
     upload_sliced_slot_pdfs,
+    verified_content_hash,
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_test_download_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep URL-ingestion tests deterministic; security checks have dedicated tests."""
+
+    async def allow(url: str) -> str:
+        return url
+
+    monkeypatch.setattr("extraction_review.remote_download.validate_remote_url", allow)
+
+
+def test_safe_url_for_log_removes_credentials_and_query() -> None:
+    safe = safe_url_for_log(
+        "https://user:secret@s3.example.com/file.pdf?X-Amz-Credential=secret#part"
+    )
+
+    assert safe == "https://s3.example.com/file.pdf"
+
+
+def test_verified_content_hash_rejects_bad_or_mismatched_claim() -> None:
+    actual = "a" * 64
+    assert verified_content_hash(None, actual) == actual
+    assert verified_content_hash(actual.upper(), actual) == actual
+    with pytest.raises(ValueError, match="64-character"):
+        verified_content_hash("not-a-sha", actual)
+    with pytest.raises(ValueError, match="does not match"):
+        verified_content_hash("b" * 64, actual)
 
 
 def test_file_event_accepts_file_url_without_file_id() -> None:
@@ -72,6 +107,62 @@ def test_upload_sliced_slot_pdfs_skip_flag(
     assert upload_sliced_slot_pdfs() is True
     monkeypatch.delenv("SKIP_SLOT_PDF_UPLOAD", raising=False)
     assert upload_sliced_slot_pdfs() is True
+
+
+def test_split_output_selection_defaults_to_annexures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPLIT_OUTPUT_DOCUMENTS", raising=False)
+    assert split_output_selection() == {
+        "mode": "selected",
+        "configured_value": "Annexures, Cover Page",
+        "requested": ["Annexures", "Cover Page"],
+    }
+    assert split_output_selection("")["requested"] == ["Annexures", "Cover Page"]
+    assert split_output_selection("All")["mode"] == "all"
+    monkeypatch.setenv("SPLIT_OUTPUT_DOCUMENTS", "Annexures")
+    assert split_output_selection()["requested"] == ["Annexures"]
+
+
+def test_split_output_selection_accepts_annexure_family_and_multiple_names() -> None:
+    annexures = split_output_selection("Annexures")
+    annexure = SimpleNamespace(slot_id="annexure_p_9", label="Annexure P-9")
+    petition = SimpleNamespace(slot_id="main_petition", label="Main Petition")
+    cover = SimpleNamespace(slot_id="cover_page", label="Cover Page")
+    assert _split_output_matches(annexure, annexures)
+    assert not _split_output_matches(petition, annexures)
+
+    selected = split_output_selection("Annexure P-9, Main Petition")
+    assert _split_output_matches(annexure, selected)
+    assert _split_output_matches(petition, selected)
+    configured_selection = split_output_selection("Annexures, Cover Page")
+    assert _split_output_matches(annexure, configured_selection)
+    assert _split_output_matches(cover, configured_selection)
+    assert not _split_output_matches(petition, configured_selection)
+    assert not _split_output_matches(
+        SimpleNamespace(slot_id="affidavit", label="Affidavit"), selected
+    )
+
+
+def test_filter_split_outputs_reports_pages_and_slots_excluded_by_filter() -> None:
+    outputs = [
+        SimpleNamespace(slot_id="annexure_p_9", label="Annexure P-9", pages=(10, 11)),
+        SimpleNamespace(slot_id="main_petition", label="Main Petition", pages=(1, 9)),
+    ]
+    selected, report = filter_split_outputs(
+        outputs, split_output_selection("Annexures")
+    )
+    assert [item.slot_id for item in selected] == ["annexure_p_9"]
+    assert report["selected_slots"] == ["annexure_p_9"]
+    assert report["excluded_slots"] == ["main_petition"]
+    assert report["source_pages_excluded_from_outputs"] == [1, 9]
+    assert report["matched"] == ["Annexures"]
+    assert report["unmatched"] == []
+
+
+def test_split_output_selection_rejects_ambiguous_all_mix() -> None:
+    with pytest.raises(ValueError, match="cannot combine 'All'"):
+        split_output_selection("All, Annexures")
 
 
 def test_full_petition_from_parts_slot() -> None:
@@ -134,6 +225,19 @@ def test_swagger_slot_id_string_maps_from_filename() -> None:
     assert event.documents[0].slot_id == "petition"
     assert event.documents[0].file_id is None
     assert event.documents[0].file_url.endswith("01_Petition.pdf")
+
+
+def test_aor_declaration_and_certificate_names_map_to_separate_slots() -> None:
+    assert slot_id_from_name("AOR's Declaration.pdf", "SLP_CIVIL") == (
+        "aor_s_declaration"
+    )
+    assert slot_id_from_name("AOR's Certificate.pdf", "SLP_CIVIL") == (
+        "aor_s_certificate"
+    )
+    # This old id labelled the Certificate before the slots were separated.
+    assert slot_id_from_name("aors_declaration.pdf", "SLP_CIVIL") == (
+        "aor_s_certificate"
+    )
 
 
 def test_split_mode_from_petitiontype() -> None:
@@ -214,6 +318,32 @@ def test_slot_id_from_document_name() -> None:
     assert slot_id_from_name("Filing_Memo.pdf", "SLP_CIVIL") == "filing_memo"
     assert slot_id_from_name("Filing Memo.pdf", "SLP_CRIMINAL") == "filing_memo"
     assert slot_id_from_name("Application 3.pdf", "SLP_CIVIL") == "application_3"
+    assert (
+        slot_id_from_name("Defect_File__001-Application_1.pdf", "SLP_CIVIL")
+        == "application_1"
+    )
+
+
+def test_undefined_application_file_is_labelled_from_its_name() -> None:
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-test",
+        documents=[
+            {
+                "slot_id": "undefined",
+                "name": "Defect_File__001-Application_1.pdf",
+                "download_url": "https://example.com/Defect_File__001-Application_1.pdf",
+            },
+            {
+                "slot_id": "undefined",
+                "name": "scan.pdf",
+                "download_url": "https://example.com/scan.pdf",
+            },
+        ],
+    )
+    assert event.documents[0].slot_id == "application_1"
+    assert event.documents[1].slot_id == "undefined"
 
 
 def test_upload_separate_maps_application_pdf_to_numbered_slot() -> None:
@@ -289,7 +419,9 @@ def test_upload_separate_documents_payload() -> None:
 
 
 def test_compiled_uses_requested_type_when_classified_unknown() -> None:
-    filing_type, catalog = resolve_compiled_filing_type("NOT_A_FILING_TYPE", "SLP_CIVIL")
+    filing_type, catalog = resolve_compiled_filing_type(
+        "NOT_A_FILING_TYPE", "SLP_CIVIL"
+    )
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
 
@@ -298,6 +430,14 @@ def test_compiled_keeps_classified_slp_civil() -> None:
     filing_type, catalog = resolve_compiled_filing_type("SLP_CIVIL", "SLP_CRIMINAL")
     assert filing_type == "SLP_CIVIL"
     assert catalog.filing_type == "SLP_CIVIL"
+
+
+def test_compiled_keeps_classified_curative_civil_over_supplied_slp() -> None:
+    filing_type, catalog = resolve_compiled_filing_type(
+        "CURATIVE_PETITION_CIVIL", "SLP_CIVIL"
+    )
+    assert filing_type == "CURATIVE_PETITION_CIVIL"
+    assert catalog.filing_type == "CURATIVE_PETITION_CIVIL"
 
 
 def test_compiled_unknown_without_filing_type_defaults_to_slp_civil() -> None:
@@ -415,6 +555,18 @@ class _EmptyFileList:
         return _gen()
 
 
+class _FileList:
+    def __init__(self, *items: object) -> None:
+        self.items = items
+
+    def __aiter__(self):
+        async def _gen():
+            for item in self.items:
+                yield item
+
+        return _gen()
+
+
 @pytest.mark.asyncio
 async def test_compiled_extract_skips_required_slot_check(
     monkeypatch: pytest.MonkeyPatch,
@@ -449,7 +601,7 @@ async def test_compiled_extract_skips_required_slot_check(
     )
     ctx = MagicMock()
     ctx.write_event_to_stream = MagicMock()
-    agent_data_id = await _extract_sliced_parts(
+    payload = await _extract_sliced_parts(
         ctx,
         filing_type="SLP_CIVIL",
         parts=[],
@@ -462,7 +614,7 @@ async def test_compiled_extract_skips_required_slot_check(
         },
         require_all_slots=False,
     )
-    assert agent_data_id == "agd-compiled-2"
+    assert payload["agent_data_id"] == "agd-compiled-2"
     event = captured["event"]
     assert getattr(event, "require_all_slots") is False
     assert getattr(event, "filing_type") == "SLP_CIVIL"
@@ -509,9 +661,105 @@ async def test_ingest_remote_file_uploads_to_llamacloud(
     assert len(digest) == 64
     kwargs = client.files.create.await_args.kwargs
     assert kwargs["purpose"] == "extract"
-    assert kwargs["external_file_id"] == "backend-doc-99"
+    assert kwargs["external_file_id"].startswith("sha256:")
     assert kwargs["file"][0] == "My_Filing.pdf"
     assert take_file_bytes(file_id) is None
+
+
+@pytest.mark.asyncio
+async def test_upload_reuses_existing_llamacloud_file_by_content_hash() -> None:
+    pdf_bytes = b"%PDF-1.7 stable filing content"
+    client = MagicMock()
+    client.files.list = MagicMock(
+        return_value=_FileList(SimpleNamespace(id="dfl-existing-content"))
+    )
+    client.files.create = AsyncMock()
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="same-filing.pdf",
+        pdf_bytes=pdf_bytes,
+        external_file_id="new-workspace-document-id",
+    )
+
+    assert file_id == "dfl-existing-content"
+    assert client.files.list.call_args.kwargs["external_file_id"].startswith("sha256:")
+    client.files.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_large_upload_reuses_legacy_same_name_after_hash_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_bytes = b"%PDF-1.7 legacy large filing"
+    client = MagicMock()
+    client.files.list = MagicMock(
+        side_effect=[
+            _EmptyFileList(),
+            _EmptyFileList(),
+            _FileList(SimpleNamespace(id="dfl-legacy-same-content")),
+        ]
+    )
+    client.files.create = AsyncMock()
+    monkeypatch.setenv("LLAMA_CLOUD_LARGE_UPLOAD_BYTES", "1")
+    download = AsyncMock(return_value=pdf_bytes)
+    monkeypatch.setattr(
+        "extraction_review.process_file._download_file_bytes",
+        download,
+    )
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="Defect_File_003.pdf",
+        pdf_bytes=pdf_bytes,
+        external_file_id="old-workspace-document-id",
+    )
+
+    assert file_id == "dfl-legacy-same-content"
+    assert client.files.list.call_args_list[-1].kwargs["file_name"] == (
+        "Defect_File_003.pdf"
+    )
+    download.assert_awaited_once_with(client, "dfl-legacy-same-content")
+    client.files.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ingest_remote_file_uses_refreshed_workspace_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = "https://s3.example/old.pdf?X-Amz-Signature=old"
+    refreshed = "https://s3.example/new.pdf?X-Amz-Signature=new"
+    seen: list[str] = []
+
+    def renew(
+        url: str, *, organization_id: str | None, workspace_id: str | None
+    ) -> str:
+        assert (url, organization_id, workspace_id) == (original, "org", "workspace")
+        return refreshed
+
+    class FakeAsyncClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> httpx.Response:
+            seen.append(url)
+            return httpx.Response(403, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("extraction_review.process_file.renew_workspace_s3_url", renew)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as error:
+        await ingest_remote_file(
+            MagicMock(), original, organization_id="org", workspace_id="workspace"
+        )
+    assert seen == [refreshed]
+    assert "X-Amz-Signature" not in str(error.value)
 
 
 @pytest.mark.asyncio
@@ -559,6 +807,74 @@ async def test_ingest_retries_upload_without_external_id(
     assert file_id == "dfl-retry-1"
     assert client.files.create.await_count == 2
     assert "external_file_id" not in client.files.create.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_large_upload_retries_client_closed_request_with_fresh_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llama_cloud import APIStatusError
+
+    response = MagicMock(status_code=499, headers={})
+    error = APIStatusError(
+        "Client Closed Request",
+        response=response,
+        body={"detail": "Client Closed Request"},
+    )
+    client = MagicMock()
+    client.files.create = AsyncMock(
+        side_effect=[error, SimpleNamespace(id="dfl-large-upload")]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    file_id = await _upload_slot_pdf(
+        client,
+        filename="Defect file 002.pdf",
+        pdf_bytes=b"%PDF-1.7 large filing",
+        external_file_id="backend-doc-002",
+    )
+
+    assert file_id == "dfl-large-upload"
+    assert client.files.create.await_count == 2
+    first = client.files.create.await_args_list[0].kwargs["file"][1]
+    second = client.files.create.await_args_list[1].kwargs["file"][1]
+    assert first is not second
+    assert first.getvalue() == second.getvalue() == b"%PDF-1.7 large filing"
+    sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+async def test_upload_499_uses_configured_bounded_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llama_cloud import APIStatusError
+
+    response = MagicMock(status_code=499, headers={})
+    errors = [
+        APIStatusError(
+            "Client Closed Request",
+            response=response,
+            body={"detail": "Client Closed Request"},
+        )
+        for _ in range(4)
+    ]
+    client = MagicMock()
+    client.files.list = MagicMock(return_value=_EmptyFileList())
+    client.files.create = AsyncMock(side_effect=errors)
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setenv("LLAMA_CLOUD_UPLOAD_MAX_ATTEMPTS", "4")
+
+    with pytest.raises(APIStatusError, match="Client Closed Request"):
+        await _upload_slot_pdf(
+            client,
+            filename="large.pdf",
+            pdf_bytes=b"%PDF-1.7 retry budget",
+        )
+
+    assert client.files.create.await_count == 4
+    assert [call.args[0] for call in sleep.await_args_list] == [1.0, 2.0, 4.0]
 
 
 def test_positive_int_env_and_slot_upload_concurrency(

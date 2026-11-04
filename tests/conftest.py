@@ -1,4 +1,9 @@
-"""Pytest configuration: install the LlamaCloud fake server when compatible."""
+"""Pytest configuration: install the LlamaCloud fake server when compatible.
+
+The latest published fake (0.1.1) still imports SDK models removed in
+llama-cloud 2.19. Keep non-fake tests collectable and skip only tests that use
+the ``fake`` fixture until the fake package publishes compatible models.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ import sys
 from typing import Any
 
 import httpx
+import pymupdf
 import pytest
 
 logging.basicConfig(
@@ -20,7 +26,7 @@ logging.basicConfig(
 def _install_llama_cloud_compat(server: object) -> None:
     """llama-cloud-fake 0.1.x still mocks the older files/split URLs.
 
-    llama-cloud 2.14 retrieve is GET /api/v1/beta/files/{id} and split is
+    Modern llama-cloud retrieve is GET /api/v1/beta/files/{id} and split is
     /api/v1/split/jobs with file_input instead of document_input.
     """
     from llama_cloud_fake import FakeLlamaCloudServer
@@ -59,6 +65,26 @@ def _install_llama_cloud_compat(server: object) -> None:
         result = adapted.get("result")
         if isinstance(result, dict):
             segments = result.get("segments") or []
+            # The fake splits raw PDF bytes into text-like "pages", which can
+            # produce hundreds of references for a one-page PDF. Return a
+            # valid simulated API response instead of relying on local repairs
+            # to silently discard those out-of-range references.
+            stored = server.files.get(adapted["file_input"])
+            if stored is not None and stored.content.startswith(b"%PDF"):
+                with pymupdf.open(stream=stored.content, filetype="pdf") as pdf:
+                    page_count = pdf.page_count
+                segments = [
+                    {**segment, "pages": pages}
+                    for segment in segments
+                    if (
+                        pages := [
+                            page
+                            for page in segment.get("pages", [])
+                            if 1 <= page <= page_count
+                        ]
+                    )
+                ]
+                adapted["result"] = {**result, "segments": segments}
             if not segments:
                 categories = adapted.get("categories") or []
                 name = None

@@ -8,13 +8,20 @@ __pycache__/
 .venv/
 venv/
 workflows.db
+qa_reports/
 package-lock.json
 node_modules/
 ui/node_modules/
 ui/dist/
 .pnpm-store/
 .DS_Store
-docs
+docs/
+!docs/
+docs/*
+!docs/SPLIT_EVALUATION.md
+!docs/DOCUMENT_SPLITTING_RULES.md
+!docs/ecs-worker-operations.md
+!docs/deployment-consolidation.md
 .cursor
 AGENTS.md
 # Local secrets
@@ -22,3 +29,23 @@ secret.json
 .env
 .env.*
 !.env.template
+google-wif-credentials.json
+
+# Local investigation and generated scratch files
+/tmp/
+
+google-wif-credentials*.json
+
+output_samples/
+
+# Generated/temporary ECS task-definition snapshots. Keep the canonical
+# ecs-*-task.json files and worker-task-definition.json tracked.
+/*.json.backup
+/scrutiny-api-[0-9]*.json
+/task-definition*.json
+/worker-task.json
+/worker-task-current.json
+/worker-task-fixed.json
+/worker-task-v[0-9]*.json
+scrutiny_harness/
+extract_capture/

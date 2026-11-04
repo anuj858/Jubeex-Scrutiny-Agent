@@ -1,8 +1,14 @@
 import json
 
+import httpx
 import pytest
 
-from extraction_review.callbacks import notify_job_finished, sign_callback
+from extraction_review.callbacks import (
+    callback_url_candidates,
+    notify_job_finished,
+    resolve_callback_url,
+    sign_callback,
+)
 
 
 def test_callback_signature_is_stable() -> None:
@@ -13,6 +19,128 @@ def test_callback_signature_is_stable() -> None:
     assert first != sign_callback(body, secret="other", timestamp="100")
 
 
+def test_resolve_callback_url_ignores_loopback_when_env_is_public(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    )
+    assert (
+        resolve_callback_url("http://localhost:8000/api/v1/webhooks/ai-agent")
+        == "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    )
+
+
+def test_resolve_callback_url_uses_approved_worker_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "JUBEEX_CALLBACK_URL", "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    )
+    assert (
+        resolve_callback_url("https://api.example.com/api/v1/webhooks/ai-agent")
+        == "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    )
+
+
+def test_resolve_callback_url_can_opt_in_to_request_override(monkeypatch) -> None:
+    monkeypatch.setenv("JUBEEX_CALLBACK_URL", "https://backend.example/webhook")
+    monkeypatch.setenv("JUBEEX_CALLBACK_ALLOW_REQUEST_OVERRIDE", "true")
+    assert resolve_callback_url("https://other.example/webhook") == (
+        "https://other.example/webhook"
+    )
+
+
+def test_callback_url_candidates_adds_api_port() -> None:
+    assert callback_url_candidates("http://3.111.86.61/api/v1/webhooks/ai-agent") == [
+        "http://3.111.86.61/api/v1/webhooks/ai-agent",
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
+    ]
+    assert callback_url_candidates(
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
+    ) == ["http://3.111.86.61:8000/api/v1/webhooks/ai-agent"]
+
+
+@pytest.mark.asyncio
+async def test_notify_retries_port_8000_after_404(monkeypatch) -> None:
+    hits: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, url: str) -> None:
+            self.status_code = status_code
+            self.request = httpx.Request("POST", url)
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    "error",
+                    request=self.request,
+                    response=httpx.Response(self.status_code, request=self.request),
+                )
+
+    class FakeClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            hits.append(url)
+            if ":8000" in url:
+                return FakeResponse(200, url)
+            return FakeResponse(404, url)
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
+    delivered = await notify_job_finished(
+        callback_url="http://3.111.86.61/api/v1/webhooks/ai-agent",
+        job_id="job-9",
+        kind="scrutiny",
+        status="completed",
+        agent_data_id="agd-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        error=None,
+        result={},
+        artifacts={},
+        event_id="evt-1",
+    )
+    assert hits == [
+        "http://3.111.86.61/api/v1/webhooks/ai-agent",
+        "http://3.111.86.61:8000/api/v1/webhooks/ai-agent",
+    ]
+    assert delivered is True
+
+
+@pytest.mark.asyncio
+async def test_callback_failure_is_reported_for_sqs_retry(monkeypatch) -> None:
+    class FailingClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            raise httpx.ConnectError("backend unavailable")
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FailingClient)
+    delivered = await notify_job_finished(
+        callback_url="https://backend.example/webhook",
+        job_id="job-1",
+        kind="scrutiny",
+        status="failed",
+        agent_data_id=None,
+        organization_id="org-1",
+        error="scrutiny incomplete",
+        result=None,
+        event_id="evt-1",
+    )
+    assert delivered is False
+
+
 @pytest.mark.asyncio
 async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     captured: dict[str, object] = {}
@@ -20,6 +148,8 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     class FakeResponse:
         def raise_for_status(self) -> None:
             return None
+
+        status_code = 200
 
     class FakeClient:
         def __init__(self, timeout: object = None) -> None:
@@ -63,3 +193,55 @@ async def test_notify_job_finished_includes_artifact_urls(monkeypatch) -> None:
     assert body["organization_id"] == "org-1"
     assert body["artifacts"]["extract"]["url"].endswith("extract.json")
     assert body["result"]["artifacts"]["extract"]["url"].endswith("extract.json")
+
+
+@pytest.mark.asyncio
+async def test_annexure_index_callback_event(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, timeout: object = None) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, content, headers):
+            captured["body"] = json.loads(content)
+            return FakeResponse()
+
+    monkeypatch.setattr("extraction_review.callbacks.httpx.AsyncClient", FakeClient)
+    await notify_job_finished(
+        callback_url="https://backend.example/api/v1/webhooks/ai-agent",
+        job_id="job-annex",
+        kind="annexure_index",
+        status="completed",
+        agent_data_id="agd-1",
+        organization_id="org-1",
+        workspace_id="ws-1",
+        error=None,
+        result={
+            "annexures": [
+                {
+                    "annexure": "annexure_p1",
+                    "source": "list_of_dates",
+                    "source_location": "A true copy. (Pg. 37-48)",
+                    "confidence": 0.9,
+                    "description": "A true copy.",
+                }
+            ]
+        },
+        event_id="evt-annex",
+    )
+    body = captured["body"]
+    assert body["event"] == "ANNEXURE_INDEX_COMPLETED"
+    assert body["result"]["annexures"][0]["description"] == "A true copy."

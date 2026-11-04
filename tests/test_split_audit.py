@@ -1,0 +1,717 @@
+"""Split audit: sequence order + Index ↔ file consistency."""
+
+from __future__ import annotations
+
+from extraction_review.split_audit import (
+    aligned_index_printed_rows,
+    annexure_labels_from_text,
+    audit_compiled_split,
+    check_document_sequence,
+    check_index_consistency,
+    collect_expected_annexures,
+    collect_index_annexure_entries,
+    index_rows_with_printed_pages,
+    map_index_particulars_to_part,
+    parse_index_rows,
+)
+
+
+def test_index_recovers_two_missing_ranges_only_from_unique_openings() -> None:
+    index = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1.\tI.A. AN APPLICATION FOR EXEMPTION FROM FILING CERTIFIED COPY\t210-211\n"
+        "2.\tI.A. AN APPLICATION FOR PERMISSION TO FILE ADDITIONAL DOCUMENTS\t\n"
+        "3.\tANNEXURE-P/12 True copy of W.P.(C) No. 28199 of 2012\t\n"
+        "4.\tF/M\t216"
+    )
+    texts = {
+        1: index,
+        10: "prior application\n210",
+        11: "application continuation\n211",
+        12: "IN THE SUPREME COURT OF INDIA\n"
+        "AN APPLICATION FOR PERMISSION TO FILE ADDITIONAL DOCUMENTS\n212",
+        13: "application prayer\n213",
+        14: "BEFORE THE HONBLE HIGH COURT OF KERALA\n"
+        "W.P.(C) No. 28199 of 2012\n214",
+        15: "writ continuation\n215",
+        16: "FILING MEMO\n216",
+    }
+    rows = aligned_index_printed_rows({1: ["Index"]}, texts)
+    assert {(row.mapped_part, row.start, row.end) for row in rows} >= {
+        ("Application 1", 212, 213),
+        ("Annexure P-12", 214, 215),
+    }
+
+    # The case number alone in application prose cannot open an annexure.
+    texts[14] = "The applicant cites W.P.(C) No. 28199 of 2012\n214"
+    rows_without_opening = aligned_index_printed_rows({1: ["Index"]}, texts)
+    assert not any(
+        row.mapped_part == "Annexure P-12" for row in rows_without_opening
+    )
+
+
+def test_index_recovers_unnumbered_annexure_only_with_explicit_range() -> None:
+    text = (
+        "INDEX OF PAPERS\nParticulars of Documents Page No.\n"
+        "31.\tAnnexure A-20 Deposition\t142-144\n"
+        "Annexure A-21:\nTrue translated copy of Judgment\n145-200\n"
+        "33.\tAnnexure A-22 Appeal\t201-210\n"
+    )
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: text})
+    assert ("Annexure A-21", 145, 200) in {
+        (row.mapped_part, row.start, row.end) for row in rows
+    }
+
+    without_range = text.replace("145-200", "page column unreadable")
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: without_range})
+    assert not any(row.mapped_part == "Annexure A-21" for row in rows)
+
+
+def test_index_recovers_appendix_with_ocr_damaged_serial() -> None:
+    rows = aligned_index_printed_rows(
+        {1: ["Index"]},
+        {1: (
+            "INDEX OF PAPERS\nParticulars of Documents Page No.\n"
+            "10. | Criminal Appeal with affidavit 18-42\n"
+            "“Ii. | Appendix — U/S 147,148,120 B, 43-44\n"
+            "12. | Annexure A-1: 45-50\n"
+        )},
+    )
+    assert ("Appendix", 43, 44) in {
+        (row.mapped_part, row.start, row.end) for row in rows
+    }
+
+
+def test_map_index_particulars_to_common_parts() -> None:
+    assert map_index_particulars_to_part("Office Report on Limitation") == (
+        "Office Report on Limitation"
+    )
+    assert map_index_particulars_to_part("Listing Proforma") == "Listing Proforma"
+    assert map_index_particulars_to_part("LISTING PERFORMA") == "Listing Proforma"
+    assert map_index_particulars_to_part(
+        "Synopsis and List of Dates"
+    ) == "Synopsis"
+    assert map_index_particulars_to_part("Special Leave Petition") == "Main Petition"
+    assert map_index_particulars_to_part("SLP WITH AFFIDAVIT") == "Main Petition"
+    assert map_index_particulars_to_part("ANNEXURE-P/4") == "Annexure P-4"
+    assert map_index_particulars_to_part("ANNEXURE-E/2") == "Annexure P-2"
+    assert map_index_particulars_to_part("Annexure E-1") == "Annexure P-1"
+    assert map_index_particulars_to_part("Application for condonation") == (
+        "Application 1"
+    )
+    assert map_index_particulars_to_part("Vakalatnama") == "Vakalatnama"
+    assert map_index_particulars_to_part("F/M") == "Filing Memo"
+    assert map_index_particulars_to_part("V/A") == "Vakalatnama"
+
+
+def test_master_index_continuations_survive_mutated_split_labels() -> None:
+    """Geometry-backed master Index pages are immutable split evidence."""
+    from extraction_review.split_audit import aligned_index_printed_rows
+
+    page_parts = {1: ["Index"], 2: ["Annexure P-5"], 3: ["Annexure P-8"]}
+    texts = {
+        1: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "16.\tANNEXURE P-5 Letter\t32-33\n"
+            "17.\tANNEXURE P-6 Notice\t34-36"
+        ),
+        2: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "18.\tANNEXURE P-7 Demolition order\t55-67 37-40"
+        ),
+        3: (
+            "INDEX\nS.No. Particulars Page No.\n"
+            "19.\tANNEXURE P-8 Common judgment\t41-188\n"
+            "20.\tANNEXURE P-9 Appeal\t189-199"
+        ),
+    }
+
+    rows = aligned_index_printed_rows(page_parts, texts)
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert set(by_part) >= {
+        "Annexure P-5",
+        "Annexure P-6",
+        "Annexure P-7",
+        "Annexure P-8",
+        "Annexure P-9",
+    }
+    assert (by_part["Annexure P-7"].start, by_part["Annexure P-7"].end) == (
+        37,
+        40,
+    )
+
+
+def test_parse_index_rows_extracts_page_spans() -> None:
+    text = """
+INDEX
+S.No. PARTICULARS OF DOCUMENTS Page No. of part
+1. Office Report on Limitation 8-9
+2. Listing Proforma 10-12
+3. Synopsis and List of Dates 13-20
+4. Impugned Judgment and Order 21-30
+5. Special Leave Petition 31-50
+6. Affidavit 51-52
+7. ANNEXURE-P/1 53-70
+8. ANNEXURE-P/4 71-90
+9. Application for exemption 91-92
+10. Vakalatnama 93
+"""
+    rows = parse_index_rows(text)
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+    assert by_part["Office Report on Limitation"].start_page == 8
+    assert by_part["Main Petition"].start_page == 31
+    assert by_part["Annexure P-4"].end_page == 90
+    assert by_part["Vakalatnama"].start_page == 93
+
+
+def test_index_row_keeps_page_span_printed_on_following_line() -> None:
+    rows = index_rows_with_printed_pages(
+        "INDEX\n"
+        "5. Copy of impugned judgment dated 17.05.2024\n"
+        "1-15\n"
+        "6. Special Leave Petition with affidavit\n"
+        "16-28\n"
+    )
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert (by_part["Impugned Order"].start, by_part["Impugned Order"].end) == (
+        1,
+        15,
+    )
+    assert (by_part["Main Petition"].start, by_part["Main Petition"].end) == (
+        16,
+        28,
+    )
+
+
+def test_sandwiched_annexure_range_repairs_dropped_leading_digits() -> None:
+    """Defect 003: 32-66 OCR'd as 11-16 cannot overlap the prior rows."""
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "11.\tSpecial Leave Petition along with Affidavit\t10-30\n"
+        "12.\tAppendix: Section 10 and 11 CPC\t31\n"
+        "13.\tAnnexure P-1: plaint in CS(OS) 1251/2009\t11-16\n"
+        "14.\tAnnexure P-2: order in CS(OS) 1251/2009\t67-68\n"
+    )
+
+    rows = aligned_index_printed_rows({1: ["Index"]}, {1: text})
+    by_part = {row.mapped_part: row for row in rows if row.mapped_part}
+
+    assert (by_part["Annexure P-1"].start, by_part["Annexure P-1"].end) == (
+        32,
+        66,
+    )
+    assert (by_part["Annexure P-2"].start, by_part["Annexure P-2"].end) == (
+        67,
+        68,
+    )
+
+
+def test_sequence_flags_out_of_order_main_petition_before_index() -> None:
+    spans = [
+        {"name": "Main Petition", "start_page": 10, "end_page": 20},
+        {"name": "Index", "start_page": 21, "end_page": 22},
+    ]
+    flags = check_document_sequence(spans)
+    assert any(flag.code == "out_of_sequence" for flag in flags)
+    assert any(flag.part == "Main Petition" for flag in flags)
+
+
+def test_sequence_ok_when_order_matches() -> None:
+    spans = [
+        {"name": "Index", "start_page": 5, "end_page": 6},
+        {"name": "Office Report on Limitation", "start_page": 7, "end_page": 8},
+        {"name": "Main Petition", "start_page": 20, "end_page": 40},
+        {"name": "Annexure P-1", "start_page": 41, "end_page": 50},
+        {"name": "Vakalatnama", "start_page": 51, "end_page": 51},
+    ]
+    assert check_document_sequence(spans) == []
+
+
+def test_sequence_allows_document_type_families_with_variable_order() -> None:
+    """Valid filing layouts must not be rejected by one rigid template."""
+    spans = [
+        {"name": "AOR's Certificate", "start_page": 60, "end_page": 60},
+        {"name": "Affidavit", "start_page": 61, "end_page": 61},
+        {"name": "Annexure P-11", "start_page": 243, "end_page": 243},
+        {"name": "Application 1", "start_page": 244, "end_page": 245},
+        {"name": "Annexure P-12", "start_page": 251, "end_page": 268},
+        {"name": "Filing Memo", "start_page": 269, "end_page": 269},
+        {"name": "Memo of Parties", "start_page": 270, "end_page": 271},
+    ]
+
+    assert check_document_sequence(spans) == []
+
+
+def test_aor_declaration_is_optional_in_part_one_index() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 10-20\n")
+    spans = [
+        {"name": "AOR's Declaration", "start_page": 1, "end_page": 1},
+        {"name": "Main Petition", "start_page": 10, "end_page": 20},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=20)
+
+    assert all(flag.part != "AOR's Declaration" for flag in flags)
+
+
+def test_slp_with_affidavit_index_row_mentions_both_document_types() -> None:
+    rows = parse_index_rows("1. SLP WITH AFFIDAVIT 10-31\n")
+    spans = [
+        {"name": "Main Petition", "start_page": 10, "end_page": 30},
+        {"name": "Affidavit", "start_page": 31, "end_page": 31},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=31)
+
+    assert not any(flag.code == "index_end_page_mismatch" for flag in flags)
+    assert all(
+        not (flag.code == "in_file_missing_in_index" and flag.part == "Affidavit")
+        for flag in flags
+    )
+
+
+def test_slp_affidavit_index_row_checks_combined_document_span() -> None:
+    rows = parse_index_rows("1. SLP WITH AFFIDAVIT 41-61\n")
+    spans = [
+        {"name": "Main Petition", "start_page": 41, "end_page": 59},
+        {"name": "AOR's Certificate", "start_page": 60, "end_page": 60},
+        {"name": "Affidavit", "start_page": 61, "end_page": 61},
+    ]
+
+    flags = check_index_consistency(rows, spans, page_count=100)
+
+    assert not any(flag.code == "index_end_page_mismatch" for flag in flags)
+
+
+def test_index_lists_missing_document() -> None:
+    rows = parse_index_rows(
+        "1. Special Leave Petition 10-20\n2. ANNEXURE-P/5 30-40\n"
+    )
+    spans = [
+        {"name": "Main Petition", "start_page": 10, "end_page": 20},
+    ]
+    flags = check_index_consistency(rows, spans, page_count=50)
+    codes = {flag.code for flag in flags}
+    assert "in_index_missing_in_file" in codes
+    missing = next(flag for flag in flags if flag.code == "in_index_missing_in_file")
+    assert missing.part == "Annexure P-5"
+
+
+def test_file_has_document_missing_from_index() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 10-20\n")
+    spans = [
+        {"name": "Main Petition", "start_page": 10, "end_page": 20},
+        {"name": "Annexure P-2", "start_page": 30, "end_page": 35},
+        {"name": "Cover Page", "start_page": 1, "end_page": 1},
+    ]
+    flags = check_index_consistency(rows, spans, page_count=40)
+    codes = {flag.code: flag for flag in flags}
+    assert "in_file_missing_in_index" in codes
+    assert codes["in_file_missing_in_index"].part == "Annexure P-2"
+    # Cover is optional in Index — not flagged.
+    assert all(flag.part != "Cover Page" for flag in flags)
+
+
+def test_index_page_out_of_range() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 90-95\n")
+    spans = [{"name": "Main Petition", "start_page": 10, "end_page": 20}]
+    flags = check_index_consistency(rows, spans, page_count=50)
+    assert any(flag.code == "index_page_out_of_range" for flag in flags)
+
+
+def test_index_audit_catches_document_that_runs_past_indexed_end() -> None:
+    rows = parse_index_rows("1. Special Leave Petition 41-59\n")
+    spans = [{"name": "Main Petition", "start_page": 41, "end_page": 77}]
+
+    flags = check_index_consistency(rows, spans, page_count=271)
+
+    mismatch = next(flag for flag in flags if flag.code == "index_end_page_mismatch")
+    assert mismatch.part == "Main Petition"
+    assert mismatch.expected_pages == {"start_page": 41, "end_page": 59}
+    assert mismatch.found_pages == {"start_page": 41, "end_page": 77}
+
+
+def test_audit_records_no_index_as_fallback_mode() -> None:
+    result = audit_compiled_split(
+        {1: ["Main Petition"]},
+        {1: "SPECIAL LEAVE PETITION\nMost respectfully showeth"},
+        page_count=1,
+    )
+
+    assert result["index_status"] == "missing"
+    assert any(flag["code"] == "index_missing" for flag in result["flags"])
+
+
+def test_audit_keeps_page_level_split_evidence() -> None:
+    from extraction_review.structure_split import (
+        BoundaryCandidate,
+        PageClassification,
+        PageUnit,
+        ReconciliationChange,
+    )
+
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Annexure P-9"]},
+        {
+            1: "INDEX\n1. Annexure P-9 189-199",
+            2: "ANNEXURE P/9\nHigh Court order\n189",
+        },
+        page_count=2,
+        llama_page_parts={2: ["Main Petition"]},
+        classifications=[
+            PageClassification(
+                page=2,
+                document_type="Annexure P-9",
+                confidence=0.95,
+                signals=("annexure_stamp",),
+            )
+        ],
+        reconciliation_changes=[
+            ReconciliationChange(
+                page=2,
+                old_labels=("Main Petition",),
+                new_labels=("Annexure P-9",),
+                evidence=("explicit_outer_boundary",),
+            )
+        ],
+        boundaries=[
+            BoundaryCandidate(
+                page=2,
+                document_type="Annexure P-9",
+                score=0.9,
+                signals=("annexure_marker",),
+                action="verify",
+            )
+        ],
+        page_units=[
+            PageUnit(
+                pdf_page=2,
+                text="ANNEXURE P/9\nHigh Court order\n189",
+                native_text="ANNEXURE P/9\nHigh Court order\n189",
+                extraction_method="native",
+                text_quality="usable",
+            )
+        ],
+        source_document_id="source-id",
+        source_pdf_sha256="abc123",
+    )
+
+    evidence = result["page_evidence"][1]
+    assert evidence["source_page"] == 2
+    assert evidence["assigned_labels"] == ["Annexure P-9"]
+    assert evidence["llama_labels"] == ["Main Petition"]
+    assert evidence["classification"]["signals"] == ["annexure_stamp"]
+    assert evidence["reconciliation"]["evidence"] == ["explicit_outer_boundary"]
+    assert "High Court order" in evidence["text_excerpt"]
+    manifest = result["page_manifest"]
+    assert manifest["source_page_count"] == 2
+    assert manifest["pages"][1]["source_document_id"] == "source-id"
+    assert manifest["pages"][1]["segment_id"]
+    assert manifest["pages"][1]["boundary_before"]["action"] == "verify"
+    assert manifest["pages"][1]["extraction"]["method"] == "native"
+    assert "ANNEXURE P/9" in manifest["pages"][1]["extraction"]["native_excerpt"]
+    assert manifest["pages"][1]["review_status"] == "needs_review"
+    assert result["source_pdf_sha256"] == "abc123"
+
+
+def test_audit_marks_present_but_unreadable_index() -> None:
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Main Petition"]},
+        {1: " ", 2: "SPECIAL LEAVE PETITION"},
+        page_count=2,
+    )
+
+    assert result["index_status"] == "unreadable"
+
+
+def test_audit_compiled_split_end_to_end() -> None:
+    page_parts = {
+        1: ["Cover Page"],
+        2: ["Index"],
+        3: ["Index"],
+        10: ["Main Petition"],
+        11: ["Main Petition"],
+        20: ["Annexure P-1"],
+    }
+    texts = {
+        2: (
+            "INDEX\nS.No. PARTICULARS Page No.\n"
+            "1. Special Leave Petition 10-11\n"
+            "2. ANNEXURE-P/1 20-25\n"
+            "3. ANNEXURE-P/9 40-45\n"
+        ),
+        3: "continuation of index table",
+        10: "IN THE SUPREME COURT OF INDIA\nQUESTIONS OF LAW",
+        20: "ANNEXURE P-1\nexhibit",
+    }
+    for page in range(1, 50):
+        texts.setdefault(page, "body")
+
+    audit = audit_compiled_split(page_parts, texts, page_count=49)
+    codes = {flag["code"] for flag in audit["flags"]}
+    assert "in_index_missing_in_file" in codes  # Annexure P-9 listed, absent
+    assert "annexure_mentioned_not_attached" in codes
+    assert any(row["mapped_part"] == "Main Petition" for row in audit["index_rows"])
+    inv = audit["annexure_inventory"]
+    assert inv["mentioned_count"] == 2
+    assert "Annexure P-1" in inv["mentioned"]
+    assert "Annexure P-9" in inv["mentioned_not_attached"]
+    assert inv["attached"] == ["Annexure P-1"]
+    assert audit["flag_counts"]["total"] >= 1
+
+
+def test_collect_expected_annexures_from_index_and_main() -> None:
+    page_parts = {
+        2: ["Index"],
+        10: ["Main Petition"],
+        11: ["Main Petition"],
+    }
+    texts = {
+        2: (
+            "INDEX\n1. List of dates\n"
+            "2. Curative Petition\n"
+            "3. ANNEXURE P-1: Writ Petition\n"
+            "4. ANNEXURE P-3: High Court order\n"
+        ),
+        10: "body",
+        11: (
+            "A copy is annexed and marked as ANNEXURE P-2 "
+            "(At page …). Further ANNEXURE P-3 follows."
+        ),
+    }
+    expected = collect_expected_annexures(page_parts, texts)
+    assert expected == {"Annexure P-1", "Annexure P-2", "Annexure P-3"}
+    entries = collect_index_annexure_entries(page_parts, texts)
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure P-3"]
+    # Bare "Annexure 5" inside annexed HC prose must not invent SCI inventory.
+    assert "Annexure P-5" not in annexure_labels_from_text(
+        "stated that allocable area in Annexure 5 to IPS-1"
+    )
+
+def test_annexure_series_p_petitioner_r_respondent() -> None:
+    """P = Petitioner, R = Respondent; E exhibit stamps normalize to P."""
+    from extraction_review.document_parts import annexure_label_from_text
+    from extraction_review.split_audit import normalize_annexure_part_label
+
+    assert normalize_annexure_part_label("P", 1) == "Annexure P-1"
+    assert normalize_annexure_part_label("R", 2) == "Annexure R-2"
+    assert normalize_annexure_part_label("E", 3) == "Annexure P-3"
+    assert normalize_annexure_part_label("petitioner", 4) == "Annexure P-4"
+    assert normalize_annexure_part_label("respondent", 5) == "Annexure R-5"
+
+    assert annexure_label_from_text("ANNEXURE R-1\nIN THE HIGH COURT") == "Annexure R-1"
+    assert annexure_label_from_text("ANNEXURE-P/2\nWrit Petition") == "Annexure P-2"
+    assert annexure_label_from_text("ANNEXURE-E-3\nBank statement") == "Annexure P-3"
+
+    labels = annexure_labels_from_text(
+        "marked as ANNEXURE P-1 and ANNEXURE R-1; also ANNEXURE E-2"
+    )
+    assert labels == {"Annexure P-1", "Annexure R-1", "Annexure P-2"}
+
+    page_parts = {2: ["Index"], 10: ["Main Petition"]}
+    texts = {
+        2: (
+            "INDEX\n1. ANNEXURE P-1: Petitioner writ\n"
+            "2. ANNEXURE R-1: Respondent counter affidavit\n"
+        ),
+        10: "body citing ANNEXURE R-2",
+    }
+    expected = collect_expected_annexures(page_parts, texts)
+    assert "Annexure P-1" in expected
+    assert "Annexure R-1" in expected
+    assert "Annexure R-2" in expected
+    entries = collect_index_annexure_entries(page_parts, texts)
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure R-1"]
+
+
+def test_detached_index_page_column_zips_onto_rows() -> None:
+    """Page numbers printed in their own column still attach to each document."""
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = """
+INDEX
+1. Arbitration Petition with Affidavit
+2. Annexure A-1 Board Resolution
+3. Annexure A-4 Reminder Notice
+4. FILING INDEX
+5. V AKALATNAMA
+6. Payment receipt for sum of Rs. 15000/-
+1-21B
+22-24B
+36
+60
+61-63B
+64
+"""
+    rows = index_rows_with_printed_pages(text)
+    by_part = {row.mapped_part: row for row in rows}
+    assert by_part["Main Petition"].start == 1
+    assert by_part["Main Petition"].end == 21
+    assert by_part["Main Petition"].end_suffix == "B"
+    assert by_part["Annexure A-1"].start == 22
+    assert by_part["Annexure A-4"].start == 36
+    assert by_part["Filing Memo"].start == 60
+    assert by_part["Vakalatnama"].end_suffix == "B"
+    assert by_part["Court Fees"].start == 64
+
+
+def test_case_and_application_numbers_are_not_annexure_labels() -> None:
+    assert (
+        map_index_particulars_to_part(
+            "Copy of the impugned order in CM Application No. I.A/12/2023 in WRIT-B No. 450 of 1986"
+        )
+        == "Impugned Order"
+    )
+    assert map_index_particulars_to_part("Copy of order P-6") == "Annexure P-6"
+    assert map_index_particulars_to_part("Annexure A-12") == "Annexure A-12"
+    assert (
+        map_index_particulars_to_part(
+            "I.A. NO. of 2026 Application seeking permission to file the Special Leave Petition"
+        )
+        == "Application 1"
+    )
+
+
+def test_layout_index_keeps_case_numbers_out_of_page_column() -> None:
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "9.\tCopy of impugned order in I.A/12/2023, Writ No. 450 of 1986\t1-4\n"
+        "12.\tANNEXURE P-2 Copy of order in Case No. 765\t32-41\n"
+        "13.\tANNEXURE P-3 Copy of order dated 01.02.1982\t42-47\n"
+    )
+    rows = parse_index_rows(text)
+    assert [(r.mapped_part, r.start_page, r.end_page) for r in rows] == [
+        ("Impugned Order", 1, 4),
+        ("Annexure P-2", 32, 41),
+        ("Annexure P-3", 42, 47),
+    ]
+    assert "765" in rows[1].particulars
+    assert [(r.start, r.end) for r in index_rows_with_printed_pages(text)] == [
+        (1, 4),
+        (32, 41),
+        (42, 47),
+    ]
+
+
+def test_plain_index_does_not_treat_dates_or_case_numbers_as_pages() -> None:
+    rows = parse_index_rows(
+        "1. ANNEXURE P-2 Order in Case No. 765\n"
+        "2. ANNEXURE P-3 Writ Petition No. 450 of 1986\n"
+        "3. ANNEXURE P-4 Will dated 01.02.1982\n"
+    )
+    assert len(rows) == 3
+    assert all(row.start_page == 0 for row in rows)
+    assert "01.02.1982" in rows[2].particulars
+    bare = parse_index_rows("1. ANNEXURE P-4\n2. ANNEXURE P-5")
+    assert [(r.mapped_part, r.start_page) for r in bare] == [
+        ("Annexure P-4", 0),
+        ("Annexure P-5", 0),
+    ]
+
+
+def test_layout_audit_compares_printed_folios_to_physical_pages() -> None:
+    result = audit_compiled_split(
+        {1: ["Index"], 2: ["Annexure P-1"], 3: ["Annexure P-1"]},
+        {
+            1: "INDEX\nS.No. Particulars Page No.\n1.\tANNEXURE P-1 Order\t29-30",
+            2: "ANNEXURE P-1\nOrder body\n29",
+            3: "Order continuation\n30",
+        },
+        page_count=3,
+    )
+    assert not any(
+        flag["code"] in {"index_page_out_of_range", "index_page_mismatch"}
+        for flag in result["flags"]
+    )
+    assert result["index_rows"][0]["start_page"] == 29
+
+
+def test_letter_and_suffixed_folios_remain_distinct():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+    from extraction_review.split_pdf_layout import printed_folio
+
+    rows = index_rows_with_printed_pages(
+        "1.\tOffice Report\tA\n2.\tListing Proforma\tA1-A4\n"
+        "3.\tSynopsis\tB to U\n4.\tAnnexure P-1\t63B"
+    )
+    assert [(r.kind, r.start, r.end, r.end_suffix) for r in rows] == [
+        ("letter", 65, 65, ""),
+        ("prefixed", 1, 4, ""),
+        ("letter", 66, 85, ""),
+        ("number", 63, 63, "B"),
+    ]
+    assert printed_folio("Listing body\nA1") == ("prefixed", 1, "")
+
+    multi = index_rows_with_printed_pages(
+        "9.\tSynopsis & List of Dates\tB-EE"
+    )
+    assert [(r.kind, r.start, r.end) for r in multi] == [
+        ("letter", 66, 199)
+    ]
+    assert printed_folio("Chronology continuation\nEE") == ("letter", 199, "")
+
+
+def test_incomplete_detached_column_is_not_guessed_onto_last_rows():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    assert not index_rows_with_printed_pages(
+        "INDEX\n1. Annexure P-1 Order\n2. Annexure P-2 Deed\n32-41"
+    )
+
+
+def test_scanned_index_annexures_ignore_front_folios_and_split_damaged_serials():
+    from extraction_review.split_audit import collect_index_annexure_entries
+
+    text = (
+        "INDEX\nS.No. Particulars Page No.\n"
+        "1. Index of Record A-4\n"
+        "11. ANNEXURE P/1\nOrder dated 27.05.2006\n"
+        "12, | ANNEXURE P/2\nPolicy dated 1.8.18\n"
+        "13.\nANNEXURE P/3\nOrder dated 5.7.21\n"
+    )
+    entries = collect_index_annexure_entries({1: ["Index"]}, {1: text})
+    assert [label for label, _ in entries] == ["Annexure P-1", "Annexure P-2", "Annexure P-3"]
+    assert "Policy" not in entries[0][1]
+    assert "27.05.2006" not in entries[1][1]
+
+
+def test_scanned_index_range_embedded_before_wrapped_particulars():
+    from extraction_review.split_audit import index_rows_with_printed_pages
+
+    rows = index_rows_with_printed_pages(
+        "INDEX\n"
+        "12. | Annexure P-1: 24-46 A copy of order dated 04.03.2014\n"
+        "passed by the Additional District Judge\n"
+        "13. | I.A. No. of 2025 47-48 application for permission to file SLP\n"
+    )
+
+    assert [(row.mapped_part, row.start, row.end) for row in rows] == [
+        ("Annexure P-1", 24, 46),
+        ("Application 1", 47, 48),
+    ]
+
+
+def test_spaced_annexure_dash_wins_over_enclosed_document_words():
+    from extraction_review.split_audit import map_index_particulars_to_part
+
+    assert (
+        map_index_particulars_to_part(
+            "ANNEXURE P – 11: Anticipatory Bail Application No. 845 of 2023"
+        )
+        == "Annexure P-11"
+    )
+    assert (
+        map_index_particulars_to_part("ANNEXURE P – 15: Affidavit dated 20.09.2023")
+        == "Annexure P-15"
+    )
+    assert (
+        map_index_particulars_to_part(
+            "CRL. M.P. No. of 2024 Application seeking condonation of delay"
+        )
+        == "Application 1"
+    )
+    assert map_index_particulars_to_part("Filling Memo") == "Filing Memo"

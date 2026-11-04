@@ -27,16 +27,13 @@ EXTRACT_PACK_EXCLUDED_PARTS = frozenset(
         "Appendix",
         "Application",
         "Index",
-        "Listing Proforma",
         "Synopsis",
         "List of Dates & Events",
-        "Advocate's Checklist",
         "Filing Memo",
         "Record of Proceedings",
         "Court Fees",
-        "Affidavit",
         "Office Report on Limitation",
-        "Memo of Appearance",
+        "Custody Certificate",
     }
 )
 
@@ -48,8 +45,10 @@ def _excluded_from_extract_pack(name: str) -> bool:
     return folded.startswith("annexure") or folded.startswith("application")
 
 
-# Long bodies stay out of Extract. Keep caption/party pages and closing pages.
-PETITION_PACK_FIRST_PAGES = 1
+# Long bodies stay out of Extract. Cover Page has one name per side.
+# The Main Petition party list can run 3-4 pages or more; keep those
+# opening pages plus the closing prayer pages.
+PETITION_PACK_FIRST_PAGES = 8
 PETITION_PACK_LAST_PAGES = 3
 IMPUGNED_PACK_FIRST_PAGES = 2
 IMPUGNED_PACK_LAST_PAGES = 2
@@ -61,10 +60,27 @@ EXTRACT_PACK_PAGE_WINDOWS: dict[str, tuple[int, int]] = {
     "Vakalatnama": (VAKALATNAMA_PACK_FIRST_PAGES, VAKALATNAMA_PACK_LAST_PAGES),
 }
 LOOK_ONLY_SUFFIX = " Ignore other document parts."
+OPENING_PAGES_SOURCE = "Opening pages"
+CLOSING_PAGES_SOURCE = "Closing pages"
+COMPILED_FILING_SOURCE = "Compiled filing"
+OPENING_PAGE_LIMIT = 30
+CLOSING_PAGE_LIMIT = 5
+_PAGE_WINDOW_SOURCES = frozenset({OPENING_PAGES_SOURCE, CLOSING_PAGES_SOURCE})
+AOR_EXTRACT_RULES = (
+    "Copy the printed advocate-on-record footer only. Leave a field null if it "
+    "is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. "
+    "Do not copy a petitioner or respondent address into the chamber. "
+    "The footer may be on any opening page or on the closing pages. Use the block "
+    "that prints Advocate-on-Record, Vakalatnama, Memo of Appearance, or "
+    "Drawn By / Filed on / DRAWN & FILED BY, with the chamber lines under that name. "
+    "A Ph., Phone, Tel., or Mobile number on the chamber line, including after the PIN, "
+    "goes in mobile. Record source_pages for the page that printed it."
+)
 PETITION_SLOT_ID = "petition"
 UNDEFINED_SLOT_ID = "undefined"
-_ANNEXURE_SLOT_RE = re.compile(r"^annexure_p(\d{1,3})$")
-_APPLICATION_SLOT_RE = re.compile(r"^application_(\d{1,3})$")
+_ANNEXURE_SLOT_RE = re.compile(r"^annexure_([a-z])(\d+)$")
+_GENERIC_ANNEXURE_SLOT_RE = re.compile(r"^annexure_(\d+)$")
+_APPLICATION_SLOT_RE = re.compile(r"^application_(\d+)$")
 _PARSE_STUB_PREFIX = "(No parse text for"
 PARTY_FIELDS = frozenset({"petitioners", "respondents"})
 
@@ -82,15 +98,32 @@ class UploadSlot:
 
 
 def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
-    """Annexure P-n / Application n slots are created when those files appear."""
+    """Resolve upload IDs, without inferring printed document identities."""
     key = (slot_id or "").strip()
-    match = _ANNEXURE_SLOT_RE.fullmatch(key)
-    if match:
-        number = int(match.group(1))
+    if key == "custody_certificate":
         return UploadSlot(
             id=key,
-            label=f"Annexure P-{number}",
-            parts=(f"Annexure P-{number}",),
+            label="Custody Certificate",
+            parts=("Custody Certificate",),
+            required=False,
+        )
+    match = _GENERIC_ANNEXURE_SLOT_RE.fullmatch(key)
+    if match and int(match.group(1)) >= 1:
+        return UploadSlot(
+            id=key,
+            label=f"Annexure {int(match.group(1))}",
+            # The ordinal identifies a returned segment, not a printed P/A mark.
+            parts=("Annexures",),
+            required=False,
+        )
+    match = _ANNEXURE_SLOT_RE.fullmatch(key)
+    if match:
+        series = match.group(1).upper()
+        number = int(match.group(2))
+        return UploadSlot(
+            id=key,
+            label=f"Annexure {series}-{number}",
+            parts=(f"Annexure {series}-{number}",),
             required=False,
         )
     match = _APPLICATION_SLOT_RE.fullmatch(key)
@@ -106,17 +139,43 @@ def dynamic_upload_slot(slot_id: str) -> UploadSlot | None:
 
 
 def resolve_upload_slot(catalog: UploadTypeCatalog, slot_id: str) -> UploadSlot | None:
-    return catalog.slot_by_id().get(slot_id) or dynamic_upload_slot(slot_id)
+    key = (slot_id or "").strip()
+    # Before the two AOR documents were separated, ``aors_declaration`` was
+    # the id of the slot labelled AOR's Certificate.  Continue accepting that
+    # id, but normalize it to the unambiguous Certificate slot.
+    if key == "aors_declaration":
+        key = "aor_s_certificate"
+    found = catalog.slot_by_id().get(key) or dynamic_upload_slot(key)
+    if found:
+        return found
+    match = re.fullmatch(r"([a-z0-9_]+)_(\d+)", key)
+    if match:
+        base_key = match.group(1)
+        base_slot = catalog.slot_by_id().get(base_key) or dynamic_upload_slot(base_key)
+        if base_slot:
+            return UploadSlot(
+                id=key,
+                label=base_slot.label,
+                parts=base_slot.parts,
+                required=False,
+            )
+    return None
 
 
-def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int]:
+def _numbered_slot_sort_key(slot_id: str) -> tuple[int, int, int]:
+    generic = _GENERIC_ANNEXURE_SLOT_RE.fullmatch(slot_id)
+    if generic:
+        return (0, 4, int(generic.group(1)))
     match = _ANNEXURE_SLOT_RE.fullmatch(slot_id)
     if match:
-        return (0, int(match.group(1)))
+        series = match.group(1)
+        # Keep P first, then R, then E, then other letters.
+        series_rank = {"p": 0, "r": 1, "e": 2}.get(series, 3)
+        return (0, series_rank, int(match.group(2)))
     match = _APPLICATION_SLOT_RE.fullmatch(slot_id)
     if match:
-        return (1, int(match.group(1)))
-    return (2, 0)
+        return (1, 0, int(match.group(1)))
+    return (2, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -153,6 +212,7 @@ class SplitPartInput:
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 @lru_cache(maxsize=1)
@@ -259,15 +319,26 @@ def _ui_slot_dict(slot: UploadSlot) -> dict[str, Any]:
     }
 
 
-def _repeatable_ui_slot(group: str, number: int = 1) -> dict[str, Any]:
+def _repeatable_ui_slot(
+    group: str, number: int = 1, *, series: str = "P"
+) -> dict[str, Any]:
     if group == "annexures":
+        letter = (series or "P").strip().upper()[:1] or "P"
+        if letter == "E":
+            letter = "P"
         return {
-            "id": f"annexure_p{number}",
-            "label": f"Annexure P-{number}",
-            "parts": [f"Annexure P-{number}"],
+            "id": f"annexure_{letter.lower()}{number}",
+            "label": f"Annexure {letter}-{number}",
+            "parts": [f"Annexure {letter}-{number}"],
             "required": False,
             "repeatable": True,
             "repeat_group": "annexures",
+            "series": letter,
+            "series_label": (
+                "Petitioner"
+                if letter == "P"
+                else ("Respondent" if letter == "R" else letter)
+            ),
         }
     return {
         "id": f"application_{number}",
@@ -283,7 +354,9 @@ def ui_catalog(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Filing-type labels and slots for the UI. No extract internals.
 
     Catch-all Annexures / Applications slots become the first numbered upload
-    (P-1 / Application 1) with ``repeatable`` so the form can Add P-2, P-3, …
+    (Annexure P-1 / Application 1) with ``repeatable`` so the form can Add
+    P-2, P-3, … and Respondent series Annexure R-1, R-2, ….
+    ``P`` = Petitioner, ``R`` = Respondent.
     """
     block = load_split_upload_config(payload)
     types = block.get("types") if isinstance(block.get("types"), Mapping) else {}
@@ -340,19 +413,18 @@ def validate_parts(
     require_all_slots: bool = False,
 ) -> tuple[UploadTypeCatalog, list[SplitPartInput]]:
     catalog = type_catalog(filing_type, payload)
-    allowed = catalog.slot_by_id()
     parsed: list[SplitPartInput] = []
     seen: set[str] = set()
     for raw in parts:
         item = _part_from_mapping(raw)
         if not item.slot_id:
             raise SplitUploadError("Each uploaded file must include slot_id")
-        seen.add(item.slot_id)
-        slot = allowed.get(item.slot_id) or dynamic_upload_slot(item.slot_id)
+        slot = resolve_upload_slot(catalog, item.slot_id)
         if slot is None:
             raise SplitUploadError(
                 f"Unknown slot {item.slot_id!r} for {catalog.filing_type}"
             )
+        seen.add(slot.id)
         if not item.file_id:
             raise SplitUploadError(f"No file uploaded for {slot.label}")
         parsed.append(
@@ -372,9 +444,7 @@ def validate_parts(
     if require_all_slots and missing:
         raise SplitUploadError("Missing required documents: " + ", ".join(missing))
     if not parsed:
-        raise SplitUploadError(
-            "No labeled documents were sliced from the compiled PDF"
-        )
+        raise SplitUploadError("No labeled documents were sliced from the compiled PDF")
     return catalog, parsed
 
 
@@ -387,7 +457,12 @@ def ordered_parts(
     ordered: list[SplitPartInput] = []
     consumed: set[str] = set()
     annexure_ids = sorted(
-        (slot_id for slot_id in grouped if _ANNEXURE_SLOT_RE.fullmatch(slot_id)),
+        (
+            slot_id
+            for slot_id in grouped
+            if _ANNEXURE_SLOT_RE.fullmatch(slot_id)
+            or _GENERIC_ANNEXURE_SLOT_RE.fullmatch(slot_id)
+        ),
         key=_numbered_slot_sort_key,
     )
     application_ids = sorted(
@@ -417,28 +492,33 @@ def ordered_parts(
     return ordered
 
 
-def bundle_file_hash(parts: Sequence[SplitPartInput]) -> str:
-    payload = [
-        [item.slot_id, item.file_hash or item.file_id]
-        for item in sorted(parts, key=lambda item: item.slot_id)
-    ]
+def bundle_file_hash(
+    parts: Sequence[SplitPartInput], *, preserve_order: bool = False
+) -> str:
+    ordered = (
+        list(parts) if preserve_order else sorted(parts, key=lambda item: item.slot_id)
+    )
+    payload = [[item.slot_id, item.file_hash or item.file_id] for item in ordered]
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def stitch_parsed_parts(
-    catalog: UploadTypeCatalog,
+def stitch_parsed_parts_in_order(
     parts: Sequence[SplitPartInput],
     pages_by_slot: Mapping[str, Mapping[int, str]],
+    *,
+    omit_empty: bool = False,
 ) -> tuple[dict[int, str], dict[int, list[str]]]:
-    """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
+    """Concatenate per-file pages in the given list order. Global pages are 1-indexed."""
     page_markdown: dict[int, str] = {}
     page_parts: dict[int, list[str]] = {}
     next_page = 1
-    for item in ordered_parts(catalog, parts):
+    for item in parts:
         local = pages_by_slot.get(item.slot_id) or {}
         local_numbers = sorted(int(page) for page in local)
         if not local_numbers:
+            if omit_empty:
+                continue
             page_markdown[next_page] = (
                 f"{_PARSE_STUB_PREFIX} {item.filename or item.slot_id})"
             )
@@ -451,6 +531,59 @@ def stitch_parsed_parts(
             page_parts[next_page] = list(item.document_parts)
             next_page += 1
     return page_markdown, page_parts
+
+
+def stitch_parsed_parts(
+    catalog: UploadTypeCatalog,
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+) -> tuple[dict[int, str], dict[int, list[str]]]:
+    """Concatenate per-file pages in catalog order. Global pages are 1-indexed."""
+    return stitch_parsed_parts_in_order(ordered_parts(catalog, parts), pages_by_slot)
+
+
+def stitch_structured_pages_in_order(
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]],
+    *,
+    omit_empty: bool = False,
+) -> dict[int, dict[str, Any]]:
+    """Mirror Markdown stitching while preserving local structured page data."""
+
+    stitched: dict[int, dict[str, Any]] = {}
+    next_page = 1
+    for item in parts:
+        local_markdown = pages_by_slot.get(item.slot_id) or {}
+        local_numbers = sorted(int(page) for page in local_markdown)
+        if not local_numbers:
+            if omit_empty:
+                continue
+            next_page += 1
+            continue
+        local_structured = structured_pages_by_slot.get(item.slot_id) or {}
+        for local_page in local_numbers:
+            raw = local_structured.get(local_page)
+            if isinstance(raw, Mapping):
+                page = dict(raw)
+                page["page_number"] = next_page
+                page["global_page"] = next_page
+                page["local_page"] = local_page
+                page["slot_id"] = item.slot_id
+                stitched[next_page] = page
+            next_page += 1
+    return stitched
+
+
+def stitch_structured_pages(
+    catalog: UploadTypeCatalog,
+    parts: Sequence[SplitPartInput],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]],
+) -> dict[int, dict[str, Any]]:
+    return stitch_structured_pages_in_order(
+        ordered_parts(catalog, parts), pages_by_slot, structured_pages_by_slot
+    )
 
 
 def coerce_page_markdown(raw: Mapping[Any, Any] | None) -> dict[int, str]:
@@ -485,11 +618,29 @@ def extract_source_parts(catalog: UploadTypeCatalog) -> set[str]:
     pack. They are still parsed for scrutiny.
     """
     names = {
-        part
-        for spec in catalog.extract_field_sources.values()
-        for part in spec.fill
+        part for spec in catalog.extract_field_sources.values() for part in spec.fill
     }
     return names - {part for part in names if _excluded_from_extract_pack(part)}
+
+
+def _field_uses_page_window(spec: FieldSources) -> bool:
+    names = {name for name in spec.all_parts() if name}
+    return bool(names) and names <= _PAGE_WINDOW_SOURCES
+
+
+def _sources_use_page_window(sources: Mapping[str, FieldSources]) -> bool:
+    return bool(sources) and all(_field_uses_page_window(spec) for spec in sources.values())
+
+
+def _uses_page_window(source_parts: set[str]) -> bool:
+    return bool(source_parts) and source_parts <= _PAGE_WINDOW_SOURCES
+
+
+def opening_window_limit(page_count: int) -> int:
+    """First 30 pages, or every page when the file is shorter."""
+    if page_count <= 0:
+        return 0
+    return page_count if page_count <= OPENING_PAGE_LIMIT else OPENING_PAGE_LIMIT
 
 
 def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool:
@@ -498,9 +649,19 @@ def page_is_extract_source(names: Iterable[str], source_parts: set[str]) -> bool
         return False
     if all(_excluded_from_extract_pack(name) for name in labels):
         return False
-    if not source_parts:
+    if not source_parts or _uses_page_window(source_parts):
         return not any(_excluded_from_extract_pack(name) for name in labels)
     return any(name in source_parts for name in labels)
+
+
+def _page_in_extract_window(page: int, page_count: int, source_parts: set[str]) -> bool:
+    if page_count <= 0:
+        return False
+    if page <= opening_window_limit(page_count):
+        return True
+    if CLOSING_PAGES_SOURCE not in source_parts:
+        return False
+    return page > page_count - CLOSING_PAGE_LIMIT
 
 
 PRECISE_PARSE_SLOT_IDS = frozenset(
@@ -510,24 +671,352 @@ PRECISE_PARSE_SLOT_IDS = frozenset(
         "memo_of_parties",
         "vakalatnama_appearance",
         "aor_certificate",
-        "aors_declaration",
+        "aor_s_declaration",
+        "aor_s_certificate",
+        "aors_declaration",  # legacy compiled-split Certificate id
         "impugned_order",
         "affidavit",
+        "listing_proforma",
+        "advocates_checklist",
         "office_report_limitation",
         "office_report_on_limitation",
     }
 )
-FAST_PARSE_SLOT_IDS = frozenset(
-    {"undefined", "annexures", "applications", "appendix"}
-)
+FAST_PARSE_SLOT_IDS = frozenset({"undefined", "annexures", "applications", "appendix"})
 
 
-def slot_needs_precise_parse(
-    part: SplitPartInput, source_parts: set[str]
-) -> bool:
+def slot_is_extract_source(part: SplitPartInput, catalog: UploadTypeCatalog) -> bool:
+    """True when this upload slot is needed to fill LlamaExtract fields."""
+    sources = extract_source_parts(catalog)
+    names = [name for name in part.document_parts if name]
+    if not names:
+        slot = resolve_upload_slot(catalog, part.slot_id)
+        names = list(slot.parts) if slot else []
+    return page_is_extract_source(names, sources)
+
+
+def parse_action_for_slot(
+    part: SplitPartInput,
+    *,
+    catalog: UploadTypeCatalog,
+    parse_scope: str,
+    reuse_slots: set[str] | None = None,
+) -> str:
+    """Return ``parse``, ``reuse``, or ``skip`` for one labeled PDF."""
+    slot = (part.slot_id or "").strip()
+    scope = (parse_scope or "all").strip().lower()
+    reused = reuse_slots or set()
+    if scope == "extract_sources":
+        if not slot_is_extract_source(part, catalog):
+            return "skip"
+        return "parse"
+    if scope == "supplied":
+        if slot in reused:
+            return "reuse"
+        return "parse"
+    if scope == "unparsed":
+        if slot in reused:
+            return "reuse"
+        return "parse"
+    return "parse"
+
+
+PARSE_ARTIFACT_URL_KEY = "parse_artifact_url"
+PARSE_ARTIFACT_KEY_KEY = "parse_artifact_key"
+
+
+def _int_keyed_mapping(raw: Mapping[Any, Any] | None) -> dict[int, Any]:
+    pages: dict[int, Any] = {}
+    for key, value in (raw or {}).items():
+        try:
+            pages[int(key)] = value
+        except (TypeError, ValueError):
+            continue
+    return pages
+
+
+def dump_parse_artifact(
+    *,
+    parsed_slots: Sequence[str],
+    document_order: Sequence[str],
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+    parse_job_ids: Mapping[str, str] | None = None,
+    layouts_by_slot: Mapping[str, Mapping[int, Any]] | None = None,
+    structured_pages_by_slot: Mapping[str, Mapping[int, Mapping[str, Any]]]
+    | None = None,
+) -> dict[str, Any]:
+    """Per-slot markdown JSON so a later job can re-stitch in a new send order."""
+    job_ids = dict(parse_job_ids or {})
+    layouts = layouts_by_slot or {}
+    structured = structured_pages_by_slot or {}
+    slot_ids = list(document_order)
+    for slot_id in pages_by_slot:
+        if slot_id not in slot_ids:
+            slot_ids.append(slot_id)
+    slots: dict[str, Any] = {}
+    for slot_id in slot_ids:
+        pages = pages_by_slot.get(slot_id) or {}
+        layout = layouts.get(slot_id) or {}
+        structured_pages = structured.get(slot_id) or {}
+        slots[slot_id] = {
+            "pages": {
+                str(page): str(text or "")
+                for page, text in sorted(
+                    ((int(number), value) for number, value in pages.items()),
+                    key=lambda item: item[0],
+                )
+            },
+            "parse_job_id": job_ids.get(slot_id),
+            "layout": {
+                str(page): payload
+                for page, payload in sorted(
+                    _int_keyed_mapping(layout).items(),
+                    key=lambda item: item[0],
+                )
+                if isinstance(payload, Mapping)
+            },
+            "structured_pages": {
+                str(page): dict(payload)
+                for page, payload in sorted(
+                    _int_keyed_mapping(structured_pages).items(),
+                    key=lambda item: item[0],
+                )
+                if isinstance(payload, Mapping)
+            },
+        }
+    return {
+        "parsed_slots": [slot for slot in parsed_slots if slot],
+        "document_order": [slot for slot in document_order if slot],
+        "slots": slots,
+    }
+
+
+def load_parse_artifact(
+    payload: Mapping[str, Any] | None,
+) -> tuple[
+    list[str],
+    list[str],
+    dict[str, dict[int, str]],
+    dict[str, str],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+]:
+    """Restore per-slot Markdown, parse ids, layouts, and structured pages."""
+    data = payload if isinstance(payload, Mapping) else {}
+    parsed_slots = [
+        str(slot).strip()
+        for slot in (data.get("parsed_slots") or [])
+        if str(slot).strip()
+    ]
+    document_order = [
+        str(slot).strip()
+        for slot in (data.get("document_order") or [])
+        if str(slot).strip()
+    ]
+    raw_slots_value = data.get("slots")
+    raw_slots: Mapping[Any, Any] = (
+        raw_slots_value if isinstance(raw_slots_value, Mapping) else {}
+    )
+    pages_by_slot: dict[str, dict[int, str]] = {}
+    parse_job_ids: dict[str, str] = {}
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
+    for slot_id, raw in raw_slots.items():
+        key = str(slot_id).strip()
+        if not key or not isinstance(raw, Mapping):
+            continue
+        pages_by_slot[key] = coerce_page_markdown(
+            raw.get("pages") if isinstance(raw.get("pages"), Mapping) else {}
+        )
+        job_id = str(raw.get("parse_job_id") or "").strip()
+        if job_id:
+            parse_job_ids[key] = job_id
+        layout_raw = raw.get("layout")
+        layout_pages: dict[int, dict[str, Any]] = {}
+        for page, payload_page in _int_keyed_mapping(
+            layout_raw if isinstance(layout_raw, Mapping) else {}
+        ).items():
+            if isinstance(payload_page, Mapping):
+                layout_pages[page] = dict(payload_page)
+        layouts_by_slot[key] = layout_pages
+        structured_raw = raw.get("structured_pages")
+        structured_pages: dict[int, dict[str, Any]] = {}
+        for page, payload_page in _int_keyed_mapping(
+            structured_raw if isinstance(structured_raw, Mapping) else {}
+        ).items():
+            if isinstance(payload_page, Mapping):
+                structured_pages[page] = dict(payload_page)
+        structured_pages_by_slot[key] = structured_pages
+    if not parsed_slots:
+        parsed_slots = [slot for slot, pages in pages_by_slot.items() if pages]
+    return (
+        parsed_slots,
+        document_order,
+        pages_by_slot,
+        parse_job_ids,
+        layouts_by_slot,
+        structured_pages_by_slot,
+    )
+
+
+_SOURCE_BOOK_SLOT = "compiled"
+
+
+def dump_source_book(
+    *,
+    pages: Mapping[int, str],
+    layout: Mapping[int, Mapping[str, Any]] | None = None,
+    structured: Mapping[int, Mapping[str, Any]] | None = None,
+    parse_job_id: str | None = None,
+    file_id: str | None = None,
+    file_hash: str | None = None,
+) -> dict[str, Any]:
+    """Full-book parse pages, stored beside the per-slot artifact."""
+    artifact = dump_parse_artifact(
+        parsed_slots=[_SOURCE_BOOK_SLOT],
+        document_order=[_SOURCE_BOOK_SLOT],
+        pages_by_slot={_SOURCE_BOOK_SLOT: pages},
+        parse_job_ids={_SOURCE_BOOK_SLOT: parse_job_id or ""},
+        layouts_by_slot={_SOURCE_BOOK_SLOT: layout or {}},
+        structured_pages_by_slot={_SOURCE_BOOK_SLOT: structured or {}},
+    )
+    book = dict(artifact["slots"][_SOURCE_BOOK_SLOT])
+    if file_id:
+        book["file_id"] = file_id
+    if file_hash:
+        book["file_hash"] = file_hash
+    return book
+
+
+def load_source_book(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Restore the compiled-book parse saved by extract-front."""
+    data = payload if isinstance(payload, Mapping) else {}
+    raw = data.get("source_book")
+    if not isinstance(raw, Mapping):
+        return None
+    _slots, _order, pages, jobs, layouts, structured = load_parse_artifact(
+        {"slots": {_SOURCE_BOOK_SLOT: raw}, "parsed_slots": [_SOURCE_BOOK_SLOT]}
+    )
+    book_pages = pages.get(_SOURCE_BOOK_SLOT) or {}
+    if not book_pages:
+        return None
+    return {
+        "pages": book_pages,
+        "layout": layouts.get(_SOURCE_BOOK_SLOT) or {},
+        "structured": structured.get(_SOURCE_BOOK_SLOT) or {},
+        "parse_job_id": jobs.get(_SOURCE_BOOK_SLOT)
+        or str(raw.get("parse_job_id") or "").strip(),
+        "file_id": str(raw.get("file_id") or "").strip(),
+        "file_hash": str(raw.get("file_hash") or "").strip(),
+    }
+
+
+def pages_for_source_span(
+    pages: Mapping[int, Any],
+    page_span: Sequence[Mapping[str, Any]] | None,
+    *,
+    require_complete: bool = True,
+    slot_id: str | None = None,
+) -> dict[int, Any] | None:
+    """Renumber compiled-book pages to 1..n inside one sliced slot.
+
+    Returns None when a source page in the span has no saved text. Layout
+    callers set ``require_complete`` false and keep the local page numbers of
+    the pages that do have boxes.
+    """
+    if not page_span:
+        return None
+    out: dict[int, Any] = {}
+    local = 1
+    missing = False
+    for span in page_span:
+        if not isinstance(span, Mapping):
+            return None
+        try:
+            start = int(span.get("start"))
+            end = int(span.get("end"))
+        except (TypeError, ValueError):
+            return None
+        if end < start:
+            return None
+        for source in range(start, end + 1):
+            if source in pages:
+                value = pages[source]
+                if isinstance(value, Mapping):
+                    value = dict(value)
+                    value["local_page"] = local
+                    if slot_id:
+                        value["slot_id"] = slot_id
+                out[local] = value
+            else:
+                missing = True
+            local += 1
+    if require_complete and (missing or not out):
+        return None
+    return out
+
+
+def compiled_index_reuse(
+    book: Mapping[str, Any],
+    parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
+    *,
+    edited: bool,
+    reusable_slots: set[str],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+    list[str],
+]:
+    """Cut the saved book parse into slot pages. Skip a slot that was edited."""
+    book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
+    book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
+    book_structured = (
+        book.get("structured") if isinstance(book.get("structured"), Mapping) else {}
+    )
+    job_id = str(book.get("parse_job_id") or "").strip()
+    pages_by_slot: dict[str, dict[int, str]] = {}
+    layouts: dict[str, dict[int, dict[str, Any]]] = {}
+    structured: dict[str, dict[int, dict[str, Any]]] = {}
+    jobs: dict[str, str] = {}
+    slots: list[str] = []
+    for slot_id, span in parts:
+        slot = (slot_id or "").strip()
+        if not slot:
+            continue
+        if edited and slot not in reusable_slots:
+            continue
+        sliced = pages_for_source_span(book_pages, span)
+        if not sliced:
+            continue
+        pages_by_slot[slot] = {page: str(text or "") for page, text in sliced.items()}
+        layout = pages_for_source_span(
+            book_layout, span, require_complete=False, slot_id=slot
+        )
+        layouts[slot] = {
+            page: dict(payload)
+            for page, payload in (layout or {}).items()
+            if isinstance(payload, Mapping)
+        }
+        structures = pages_for_source_span(
+            book_structured, span, require_complete=False
+        )
+        structured[slot] = {
+            page: dict(payload)
+            for page, payload in (structures or {}).items()
+            if isinstance(payload, Mapping)
+        }
+        if job_id:
+            jobs[slot] = job_id
+        slots.append(slot)
+    return pages_by_slot, layouts, structured, jobs, slots
+
+
+def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:
     """True when LlamaParse should keep the extract-quality (agentic) tier."""
     slot = (part.slot_id or "").strip().lower()
-    if slot in FAST_PARSE_SLOT_IDS or slot.startswith("annexure_p"):
+    if slot in FAST_PARSE_SLOT_IDS or _ANNEXURE_SLOT_RE.fullmatch(slot):
         return False
     if slot.startswith("application_") and slot != "applications":
         return False
@@ -583,6 +1072,54 @@ def _keep_extract_page(
     return any(page in window_keep.get(name, set()) for name in sources)
 
 
+def _layout_ocr_text(page: Mapping[str, Any] | None) -> str:
+    """Rebuild readable OCR lines from grounded layout words.
+
+    Scanned pages can have useful LlamaParse layout words even when the page
+    markdown is empty or contains only the parse stub.  Party schedules often
+    continue on exactly such a page.
+    """
+    if not isinstance(page, Mapping):
+        return ""
+    words = page.get("words")
+    if not isinstance(words, Sequence) or isinstance(words, (str, bytes)):
+        return ""
+    lines: list[str] = []
+    current: list[str] = []
+    current_line: Any = object()
+    for word in words:
+        if not isinstance(word, Mapping):
+            continue
+        token = str(word.get("t") or "").strip()
+        if not token:
+            continue
+        line = word.get("line")
+        if current and line != current_line:
+            lines.append(" ".join(current))
+            current = []
+        current.append(token)
+        current_line = line
+    if current:
+        lines.append(" ".join(current))
+    return "\n".join(lines).strip()
+
+
+def _recover_page_markdown(
+    page_markdown: Mapping[int, str],
+    page_layout: Mapping[int, Mapping[str, Any]] | None,
+) -> dict[int, str]:
+    recovered = dict(page_markdown)
+    for page in sorted(set(recovered) | set(page_layout or {})):
+        body = recovered.get(page, "")
+        text = (body or "").strip()
+        if text and not text.startswith(_PARSE_STUB_PREFIX):
+            continue
+        layout_text = _layout_ocr_text((page_layout or {}).get(page))
+        if layout_text:
+            recovered[page] = layout_text
+    return recovered
+
+
 def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
     fill_of: dict[str, list[str]] = {}
     verify_of: dict[str, list[str]] = {}
@@ -605,24 +1142,70 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
         notes[part] = (notes.get(part) or "").rstrip() + extra
     notes.setdefault(
         "Memo of Appearance",
-        "Use only for advocates_on_record.",
+        "Use only for advocates_on_record. AOR footer under the name: Chamber "
+        "lines, often not labelled Address. Copy printed text only; do not invent.",
     )
     notes.setdefault(
         "Vakalatnama",
-        "Use only for advocates_on_record.",
+        "Use only for advocates_on_record. Prefer this over Main Petition last page.",
     )
     notes.setdefault(
         "AOR's Certificate",
         "Cause title at the top, then the word CERTIFICATE (or C E R T I F I C A T E). "
         "Both are required. Body starts Certified that / CERTIFIED that the petition "
         "is confined only to the pleadings. Use the signature or DRAWN & FILED BY "
-        "block only for advocates_on_record.",
+        "block to fill blank advocates_on_record fields only; never override Vakalatnama. "
+        "Use bracketed impugned-order particulars only when Impugned Order is not in "
+        "this pack.",
     )
+    for part, extra in (
+        (
+            "Listing Proforma",
+            " For petitioners/respondents, use numbered fields to cross-check the "
+            "complete party count and recover names omitted by scanned Main Petition "
+            "OCR; do not invent unprinted addresses or relations. For "
+            "advocates_on_record, use only to fill blank fields and never override "
+            "Vakalatnama. office_address is the Chamber lines on the last page, "
+            "under the AOR name / (ADVOCATE-ON-RECORD). Copy printed text only; "
+            "do not invent.",
+        ),
+        (
+            "Advocate's Checklist",
+            " Use only to fill blank advocates_on_record fields. Never override Vakalatnama.",
+        ),
+        (
+            "Affidavit",
+            " Use bracketed impugned-order particulars only when Impugned Order is "
+            "not in this pack. Do not copy petitioner or respondent names.",
+        ),
+        (
+            "AOR's Certificate",
+            " Use the signature or DRAWN & FILED BY block to fill blank "
+            "advocates_on_record fields only; never override Vakalatnama. "
+            "Use bracketed impugned-order particulars only when Impugned Order is "
+            "not in this pack.",
+        ),
+        (
+            "Vakalatnama",
+            " Prefer this over Main Petition last page. Never override Vakalatnama "
+            "values from later sections.",
+        ),
+        (
+            "Memo of Appearance",
+            " Prefer this over Main Petition last page when Vakalatnama is missing "
+            "or prints no AOR. Fill blank office_address from Chamber lines under "
+            "the name. Copy printed text only; never override Vakalatnama.",
+        ),
+    ):
+        current = notes.get(part) or ""
+        if extra.strip() not in current:
+            notes[part] = (
+                (current.rstrip() + extra).strip() if current else extra.strip()
+            )
     for part in ("Memo of Appearance", "Vakalatnama", "AOR's Certificate"):
         if "Do not copy petitioner or respondent names" not in notes[part]:
             notes[part] = (
-                notes[part].rstrip()
-                + " Do not copy petitioner or respondent names."
+                notes[part].rstrip() + " Do not copy petitioner or respondent names."
             )
     cert_note = notes.get("AOR's Certificate") or ""
     if "cause title" not in cert_note.lower():
@@ -634,10 +1217,113 @@ def _section_use_notes(catalog: UploadTypeCatalog | None) -> dict[str, str]:
             "DRAWN & FILED BY block for advocates_on_record only. "
             "Cause title without CERTIFICATE is Cover Page or Main Petition."
         )
+    petition_note = notes.get("Main Petition") or ""
+    extras: list[str] = []
+    petition_fill = fill_of.get("Main Petition", [])
+    if "advocates_on_record" in petition_fill:
+        extras.append(
+            " For advocates_on_record, use only the very last page: Drawn By, "
+            "Filed on, DRAWN & FILED BY, Advocate for Petitioner/Respondent, then "
+            "Chamber lines under the name. Copy printed text only; do not invent. "
+            "Fill blanks if Vakalatnama is missing, prints no AOR, or leaves that "
+            "field blank. Do not take advocate names or addresses from the opening "
+            "party-list pages."
+        )
+    if "cause_title" in petition_fill:
+        extras.append(
+            " For cause_title, use this caption only when Cover Page is not in this pack."
+        )
+    if "petition_type" in petition_fill:
+        extras.append(
+            " For petition_type, fill from this cause title first; Cover Page is the fallback."
+        )
+    if "impugned_orders" in petition_fill:
+        extras.append(
+            " For impugned_orders, use bracketed particulars only when Impugned Order "
+            "is not in this pack."
+        )
+    if "petition_date" in petition_fill:
+        extras.append(
+            " For petition_date, use only the last page after Main Prayer or Prayer. "
+            "If Date Drafted and Date Filed on are both printed, use Date Drafted only."
+        )
+    for extra in extras:
+        if extra.strip() not in petition_note:
+            petition_note = petition_note.rstrip() + extra
+    if petition_note:
+        notes["Main Petition"] = petition_note
+    cover_note = notes.get("Cover Page") or ""
+    cover_fill = fill_of.get("Cover Page", [])
+    cover_bits: list[str] = []
+    if "cause_title" in cover_fill:
+        cover_bits.append(" Prefer this page for cause_title.")
+    if "petition_type" in cover_fill:
+        cover_bits.append(
+            " For petition_type, use this cause title only if Main Petition does not print it."
+        )
+    if "impugned_orders" in cover_fill:
+        cover_bits.append(
+            " For impugned_orders, use bracketed particulars only when Impugned Order "
+            "is not in this pack."
+        )
+    for extra in cover_bits:
+        if extra.strip() not in cover_note:
+            cover_note = cover_note.rstrip() + extra
+    if cover_note:
+        notes["Cover Page"] = cover_note
     return notes
 
 
+def _window_extract_preamble(*, whole_filing: bool = False) -> str:
+    if whole_filing:
+        where = (
+            "Search every page labelled Compiled filing. "
+            "The heading page number is the compiled PDF page number."
+        )
+        missing = "If a value is not printed in this filing, write N/A."
+        field_pages = "any page"
+    else:
+        where = (
+            f"Search every page labelled Opening pages. That is the first "
+            f"{OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter. "
+            f"Pages labelled Closing pages are the last {CLOSING_PAGE_LIMIT} pages."
+        )
+        missing = "If a value is not printed in that window, write N/A."
+        field_pages = "any opening page"
+    return "\n".join(
+        [
+            "# Extraction rules",
+            "This filing has not been split. Do not assume which page is the "
+            "Cover Page, Main Petition, Vakalatnama, or any other section.",
+            where,
+            "Copy printed text only. Do not invent names, addresses, dates, or "
+            f"categories. {missing}",
+            "Record source_pages as the heading page numbers for every value.",
+            "",
+            "- court, petition_type, cause_title, petitioners, respondents, "
+            f"impugned_orders, relief_sort, and petition_date may be on {field_pages}.",
+            "- petitioners and respondents: read every numbered party from the "
+            "petition opening in these pages. Copy the relation, guardian, age, "
+            "occupation, and address printed under that name. When the same "
+            "schedule has a lower-court column and a current-court column "
+            "(Before High Court and Before Supreme Court, or In this Court), use "
+            "only the current-court column. '& Anr.', 'and Anr.', or '& Ors.' is "
+            "not a party. Do not copy a memo of parties headed as the lower court's memo.",
+            "- petition_date: after Main Prayer or Prayer, the date next to Date, "
+            "Dated, Date Drafted, or Date Filed on. Date Drafted wins when both "
+            "drafted and filed dates are printed. Skip a page number sitting between "
+            "the label and the date.",
+            "- relief_sort: the prayer body only, without the Main Prayer heading.",
+            f"- advocates_on_record: {AOR_EXTRACT_RULES}",
+            "- impugned_orders.bench: judge names under CORAM, joined with '; '.",
+        ]
+    )
+
+
 def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
+    sources = catalog.extract_field_sources if catalog is not None else {}
+    if _sources_use_page_window(sources):
+        return _window_extract_preamble()
     lines = [
         "# Extraction rules",
         "Copy printed text only. Do not invent names, addresses, dates, or "
@@ -645,7 +1331,6 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
         "value is not printed there, write N/A. Do not guess from other parts.",
         "",
     ]
-    sources = catalog.extract_field_sources if catalog is not None else {}
     for field_name, spec in sources.items():
         fill = ", ".join(f"[{p}]" for p in spec.fill) or "(none)"
         bit = f"- {field_name}: fill from {fill}"
@@ -654,17 +1339,50 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             bit += f". Check spelling against {verify}; never overwrite fill text"
         if field_name in PARTY_FIELDS:
             bit += (
-                ". Prefer Memo of Parties; if it is missing, use the first page of "
-                "the Main Petition. Merge blank particulars between those two only. "
-                "Never copy party names or addresses from Vakalatnama or Cover Page. "
-                "Use Cover Page only to mark is_primary from the cover cause-title names. "
-                "And Anr/Ors on Cover Page means extra parties exist; list those names "
-                "from Memo of Parties or the Main Petition"
+                ". List every petitioner and respondent from the starting pages of "
+                "the Main Petition; that party list can run 3-4 pages or more. "
+                "Cover Page prints only one petitioner and one respondent (the main "
+                "names, plus And Anr/Ors if extras exist). If a field is blank on "
+                "those starting pages or Main Petition is missing, use the Cover Page "
+                "if it is in this pack. Cross-check Listing Proforma for the total "
+                "party count and names and add a numbered party omitted by OCR. Use "
+                "Listing Proforma only for names/counts and contacts actually printed "
+                "there; keep address, relation, guardian, and acting-through details "
+                "from Main Petition. Merge blanks between permitted sources only. "
+                "Never copy party names or addresses from Vakalatnama or Memo of Parties. "
+                "Use Cover Page to mark is_primary from the cover cause-title names. "
+                "Petitioner 1 on the Main Petition starting pages must be the same "
+                "person as cause_title.main_petitioner; respondent 1 must be the same "
+                "person as cause_title.main_respondent. Flag a different name, a "
+                "missing name, or a side swap (Cause Title petitioner listed as a "
+                "respondent, or the reverse). And Anr/Ors on Cover Page means extra "
+                "parties exist; list those names from the Main Petition starting pages"
+            )
+        if field_name == "cause_title":
+            bit += (
+                ". Prefer Cover Page. If Cover Page is not in this pack, fill from the "
+                "Main Petition caption and draft formatted_title from party counts"
+            )
+        if field_name == "petition_type":
+            bit += (
+                ". Prefer the Main Petition cause title. If not printed there, use the "
+                "Cover Page cause title"
+            )
+        if field_name == "advocates_on_record":
+            bit += f". {AOR_EXTRACT_RULES.rstrip('.')}"
+        if field_name == "impugned_orders":
+            bit += (
+                ". Prefer the Impugned Order document. If it is not in this pack, use "
+                "bracketed particulars on Main Petition, Cover Page, AOR's Certificate, "
+                "and Affidavit. Keep one consistent set. bench means the judge names "
+                "under CORAM, joined with '; '; it never means New Delhi or another seat"
             )
         lines.append(bit + ".")
     lines.extend(
         [
-            "- formatted_title: Cover Page names are main_petitioner and main_respondent. "
+            "- formatted_title: Cover Page names are main_petitioner and main_respondent "
+            "when Cover Page is present. If Cover Page is missing, use Main Petition "
+            "petitioner 1 and respondent 1. "
             "Store those names without And Anr, And Ors, Petitioner, or Respondent. "
             "Each side is 'MainName' (1 party), 'MainName and Anr.' (exactly 2), "
             "'MainName and Ors.' (3 or more). Join with ' VS '. Never use square "
@@ -681,12 +1399,20 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "- relief_sort: copy only the prayer body under Main Prayer / Prayer on the "
             "last 2-3 pages of the Main Petition. Do not include the heading, number, "
             "or markdown such as '7. MAIN PRAYER:' or '<u>**MAIN PRAYER**</u>:'.",
+            "- petition_date: on the last page of the Main Petition, after Main Prayer "
+            "/ Prayer, copy the date next to Date, Date Drafted, or Date Filed on. "
+            "If both Date Drafted and Date Filed on are printed, use only Date Drafted. "
+            "Return the date only, without the label.",
             "- confidence: percentage string such as 95% or 65% on each object.",
             "- inconsistencies: record spelling or value mismatches between fill and "
-            "verify sources. Always record a letter-level mismatch of the Cover Page "
+            "verify sources. Always record a letter-level mismatch of the Cause Title "
             "main petitioner or main respondent versus that same person's name on "
-            "Memo of Parties or the Main Petition (example: Shalija vs Shailja). "
-            "Do not skip the main-name spelling because Cover Page also says And Anr/Ors. "
+            "the Main Petition starting pages (example: Shalija vs Shailja). "
+            "The Cause Title petitioner must be petitioner 1 on those starting pages; "
+            "the Cause Title respondent must be respondent 1. Flag when they are a "
+            "different person, missing, or listed on the other side. Cover Page has "
+            "only one name per side. Do not skip the main-name spelling because Cover "
+            "Page also says And Anr/Ors. "
             "Do not invent extra parties to resolve a mismatch. "
             "Do not flag Cover Page / caption role labels Petitioner, Petitioner(s), "
             "Respondent, or Respondent(s), with or without leading dots (... or …). "
@@ -696,12 +1422,19 @@ def extract_pack_preamble(catalog: UploadTypeCatalog | None = None) -> str:
             "Do not compare party names against the Impugned Order. "
             "One item per distinct name spelling; do not repeat the same two names. "
             "Skip only extra serials (petitioner/respondent 2, 3, …) compared against "
-            "Cover Page And Anr/Ors; those extra people are listed on Memo of Parties "
-            "or the Main Petition, not on the cover shorthand. "
-            "Party-name raw_text must be: Cover Page: \"Name\"; Main Petition / "
-            "Memo of Parties: \"Name\". Quote the person's name only: no And Anr/Ors, "
+            "Cover Page And Anr/Ors; those extra people are listed on the Main "
+            "Petition starting pages, not on the cover shorthand. "
+            'Party-name raw_text must be: Cause Title: "Name"; Main Petition: '
+            '"Name". Quote the person\'s name only: no And Anr/Ors, '
             "no Petitioner/Respondent, and do not list Vakalatnama, Affidavit, or "
             "AOR's Certificate as party-name sources. "
+            "Also record Impugned Order case number, date, or forum mismatches "
+            "across Impugned Order, Main Petition, Cover Page, AOR's Certificate, "
+            "and Affidavit. Also record printed AOR chamber/office address "
+            "mismatches across Vakalatnama, Memo of Appearance, Main Petition last "
+            "page, Listing Proforma last page, and AOR's Certificate. Quote both "
+            "printed strings. Do not invent an address. Ignore extra Ph. on the "
+            "same chamber line. "
             "items[].id is '1', '2', …; use raw_text, not detail.",
         ]
     )
@@ -713,17 +1446,33 @@ def build_extract_pack_markdown(
     page_parts: Mapping[int, Any],
     source_parts: set[str],
     catalog: UploadTypeCatalog | None = None,
+    page_layout: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> str:
+    page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
-    window_keep = _windowed_pages_to_keep(page_markdown, page_parts)
-    notes = _section_use_notes(catalog)
+    page_window = _uses_page_window(source_parts)
+    page_count = max(page_markdown) if page_markdown else 0
+    window_keep = {} if page_window else _windowed_pages_to_keep(page_markdown, page_parts)
+    notes = {} if page_window else _section_use_notes(catalog)
     for page in sorted(page_markdown):
         names = parts_on_page(page_parts.get(page))
-        if not page_is_extract_source(names, source_parts):
+        if page_window:
+            if not _page_in_extract_window(page, page_count, source_parts):
+                continue
+            if names and all(_excluded_from_extract_pack(name) for name in names):
+                continue
+            if not names:
+                continue
+        elif not page_is_extract_source(names, source_parts):
             continue
-        if not _keep_extract_page(page, names, source_parts, window_keep):
+        elif not _keep_extract_page(page, names, source_parts, window_keep):
             continue
-        label = " / ".join(names) or "Unknown"
+        if page_window and page <= opening_window_limit(page_count):
+            label = OPENING_PAGES_SOURCE
+        elif page_window:
+            label = CLOSING_PAGES_SOURCE
+        else:
+            label = " / ".join(names) or "Unknown"
         body = (page_markdown.get(page) or "").strip()
         if body.startswith(_PARSE_STUB_PREFIX):
             continue
@@ -738,7 +1487,79 @@ def build_extract_pack_markdown(
     return f"{extract_pack_preamble(catalog)}\n\n{packed}"
 
 
+def _window_look_only(field_name: str) -> str:
+    """Where to read a field when split labels do not exist yet."""
+    where = (
+        f"Search every page in the opening window: the first {OPENING_PAGE_LIMIT} "
+        "pages, or every page when the file has fewer than that. "
+        "Do not assume a Cover Page, Main Petition, Listing Proforma, or any other "
+        "split section. Those labels are not known yet. "
+    )
+    if field_name in PARTY_FIELDS:
+        return (
+            where
+            + "Read every numbered party from the petition opening, and copy the "
+            "relation, guardian, age, occupation, and address printed under that "
+            "name. When the same schedule has a lower-court column and a "
+            "current-court column (Before High Court and Before Supreme Court, "
+            "or In this Court), use only the current-court column. '& Anr.' or "
+            "'& Ors.' is not a party. Do not copy a memo of parties headed as the "
+            "lower court's memo. Do not stop after the first name. "
+            "Record source_pages as the page numbers in the headings."
+        )
+    if field_name == "cause_title":
+        return (
+            where
+            + "Read the caption from whichever opening page prints it. "
+            "main_petitioner and main_respondent are the first petitioner and first "
+            "respondent in the fullest party list, without And Anr, And Ors, or the "
+            "role label. formatted_title uses those names plus 'and Anr.' for exactly "
+            "one extra party on that side and 'and Ors.' for two or more. "
+            "Join the sides with ' VS '. Never use square brackets."
+        )
+    if field_name == "petition_type":
+        return (
+            where
+            + "Copy the petition type from the page that prints it, for example "
+            "Special Leave Petition (Civil)."
+        )
+    if field_name == "court":
+        return where + "Copy the court heading from the page that prints it."
+    if field_name == "advocates_on_record":
+        return (
+            where
+            + f"Also search the last {CLOSING_PAGE_LIMIT} pages. {AOR_EXTRACT_RULES}"
+        )
+    if field_name == "impugned_orders":
+        return (
+            where
+            + "Copy the court, date, and case number of the order under challenge "
+            "from the page that prints those particulars. bench is the judge names "
+            "under CORAM, joined with '; '. It is not a city or the forum name."
+        )
+    if field_name == "relief_sort":
+        return (
+            where
+            + "Copy only the prayer body under Main Prayer or Prayer. Omit the "
+            "heading, clause number, and markdown. Leave null if that prayer is not "
+            "in the window."
+        )
+    if field_name == "petition_date":
+        return (
+            where
+            + "After Main Prayer or Prayer, copy the date next to Date, Dated, "
+            "Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on "
+            "are printed, use only Date Drafted. Return the date only. A page number "
+            "between the label and the date is not the date. Do not use an "
+            "impugned-order date or a date inside the prayer. Leave null if no such "
+            "date is printed in the window."
+        )
+    return where + "Copy the printed value. Record source_pages."
+
+
 def _look_only_text(field_name: str, spec: FieldSources) -> str:
+    if _field_uses_page_window(spec):
+        return _window_look_only(field_name)
     fill = ", ".join(spec.fill) or "no fill source"
     extra = f"Fill only from {fill}."
     if spec.verify:
@@ -748,49 +1569,84 @@ def _look_only_text(field_name: str, spec: FieldSources) -> str:
         )
     if field_name in PARTY_FIELDS:
         extra += (
-            " Prefer Memo of Parties; if it is missing, use the first page of the "
-            "Main Petition. If a field is blank in one of those parts, fill it from the "
-            "other. If neither Memo of Parties nor Main Petition is in this pack, "
+            " List every petitioner and respondent from the starting pages of the "
+            "Main Petition; that party list can run 3-4 pages or more. Cover Page "
+            "prints only one petitioner and one respondent. If a field is blank on "
+            "those starting pages or Main Petition is missing, use the Cover Page if "
+            "it is in this pack. Cross-check Listing Proforma numbered fields for the "
+            "total count and names, adding parties omitted by OCR. Listing Proforma "
+            "may supply names and printed contacts only; address, relation, guardian, "
+            "and acting_through remain Main Petition details. If a field is blank in "
+            "one permitted source, fill it from another. If neither Main Petition, "
+            "Cover Page nor Listing Proforma is in this pack, "
             "set party names to N/A. Never copy party names or addresses from Vakalatnama, PoA/BR, "
-            "Memo of Appearance, AOR's Certificate, or Cover Page. Use Cover Page "
-            "only to decide which already-listed party is primary. Extra petitioners "
-            "and respondents are listed on Memo of Parties or the Main Petition; "
-            "Cover Page And Anr/Ors is not the second party's name. Do not invent "
-            "parties. Write N/A if a field is not printed on a fill source that is present. "
+            "Memo of Appearance, AOR's Certificate, or Memo of Parties. "
+            "Use Cover Page to decide which already-listed party is primary and to "
+            "fill blanks. Petitioner 1 must be the same person as "
+            "cause_title.main_petitioner; respondent 1 must be the same person as "
+            "cause_title.main_respondent. Flag a different name, a missing name, or "
+            "a side swap. Extra petitioners and respondents continue on later starting "
+            "pages of the Main Petition; Cover Page And Anr/Ors is not the second "
+            "party's name. Do not invent parties. Write N/A if a field is not printed "
+            "on a fill source that is present. "
             "kind is INDIVIDUAL or ORGANIZATION from name prefixes/suffixes. "
             "ORGANIZATION without acting_through is an inconsistencies item."
         )
     if field_name == "cause_title":
         extra += (
             " main_petitioner and main_respondent are the names on the Cover Page "
-            "cause-title line without And Anr / And Ors / Petitioner / Respondent. "
-            "formatted_title uses Cover Page main names plus and Anr. for exactly "
+            "cause-title line if Cover Page is in this pack, without And Anr / And Ors / "
+            "Petitioner / Respondent. If Cover Page is missing, use petitioner 1 and "
+            "respondent 1 from the Main Petition caption. "
+            "formatted_title uses those main names plus and Anr. for exactly "
             "one extra party on that side and and Ors. for two or more extras. "
             "Never wrap and Anr. or and Ors. in square brackets. "
             "Do not treat trailing Petitioner / Petitioner(s) / Respondent / "
             "Respondent(s), with or without dots, as a spelling mismatch. "
             "Do not write 'and Anr. and Anr.' "
-            "If the Cover Page main name differs in letters from Memo of Parties "
-            "or the Main Petition (Shalija vs Shailja), that is an inconsistencies item. "
-            "Extra parties are not a spelling mismatch against And Anr/Ors."
+            "Cover Page has only one petitioner and one respondent. "
+            "Cross-check Cause Title with the starting pages of the Main Petition "
+            "(the party list can run 3-4 pages or more). "
+            "The Cause Title petitioner must be the same person as petitioner 1; "
+            "the Cause Title respondent must be respondent 1. "
+            "If the Cover Page / Cause Title main name differs in letters from "
+            "petitioner 1 or respondent 1 on those starting pages (Shalija vs "
+            "Shailja), that is an inconsistencies item. Also flag a different "
+            "person, a missing name, or a side swap (Cause Title petitioner listed "
+            "as a respondent, or the reverse). Extra parties on later starting "
+            "pages are not a spelling mismatch against And Anr/Ors."
+        )
+    if field_name == "petition_type":
+        extra += (
+            " Fill from the cause title of the Main Petition first "
+            "(e.g. Special Leave Petition (Civil)). If that heading is not printed "
+            "there, use the Cover Page cause title."
         )
     if field_name == "advocates_on_record":
+        extra += f" {AOR_EXTRACT_RULES}"
+    if field_name == "impugned_orders":
         extra += (
-            " AOR's Certificate always has the cause title at the top, then the word "
-            "CERTIFICATE (one word or letter-spaced C E R T I F I C A T E). Both are "
-            "required. Under CERTIFICATE the body starts Certified that or CERTIFIED "
-            "that the Special Leave Petition is confined only to the pleadings before "
-            "the High Court, Court, or Tribunal whose order is challenged. Extra facts "
-            "or grounds with an application may or may not be mentioned. Take AOR name "
-            "from the signature block or DRAWN & FILED BY; take code (CC No.) and mobile "
-            "only if printed. Do not copy petitioner or respondent names from the cause "
-            "title on this page. Cause title without CERTIFICATE is not this page. This "
-            "is not Cover Page, Vakalatnama, or the Advocate's Check List."
+            " Validate the document contents, not just the Impugned Order filename. "
+            "Reject dates merely quoted or summarized from earlier proceedings; "
+            "if no challenged order is identifiable, return an empty list. "
+            " If the Impugned Order document is in this pack, fill from it. If it is "
+            "not attached, fill from bracketed particulars on the Main Petition cause "
+            "title, Cover Page, AOR's Certificate, and Affidavit. Cross-check those "
+            "documents. Keep Impugned Order PDF values when present; otherwise keep "
+            "one consistent set and add an inconsistencies item for mismatches."
         )
     if field_name == "relief_sort":
         extra += (
             " Copy only the prayer body under Main Prayer or Prayer on the last 2-3 pages "
             "of the Main Petition. Omit the heading, clause number, HTML, and markdown."
+        )
+    if field_name == "petition_date":
+        extra += (
+            " Read the last page of the Main Petition, after Main Prayer or Prayer. "
+            "Use the date next to Date, Date Drafted, or Date Filed on. If both "
+            "Date Drafted and Date Filed on are printed, use only the Date Drafted "
+            "date. Return the date only, without the label. Do not use a date inside "
+            "the prayer or from any other document."
         )
     return f"{extra}{LOOK_ONLY_SUFFIX}"
 
@@ -819,17 +1675,44 @@ def inject_where_to_look(
     return updated
 
 
+def _window_extract_system_prompt() -> str:
+    return "\n".join(
+        [
+            "You are extracting a compiled court filing before it has been split.",
+            "Do not assume where the Cover Page, Main Petition, Vakalatnama, or any other section is.",
+            f"Opening pages are the first {OPENING_PAGE_LIMIT} pages, or the whole file when it is shorter.",
+            f"Closing pages are the last {CLOSING_PAGE_LIMIT} pages.",
+            "A field may be on any opening page. Copy printed text only. If it is not printed, write N/A.",
+            "source_part is Opening pages or Closing pages. source_pages are the heading page numbers.",
+            "",
+            "- court: the court heading, from whichever opening page prints it.",
+            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever opening page prints it.",
+            "- cause_title: the caption from whichever opening page prints it. Main names come from the fullest party list, without And Anr or And Ors.",
+            "- petitioners and respondents: every numbered party in the petition opening, with the relation, guardian, age, occupation, and address printed under that name. When one schedule has a lower-court column and a current-court column, use only the current-court column. '& Anr.' or '& Ors.' is not a party. Do not copy a memo of parties headed as the lower court's memo. Do not stop after the first name.",
+            "- advocates_on_record: the printed advocate footer on any opening page or on the closing pages. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
+            "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
+            "- impugned_orders: court, date, and case number of the order under challenge, from whichever opening page prints them. bench is the CORAM judge names joined with '; '.",
+            "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
+            "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
+            "- confidence: percentage strings such as 95% or 65%.",
+        ]
+    )
+
+
 def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
+    if _sources_use_page_window(catalog.extract_field_sources):
+        return _window_extract_system_prompt()
     lines = [
         "You are extracting a compiled Supreme Court filing record from an already-split paper book.",
         "Each section is labelled with its document part, for example ## [Cover Page] (p. 1).",
         "Copy printed text only. Do not invent or complete a field from a document "
         "part that is not a fill source for that field. If that fill-source document is "
         "not in this pack, or the value is not printed there, write N/A.",
-        "source_part must be the labelled Split name (Memo of Parties, Cover Page, Main Petition, …). "
+        "source_part must be the labelled Split name (Cover Page, Main Petition, …). "
         "source_pages must be the integer page numbers in the headings, for example (p. 6).",
-        "Ignore Annexures, Appendix, applications, Index, Listing Proforma, "
-        "Synopsis, List of Dates, Checklist, Filing Memo, Affidavit, and "
+        "Ignore Annexures, Appendix, applications, Index, "
+        "Synopsis, List of Dates, Filing Memo, and "
         "Office Report on Limitation. Those pages are not in this pack.",
         "",
     ]
@@ -840,12 +1723,18 @@ def build_extract_system_prompt(catalog: UploadTypeCatalog) -> str:
         lines.append(line)
     lines.extend(
         [
-            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page without And Anr / And Ors. Never use [And ors.] or other square brackets.",
+            "- formatted_title: MainName / MainName and Anr. / MainName and Ors. per side, joined by VS. Main names from Cover Page if present, else Main Petition petitioner 1 / respondent 1, without And Anr / And Ors. Never use [And ors.] or other square brackets.",
             "- kind: INDIVIDUAL or ORGANIZATION from name prefixes/suffixes on Main Petition.",
+            "- petitioners/respondents: read every numbered party across all consecutive Main Petition opening pages, on both sides of VERSUS. Cross-check Listing Proforma for party counts/names and restore any OCR-omitted party. Preserve each printed address, S/o/D/o/W/o relation and related person's name, and acting-through representative from Main Petition.",
             "- acting_through: required for ORGANIZATION (missing is an inconsistency); optional for INDIVIDUAL.",
+            "- petition_type: Main Petition cause title first; Cover Page cause title if not printed there.",
+            "- advocates_on_record: Vakalatnama first. Copy the printed AOR footer only; leave a field null if it is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. If Vakalatnama is missing or prints no AOR, Memo of Appearance footer, then last page of the Main Petition (very end: Drawn By / Filed on / DRAWN & FILED BY / Advocate for Petitioner / Chamber). Do not use petition opening pages. If office_address is still blank, last page of Listing Proforma / Proforma for First Listing. Remaining blanks: AOR's Certificate signature / DRAWN & FILED BY and Advocate's Checklist. Never override Vakalatnama.",
+            "- impugned_orders: Impugned Order PDF first. If missing, bracketed particulars on Main Petition, Cover Page, AOR's Certificate, and Affidavit. Keep one consistent set.",
+            "- impugned_orders.bench: copy every judge name under CORAM in the Impugned Order, joined with '; '. Never put New Delhi, another city/seat, or the forum name in bench.",
             "- relief_sort: prayer body only under Main Prayer / Prayer on the last 2-3 pages of the Main Petition. Do not include the heading or markdown.",
+            "- petition_date: last page of the Main Petition, after Main Prayer / Prayer. Use Date, Date Drafted, or Date Filed on. If both Date Drafted and Date Filed on are printed, use only Date Drafted. Return the date only.",
             "- confidence: percentage strings such as 95% or 65%.",
-            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cover Page main petitioner/respondent letter mismatch versus Memo of Parties or the Main Petition (Shalija vs Shailja). id is '1', '2', …; use raw_text as Cover Page: \"Name\"; Main Petition / Memo of Parties: \"Name\". Do not list Vakalatnama, Affidavit, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on Main Petition / Memo of Parties are not spelling errors against Cover Page And Anr/Ors.",
+            "- inconsistencies: one item per spelling or value mismatch between fill and verify sources. Always keep the Cause Title main petitioner/respondent letter mismatch versus petitioner 1 / respondent 1 on the Main Petition starting pages (Shalija vs Shailja). Cover Page has only one name per side; extra parties continue on later starting pages. Flag a different person, a missing name, or a side swap. Also record Impugned Order case number, date, or forum mismatches across Impugned Order, Main Petition, Cover Page, AOR's Certificate, and Affidavit. Also record printed AOR chamber/office address mismatches across Vakalatnama, Memo of Appearance, Main Petition last page, Listing Proforma last page, and AOR's Certificate. Quote both printed strings. Do not invent an address. Ignore extra Ph. on the same chamber line. id is '1', '2', …; use raw_text as Cause Title: \"Name\"; Main Petition: \"Name\". Do not list Vakalatnama, Affidavit, Memo of Parties, or AOR's Certificate as party-name sources. Do not flag Petitioner / Respondent caption labels, with or without dots. Do not flag ALL CAPS vs title case. Do not compare party names against the Impugned Order. Do not repeat the same name pair. Extra serials on the Main Petition starting pages are not spelling errors against Cover Page And Anr/Ors.",
         ]
     )
     return "\n".join(lines).strip()
@@ -863,6 +1752,135 @@ def extract_configuration(
         catalog.extract_field_sources,
     )
     dumped["system_prompt"] = build_extract_system_prompt(catalog)
+    return dumped
+
+
+def _front_special_category_names() -> list[str]:
+    from .scrutiny.catalogue_db import fetch_special_category_names
+
+    return fetch_special_category_names()
+
+
+def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str:
+    """Prompt for the full compiled filing. Split labels are not known yet."""
+    from .config import (
+        FRONT_ACTING_THROUGH_DESCRIPTION,
+        FRONT_ADDRESS_DESCRIPTION,
+        FRONT_AGE_DESCRIPTION,
+        FRONT_GUARDIAN_DESCRIPTION,
+        FRONT_OCCUPATION_DESCRIPTION,
+        FRONT_PETITIONERS_DESCRIPTION,
+        FRONT_RELATION_DESCRIPTION,
+        FRONT_RESPONDENTS_DESCRIPTION,
+        front_special_category_description,
+    )
+
+    category = front_special_category_description(
+        list(names) if names is not None else _front_special_category_names()
+    )
+
+    return "\n".join(
+        [
+            "You are extracting a compiled court filing before it has been split.",
+            "The pack is labelled Compiled filing. Each heading page number is the compiled PDF page number.",
+            "Search every page. Copy printed text only. If it is not printed, write N/A.",
+            "special_category is the exception: store a category name from the list, not the printed words.",
+            "source_part is Compiled filing. source_pages are the heading page numbers.",
+            "",
+            "- court: the court heading, from whichever page prints it.",
+            "- petition_type: the type as printed, such as Special Leave Petition (Civil), from whichever page prints it.",
+            "- cause_title: the caption from whichever page prints the fullest party list. Main names come from that list, without And Anr or And Ors.",
+            f"- petitioners: {FRONT_PETITIONERS_DESCRIPTION}",
+            f"- respondents: {FRONT_RESPONDENTS_DESCRIPTION}",
+            f"- address: {FRONT_ADDRESS_DESCRIPTION}",
+            f"- occupation: {FRONT_OCCUPATION_DESCRIPTION}",
+            f"- age: {FRONT_AGE_DESCRIPTION}",
+            f"- relation: {FRONT_RELATION_DESCRIPTION}",
+            f"- guardian: {FRONT_GUARDIAN_DESCRIPTION}",
+            f"- acting_through: {FRONT_ACTING_THROUGH_DESCRIPTION}",
+            "- advocates_on_record: the printed advocate footer on any page. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
+            "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
+            "- impugned_orders: court, date, and case number of the order under challenge, from whichever page prints them. bench is the CORAM judge names joined with '; '.",
+            "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
+            "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
+            "- confidence: percentage strings such as 95% or 65%.",
+            f"- special_category: {category}",
+            "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
+            "- documents stays empty.",
+        ]
+    ).strip()
+
+
+def build_front_extract_pack_markdown(
+    page_markdown: Mapping[int, str],
+    page_layout: Mapping[int, Mapping[str, Any]] | None = None,
+    opening_pages: int = 30,
+) -> str:
+    """Every parsed page of the compiled filing, with its own page number."""
+    from .config import front_special_category_description
+
+    del opening_pages
+    category = front_special_category_description(_front_special_category_names())
+    page_markdown = _recover_page_markdown(page_markdown, page_layout)
+    sections: list[str] = []
+    for page in sorted(page_markdown):
+        body = (page_markdown.get(page) or "").strip()
+        if not body or body.startswith(_PARSE_STUB_PREFIX):
+            continue
+        sections.append(
+            f"## [{COMPILED_FILING_SOURCE}] (p. {page})\n\n{body}".rstrip()
+        )
+    packed = "\n\n".join(sections).strip()
+    if not packed:
+        return ""
+    preamble = (
+        f"{_window_extract_preamble(whole_filing=True)}\n"
+        "This pack is every page of the compiled filing.\n"
+        f"special_category: {category}\n"
+        "Do not copy checklist questions, Yes/NA answers, or index rows as parties."
+    )
+    return f"{preamble}\n\n{packed}"
+
+
+def _schema_with_special_category_beside_petition_type(
+    schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    updated = copy.deepcopy(dict(schema))
+    props = updated.get("properties")
+    if not isinstance(props, dict) or "special_category" not in props:
+        return updated
+    ordered: dict[str, Any] = {}
+    for key, value in props.items():
+        if key == "special_category":
+            continue
+        ordered[key] = value
+        if key == "petition_type":
+            ordered["special_category"] = props["special_category"]
+    updated["properties"] = ordered
+    return updated
+
+
+def front_extract_configuration(extract_config: Any) -> dict[str, Any]:
+    """Current extract schema plus special_category, for this job only."""
+    from .config import (
+        FrontExtractRecord,
+        dump_api_configuration,
+        front_special_category_description,
+    )
+
+    names = _front_special_category_names()
+    description = front_special_category_description(names)
+    dumped = dump_api_configuration(extract_config)
+    dumped.pop("configuration_id", None)
+    schema = _schema_with_special_category_beside_petition_type(
+        FrontExtractRecord.model_json_schema()
+    )
+    field = schema.get("properties", {}).get("special_category")
+    if isinstance(field, dict):
+        field["description"] = description
+    dumped["data_schema"] = schema
+    dumped["system_prompt"] = build_front_extract_system_prompt(names)
     return dumped
 
 

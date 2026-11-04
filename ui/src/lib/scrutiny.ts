@@ -12,7 +12,27 @@ export type ResultState =
   | "compliant"
   | "not_applicable"
   | "not_determined"
-  | "needs_review";
+  | "needs_review"
+  | "rule_verification_pending";
+
+export type ReviewReasonCode =
+  | "part_not_in_excerpts"
+  | "element_page_not_in_excerpts"
+  | "unreadable"
+  | "ambiguous"
+  | "conflict"
+  | "low_confidence"
+  | "legal_rule_unverified";
+
+export const REVIEW_REASON_LABELS: Record<ReviewReasonCode, string> = {
+  part_not_in_excerpts: "Required document unavailable",
+  element_page_not_in_excerpts: "Required page or field unavailable",
+  unreadable: "Scan or handwriting unreadable",
+  ambiguous: "Applicability or wording unclear",
+  conflict: "Conflicting information",
+  low_confidence: "Low-confidence assessment",
+  legal_rule_unverified: "Legal rule pending verification",
+};
 
 export interface BoundingBox {
   page: number;
@@ -59,7 +79,6 @@ export interface LlmUsage {
 
 export interface UsageByCheck {
   check_id: string;
-  serial_no: number | string;
   cost_usd?: number | null;
   prompt_tokens: number;
   completion_tokens: number;
@@ -78,7 +97,6 @@ export interface UsageSummary {
   llm_calls: number;
   model?: string | null;
   highest_cost_check_id?: string | null;
-  highest_cost_serial_no?: number | string | null;
   highest_cost_usd?: number | null;
   by_check?: UsageByCheck[];
   note?: string;
@@ -88,12 +106,25 @@ export interface Coverage {
   chunks_reviewed: number;
   pages_reviewed: number[];
   structured_record_available: boolean;
+  document_found?: boolean;
+  required_scope_found?: boolean;
+  scope_complete?: boolean;
+  prompt_truncated?: boolean;
   evidence_complete: boolean;
+}
+
+export interface VisualLocalization {
+  page: number | null;
+  document_type?: string | null;
+  marking_type: string;
+  signature_role?: string | null;
+  bounding_boxes?: BoundingBox[];
+  boxes_status?: BoxesStatus;
+  confidence?: number | null;
 }
 
 export interface DefectFinding {
   check_id: string;
-  serial_no?: number | string;
   title: string;
   defect?: string;
   requirement?: string;
@@ -102,6 +133,8 @@ export interface DefectFinding {
   status: ResultState;
   summary: string;
   confidence: number;
+  review_reason_code?: ReviewReasonCode | null;
+  review_reason?: string | null;
   reasoning?: string;
   evidence?: EvidenceRef[];
   suggested_fix?: string | null;
@@ -111,6 +144,7 @@ export interface DefectFinding {
   location?: string | null;
   location_source?: string | null;
   evidence_ids?: string[];
+  visual_localizations?: VisualLocalization[];
   coverage: Coverage;
   usage?: LlmUsage | null;
   error?: string | null;
@@ -125,6 +159,7 @@ export interface ScrutinySummary {
   defects_found: number;
   compliant: number;
   needs_review: number;
+  rule_verification_pending?: number;
   not_determined: number;
   not_applicable: number;
   overall_confidence: number;
@@ -136,7 +171,6 @@ export interface ScrutinyReport {
   catalogue_version: string;
   agent_data_id: string | null;
   file_hash: string | null;
-  file_name: string | null;
   petition_type: string | null;
   model: string | null;
   generated_at: string;
@@ -152,9 +186,14 @@ export const RESULT_LABELS: Record<ResultState, string> = {
   defect_found: "Defect found",
   compliant: "Compliant",
   not_applicable: "Not applicable",
-  not_determined: "Visual / undetermined",
-  needs_review: "Needs review",
+  not_determined: "Check not completed",
+  needs_review: "Need Review",
+  rule_verification_pending: "Need Review",
 };
+
+export function publicResultState(status: ResultState): ResultState {
+  return status;
+}
 
 /** Tailwind classes per result state, ordered from most to least alarming. */
 export const RESULT_STYLES: Record<ResultState, string> = {
@@ -162,6 +201,8 @@ export const RESULT_STYLES: Record<ResultState, string> = {
     "bg-red-50 text-red-800 border-red-200 dark:bg-red-950 dark:text-red-100 dark:border-red-900",
   needs_review:
     "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950 dark:text-amber-100 dark:border-amber-900",
+  rule_verification_pending:
+    "bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950 dark:text-violet-100 dark:border-violet-900",
   not_determined:
     "bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-900 dark:text-slate-200 dark:border-slate-700",
   compliant:
@@ -173,14 +214,19 @@ export const RESULT_STYLES: Record<ResultState, string> = {
 const RESULT_ORDER: ResultState[] = [
   "defect_found",
   "needs_review",
+  "rule_verification_pending",
   "not_determined",
   "compliant",
   "not_applicable",
 ];
 
-export function serialSortKey(serial: number | string | null | undefined): [number, string] {
-  const text = String(serial ?? "").trim().toUpperCase();
-  const match = text.match(/^(\d+)([A-Z]*)$/);
+export function checkIdSortKey(
+  checkId: string | null | undefined,
+): [number, string] {
+  const text = String(checkId ?? "")
+    .trim()
+    .toUpperCase();
+  const match = text.match(/^D-?(\d+)([A-Z]*)$/);
   if (!match) {
     return [Number.MAX_SAFE_INTEGER, text];
   }
@@ -190,12 +236,13 @@ export function serialSortKey(serial: number | string | null | undefined): [numb
 export function sortFindings(findings: DefectFinding[]): DefectFinding[] {
   return [...findings].sort((a, b) => {
     const byStatus =
-      RESULT_ORDER.indexOf(a.status) - RESULT_ORDER.indexOf(b.status);
+      RESULT_ORDER.indexOf(publicResultState(a.status)) -
+      RESULT_ORDER.indexOf(publicResultState(b.status));
     if (byStatus !== 0) {
       return byStatus;
     }
-    const [aNum, aSuf] = serialSortKey(a.serial_no);
-    const [bNum, bSuf] = serialSortKey(b.serial_no);
+    const [aNum, aSuf] = checkIdSortKey(a.check_id);
+    const [bNum, bSuf] = checkIdSortKey(b.check_id);
     return aNum !== bNum ? aNum - bNum : aSuf.localeCompare(bSuf);
   });
 }
@@ -288,7 +335,7 @@ export function downloadScrutinyDoc(report: ScrutinyReport) {
 }
 
 function scrutinyFilename(report: ScrutinyReport, ext: string) {
-  const fileName = (report.file_name || "filing").replace(/\.[^.]+$/, "");
+  const fileName = "filing";
   const stamp = (report.generated_at || new Date().toISOString()).slice(0, 10);
   return `${fileName}-scrutiny-${stamp}.${ext}`;
 }
@@ -304,14 +351,16 @@ function escapeHtml(value: string) {
 const STATUS_COLORS: Record<ResultState, { bg: string; fg: string }> = {
   defect_found: { bg: "#FEE2E2", fg: "#991B1B" },
   needs_review: { bg: "#FEF3C7", fg: "#92400E" },
+  rule_verification_pending: { bg: "#EDE9FE", fg: "#5B21B6" },
   not_determined: { bg: "#F1F5F9", fg: "#334155" },
   compliant: { bg: "#D1FAE5", fg: "#065F46" },
   not_applicable: { bg: "#F1F5F9", fg: "#64748B" },
 };
 
 function statusBadge(status: ResultState) {
-  const colors = STATUS_COLORS[status];
-  return `<span style="background:${colors.bg};color:${colors.fg};padding:2px 8px;border-radius:999px;font-size:10pt;font-weight:600;">${escapeHtml(RESULT_LABELS[status])}</span>`;
+  const publicStatus = publicResultState(status);
+  const colors = STATUS_COLORS[publicStatus];
+  return `<span style="background:${colors.bg};color:${colors.fg};padding:2px 8px;border-radius:999px;font-size:10pt;font-weight:600;">${escapeHtml(RESULT_LABELS[publicStatus])}</span>`;
 }
 
 function buildScrutinyDocHtml(report: ScrutinyReport): string {
@@ -319,17 +368,16 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
   const generated = report.generated_at
     ? new Date(report.generated_at).toLocaleString()
     : new Date().toLocaleString();
-  const title = report.file_name || "Filing";
+  const title = "Filing";
 
   const usage = report.usage;
   const usageBlock =
     usage && (usage.llm_calls || usage.total_tokens || usage.cost_usd != null)
       ? `<h2 style="margin:24px 0 8px;font-size:14pt;">OpenRouter spend</h2>
         <p><b>${escapeHtml(formatUsd(usage.cost_usd))}</b> · ${escapeHtml(formatTokens(usage.prompt_tokens))} in · ${escapeHtml(formatTokens(usage.completion_tokens))} out · ${usage.llm_calls} call${usage.llm_calls === 1 ? "" : "s"}${usage.model ? ` · ${escapeHtml(usage.model)}` : ""}</p>
-        ${usage.highest_cost_check_id ? `<p>Highest: S.No. ${usage.highest_cost_serial_no} ${escapeHtml(usage.highest_cost_check_id)} · ${escapeHtml(formatUsd(usage.highest_cost_usd))}</p>` : ""}
+        ${usage.highest_cost_check_id ? `<p>Highest: ${escapeHtml(usage.highest_cost_check_id)} · ${escapeHtml(formatUsd(usage.highest_cost_usd))}</p>` : ""}
         <table style="width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:10pt;">
           <tr style="background:#F8FAFC;text-align:left;">
-            <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">S.No.</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Check</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Charge</th>
             <th style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">Tokens</th>
@@ -339,7 +387,6 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
             .map(
               (row) =>
                 `<tr>
-                  <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${row.serial_no}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(row.check_id)}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatUsd(row.cost_usd))}</td>
                   <td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">${escapeHtml(formatTokens(row.total_tokens))} (${escapeHtml(formatTokens(row.prompt_tokens))} in / ${escapeHtml(formatTokens(row.completion_tokens))} out)</td>
@@ -377,12 +424,8 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
       const cure = finding.how_to_cure?.length
         ? `<p><b>How to cure</b></p><ol>${finding.how_to_cure.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>`
         : "";
-      const heading =
-        finding.serial_no != null
-          ? `S.No. ${finding.serial_no} · ${finding.check_id}`
-          : finding.check_id;
+      const heading = finding.check_id;
       const meta = [
-        finding.serial_no != null ? `Sheet S.No. ${finding.serial_no}` : null,
         finding.location,
         finding.applicable_rule,
         finding.location_source,
@@ -449,9 +492,9 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
   <table class="summary" style="width:100%;border-collapse:collapse;margin:16px 0 24px;">
     <tr>
       <td style="background:#FEE2E2;"><b style="font-size:18pt;">${report.summary.defects_found}</b><br/>Defects found</td>
-      <td style="background:#FEF3C7;"><b style="font-size:18pt;">${report.summary.needs_review}</b><br/>Needs review</td>
-      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_determined}</b><br/>Visual / undetermined</td>
       <td style="background:#D1FAE5;"><b style="font-size:18pt;">${report.summary.compliant}</b><br/>Compliant</td>
+      <td style="background:#FEF3C7;"><b style="font-size:18pt;">${report.summary.needs_review + report.summary.not_determined + (report.summary.rule_verification_pending ?? 0)}</b><br/>Manual verification required</td>
+      <td style="background:#F1F5F9;"><b style="font-size:18pt;">${report.summary.not_applicable}</b><br/>Not applicable</td>
     </tr>
   </table>
 
@@ -466,10 +509,12 @@ function buildScrutinyDocHtml(report: ScrutinyReport): string {
 </html>`;
 }
 
-function stopSubscription(sub: {
-  disconnect?: () => void;
-  unsubscribe?: () => void;
-} | null) {
+function stopSubscription(
+  sub: {
+    disconnect?: () => void;
+    unsubscribe?: () => void;
+  } | null,
+) {
   sub?.disconnect?.();
   sub?.unsubscribe?.();
 }
@@ -516,6 +561,8 @@ export function useScrutiny() {
         const created = await wf.createHandler({
           agent_data_id: item.id,
           file_hash: (data?.file_hash as string | undefined) ?? null,
+          special_category:
+            (data?.special_category as string | undefined) ?? null,
         });
         handlersService.setHandler(created);
         setHandlerId(created.handler_id);

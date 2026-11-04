@@ -9,13 +9,13 @@ import {
 import styles from "./HomePage.module.css";
 import { useNavigate } from "react-router-dom";
 import { useMemo, useState } from "react";
-import { ShieldCheck, History } from "lucide-react";
+import { ShieldCheck, History, ExternalLink } from "lucide-react";
 import { WorkflowProgress } from "@/lib/WorkflowProgress";
 import { ScrutinyDialog } from "@/lib/ScrutinyDialog";
 import { isApproved, useScrutiny } from "@/lib/scrutiny";
 import { SplitUploadForm } from "@/lib/SplitUploadForm";
 import { useMetadataContext } from "@/lib/MetadataProvider";
-import { readJobTiming, timingLabel } from "@/lib/utils";
+import { readJobTiming, timingLabel, visualArtifactUrl } from "@/lib/utils";
 
 export default function HomePage() {
   return <TaskList />;
@@ -92,6 +92,33 @@ function TaskList() {
           {typeof value === "string" && value ? value : "—"}
         </span>
       ),
+    }),
+    [],
+  );
+
+  const visualColumn = useMemo(
+    () => ({
+      key: "visual",
+      header: "Visual JSON",
+      getValue: (item: AgentDataItem) => visualArtifactUrl(item.data) ?? "",
+      renderCell: (value: unknown) => {
+        const url = typeof value === "string" ? value : "";
+        if (!url) {
+          return <span className="text-xs text-slate-400">—</span>;
+        }
+        return (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-medium text-blue-800 hover:underline"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <ExternalLink className="h-3 w-3" />
+            Open
+          </a>
+        );
+      },
     }),
     [],
   );
@@ -176,7 +203,7 @@ function TaskList() {
         <ExtractedDataItemGrid
           key={reloadSignal}
           onRowClick={goToItem}
-          customColumns={[durationColumn, scrutinyColumn]}
+          customColumns={[durationColumn, visualColumn, scrutinyColumn]}
           builtInColumns={{
             fileName: true,
             status: true,

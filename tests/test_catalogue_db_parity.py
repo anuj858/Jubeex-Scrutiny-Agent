@@ -1,0 +1,355 @@
+"""Database catalogue matches the JSON catalogue, when a database is configured."""
+
+from __future__ import annotations
+
+import os
+from contextlib import contextmanager
+
+import pytest
+from psycopg import errors
+
+from extraction_review.scrutiny.catalogue_db import (
+    _attach_remediation_config,
+    _attach_requirement_ai,
+    catalogue_from_rows,
+)
+from extraction_review.scrutiny.catalogue_export import legacy_selected_ids
+from extraction_review.scrutiny.rules import (
+    Defect,
+    _allowed_check_ids,
+    defects_for_filing_type,
+    get_catalogue,
+    refresh_catalogue,
+)
+
+
+def test_rows_become_an_explicit_catalogue() -> None:
+    catalogue = catalogue_from_rows(
+        [
+            {
+                "check_id": "D-9",
+                "defect_version": 3,
+                "defect": "Missing index",
+                "requirement": "An index is required",
+                "requirement_ai": "Check whether the index pages are present",
+                "where_to_look": ["Index"],
+                "how_to_cure": ["Add an index"],
+                "trigger_words": ["index", "contents"],
+                "main_category": "General/Global",
+                "special_category": None,
+                "special_category_mode": None,
+                "applies_to_all_petition_types": True,
+                "agent_filing_types": ["SLP_CIVIL"],
+                "parent_check_id": None,
+                "is_enabled": True,
+                "inspect_parts": ["Index"],
+                "context_parts": [],
+                "exclude_parts": None,
+                "applicable_rule": None,
+                "location_source": "SCI_RULES_2013",
+                "notes": None,
+                "overlap_note": None,
+            }
+        ],
+        [
+            {
+                "source_id": "SCI_RULES_2013",
+                "title": "Supreme Court Rules",
+                "authority_type": "rules",
+                "url": None,
+                "alternate_urls": [],
+                "filename_aliases": [],
+                "issued_date": None,
+                "effective_date": None,
+                "checksum": None,
+                "locators": {},
+            }
+        ],
+        [{"agent_filing_type": "SLP_CIVIL", "special_category": "Tax Matters"}],
+        12,
+    )
+    assert catalogue.catalogue_version == "db:12"
+    defect = catalogue.defect("D-9")
+    assert defect.use_explicit_applicability is True
+    assert defect.defect_version == 3
+    assert defect.requirement == "An index is required"
+    assert defect.requirement_ai == "Check whether the index pages are present"
+    assert defect.trigger_words == "index; contents"
+    assert defect.agent_filing_types == ["slp_civil"]
+    assert catalogue.petition_specials["slp_civil"] == ["Tax Matters"]
+
+
+def test_denied_optional_remediation_lookup_keeps_catalogue_rows(caplog: pytest.LogCaptureFixture) -> None:
+    class Connection:
+        rolled_back = False
+
+        @contextmanager
+        def transaction(self):
+            try:
+                yield
+            except errors.InsufficientPrivilege:
+                self.rolled_back = True
+                raise
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, *_args):
+            raise errors.InsufficientPrivilege("permission denied for table hub_defects")
+
+    rows = [{"check_id": "D-1", "defect": "Sample"}]
+    cursor = Cursor()
+
+    _attach_remediation_config(cursor, rows)
+
+    assert cursor.connection.rolled_back
+    assert rows == [{"check_id": "D-1", "defect": "Sample"}]
+    assert "without remediation actions" in caplog.text
+
+
+def test_requirement_ai_is_copied_when_the_view_omits_it() -> None:
+    class Connection:
+        @contextmanager
+        def transaction(self):
+            yield
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, query, params):
+            assert "requirement_ai" in query
+            assert params == (["D-1"],)
+
+        def fetchall(self):
+            return [("D-1", "Checker text")]
+
+    rows = [{"check_id": "D-1", "requirement": "User text"}]
+    _attach_requirement_ai(Cursor(), rows)
+
+    assert rows[0]["requirement"] == "User text"
+    assert rows[0]["requirement_ai"] == "Checker text"
+
+
+def test_missing_requirement_ai_column_keeps_catalogue_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Connection:
+        rolled_back = False
+
+        @contextmanager
+        def transaction(self):
+            try:
+                yield
+            except errors.UndefinedColumn:
+                self.rolled_back = True
+                raise
+
+    class Cursor:
+        connection = Connection()
+
+        def execute(self, *_args):
+            raise errors.UndefinedColumn("column requirement_ai does not exist")
+
+    rows = [{"check_id": "D-1", "requirement": "User text"}]
+    cursor = Cursor()
+
+    _attach_requirement_ai(cursor, rows)
+
+    assert cursor.connection.rolled_back
+    assert rows == [{"check_id": "D-1", "requirement": "User text"}]
+    assert "requirement_ai" in caplog.text
+
+
+def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "local")
+
+    def unavailable() -> int:
+        raise AssertionError("the database must not be contacted")
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        unavailable,
+    )
+    get_catalogue.cache_clear()
+    catalogue = refresh_catalogue()
+    assert catalogue.schema_version != "db"
+    assert catalogue.catalogue_version == "3.4.0"
+    assert len(catalogue.defects) == 306
+    assert catalogue.defect("D-179") is not None
+    get_catalogue.cache_clear()
+
+
+def test_localhost_database_url_is_not_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "CATALOGUE_DATABASE_URL",
+        "postgresql://parse:secret@localhost:5432/none",
+    )
+
+    def unavailable() -> int:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        unavailable,
+    )
+    get_catalogue.cache_clear()
+    with pytest.raises(RuntimeError, match="could not be loaded from the database"):
+        refresh_catalogue()
+    get_catalogue.cache_clear()
+
+
+def test_database_failure_does_not_use_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
+    monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)
+    get_catalogue.cache_clear()
+    with pytest.raises(RuntimeError, match="CATALOGUE_DATABASE_URL"):
+        refresh_catalogue()
+
+    def unavailable() -> int:
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "postgresql://parse:secret@127.0.0.1:1/none")
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        unavailable,
+    )
+    get_catalogue.cache_clear()
+    with pytest.raises(RuntimeError, match="could not be loaded from the database"):
+        refresh_catalogue()
+    get_catalogue.cache_clear()
+
+
+def test_json_catalogue_does_not_require_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "json")
+    monkeypatch.setenv(
+        "SCRUTINY_DEFECTS",
+        "D-1,D-57,D-58,D-64,D-68,D-69,D-112,D-161,D-179,D-226,D-327",
+    )
+    monkeypatch.delenv("CATALOGUE_DATABASE_URL", raising=False)
+    get_catalogue.cache_clear()
+    try:
+        catalogue = refresh_catalogue()
+        assert catalogue.schema_version == "2.1"
+        selected_ids = {
+            "D-1", "D-57", "D-58", "D-64", "D-68", "D-69",
+            "D-112", "D-161", "D-179", "D-226", "D-327",
+        }
+        assert {item.check_id for item in catalogue.defects} >= selected_ids
+        assert _allowed_check_ids(catalogue) == selected_ids
+        assert {d.check_id for d in defects_for_filing_type("SLP (Civil)")} <= selected_ids
+    finally:
+        get_catalogue.cache_clear()
+
+
+def test_refresh_reloads_only_when_revision_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    loads: list[int] = []
+    revisions = [4]
+
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
+
+    def fake_revision() -> int:
+        return revisions[0]
+
+    def fake_load(revision: int):
+        loads.append(revision)
+        return catalogue_from_rows([], [], [], revision)
+
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "postgresql://parse:secret@127.0.0.1:1/none")
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.fetch_catalogue_revision",
+        fake_revision,
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_db.load_catalogue_from_db",
+        fake_load,
+    )
+    get_catalogue.cache_clear()
+    first = refresh_catalogue()
+    assert first.catalogue_version == "db:4"
+    assert loads == [4]
+    again = refresh_catalogue()
+    assert again is first
+    assert loads == [4]
+    revisions[0] = 5
+    refreshed = refresh_catalogue()
+    assert refreshed.catalogue_version == "db:5"
+    assert loads == [4, 5]
+    get_catalogue.cache_clear()
+
+
+@pytest.mark.skipif(
+    not os.getenv("CATALOGUE_DATABASE_URL"),
+    reason="CATALOGUE_DATABASE_URL is not set",
+)
+def test_database_selection_matches_file_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
+    os.environ["SCRUTINY_DEFECTS"] = "all"
+    get_catalogue.cache_clear()
+    try:
+        catalogue = refresh_catalogue()
+    except RuntimeError as exc:
+        get_catalogue.cache_clear()
+        pytest.skip(str(exc))
+    sample = catalogue.defects[0] if catalogue.defects else None
+    if sample is None or not sample.court_code:
+        get_catalogue.cache_clear()
+        pytest.skip("database catalogue has no court on the parse view")
+
+    plain = defects_for_filing_type("SLP_CIVIL", None)
+    indigent = defects_for_filing_type("SLP_CIVIL", "Indigent person")
+    get_catalogue.cache_clear()
+    assert plain
+    assert all(defect.release_stage == "production" for defect in plain)
+    assert all(not defect.special_category for defect in plain)
+    assert any(defect.is_global for defect in plain)
+    assert any(
+        (defect.special_category or "").lower().startswith("indigent") for defect in indigent
+    )
+    assert {defect.check_id for defect in plain}.issubset(
+        defect.check_id for defect in indigent
+    )
+
+
+def test_live_selector_matches_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from extraction_review.scrutiny.rules import _load_file_catalogue
+
+    catalogue = _load_file_catalogue()
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.rules.get_catalogue", lambda: catalogue
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.catalogue_export.get_catalogue", lambda: catalogue
+    )
+    monkeypatch.setenv("SCRUTINY_DEFECTS", "all")
+    os.environ["SCRUTINY_DEFECTS"] = "all"
+    filing = "SLP_CIVIL"
+    assert [d.check_id for d in defects_for_filing_type(filing)] == legacy_selected_ids(filing, None)
+    sample = Defect.model_validate(
+        {
+            "check_id": "D-1",
+            "main_category": "General/Global",
+            "defect": "x",
+            "requirement": "y",
+            "where_to_look": ["z"],
+            "how_to_cure": ["c"],
+            "location_source": "s",
+        }
+    )
+    assert sample.use_explicit_applicability is False
+
+
+def test_local_catalogue_special_names_are_not_a_database_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.scrutiny.catalogue_db import fetch_special_category_names
+
+    monkeypatch.setenv("CATALOGUE_DATABASE_URL", "local")
+
+    def refuse_connection(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("local catalogue must not open a database connection")
+
+    monkeypatch.setattr("psycopg.connect", refuse_connection)
+    names = fetch_special_category_names()
+    assert names[0] == "Motor Vehical Act"
+    assert "Tax Matters" in names
+    assert "Eviction Matters" in names

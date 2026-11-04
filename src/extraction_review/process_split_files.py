@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 import os
+import uuid
+from collections.abc import Mapping
 from typing import Annotated, Any, cast
 
-from llama_cloud import AsyncLlamaCloud
+from llama_cloud import AsyncLlamaCloud, NotFoundError
 from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
 from pydantic import BaseModel, Field, field_validator, model_validator
 from workflows import Context, Workflow, step
@@ -20,6 +21,7 @@ from .clients import agent_name, get_llama_cloud_client, project_id
 from .config import (
     EXTRACTED_DATA_COLLECTION,
     ExtractConfig,
+    FrontExtractRecord,
     LegalExtractRecord,
     ParseConfig,
     config_identity,
@@ -29,6 +31,8 @@ from .document_parts import overlay_split_documents
 from .extract_record import (
     apply_extract_envelope,
     field_confidence_from_job,
+    finalize_front_extract,
+    merge_dropped_party_schedule,
     overall_confidence_from_job,
     stamp_review_status,
     stamp_source_pages,
@@ -42,12 +46,6 @@ from .job_timing import (
     timing_status_message,
     uploaded_filename,
 )
-from .llama_usage import (
-    collect_extract_usage,
-    collect_parse_usage,
-    summarize_llamacloud_usage,
-    usage_status_message,
-)
 from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
@@ -57,56 +55,94 @@ from .layout_index import (
     dump_layout_index,
     grounded_items_url,
     merge_granular_bboxes,
+    merge_pdf_text_words,
     stitch_slot_layouts,
 )
+from .llama_usage import (
+    collect_extract_usage,
+    collect_parse_usage,
+    summarize_llamacloud_usage,
+    usage_status_message,
+)
+from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .process_file import (
     ExtractedEvent,
     ExtractedInvalidEvent,
     ExtractJobStartedEvent,
     ParsedEvent,
     Status,
+    _download_file_bytes,
     _extract_page_markdown,
     _wait_for_parse,
     ingest_remote_file,
     normalize_org_id,
     positive_int_env,
+    verified_content_hash,
 )
 from .s3_artifacts import (
     STEP_EXTRACT,
     STEP_LAYOUT,
+    STEP_PARSE,
     artifact_bucket,
     set_job_context,
     upload_step_json,
 )
 from .split_upload import (
+    PARSE_ARTIFACT_KEY_KEY,
+    PARSE_ARTIFACT_URL_KEY,
     PETITION_SLOT_ID,
     SplitPartInput,
     SplitUploadError,
     build_extract_pack_markdown,
+    build_front_extract_pack_markdown,
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
     display_filename,
+    dump_parse_artifact,
+    dump_source_book,
     extract_configuration,
     extract_source_parts,
     find_part,
+    front_extract_configuration,
+    parse_action_for_slot,
     slot_needs_precise_parse,
     stitch_parsed_parts,
+    stitch_parsed_parts_in_order,
+    stitch_structured_pages,
+    stitch_structured_pages_in_order,
     validate_parts,
 )
 from .vector_store import (
+    VECTOR_SCHEMA_VERSION,
     build_filing_chunk_text,
     build_page_records,
+    delete_vector_generation,
     pinecone_enabled,
+    scoped_record_base_id,
     upsert_records,
+)
+from .visual.detect import detect_visual_marks
+from .visual.schema import empty_visual_index
+from .visual.store import (
+    VISUAL_ARTIFACT_KEY_KEY,
+    VISUAL_ARTIFACT_URL_KEY,
+    VISUAL_SUMMARY_KEY,
+    upload_visual_index,
+    visual_summary,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PARSE_CONCURRENCY = 8
 DEFAULT_INGEST_CONCURRENCY = 8
-DEFAULT_FAST_PARSE_TIER = "fast"
+# OCRia-1 is selected by LlamaParse v2 through the agentic tier with the
+# configured "latest" version. Keep FAST_PARSE_TIER as the environment key for
+# backwards compatibility, but default secondary document parts to OCRia-1 as
+# well instead of downgrading them to the non-AI fast tier.
+DEFAULT_FAST_PARSE_TIER = "agentic"
 PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
+VECTOR_INDEX_METADATA_KEY = "vector_index"
 
 
 def parse_concurrency() -> int:
@@ -154,6 +190,7 @@ class SplitPartEvent(BaseModel):
     file_hash: str | None = None
     filename: str | None = None
     document_id: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
 
 class SplitFilesEvent(StartEvent):
@@ -168,6 +205,30 @@ class SplitFilesEvent(StartEvent):
     fallback_file_id: str | None = None
     filename: str | None = None
     classify_split_seconds: float | None = None
+    parse_scope: str = "all"
+    skip_index: bool = False
+    skip_extract: bool = False
+    stitch_in_request_order: bool = False
+    front_extract: bool = False
+    front_opening_pages: int = 30
+    front_text_layer: dict[int, str] = Field(default_factory=dict)
+    edited: bool = False
+    parsed_slots: list[str] = Field(default_factory=list)
+    agent_data_id: str | None = None
+    special_category: str | None = None
+    model_tier: str | None = None
+    court: str | None = None
+    reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
+    reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    reuse_structured_pages_by_slot: dict[str, dict[str, Any]] = Field(
+        default_factory=dict
+    )
+    reuse_parse_job_ids: dict[str, str] = Field(default_factory=dict)
+    source_parse_job_id: str | None = None
+    source_file_id: str | None = None
+    source_file_hash: str | None = None
+    source_book: dict[str, Any] | None = None
+    supplied_parse_usage: dict[str, Any] | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -205,9 +266,132 @@ class SplitFilesState(BaseModel):
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
     page_layout: dict[int, dict[str, Any]] = Field(default_factory=dict)
+    page_structures: dict[int, dict[str, Any]] = Field(default_factory=dict)
     started_at: float | None = None
+    extract_started_at: float | None = None
     classify_split_seconds: float | None = None
     llamacloud_jobs: list[dict[str, Any]] = Field(default_factory=list)
+    parse_scope: str = "all"
+    skip_index: bool = False
+    skip_extract: bool = False
+    stitch_in_request_order: bool = False
+    front_extract: bool = False
+    front_opening_pages: int = 30
+    edited: bool = False
+    parsed_slots: list[str] = Field(default_factory=list)
+    agent_data_id: str | None = None
+    special_category: str | None = None
+    model_tier: str | None = None
+    court: str | None = None
+    pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(
+        default_factory=dict
+    )
+    parse_artifact_url: str | None = None
+    parse_artifact_key: str | None = None
+    source_parse_job_id: str | None = None
+    source_file_id: str | None = None
+    source_file_hash: str | None = None
+
+
+async def _workspace_agent_data_item(
+    client: AsyncLlamaCloud,
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> Any | None:
+    """Find the filing record owned by one workspace.
+
+    Workspace ids are the durable identity for a JubeeX matter. File hashes are
+    not: the same PDF can legitimately be uploaded to several workspaces.
+    """
+    clean_workspace_id = (workspace_id or "").strip()
+    if not clean_workspace_id:
+        return None
+    filters: dict[str, dict[str, str]] = {
+        "workspace_id": {"eq": clean_workspace_id},
+    }
+    clean_organization_id = (organization_id or "").strip()
+    if clean_organization_id:
+        filters["organization_id"] = {"eq": clean_organization_id}
+    page = await client.beta.agent_data.search(
+        deployment_name=agent_name or "_public",
+        collection=EXTRACTED_DATA_COLLECTION,
+        filter=filters,
+        page_size=2,
+    )
+    items = list(getattr(page, "items", None) or [])
+    if len(items) > 1:
+        logger.warning(
+            "Found %s Agent Data records for workspace %s; reusing %s",
+            len(items),
+            clean_workspace_id,
+            getattr(items[0], "id", "unknown"),
+        )
+    return items[0] if items else None
+
+
+async def _upsert_agent_data(
+    client: AsyncLlamaCloud,
+    *,
+    data: dict[str, Any],
+    agent_data_id: str | None,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> Any:
+    """Update a matter's stable Agent Data record or create it once.
+
+    Older code deleted every record sharing a file hash before creating a new
+    id. That invalidated existing reviews and could delete another workspace's
+    record when users uploaded the same PDF. Prefer the caller's durable id,
+    then a workspace-scoped record, and create only when neither exists.
+    """
+    requested_id = (agent_data_id or "").strip()
+    if requested_id:
+        try:
+            item = await client.beta.agent_data.update(requested_id, data=data)
+            logger.info("Updated Agent Data %s", requested_id)
+            return item
+        except NotFoundError:
+            logger.warning(
+                "Agent Data %s no longer exists; recovering by workspace",
+                requested_id,
+            )
+
+    existing = await _workspace_agent_data_item(
+        client,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    existing_id = str(getattr(existing, "id", "") or "").strip()
+    if existing_id and existing_id != requested_id:
+        try:
+            item = await client.beta.agent_data.update(existing_id, data=data)
+            logger.info(
+                "Updated workspace Agent Data %s instead of creating a replacement",
+                existing_id,
+            )
+            return item
+        except NotFoundError:
+            # A concurrent cleanup may have removed the search result. Creating
+            # a replacement is safe and its id is returned to the backend.
+            logger.warning(
+                "Workspace Agent Data %s disappeared before update; recreating",
+                existing_id,
+            )
+
+    item = await client.beta.agent_data.create(
+        data=data,
+        deployment_name=agent_name or "_public",
+        collection=EXTRACTED_DATA_COLLECTION,
+    )
+    logger.info(
+        "Created Agent Data %s for workspace %s",
+        getattr(item, "id", "unknown"),
+        (workspace_id or "").strip() or "unknown",
+    )
+    return item
 
 
 class ProcessSplitFilesWorkflow(Workflow):
@@ -230,7 +414,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 description="LlamaParse settings for JubeeX filings",
             ),
         ],
-    ) -> ParsedEvent:
+    ) -> ParsedEvent | StopEvent:
         started_at = start_timer()
         ctx.write_event_to_stream(
             Status(
@@ -241,11 +425,15 @@ class ProcessSplitFilesWorkflow(Workflow):
                 ),
             )
         )
+        ingest_started = start_timer()
         ingested = await _ingest_labeled_parts(
             llama_cloud_client,
             event.parts,
             concurrency=ingest_concurrency(),
+            organization_id=event.organization_id or event.org_id,
+            workspace_id=event.workspace_id,
         )
+        ingest_seconds = elapsed_seconds(ingest_started)
 
         try:
             catalog, parts = validate_parts(
@@ -260,9 +448,14 @@ class ProcessSplitFilesWorkflow(Workflow):
         filename = uploaded_filename(event.filename) or display_filename(
             catalog.filing_type, parts, original=event.filename
         )
-        file_hash = bundle_file_hash(parts)
+        file_hash = bundle_file_hash(
+            parts, preserve_order=bool(event.stitch_in_request_order)
+        )
         petition = find_part(parts, PETITION_SLOT_ID)
         source_parts = extract_source_parts(catalog)
+        reuse_pages, reuse_layouts, reuse_structured, reuse_jobs = _reuse_parse_maps(
+            event, parts=parts
+        )
         ctx.write_event_to_stream(
             Status(
                 level="info",
@@ -275,19 +468,76 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
 
-        pages_by_slot, parse_job_ids, layouts_by_slot, parse_usage = (
-            await _parse_labeled_files(
-                llama_cloud_client,
-                parse_config=parse_config,
-                parts=parts,
-                source_parts=source_parts,
-                ctx=ctx,
+        parse_started = start_timer()
+        (
+            pages_by_slot,
+            structured_pages_by_slot,
+            parse_job_ids,
+            layouts_by_slot,
+            parse_usage,
+        ) = await _parse_labeled_files(
+            llama_cloud_client,
+            parse_config=parse_config,
+            parts=parts,
+            source_parts=source_parts,
+            catalog=catalog,
+            parse_scope=event.parse_scope,
+            reuse_slots=set(event.parsed_slots),
+            reuse_pages=reuse_pages,
+            reuse_layouts=reuse_layouts,
+            reuse_structured_pages=reuse_structured,
+            reuse_job_ids=reuse_jobs,
+            ctx=ctx,
+        )
+        if event.supplied_parse_usage:
+            parse_usage = [*parse_usage, event.supplied_parse_usage]
+        parse_seconds = elapsed_seconds(parse_started)
+        logger.info(
+            "[ExtractionTiming] ingest=%ss parse=%ss documents=%s parsed_slots=%s",
+            ingest_seconds,
+            parse_seconds,
+            len(parts),
+            len(parse_job_ids),
+        )
+        if event.stitch_in_request_order:
+            omit_empty = (event.parse_scope or "").strip().lower() == "extract_sources"
+            page_markdown, page_parts = stitch_parsed_parts_in_order(
+                parts, pages_by_slot, omit_empty=omit_empty
             )
-        )
-        page_markdown, page_parts = stitch_parsed_parts(catalog, parts, pages_by_slot)
-        page_layout = stitch_slot_layouts(
-            catalog, parts, pages_by_slot, layouts_by_slot
-        )
+            page_layout = stitch_slot_layouts(
+                catalog,
+                parts,
+                pages_by_slot,
+                layouts_by_slot,
+                part_order=parts,
+                omit_empty=omit_empty,
+            )
+            page_structures = stitch_structured_pages_in_order(
+                parts,
+                pages_by_slot,
+                structured_pages_by_slot,
+                omit_empty=omit_empty,
+            )
+        else:
+            page_markdown, page_parts = stitch_parsed_parts(
+                catalog, parts, pages_by_slot
+            )
+            page_layout = stitch_slot_layouts(
+                catalog, parts, pages_by_slot, layouts_by_slot
+            )
+            page_structures = stitch_structured_pages(
+                catalog, parts, pages_by_slot, structured_pages_by_slot
+            )
+        parsed_slots = [
+            item.slot_id
+            for item in parts
+            if pages_by_slot.get(item.slot_id) or item.slot_id in parse_job_ids
+        ]
+        if event.front_extract and event.front_text_layer:
+            page_markdown = merge_dropped_party_schedule(
+                page_markdown,
+                event.front_text_layer,
+            )
 
         async with ctx.store.edit_state() as state:
             state.filing_type = catalog.filing_type
@@ -314,6 +564,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                     file_url=getattr(
                         ingested_by_slot.get(item.slot_id), "file_url", None
                     ),
+                    page_span=item.page_span,
                 )
                 for item in parts
             ]
@@ -325,9 +576,28 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.page_markdown = page_markdown
             state.page_parts = page_parts
             state.page_layout = page_layout
+            state.page_structures = page_structures
             state.started_at = started_at
             state.classify_split_seconds = event.classify_split_seconds
             state.llamacloud_jobs = list(parse_usage)
+            state.parse_scope = event.parse_scope
+            state.skip_index = event.skip_index
+            state.skip_extract = event.skip_extract
+            state.stitch_in_request_order = event.stitch_in_request_order
+            state.front_extract = event.front_extract
+            state.front_opening_pages = event.front_opening_pages
+            state.edited = event.edited
+            state.parsed_slots = parsed_slots
+            state.agent_data_id = event.agent_data_id
+            state.special_category = event.special_category
+            state.model_tier = event.model_tier
+            state.court = event.court
+            state.pages_by_slot = pages_by_slot
+            state.layouts_by_slot = layouts_by_slot
+            state.structured_pages_by_slot = structured_pages_by_slot
+            state.source_parse_job_id = event.source_parse_job_id
+            state.source_file_id = event.source_file_id
+            state.source_file_hash = event.source_file_hash
 
         set_job_context(
             file_hash or filename,
@@ -335,6 +605,27 @@ class ProcessSplitFilesWorkflow(Workflow):
             event.workspace_id,
             reset=False,
         )
+        parse_record = _upload_parse_artifact(
+            parsed_slots=parsed_slots,
+            document_order=[item.slot_id for item in parts],
+            pages_by_slot=pages_by_slot,
+            parse_job_ids=parse_job_ids,
+            layouts_by_slot=layouts_by_slot,
+            structured_pages_by_slot=structured_pages_by_slot,
+            organization_id=event.organization_id or event.org_id,
+            workspace_id=event.workspace_id,
+            job_id=file_hash,
+            source_book=_source_book_payload(
+                event,
+                pages_by_slot=pages_by_slot,
+                layouts_by_slot=layouts_by_slot,
+                structured_pages_by_slot=structured_pages_by_slot,
+            ),
+        )
+        if parse_record:
+            async with ctx.store.edit_state() as state:
+                state.parse_artifact_url = parse_record.get("url")
+                state.parse_artifact_key = parse_record.get("key")
         if not page_layout:
             logger.error(
                 "Layout index is empty after parse for %s (%s slot(s))",
@@ -360,6 +651,21 @@ class ProcessSplitFilesWorkflow(Workflow):
                 ),
             )
         )
+        if event.skip_extract:
+            payload = await _complete_index_only(
+                llama_cloud_client,
+                ctx=ctx,
+                catalog=catalog,
+                parts=parts,
+                pages_by_slot=pages_by_slot,
+                parse_job_ids=parse_job_ids,
+                layouts_by_slot=layouts_by_slot,
+                page_markdown=page_markdown,
+                page_parts=page_parts,
+                page_layout=page_layout,
+                page_structures=page_structures,
+            )
+            return StopEvent(result=payload)
         return ParsedEvent()
 
     @step()
@@ -380,6 +686,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             ),
         ],
     ) -> ExtractJobStartedEvent:
+        extract_started_at = start_timer()
         state = await ctx.store.get_state()
         if not state.filing_type:
             raise ValueError("Filing type is not set")
@@ -391,12 +698,20 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
-        pack_text = build_extract_pack_markdown(
-            page_markdown,
-            page_parts,
-            extract_source_parts(catalog),
-            catalog=catalog,
-        )
+        if state.front_extract:
+            pack_text = build_front_extract_pack_markdown(
+                page_markdown,
+                page_layout=coerce_page_layout(state.page_layout),
+                opening_pages=state.front_opening_pages,
+            )
+        else:
+            pack_text = build_extract_pack_markdown(
+                page_markdown,
+                page_parts,
+                extract_source_parts(catalog),
+                catalog=catalog,
+                page_layout=coerce_page_layout(state.page_layout),
+            )
         extract_file_id = state.petition_file_id
         pack_file_id: str | None = None
         if pack_text:
@@ -415,7 +730,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message="Extracting from labeled document parts (no LlamaSplit)",
+                    message="Extracting information from the identified document parts",
                 )
             )
         else:
@@ -434,23 +749,32 @@ class ProcessSplitFilesWorkflow(Workflow):
                 )
             )
 
-        configuration = extract_configuration(extract_config, catalog)
-        if extract_config.configuration_id:
-            extract_job = await llama_cloud_client.extract.create(
-                file_input=extract_file_id,
-                configuration_id=extract_config.configuration_id,
-                project_id=project_id,
-            )
-        else:
+        if state.front_extract:
+            configuration = front_extract_configuration(extract_config)
             extract_job = await llama_cloud_client.extract.create(
                 file_input=extract_file_id,
                 configuration=cast(Any, configuration),
                 project_id=project_id,
             )
+        else:
+            configuration = extract_configuration(extract_config, catalog)
+            if extract_config.configuration_id:
+                extract_job = await llama_cloud_client.extract.create(
+                    file_input=extract_file_id,
+                    configuration_id=extract_config.configuration_id,
+                    project_id=project_id,
+                )
+            else:
+                extract_job = await llama_cloud_client.extract.create(
+                    file_input=extract_file_id,
+                    configuration=cast(Any, configuration),
+                    project_id=project_id,
+                )
 
         async with ctx.store.edit_state() as state:
             state.extract_pack_file_id = pack_file_id
             state.extract_job_id = extract_job.id
+            state.extract_started_at = extract_started_at
 
         return ExtractJobStartedEvent()
 
@@ -496,6 +820,11 @@ class ProcessSplitFilesWorkflow(Workflow):
             expand=["extract_metadata", "usage"],
             project_id=project_id,
         )
+        logger.info(
+            "[ExtractionTiming] extract=%ss job_id=%s",
+            elapsed_seconds(state.extract_started_at),
+            state.extract_job_id,
+        )
         extract_usage = await collect_extract_usage(
             llama_cloud_client,
             state.extract_job_id,
@@ -505,20 +834,22 @@ class ProcessSplitFilesWorkflow(Workflow):
             [*(state.llamacloud_jobs or []), extract_usage]
         )
         logger.info("[Usage] %s", usage_status_message(usage_summary))
-        ctx.write_event_to_stream(
-            Status(level="info", message=usage_status_message(usage_summary))
-        )
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
         try:
+            job_payload = job.model_dump(mode="json")
             logger.info(
-                "Extracted split-upload data: %s",
-                json.dumps(job.model_dump(mode="json"), indent=2, default=str),
+                "Extracted split-upload job id=%s status=%s top_level_fields=%s",
+                state.extract_job_id,
+                job_payload.get("status"),
+                sorted(job_payload),
             )
             data = ExtractedData.from_extract_job(
                 job=job,
-                schema=LegalExtractRecord,
+                schema=(
+                    FrontExtractRecord if state.front_extract else LegalExtractRecord
+                ),
                 file_name=state.filename,
                 file_id=record_file_id,
                 file_hash=state.file_hash,
@@ -528,12 +859,21 @@ class ProcessSplitFilesWorkflow(Workflow):
             overall = overall_confidence_from_job(job)
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
+            if state.source_parse_job_id:
+                data.metadata["source_parse_job_id"] = state.source_parse_job_id
+                data.metadata["source_file_id"] = state.source_file_id
+                data.metadata["source_file_hash"] = state.source_file_hash
+            data.metadata["parsed_slots"] = list(state.parsed_slots)
+            data.metadata["document_order"] = [item.slot_id for item in state.parts]
             data.metadata["page_count"] = len(page_markdown)
             data.metadata["split_upload"] = True
             data.metadata["usage"] = {"llamacloud": usage_summary}
             data.metadata["extract_pack_file_id"] = state.extract_pack_file_id
             data.metadata["split_files"] = {
                 item.slot_id: item.file_id for item in state.parts
+            }
+            data.metadata["document_hashes"] = {
+                item.slot_id: item.file_hash for item in state.parts if item.file_hash
             }
             data.metadata["extract_confidence"] = {
                 "overall": overall,
@@ -545,6 +885,8 @@ class ProcessSplitFilesWorkflow(Workflow):
                     "name": item.filename,
                     "document_id": item.document_id,
                     "file_id": item.file_id,
+                    "file_hash": item.file_hash,
+                    "page_span": item.page_span,
                 }
                 for item in state.parts
             ]
@@ -585,6 +927,10 @@ class ProcessSplitFilesWorkflow(Workflow):
             if layout_record:
                 data.metadata[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
                 data.metadata[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+            if state.parse_artifact_url:
+                data.metadata[PARSE_ARTIFACT_URL_KEY] = state.parse_artifact_url
+            if state.parse_artifact_key:
+                data.metadata[PARSE_ARTIFACT_KEY_KEY] = state.parse_artifact_key
             elif artifact_bucket():
                 logger.error(
                     "Layout artifact upload failed for %s; scrutiny will "
@@ -642,19 +988,27 @@ class ProcessSplitFilesWorkflow(Workflow):
             if not isinstance(data_dict.get("metadata"), dict):
                 data_dict["metadata"] = dict(meta)
                 meta = data_dict["metadata"]
-            for key in (LAYOUT_ARTIFACT_URL_KEY, LAYOUT_ARTIFACT_KEY_KEY):
+            for key in (
+                LAYOUT_ARTIFACT_URL_KEY,
+                LAYOUT_ARTIFACT_KEY_KEY,
+                PARSE_ARTIFACT_URL_KEY,
+                PARSE_ARTIFACT_KEY_KEY,
+            ):
                 if src_meta.get(key):
                     meta[key] = src_meta[key]
         confidence = (meta.get("extract_confidence") or {}).get("overall")
         inner = apply_extract_envelope(
             inner,
             page_parts=page_parts,
+            page_markdown=page_markdown,
             filing_type=filing_type,
             overall_confidence=confidence,
             field_confidence=(meta.get("extract_confidence") or {}).get("fields"),
         )
+        if state.front_extract:
+            inner = finalize_front_extract(inner, page_markdown=page_markdown)
         data_dict["data"] = inner
-        if page_parts:
+        if page_parts and not state.front_extract:
             overlay_split_documents(data_dict, page_parts)
         org_id = state.organization_id or state.org_id
         if isinstance(data_dict, dict):
@@ -676,22 +1030,12 @@ class ProcessSplitFilesWorkflow(Workflow):
             workspace_id=state.workspace_id,
         )
 
-        if extracted_data.file_hash is not None:
-            delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
-                deployment_name=agent_name or "_public",
-                collection=EXTRACTED_DATA_COLLECTION,
-                filter={"file_hash": {"eq": extracted_data.file_hash}},
-            )
-            if delete_result.deleted_count > 0:
-                logger.info(
-                    "Removed %s existing record(s) for %s",
-                    delete_result.deleted_count,
-                    extracted_data.file_name,
-                )
-        item = await llama_cloud_client.beta.agent_data.create(
+        item = await _upsert_agent_data(
+            llama_cloud_client,
             data=data_dict,
-            deployment_name=agent_name or "_public",
-            collection=EXTRACTED_DATA_COLLECTION,
+            agent_data_id=state.agent_data_id,
+            organization_id=org_id,
+            workspace_id=state.workspace_id,
         )
         ctx.write_event_to_stream(
             Status(
@@ -700,16 +1044,30 @@ class ProcessSplitFilesWorkflow(Workflow):
             )
         )
 
-        if pinecone_enabled():
+        if pinecone_enabled() and not state.skip_index:
+            index_started = start_timer()
             try:
-                await _index_split_upload(
+                vector_index = await _index_split_upload(
                     extracted_data=extracted_data,
                     item_id=str(item.id),
                     state=state,
                     filing_type=filing_type,
                     page_markdown=page_markdown,
                     page_parts=page_parts,
+                    page_layout=coerce_page_layout(state.page_layout),
+                    page_structures=coerce_structured_pages(state.page_structures),
                     ctx=ctx,
+                )
+                await _activate_vector_generation(
+                    llama_cloud_client,
+                    item_id=str(item.id),
+                    data=data_dict,
+                    vector_index=vector_index,
+                )
+                logger.info(
+                    "[ExtractionTiming] index=%ss pages=%s",
+                    elapsed_seconds(index_started),
+                    len(page_markdown),
                 )
             except Exception as exc:
                 logger.exception(
@@ -717,8 +1075,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                     state.filename,
                 )
                 ctx.write_event_to_stream(
-                    Status(level="warning", message=f"Pinecone indexing failed: {exc}")
+                    Status(level="error", message=f"Pinecone indexing failed: {exc}")
                 )
+                raise
         else:
             logger.info(
                 "[Pinecone] Skipped indexing for %s "
@@ -734,22 +1093,25 @@ class ProcessSplitFilesWorkflow(Workflow):
 async def _ingest_one_part(
     client: AsyncLlamaCloud,
     part: SplitPartEvent,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> SplitPartEvent:
     file_id = (part.file_id or "").strip() or None
     filename = (part.filename or "").strip() or None
     file_hash = part.file_hash
     if not file_id:
         if not (part.file_url or "").strip():
-            raise SplitUploadError(
-                f"Slot {part.slot_id!r} needs file_url or file_id"
-            )
+            raise SplitUploadError(f"Slot {part.slot_id!r} needs file_url or file_id")
         file_id, digest, filename = await ingest_remote_file(
             client,
             part.file_url or "",
             filename=filename,
             external_file_id=part.document_id or file_hash,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
         )
-        file_hash = file_hash or digest
+        file_hash = verified_content_hash(file_hash, digest)
     return part.model_copy(
         update={
             "file_id": file_id,
@@ -764,12 +1126,19 @@ async def _ingest_labeled_parts(
     parts: list[SplitPartEvent],
     *,
     concurrency: int,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> list[SplitPartEvent]:
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _one(part: SplitPartEvent) -> SplitPartEvent:
         async with semaphore:
-            return await _ingest_one_part(client, part)
+            return await _ingest_one_part(
+                client,
+                part,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
 
     return list(await asyncio.gather(*[_one(part) for part in parts]))
 
@@ -782,15 +1151,40 @@ async def _parse_one_file(
     source_parts: set[str],
     semaphore: asyncio.Semaphore,
     ctx: Context[SplitFilesState],
+    action: str = "parse",
+    reuse_pages: dict[int, str] | None = None,
+    reuse_layout: dict[int, dict[str, Any]] | None = None,
+    reuse_structured_pages: dict[int, dict[str, Any]] | None = None,
+    reuse_job_id: str | None = None,
 ) -> tuple[
     str,
     dict[int, str],
+    dict[int, dict[str, Any]],
     str | None,
     dict[int, dict[str, Any]],
     dict[str, Any] | None,
 ]:
     async with semaphore:
         label = part.filename or part.slot_id
+        if action == "skip":
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Skipping parse for {label} (not an extract source)",
+                )
+            )
+            return part.slot_id, {}, {}, None, {}, None
+        if action == "reuse":
+            pages = dict(reuse_pages or {})
+            layout = dict(reuse_layout or {})
+            structured = coerce_structured_pages(reuse_structured_pages)
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Reusing S3 markdown for {label} ({len(pages)} page(s))",
+                )
+            )
+            return part.slot_id, pages, structured, reuse_job_id, layout, None
         try:
             precise = slot_needs_precise_parse(part, source_parts)
             create_kwargs = parse_create_kwargs(
@@ -812,10 +1206,11 @@ async def _parse_one_file(
             await _wait_for_parse(client, parse_job.id)
             parse_result = await client.parsing.get(
                 parse_job.id,
-                expand=["markdown", "usage"],
+                expand=["markdown", "text", "items", "metadata", "usage"],
                 project_id=project_id,
             )
             pages = _extract_page_markdown(parse_result)
+            structured = extract_structured_pages(parse_result)
             usage_row = await collect_parse_usage(
                 client,
                 parse_job.id,
@@ -827,13 +1222,23 @@ async def _parse_one_file(
                 grounded_items_url(parse_result)
             )
             layout = compact_sidecar_pages(sidecar_pages, slot_id=part.slot_id)
+            if part.file_id:
+                try:
+                    pdf_bytes = await _download_file_bytes(client, part.file_id)
+                    layout = merge_pdf_text_words(layout, pdf_bytes)
+                except Exception:
+                    logger.warning(
+                        "Could not add PDF text-layer words for %s",
+                        part.slot_id,
+                        exc_info=True,
+                    )
             ctx.write_event_to_stream(
                 Status(
                     level="info",
                     message=f"Parsed {len(pages)} page(s) from {label}",
                 )
             )
-            return part.slot_id, pages, parse_job.id, layout, usage_row
+            return part.slot_id, pages, structured, parse_job.id, layout, usage_row
         except Exception as exc:
             logger.exception("Parse failed for %s", label)
             ctx.write_event_to_stream(
@@ -842,7 +1247,7 @@ async def _parse_one_file(
                     message=f"Parse failed for {label}; continuing without page text: {exc}",
                 )
             )
-            return part.slot_id, {}, None, {}, None
+            return part.slot_id, {}, {}, None, {}, None
 
 
 async def _parse_labeled_files(
@@ -852,15 +1257,34 @@ async def _parse_labeled_files(
     parts: list[SplitPartInput],
     source_parts: set[str],
     ctx: Context[SplitFilesState],
+    catalog: Any | None = None,
+    parse_scope: str = "all",
+    reuse_slots: set[str] | None = None,
+    reuse_pages: dict[str, dict[int, str]] | None = None,
+    reuse_layouts: dict[str, dict[int, dict[str, Any]]] | None = None,
+    reuse_structured_pages: dict[str, dict[int, dict[str, Any]]] | None = None,
+    reuse_job_ids: dict[str, str] | None = None,
 ) -> tuple[
     dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
     dict[str, str],
     dict[str, dict[int, dict[str, Any]]],
     list[dict[str, Any]],
 ]:
     semaphore = asyncio.Semaphore(parse_concurrency())
-    results = await asyncio.gather(
-        *[
+    tasks = []
+    for part in parts:
+        action = "parse"
+        if catalog is not None:
+            action = parse_action_for_slot(
+                part,
+                catalog=catalog,
+                parse_scope=parse_scope,
+                reuse_slots=reuse_slots,
+            )
+        if action == "reuse" and not (reuse_pages or {}).get(part.slot_id):
+            action = "parse"
+        tasks.append(
             _parse_one_file(
                 client,
                 parse_config=parse_config,
@@ -868,49 +1292,70 @@ async def _parse_labeled_files(
                 source_parts=source_parts,
                 semaphore=semaphore,
                 ctx=ctx,
+                action=action,
+                reuse_pages=(reuse_pages or {}).get(part.slot_id),
+                reuse_layout=(reuse_layouts or {}).get(part.slot_id),
+                reuse_structured_pages=(reuse_structured_pages or {}).get(part.slot_id),
+                reuse_job_id=(reuse_job_ids or {}).get(part.slot_id),
             )
-            for part in parts
-        ]
-    )
+        )
+    results = await asyncio.gather(*tasks)
     pages_by_slot: dict[str, dict[int, str]] = {}
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
     parse_job_ids: dict[str, str] = {}
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = {}
     usage_jobs: list[dict[str, Any]] = []
-    for slot_id, pages, job_id, layout, usage_row in results:
+    for slot_id, pages, structured, job_id, layout, usage_row in results:
         pages_by_slot[slot_id] = pages
+        structured_pages_by_slot[slot_id] = structured
         layouts_by_slot[slot_id] = layout
         if job_id:
             parse_job_ids[slot_id] = job_id
         if usage_row:
             usage_jobs.append(usage_row)
-    return pages_by_slot, parse_job_ids, layouts_by_slot, usage_jobs
+    return (
+        pages_by_slot,
+        structured_pages_by_slot,
+        parse_job_ids,
+        layouts_by_slot,
+        usage_jobs,
+    )
 
 
 async def _index_split_upload(
     *,
-    extracted_data: ExtractedData,
+    extracted_data: Any,
     item_id: str,
     state: SplitFilesState,
     filing_type: str,
     page_markdown: dict[int, str],
     page_parts: dict[int, list[str]],
+    page_layout: dict[int, dict[str, Any]],
+    page_structures: dict[int, dict[str, Any]] | None = None,
     ctx: Context[SplitFilesState],
-) -> None:
-    base_id = extracted_data.file_hash or state.petition_file_id or item_id
+) -> dict[str, Any]:
+    file_hash = str(extracted_data.file_hash or state.file_hash or "").strip()
+    organization_id = str(state.organization_id or state.org_id or "").strip()
+    workspace_id = str(state.workspace_id or "").strip()
+    generation = str(uuid.uuid4())
+    base_id = scoped_record_base_id(
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=generation,
+    )
     shared_meta = {
         "agent_data_id": item_id,
         "file_id": state.petition_file_id,
-        "file_name": state.filename,
-        "file_hash": extracted_data.file_hash,
+        "file_hash": file_hash,
         "petition_type": filing_type,
         "split_upload": True,
+        "organization_id": organization_id,
+        "org_id": organization_id,
+        "workspace_id": workspace_id,
+        "index_generation": generation,
+        "vector_schema_version": VECTOR_SCHEMA_VERSION,
     }
-    if state.organization_id or state.org_id:
-        org_id = state.organization_id or state.org_id
-        shared_meta["organization_id"] = org_id
-        shared_meta["org_id"] = org_id
-    if state.workspace_id:
-        shared_meta["workspace_id"] = state.workspace_id
     if state.user_id:
         shared_meta["user_id"] = state.user_id
     ctx.write_event_to_stream(
@@ -937,14 +1382,59 @@ async def _index_split_upload(
                 "metadata": {**shared_meta, "chunk_kind": "summary"},
             }
         )
+    part_by_slot = {part.slot_id: part for part in state.parts}
+    page_metadata: dict[int, dict[str, Any]] = {}
+    for page, entry in coerce_page_layout(page_layout).items():
+        slot_id = str(entry.get("slot_id") or "").strip()
+        source = part_by_slot.get(slot_id)
+        local_page = entry.get("local_page")
+        original_page = _original_page_for_local(
+            source.page_span if source else None,
+            local_page,
+        )
+        page_metadata[page] = {
+            "global_page": page,
+            "local_page": local_page,
+            "slot_id": slot_id or None,
+            "document_id": source.document_id if source else None,
+            "source_file_id": source.file_id if source else None,
+            "source_file_hash": source.file_hash if source else None,
+            "original_page": original_page,
+        }
     page_records = build_page_records(
         base_id=base_id,
         page_markdown=page_markdown,
         metadata=shared_meta,
         page_parts=page_parts,
+        page_metadata=page_metadata,
+        page_structures=page_structures,
     )
     pinecone_items.extend(page_records)
-    count = upsert_records(pinecone_items)
+    try:
+        count = upsert_records(pinecone_items)
+    except Exception:
+        try:
+            delete_vector_generation(
+                generation,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            logger.warning(
+                "Could not clean failed Pinecone generation %s",
+                generation,
+                exc_info=True,
+            )
+        raise
+    if count != len(pinecone_items):
+        delete_vector_generation(
+            generation,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        raise RuntimeError(
+            f"Pinecone indexed {count} of {len(pinecone_items)} prepared records"
+        )
     ctx.write_event_to_stream(
         Status(
             level="info",
@@ -954,6 +1444,98 @@ async def _index_split_upload(
             ),
         )
     )
+    return {
+        "schema_version": VECTOR_SCHEMA_VERSION,
+        "generation": generation,
+        "file_hash": file_hash,
+        "organization_id": organization_id,
+        "workspace_id": workspace_id,
+        "record_count": count,
+        "status": "active",
+    }
+
+
+def _original_page_for_local(
+    page_span: list[dict[str, int]] | None,
+    local_page: Any,
+) -> int | None:
+    """Map a split PDF's 1-based local page back to the compiled source page."""
+
+    try:
+        offset = int(local_page) - 1
+    except (TypeError, ValueError):
+        return None
+    if offset < 0:
+        return None
+    pages: list[int] = []
+    for span in page_span or []:
+        try:
+            start = int(span.get("start"))
+            end = int(span.get("end"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if start <= 0 or end < start:
+            continue
+        pages.extend(range(start, end + 1))
+    return pages[offset] if offset < len(pages) else None
+
+
+def _active_vector_generation(metadata: Mapping[str, Any]) -> str | None:
+    value = metadata.get(VECTOR_INDEX_METADATA_KEY)
+    if not isinstance(value, Mapping):
+        return None
+    generation = str(value.get("generation") or "").strip()
+    return generation or None
+
+
+async def _activate_vector_generation(
+    client: AsyncLlamaCloud,
+    *,
+    item_id: str,
+    data: dict[str, Any],
+    vector_index: dict[str, Any],
+) -> None:
+    required = {
+        "generation",
+        "file_hash",
+        "organization_id",
+        "workspace_id",
+        "record_count",
+    }
+    if not isinstance(vector_index, dict) or not required.issubset(vector_index):
+        raise ValueError("Pinecone indexing did not return a complete generation")
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    previous = _active_vector_generation(metadata)
+    metadata[VECTOR_INDEX_METADATA_KEY] = vector_index
+    if metadata.get("scrutiny_report"):
+        metadata["scrutiny_report_status"] = "stale"
+    try:
+        await client.beta.agent_data.update(item_id, data=data)
+    except Exception:
+        # The new generation was never activated. Remove it so retries cannot
+        # accumulate an unreachable partial generation.
+        delete_vector_generation(
+            str(vector_index["generation"]),
+            organization_id=str(vector_index["organization_id"]),
+            workspace_id=str(vector_index["workspace_id"]),
+        )
+        raise
+    if previous and previous != vector_index["generation"]:
+        try:
+            delete_vector_generation(
+                previous,
+                organization_id=str(vector_index["organization_id"]),
+                workspace_id=str(vector_index["workspace_id"]),
+            )
+        except Exception:
+            logger.warning(
+                "Could not delete inactive Pinecone generation %s after activation",
+                previous,
+                exc_info=True,
+            )
 
 
 def extract_input_file_id(state: SplitFilesState) -> str | None:
@@ -980,6 +1562,356 @@ def extract_input_file_id(state: SplitFilesState) -> str | None:
     return None
 
 
+def _payload_dict(data: Any) -> dict[str, Any]:
+    if hasattr(data, "model_dump"):
+        dumped = data.model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    if isinstance(data, dict):
+        return dict(data)
+    return {}
+
+
+class _StoredExtract:
+    def __init__(self, payload: Mapping[str, Any]) -> None:
+        self.file_hash = payload.get("file_hash")
+        self.file_name = payload.get("file_name")
+        self.data = payload.get("data")
+        meta = payload.get("metadata")
+        self.metadata = dict(meta) if isinstance(meta, dict) else {}
+
+
+def _reuse_parse_maps(
+    event: SplitFilesEvent,
+    *,
+    parts: list[SplitPartInput],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+]:
+    del parts
+    scope = (event.parse_scope or "all").strip().lower()
+    if scope not in {"unparsed", "supplied"}:
+        return {}, {}, {}, {}
+    pages = {
+        slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})
+        for slot, raw in (event.reuse_pages_by_slot or {}).items()
+    }
+    layouts: dict[str, dict[int, dict[str, Any]]] = {}
+    for slot, raw in (event.reuse_layouts_by_slot or {}).items():
+        slot_layout: dict[int, dict[str, Any]] = {}
+        if isinstance(raw, dict):
+            for page, payload in raw.items():
+                try:
+                    number = int(page)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict):
+                    slot_layout[number] = payload
+        layouts[slot] = slot_layout
+    structured = {
+        slot: coerce_structured_pages(raw if isinstance(raw, dict) else {})
+        for slot, raw in (event.reuse_structured_pages_by_slot or {}).items()
+    }
+    return pages, layouts, structured, dict(event.reuse_parse_job_ids or {})
+
+
+def _persist_visual_metadata(
+    meta: dict[str, Any],
+    visual_index: Mapping[str, Any],
+    visual_record: dict[str, str] | None,
+) -> None:
+    meta[VISUAL_SUMMARY_KEY] = visual_summary(visual_index)
+    if not visual_record:
+        return
+    meta[VISUAL_ARTIFACT_URL_KEY] = visual_record["url"]
+    meta[VISUAL_ARTIFACT_KEY_KEY] = visual_record["key"]
+
+
+async def _detect_visual_for_state(
+    state: SplitFilesState,
+    ctx: Context[SplitFilesState],
+) -> dict[str, Any]:
+    async def on_log(message: str) -> None:
+        ctx.write_event_to_stream(Status(level="info", message=message))
+
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message="Detecting signatures, seals, and stamps on formality pages",
+        )
+    )
+    try:
+        index = await detect_visual_marks(
+            parts=state.parts,
+            pages_by_slot=state.pages_by_slot,
+            page_parts=coerce_page_parts(state.page_parts),
+            page_markdown=coerce_page_markdown(state.page_markdown),
+            omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
+            on_log=on_log,
+        )
+    except Exception:
+        logger.exception("Visual ink detection failed for %s", state.filename)
+        ctx.write_event_to_stream(
+            Status(
+                level="warning",
+                message="Visual ink detection failed; scrutiny will have no mark boxes",
+            )
+        )
+        return empty_visual_index(status="error", error="visual_detection_failed")
+    mark_count = len((index or {}).get("marks") or [])
+    page_count = len((index or {}).get("pages") or [])
+    failed_count = len((index or {}).get("failures") or [])
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=(
+                f"Stored {mark_count} visual mark(s) from {page_count} "
+                f"formality page(s)"
+                + (f", {failed_count} failed" if failed_count else "")
+            ),
+        )
+    )
+    return index
+
+
+def _source_book_payload(
+    event: SplitFilesEvent,
+    *,
+    pages_by_slot: dict[str, dict[int, str]],
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]],
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    if event.source_book:
+        return event.source_book
+    if not event.source_parse_job_id:
+        return None
+    for slot_id, slot_pages in pages_by_slot.items():
+        if not slot_pages:
+            continue
+        return dump_source_book(
+            pages=slot_pages,
+            layout=layouts_by_slot.get(slot_id) or {},
+            structured=structured_pages_by_slot.get(slot_id) or {},
+            parse_job_id=event.source_parse_job_id,
+            file_id=event.source_file_id,
+            file_hash=event.source_file_hash,
+        )
+    return None
+
+
+def _upload_parse_artifact(
+    *,
+    parsed_slots: list[str],
+    document_order: list[str],
+    pages_by_slot: dict[str, dict[int, str]],
+    parse_job_ids: dict[str, str],
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]],
+    structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]],
+    organization_id: str | None,
+    workspace_id: str | None,
+    job_id: str | None,
+    source_book: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    payload = dump_parse_artifact(
+        parsed_slots=parsed_slots,
+        document_order=document_order,
+        pages_by_slot=pages_by_slot,
+        parse_job_ids=parse_job_ids,
+        layouts_by_slot=layouts_by_slot,
+        structured_pages_by_slot=structured_pages_by_slot,
+    )
+    if organization_id:
+        payload["organization_id"] = organization_id
+    if workspace_id:
+        payload["workspace_id"] = workspace_id
+    if source_book:
+        payload["source_book"] = source_book
+    return upload_step_json(
+        STEP_PARSE,
+        with_config_identity(payload),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        job_id=job_id,
+    )
+
+
+async def _complete_index_only(
+    client: AsyncLlamaCloud,
+    *,
+    ctx: Context[SplitFilesState],
+    catalog: Any,
+    parts: list[SplitPartInput],
+    pages_by_slot: dict[str, dict[int, str]],
+    parse_job_ids: dict[str, str],
+    layouts_by_slot: dict[str, dict[int, dict[str, Any]]],
+    page_markdown: dict[int, str],
+    page_parts: dict[int, list[str]],
+    page_layout: dict[int, dict[str, Any]],
+    page_structures: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    del catalog, pages_by_slot, layouts_by_slot
+    state = await ctx.store.get_state()
+    agent_data_id = (state.agent_data_id or "").strip()
+    if not agent_data_id:
+        raise ValueError("agent_data_id is required to index without re-extracting")
+    item = await client.beta.agent_data.get(agent_data_id)
+    data_dict = _payload_dict(getattr(item, "data", None))
+    meta = data_dict.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+        data_dict["metadata"] = meta
+    meta["parse_job_ids"] = parse_job_ids
+    meta["parsed_slots"] = list(state.parsed_slots)
+    meta["document_order"] = [item.slot_id for item in parts]
+    meta["page_count"] = len(page_markdown)
+    meta["split_files"] = {
+        part.slot_id: part.file_id for part in state.parts if part.file_id
+    }
+    meta["document_hashes"] = {
+        part.slot_id: part.file_hash for part in state.parts if part.file_hash
+    }
+    meta["documents"] = [
+        {
+            "slot_id": part.slot_id,
+            "name": part.filename,
+            "document_id": part.document_id,
+            "file_id": part.file_id,
+            "file_hash": part.file_hash,
+            "page_span": part.page_span,
+        }
+        for part in state.parts
+    ]
+    if state.parse_artifact_url:
+        meta[PARSE_ARTIFACT_URL_KEY] = state.parse_artifact_url
+    if state.parse_artifact_key:
+        meta[PARSE_ARTIFACT_KEY_KEY] = state.parse_artifact_key
+    layout_record = upload_step_json(
+        STEP_LAYOUT,
+        dump_layout_index(coerce_page_layout(page_layout)),
+        organization_id=state.organization_id or state.org_id,
+        workspace_id=state.workspace_id,
+        job_id=state.file_hash,
+    )
+    if layout_record:
+        meta[LAYOUT_ARTIFACT_URL_KEY] = layout_record["url"]
+        meta[LAYOUT_ARTIFACT_KEY_KEY] = layout_record["key"]
+    visual_index = await _detect_visual_for_state(state, ctx)
+    visual_record = upload_visual_index(
+        visual_index,
+        organization_id=state.organization_id or state.org_id,
+        workspace_id=state.workspace_id,
+        job_id=state.file_hash,
+    )
+    _persist_visual_metadata(meta, visual_index, visual_record)
+    if visual_record:
+        ctx.write_event_to_stream(
+            Status(
+                level="info",
+                message=(
+                    "Visual marks JSON saved to S3. Open the filing to "
+                    "download the link and verify signatures, seals, and stamps."
+                ),
+            )
+        )
+    if page_parts:
+        overlay_split_documents(data_dict, page_parts)
+    await client.beta.agent_data.update(agent_data_id, data=data_dict)
+    extracted = _StoredExtract(data_dict)
+    if pinecone_enabled() and not state.skip_index:
+        try:
+            vector_index = await _index_split_upload(
+                extracted_data=extracted,  # type: ignore[arg-type]
+                item_id=agent_data_id,
+                state=state,
+                filing_type=state.filing_type or "",
+                page_markdown=page_markdown,
+                page_parts=page_parts,
+                page_layout=page_layout,
+                page_structures=page_structures or {},
+                ctx=ctx,
+            )
+            await _activate_vector_generation(
+                client,
+                item_id=agent_data_id,
+                data=data_dict,
+                vector_index=vector_index,
+            )
+        except Exception as exc:
+            logger.exception("[Pinecone] Indexing failed for %s", state.filename)
+            ctx.write_event_to_stream(
+                Status(level="error", message=f"Pinecone indexing failed: {exc}")
+            )
+            raise
+    else:
+        logger.info(
+            "[Pinecone] Skipped indexing for %s on index-only path",
+            state.filename,
+        )
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=f"Indexed filing {agent_data_id} without re-extracting",
+        )
+    )
+    report = await _run_nested_scrutiny(ctx, agent_data_id=agent_data_id)
+    return {"agent_data_id": agent_data_id, "report": report}
+
+
+async def _run_nested_scrutiny(
+    ctx: Context[SplitFilesState],
+    *,
+    agent_data_id: str,
+) -> dict[str, Any]:
+    from .scrutiny_workflow import (
+        ScrutinyAfterIndexError,
+        ScrutinyEvent,
+        ScrutinyWorkflow,
+    )
+
+    state = await ctx.store.get_state()
+    ctx.write_event_to_stream(
+        Status(
+            level="info",
+            message=f"Running scrutiny defects for {agent_data_id}",
+        )
+    )
+    nested = ScrutinyWorkflow(timeout=None)
+    handler = nested.run(
+        start_event=ScrutinyEvent(
+            agent_data_id=agent_data_id,
+            file_hash=state.file_hash,
+            organization_id=state.organization_id or state.org_id,
+            workspace_id=state.workspace_id,
+            filing_type=state.filing_type,
+            special_category=state.special_category,
+            model_tier=state.model_tier,
+            court=state.court,
+        )
+    )
+    try:
+        async for ev in handler.stream_events():
+            ctx.write_event_to_stream(ev)
+        result = await handler
+    except ScrutinyAfterIndexError:
+        raise
+    except Exception as exc:
+        logger.exception("Scrutiny after index failed for %s", agent_data_id)
+        raise ScrutinyAfterIndexError(agent_data_id) from exc
+    report = getattr(result, "report", None)
+    if report is None and isinstance(result, dict):
+        report = result.get("report")
+    if hasattr(report, "model_dump"):
+        dumped = report.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    if isinstance(report, dict):
+        return report
+    logger.error("Scrutiny after index returned no report for %s", agent_data_id)
+    raise ScrutinyAfterIndexError(agent_data_id)
+
+
 def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:
     return [
         SplitPartInput(
@@ -989,6 +1921,7 @@ def _as_part_inputs(parts: list[SplitPartEvent]) -> list[SplitPartInput]:
             file_hash=item.file_hash,
             filename=item.filename,
             document_id=item.document_id,
+            page_span=item.page_span,
         )
         for item in parts
     ]

@@ -18,6 +18,7 @@ type UploadedPart = {
   fileId: string;
   fileHash: string | null;
   filename: string;
+  reason?: string;
 };
 
 export type PreparedPart = {
@@ -25,6 +26,7 @@ export type PreparedPart = {
   file_id: string;
   file_hash?: string | null;
   filename?: string | null;
+  reason?: string | null;
 };
 
 export type BundlePrepared = {
@@ -33,6 +35,7 @@ export type BundlePrepared = {
   slot_pages?: Record<string, string>;
   filename?: string | null;
   classify_split_seconds?: number | null;
+  llama_split?: Record<string, unknown> | null;
 };
 
 type PresignedFile = {
@@ -106,6 +109,7 @@ function asPreparedParts(value: unknown): PreparedPart[] {
       file_hash:
         typeof fileHash === "string" || fileHash === null ? fileHash : null,
       filename: typeof row.filename === "string" ? row.filename : null,
+      reason: typeof row.reason === "string" ? row.reason : null,
     });
   }
   return parts;
@@ -180,6 +184,26 @@ async function downloadCloudPdf(
   }
 }
 
+function formatPageRanges(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  let total = 0;
+  const bits: string[] = [];
+  for (const item of value) {
+    const row = asRecord(item);
+    if (!row || typeof row.start !== "number" || typeof row.end !== "number") {
+      continue;
+    }
+    total += row.end - row.start + 1;
+    bits.push(row.start === row.end ? `${row.start}` : `${row.start}–${row.end}`);
+  }
+  if (bits.length === 0) {
+    return "";
+  }
+  return `${total === 1 ? "p." : "pp."} ${bits.join(", ")}`;
+}
+
 function asSlotPages(value: unknown): Record<string, string> {
   const raw = asRecord(value);
   if (!raw) {
@@ -187,8 +211,9 @@ function asSlotPages(value: unknown): Record<string, string> {
   }
   const pages: Record<string, string> = {};
   for (const [key, item] of Object.entries(raw)) {
-    if (typeof item === "string" && item) {
-      pages[key] = item;
+    const label = typeof item === "string" ? item : formatPageRanges(item);
+    if (label) {
+      pages[key] = label;
     }
   }
   return pages;
@@ -244,6 +269,7 @@ export function readBundlePrepared(payload: unknown): BundlePrepared | null {
           : typeof asRecord(source.timing)?.classify_split_seconds === "number"
             ? (asRecord(source.timing)?.classify_split_seconds as number)
             : null,
+    llama_split: asRecord(source.llama_split) ?? asRecord(source.llamaSplit),
   };
 }
 
@@ -425,6 +451,9 @@ export function SplitUploadForm({
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [downloadingSlot, setDownloadingSlot] = useState<string | null>(null);
+  const [llamaSplit, setLlamaSplit] = useState<Record<string, unknown> | null>(
+    null,
+  );
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const preparedFor = useRef<string | null>(null);
   const cloud = useCloudApiClient() as unknown as CloudFiles;
@@ -469,6 +498,7 @@ export function SplitUploadForm({
         fileId: part.file_id,
         fileHash: part.file_hash ?? null,
         filename: part.filename || `${part.slot_id}.pdf`,
+        reason: part.reason ?? undefined,
       };
     }
     const found = Object.keys(nextUploads).length;
@@ -504,6 +534,9 @@ export function SplitUploadForm({
     }
     if (!alreadyApplied || prepared.classify_split_seconds != null) {
       setClassifySplitSeconds(prepared.classify_split_seconds ?? null);
+    }
+    if (prepared.llama_split) {
+      setLlamaSplit(prepared.llama_split);
     }
     if (found > 0) {
       setUploads((prev) =>
@@ -580,6 +613,7 @@ export function SplitUploadForm({
     setFilingType(next);
     setUploads({});
     setSlotPages({});
+    setLlamaSplit(null);
     setAnnexureCount(1);
     setApplicationCount(1);
     setUploadingSlot(null);
@@ -848,6 +882,11 @@ export function SplitUploadForm({
                     {uploaded.filename}
                   </span>
                 ) : null}
+                {uploaded?.reason ? (
+                  <span className={styles.reason} title={uploaded.reason}>
+                    {uploaded.reason}
+                  </span>
+                ) : null}
                 {uploaded ? (
                   <Button
                     size="sm"
@@ -929,6 +968,24 @@ export function SplitUploadForm({
       </ul>
 
       <div className={styles.footer}>
+        {llamaSplit ? (
+          <Button
+            size="sm"
+            variant="outline"
+            label="LlamaSplit JSON"
+            disabled={formBusy}
+            title="Download the exact request sent to LlamaSplit and the exact response it returned"
+            onClick={() =>
+              downloadFile(
+                JSON.stringify(llamaSplit),
+                "llama-split.json",
+                "application/json",
+              )
+            }
+          />
+        ) : (
+          <span />
+        )}
         {slicedCount > 0 ? (
           <Button
             size="sm"

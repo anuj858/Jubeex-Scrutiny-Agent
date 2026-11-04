@@ -1,6 +1,6 @@
 # Jubeex Scrutiny Agent
 
-A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** for page markdown, LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + page chunks in Pinecone.
+A LlamaAgents application for classifying and extracting structured data from Indian court petitions (JubeeX filings). It uses **LlamaParse** structured page items (with Markdown fallback), LlamaClassify for petition type, LlamaExtract for a shared **Core Filing Record**, stores results in LlamaCloud Agent Data, and indexes summary + provenance-rich semantic chunks in Pinecone.
 
 # Running the application
 
@@ -16,6 +16,7 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
    - `PINECONE_EMBED_MODEL` — integrated embed model (default `llama-text-embed-v2`)
    - `PINECONE_TEXT_FIELD` — record text field mapped for embedding (this index uses `normalized_text`)
    - `PINECONE_NAMESPACE` — namespace for filing vectors (default `jubeex-filings`)
+   - `SCRUTINY_RERANK_ENABLED`, `PINECONE_RERANK_MODEL` — defect-aware Pinecone reranking (defaults `true`, `bge-reranker-v2-m3`)
    - `VECTOR_BACKEND` — `pinecone` to index after extract, or anything else to skip
 3. Run the **production API** (what your other application should call):
 
@@ -45,6 +46,136 @@ uvx llamactl deployments apply -f deployment.yaml
 ```
 
 `deployment.yaml` maps Pinecone and S3 env vars into LlamaCloud deployment secrets. A local `.env` is not uploaded (it is gitignored), so hosted agents only see secrets listed there or in `[tool.llamadeploy.env]`.
+
+## Compiled splitting: optional local OCR, repair and audit
+
+LlamaCloud Split uses `split.categories` and `split.splitting_strategy` in
+`configs/config.json`. Each category description uses IDENTITY, START,
+CONTINUE, END, DO NOT SPLIT and REPEAT sections; shared instructions define
+nesting, physical-page ownership and Index/folio handling. The configured
+`min_pages_per_split: 1` disables size-based merging of short documents, as
+documented in the [Split API reference](https://developers.llamaindex.ai/reference/resources/split/methods/create/).
+Instructions over 5,000 characters, category names over 200 characters and
+descriptions over 2,000 characters fail before submitting an inline split job;
+instructions are never silently truncated.
+
+`SPLIT_RECONCILIATION_MODE` selects compiled-upload and split-petition behavior:
+
+- `llama_only`: compatibility mode. Page parsing and extraction still run;
+  Llama boundary detection and complete-segment classification are separate
+  calls. Deterministic structural page-ownership validation remains mandatory.
+  Semantic reconciliation is skipped, so unresolved semantic concerns remain
+  flagged for review rather than being treated as validated.
+- `targeted`: Local text/layout extraction, OCR and repairs run, but label
+  changes are limited to missing/ambiguous pages or supported outer boundaries
+  and Index/folio evidence. The workflow reads the source PDF page-by-page
+  before it runs the separate remote boundary and classification passes.
+- `legacy_full`: Apply the full local repair result, for regression comparison.
+
+A valid mode overrides the compatibility flag `SPLIT_PYTHON_RULES_ENABLED`.
+Otherwise that flag selects `targeted` for `true`, `1` or `yes` and `llama_only`
+for other values or when unset. Values are case-insensitive. The mode is
+captured once per split job. `.env.template` explicitly selects `targeted`.
+The worker task definitions and llamadeploy defaults also explicitly select
+`targeted`. The split audit artifact records `reconciliation_mode` so the
+actual job mode can be checked later. Both modes perform the separate Llama
+boundary and classification passes; their latency and model-call costs have
+not yet been benchmarked.
+`SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
+enable/disable switch.
+
+Registry defect checks use the model selected by the required `model_tier`
+request field on index, reindex, and defects-only scrutiny. `low`, `medium`,
+and `high` read `SCRUTINY_MODEL_LOW`, `SCRUTINY_MODEL_MEDIUM`, and
+`SCRUTINY_MODEL_HIGH`. A missing tier or an empty tier model is rejected
+before the job starts. `SCRUTINY_MODEL` remains in config and is not a
+fallback for these requests. Vertex and the Gemini Developer API strip a
+`google/` prefix; OpenRouter keeps it. `VERTEX_MODEL`, `OPENROUTER_MODEL`, and
+`OPENROUTER_VISION_MODEL` remain independent, so changing a defect-check model
+does not change extraction or visual-mark detection.
+For ECS queue, lease, callback, and rollout checks see
+[`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
+Argon must be validated for project access, latency, 429 rate, cost, and defect
+accuracy before a production rollout.
+Checked-in release defaults use the enabled production defects from the DB
+catalogue (`SCRUTINY_CATALOGUE_SOURCE=db`, `SCRUTINY_DEFECTS=all`). The former
+11-code JSON subset is only an explicit test override. SQS workers impose a
+configurable 90-minute workflow deadline by default so a hung job fails with
+a terminal callback rather than remaining in Review indefinitely. This does
+not replace live queue, Vertex-capacity, and backend acceptance testing.
+
+`SPLIT_OUTPUT_DOCUMENTS` controls which sliced PDFs are emitted, without
+changing extraction, classification, reconciliation, or page-level auditing.
+Unset or blank defaults to `Annexures, Cover Page`; explicit `All` preserves every detected output. `Annexures` selects all
+numbered and generic annexure outputs. A comma-, semicolon-, or pipe-separated
+list selects matching canonical document names, for example
+`Annexure P-9, Main Petition`. Non-selected source pages remain in the immutable
+compiled PDF and page manifest with `excluded_by_split_output_filter`; they
+are not silently reassigned or copied into another document. The audit records
+the configured filter and selected/excluded slots. The repository deployment
+defaults in `.env.template`, the LlamaDeploy project settings, and the ECS task
+templates explicitly select `All`. An unset runtime variable still falls back
+to `Annexures, Cover Page`. Deploy updated agent and worker task definitions for
+this repository setting to take effect in a live environment.
+
+In either mode, Python downloads the source PDF, maps document categories to
+configured upload slots, copies pages and uploads the resulting PDFs. Pages
+without an assigned slot are retained as Unidentified when `All` is selected;
+with a restrictive output filter, that slot is emitted only if it is selected.
+
+In every mode, separate generic `Annexures` and `Application` segments remain
+separate files when their pages retain those generic labels. The slicer uses
+remote boundaries only within the final assignments: reclassified pages and
+numbered local document identities are not overwritten. Newly assigned generic
+pages outside matching remote segments are retained in separate contiguous runs.
+Generic annexures use `Annexure 1`, `Annexure 2`, etc. (`annexure_1`, `annexure_2`
+upload IDs): these are segment ordinals, not inferred printed P/A/R numbers.
+Explicit numbered categories returned by LlamaCloud are preserved. Existing
+catalog grouping (for example Synopsis + LOD and Vakalatnama + Memo of Appearance)
+is retained for frontend compatibility; it does not reclassify page content.
+
+Local boundary checks distinguish outer annexure stamps from wrapped narrative
+references and case-specific exhibit-list appendices inside a common judgment.
+They are stateful rather than page-by-page: once a page independently opens a
+document, later pages keep that document owner until another page provides a
+verified document-start heading. A Llama category change based only on body
+text cannot cut a continuation page out of an annexure, application, petition,
+judgment, Synopsis, LOD or other multi-page filing document. Master-Index and
+folio evidence can still replace the resulting range when it provides stronger
+filing-level boundaries. ``True Copy`` is supporting evidence only, not a
+mandatory end marker, because it is optional, OCR-sensitive and can appear
+inside reproduced records.
+They also retain an application's numbered body, prayer and filing signature
+before the actual exhibit it introduces. These complement the positive
+`START`/`CONTINUE`/`END` criteria and negative `DO NOT SPLIT` rules in the config;
+adding an unused JSON rule field alone does not affect the splitter.
+Reproduced e-filing packets retain their internal Index and affidavit when
+matching docket/source headers establish continuity. A completed judgment
+followed by a different court packet without a verified outer boundary receives
+an advisory `unresolved_source_transition` flag, not a guessed annexure number.
+Blank Index cells remain unknown when more than one document occupies the gap;
+an entire gap is never assigned to its first unresolved annexure. A consistent
+sequence of explicit exhibit stamps can reject a stale, contradictory Index
+range. Geometry-recovered narrative range citations may resolve an unstamped
+indexed court packet only with a matching source case, consistent folio offsets
+at both ends, and no conflicting outer document. A citation does not move its
+own page out of the citing application or chronology.
+Court neutral citations are not chronology year entries; a judgment's initial
+party-caption pages remain with its later judgment title when source identity
+and pagination corroborate that continuation.
+Sparse scanned text (for example just a case number) still requires OCR;
+inherited court page numbers are not assumed
+to be physical PDF positions. A missing source range cannot be reconstructed
+from incorrectly sliced outputs alone: rerun the original combined paper book.
+
+Extraction, separate-file verification and scrutiny checks are unchanged.
+Deploy the updated ingestion worker image, set the mode on that worker's
+environment (for ECS, its task definition), and restart/roll out the worker.
+Editing your laptop's `.env` does not change a deployed ECS worker. Start a
+fresh split; existing split artifacts are not rewritten. Look for
+`[SplitMode] mode=llama_only`, `mode=targeted` or `mode=legacy_full` and the matching
+`[SplitTiming]` entries in worker logs. Enabled mode requires Tesseract and its
+language data, which are included in the repository's worker Dockerfiles.
 
 ## Features
 
@@ -113,6 +244,21 @@ pyproject.toml               # Package + llamadeploy workflow/UI config
 9. **Review**: UI lists items for review/edit.
 
 Vector helpers: `src/extraction_review/vector_store.py` (`upsert_records`, `build_page_records`, `gather_filing_evidence_pool`).
+
+### Validate Pinecone workspace data
+
+Run the read-only validator with a workspace UUID. It loads Pinecone settings
+from `.env`, scans the configured namespace, and checks tenant isolation,
+required metadata, text content, record IDs, schema versions, generations, and
+duplicate logical chunks. The command never creates, updates, or deletes data.
+
+```bash
+uv run jubeex-validate-pinecone WORKSPACE_UUID
+uv run jubeex-validate-pinecone WORKSPACE_UUID --json
+```
+
+The command exits `0` when no validation errors are found, `1` when data fails
+validation, and `2` when the validation operation itself cannot run.
 
 ### Workflows
 

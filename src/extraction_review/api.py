@@ -4,21 +4,24 @@ Run:
 
     uv run uvicorn extraction_review.api:app --host 0.0.0.0 --port 8000
 
-If ``JUBEEX_API_KEY`` is set, protected routes require
-``Authorization: Bearer <key>`` or ``X-API-Key: <key>``.
+Protected routes require ``JUBEEX_API_KEY`` and either
+``Authorization: Bearer <key>`` or ``X-API-Key: <key>``. An explicit
+``JUBEEX_ALLOW_UNAUTHENTICATED=true`` override is available for isolated local use.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from llama_cloud import NotFoundError
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -29,28 +32,39 @@ from pydantic import (
     model_validator,
 )
 
+from .annexure_index import AnnexureIndexEvent
+from .annexure_index import workflow as annexure_index_workflow
 from .callbacks import notify_job_finished
 from .clients import get_llama_cloud_client
-from .s3_artifacts import recorded_artifacts, set_job_context
 from .config import EXTRACTED_DATA_COLLECTION as FILING_COLLECTION
 from .config import JUBEEX_FILING_TYPES, config_identity
+from .extract_record import stamp_review_status
+from .job_progress import load_job_status, progress_for_status, save_job_status
+from .llm import ScrutinyModelError, normalize_model_tier, scrutiny_model
+from .logging_utils import silence_http_client_request_logs
 from .process_file import (
+    CATALOG_JOB_TYPES,
     FileEvent,
     blank_or_placeholder,
     normalize_job_type,
+    normalize_sha256,
+    parse_edited_flag,
 )
 from .process_file import workflow as process_file_workflow
-from .extract_record import stamp_review_status
 from .queue import enqueue_job, sqs_enabled
-from .scrutiny_workflow import ScrutinyEvent
+from .s3_artifacts import recorded_artifacts, set_job_context
+from .scrutiny.rules import special_categories_for_catalog
+from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
 from .split_upload import ui_catalog
+from .vector_store import delete_workspace_records
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+silence_http_client_request_logs()
 
-JobKind = Literal["process_file", "scrutiny"]
+JobKind = Literal["process_file", "scrutiny", "annexure_index"]
 JobStatus = Literal["running", "completed", "failed"]
 ReviewStatus = Literal["pending_review", "approved", "rejected"]
 
@@ -68,8 +82,10 @@ class DocumentIn(BaseModel):
     )
     slot_id: str | None = None
     file_id: str | None = None
+    file_hash: str | None = None
     filename: str | None = None
     file_url: str | None = None
+    page_span: list[dict[str, int]] | None = None
 
     @field_validator(
         "name",
@@ -77,6 +93,7 @@ class DocumentIn(BaseModel):
         "download_url",
         "slot_id",
         "file_id",
+        "file_hash",
         "filename",
         "file_url",
         mode="before",
@@ -84,6 +101,11 @@ class DocumentIn(BaseModel):
     @classmethod
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
         return blank_or_placeholder(value)
+
+    @field_validator("file_hash")
+    @classmethod
+    def _validate_file_hash(cls, value: str | None) -> str | None:
+        return normalize_sha256(value)
 
 
 class CreateFilingRequest(BaseModel):
@@ -154,9 +176,7 @@ class CreateFilingRequest(BaseModel):
         self.job_type = job
         catalog_types = set(ui_catalog())
         mode = normalize_job_type(job)
-        if mode == "split" or (
-            mode is None and len(self.documents) > 1
-        ):
+        if mode == "split" or (mode is None and len(self.documents) > 1):
             if not self.filing_type:
                 raise ValueError(
                     "filing_type is required for upload_separate. "
@@ -167,12 +187,148 @@ class CreateFilingRequest(BaseModel):
                 raise ValueError(
                     f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
                 )
-        elif self.filing_type and catalog_types and self.filing_type not in catalog_types:
+        elif (
+            self.filing_type and catalog_types and self.filing_type not in catalog_types
+        ):
             allowed = ", ".join(sorted(catalog_types))
             raise ValueError(
                 f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
             )
         return self
+
+
+class FilingDocumentsRequest(BaseModel):
+    """Shared body for split-petition / verify / extract / index."""
+
+    model_config = ConfigDict(extra="ignore")
+    allow_missing_filing_type: ClassVar[bool] = False
+
+    filing_type: str | None = Field(
+        default=None,
+        examples=["SLP_CIVIL"],
+    )
+    court: str | None = Field(
+        default=None,
+        examples=["sci"],
+        description="Court code. sci is the Supreme Court of India.",
+    )
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    user_id: str | None = None
+    agent_data_id: str | None = None
+    callback_url: str | None = Field(
+        default=None,
+        examples=["https://api.jubeex.com/api/v1/webhooks/ai-agent"],
+    )
+    documents: list[DocumentIn] = Field(default_factory=list)
+
+    @field_validator(
+        "filing_type",
+        "court",
+        "organization_id",
+        "workspace_id",
+        "user_id",
+        "agent_data_id",
+        "callback_url",
+        mode="before",
+    )
+    @classmethod
+    def _drop_swagger_placeholders(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
+
+    @model_validator(mode="after")
+    def _require_filing_type_and_documents(self) -> FilingDocumentsRequest:
+        if not self.filing_type and not self.allow_missing_filing_type:
+            raise ValueError(
+                "filing_type is required. Use a real type such as SLP_CIVIL."
+            )
+        catalog_types = set(ui_catalog())
+        if catalog_types and self.filing_type not in catalog_types:
+            allowed = ", ".join(sorted(catalog_types))
+            raise ValueError(
+                f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+            )
+        if not self.documents:
+            raise ValueError("documents[] is required")
+        return self
+
+
+class ExtractFrontRequest(FilingDocumentsRequest):
+    """Compiled-PDF intake, where the filing type may be classified by the agent."""
+
+    allow_missing_filing_type: ClassVar[bool] = True
+
+    @model_validator(mode="after")
+    def _require_filing_type_and_documents(self) -> ExtractFrontRequest:
+        if not self.documents:
+            raise ValueError("documents[] is required")
+        if self.filing_type:
+            catalog_types = set(ui_catalog())
+            if catalog_types and self.filing_type not in catalog_types:
+                allowed = ", ".join(sorted(catalog_types))
+                raise ValueError(
+                    f"Unknown filing_type {self.filing_type!r}. Use one of: {allowed}"
+                )
+        return self
+
+
+class IndexFilingRequest(FilingDocumentsRequest):
+    """Body for POST /v1/filings/{id}/index (vector index, then nested defects).
+
+    Runs process_file ``index_parsed`` (Pinecone first, then scrutiny). The
+    JubeeX backend records the job on ``scrutiny_jobs`` and receives a
+    SCRUTINY_* webhook when it finishes.
+    """
+
+    edited: bool = False
+    model_tier: str = Field(
+        examples=["low"],
+        description=(
+            "Required defect-check tier. low, medium, and high select "
+            "SCRUTINY_MODEL_LOW, SCRUTINY_MODEL_MEDIUM, and SCRUTINY_MODEL_HIGH."
+        ),
+    )
+    parsed_slots: list[str] = Field(default_factory=list)
+    special_category: str | None = Field(
+        default=None,
+        examples=["Eviction Matters", "N/A"],
+        description=(
+            "Optional matter subtype for the nested defect run. Null, omitted, "
+            "or N/A skips every catalogue defect that has a special_category."
+        ),
+    )
+
+    @field_validator("edited", mode="before")
+    @classmethod
+    def _coerce_edited(cls, value: object) -> bool:
+        return parse_edited_flag(value)
+
+    @field_validator("model_tier", mode="before")
+    @classmethod
+    def _require_model_tier(cls, value: object) -> str:
+        return normalize_model_tier(value)
+
+    @field_validator("parsed_slots", mode="before")
+    @classmethod
+    def _clean_parsed_slots(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = blank_or_placeholder(value)
+            return [text] if text else []
+        if isinstance(value, list):
+            slots: list[str] = []
+            for item in value:
+                cleaned = blank_or_placeholder(item)
+                if cleaned:
+                    slots.append(cleaned)
+            return slots
+        return []
+
+    @field_validator("special_category", mode="before")
+    @classmethod
+    def _clean_special_category(cls, value: object) -> str | None:
+        return blank_or_placeholder(value)
 
 
 class UpdateFilingRequest(BaseModel):
@@ -184,10 +340,17 @@ class UpdateFilingRequest(BaseModel):
 
 
 class CreateScrutinyRequest(BaseModel):
-    """Optional locators. The path already has agent_data_id; both fields may be sent."""
+    """Defects-only locators. ``model_tier`` is required."""
 
     model_config = ConfigDict(extra="ignore")
 
+    model_tier: str = Field(
+        examples=["medium"],
+        description=(
+            "Required defect-check tier. low, medium, and high select "
+            "SCRUTINY_MODEL_LOW, SCRUTINY_MODEL_MEDIUM, and SCRUTINY_MODEL_HIGH."
+        ),
+    )
     file_hash: str | None = Field(
         default=None,
         examples=["8adf76ba0ba44d4561ab5a4ad88e3d6e97e56a32010ac8c08f39b5f8c1d01340"],
@@ -203,6 +366,29 @@ class CreateScrutinyRequest(BaseModel):
     )
     organization_id: str | None = None
     workspace_id: str | None = None
+    filing_type: str | None = Field(
+        default=None,
+        examples=["SLP_CIVIL"],
+        description="Petition type used to select catalogue defects.",
+    )
+    court: str | None = Field(
+        default=None,
+        examples=["sci"],
+        description="Court code. sci is the Supreme Court of India.",
+    )
+    special_category: str | None = Field(
+        default=None,
+        examples=["Eviction Matters", "N/A"],
+        description=(
+            "Optional matter subtype. Null, omitted, or N/A skips every "
+            "catalogue defect that has a special_category."
+        ),
+    )
+
+    @field_validator("model_tier", mode="before")
+    @classmethod
+    def _require_model_tier(cls, value: object) -> str:
+        return normalize_model_tier(value)
 
     @field_validator(
         "file_hash",
@@ -210,11 +396,46 @@ class CreateScrutinyRequest(BaseModel):
         "callback_url",
         "organization_id",
         "workspace_id",
+        "filing_type",
+        "court",
+        "special_category",
         mode="before",
     )
     @classmethod
     def _drop_swagger_placeholders(cls, value: object) -> str | None:
         return blank_or_placeholder(value)
+
+
+class AnnexureIndexRequest(BaseModel):
+    """Annexure ids to describe. PDFs are already in Pinecone."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    annexures: list[str] = Field(
+        min_length=1,
+        examples=[["annexure_p1", "annexure_p2", "annexure_p3"]],
+    )
+
+    @field_validator("annexures", mode="before")
+    @classmethod
+    def _clean_annexures(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        items = [value] if isinstance(value, str) else value
+        if not isinstance(items, list):
+            return []
+        cleaned: list[str] = []
+        for item in items:
+            text = blank_or_placeholder(item)
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    @model_validator(mode="after")
+    def _require_annexures(self) -> AnnexureIndexRequest:
+        if not self.annexures:
+            raise ValueError("annexures must contain at least one annexure id")
+        return self
 
 
 class JobAccepted(BaseModel):
@@ -231,10 +452,31 @@ class JobRecordOut(BaseModel):
     workspace_id: str | None = None
     user_id: str | None = None
     agent_data_id: str | None = None
-    result: dict[str, Any] | None = None
+    progress: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Approximate completion 0–100 from workflow stage events.",
+    )
+    stage: str | None = None
+    stage_message: str | None = None
+    has_duplicates: bool | None = Field(
+        default=None,
+        description="True if any document part in the split has duplicate=True",
+    )
+    result: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Job payload. result.artifacts.visual is the D093 last-page mark "
+            "index (S3 visualfiles / agent-visual). Absent document types are "
+            "omitted from visual_index.targets."
+        ),
+    )
     error: str | None = None
     created_at: str
+    updated_at: str | None = None
     completed_at: str | None = None
+    callback_delivered: bool = False
 
 
 class JobState:
@@ -258,10 +500,22 @@ class JobState:
         self.error: str | None = None
         self.callback_url: str | None = None
         self.event_id: str = str(uuid.uuid4())
-        self.created_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC).isoformat()
+        self.created_at = now
+        self.updated_at: str | None = now
         self.completed_at: str | None = None
+        self.progress: int = 2
+        self.stage: str | None = "queued"
+        self.stage_message: str | None = "Job accepted"
+        # Webhook event family. /index runs process_file (vector + nested
+        # defects) but the JubeeX backend stores it on scrutiny_jobs.
+        self.callback_kind: JobKind = kind
+        self.callback_delivered = False
 
     def as_out(self) -> JobRecordOut:
+        has_duplicates = None
+        if isinstance(self.result, dict) and "has_duplicates" in self.result:
+            has_duplicates = bool(self.result["has_duplicates"])
         return JobRecordOut(
             job_id=self.job_id,
             kind=self.kind,
@@ -270,20 +524,119 @@ class JobState:
             workspace_id=self.workspace_id,
             user_id=self.user_id,
             agent_data_id=self.agent_data_id,
+            progress=self.progress,
+            stage=self.stage,
+            stage_message=self.stage_message,
+            has_duplicates=has_duplicates,
             result=self.result,
             error=self.error,
             created_at=self.created_at,
+            updated_at=self.updated_at,
             completed_at=self.completed_at,
+            callback_delivered=self.callback_delivered,
         )
+
+    def persist(self, *, force: bool = False) -> bool:
+        return save_job_status(self.as_out().model_dump(mode="json"), force=force)
+
+    def bump_progress(
+        self,
+        percent: int,
+        *,
+        stage: str | None = None,
+        message: str | None = None,
+        force: bool = False,
+    ) -> None:
+        changed = False
+        if percent > self.progress:
+            self.progress = min(100, percent)
+            changed = True
+        if stage and stage != self.stage:
+            self.stage = stage
+            changed = True
+        if message:
+            cleaned = message.strip()[:240]
+            if cleaned != self.stage_message:
+                self.stage_message = cleaned
+                changed = True
+        if changed or force:
+            self.updated_at = datetime.now(UTC).isoformat()
+            self.persist(force=force)
 
 
 JOBS: dict[str, JobState] = {}
+
+
+def _persist_accepted_job(job: JobState) -> None:
+    if job.persist(force=True) or not sqs_enabled():
+        return
+    JOBS.pop(job.job_id, None)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Job status storage is unavailable; the job was not queued",
+    )
+
+
+def _apply_event_progress(job: JobState, event: Any) -> None:
+    # ScrutinyPartial carries completed/total — the only signal that moves %
+    # while dozens of defect checks run (Status text alone stays on "checking").
+    completed = getattr(event, "completed", None)
+    total = getattr(event, "total", None)
+    if (
+        (job.callback_kind or job.kind) == "scrutiny"
+        and isinstance(completed, int)
+        and isinstance(total, int)
+        and total > 0
+    ):
+        ratio = min(max(completed, 0), total) / total
+        # Keep report generation distinct from defect execution. Reaching 92%
+        # while checks or snapshot writes are still active makes the UI look
+        # stalled, so checks occupy 20% → 88% and the report stage owns 92%.
+        percent = 20 + int(68 * ratio)
+        job.bump_progress(
+            percent,
+            stage="checking",
+            message=f"Checked {completed}/{total} defects",
+        )
+        return
+    message = getattr(event, "message", None)
+    if not isinstance(message, str) or not message.strip():
+        return
+    percent, stage = progress_for_status(message, kind=job.callback_kind or job.kind)
+    # Persist stage transitions immediately. The normal S3 write throttle can
+    # otherwise retain a short-lived message such as "skipping classify" for
+    # the entire LlamaSplit wait, even though the job has moved to splitting.
+    job.bump_progress(
+        percent,
+        stage=stage,
+        message=message,
+        force=stage != job.stage,
+    )
 
 
 def _serialize_result(result: Any) -> dict[str, Any]:
     if hasattr(result, "model_dump"):
         payload = result.model_dump(mode="json")
         payload["type"] = type(result).__name__
+        verified = payload.pop("verified_documents", None) or []
+        if payload.get("match") is not None:
+            docs = verified or [
+                item
+                for item in (payload.get("documents") or [])
+                if isinstance(item, dict) and "match" in item
+            ]
+            payload = {
+                "type": "DocumentsVerified",
+                "match": bool(payload.get("match")),
+                "documents": [
+                    {
+                        "name": item.get("name"),
+                        "match": bool(item.get("match")),
+                    }
+                    for item in docs
+                    if isinstance(item, dict)
+                ],
+            }
         return payload
     if isinstance(result, dict):
         return result
@@ -303,10 +656,34 @@ def _agent_data_id_from(payload: dict[str, Any]) -> str | None:
     return None
 
 
-async def _run_workflow(job: JobState, handler: Any) -> None:
+def _scrutiny_after_index_error(exc: BaseException) -> ScrutinyAfterIndexError | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ScrutinyAfterIndexError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+async def _run_workflow(
+    job: JobState,
+    handler: Any,
+    *,
+    require_durable_status: bool = False,
+    max_runtime_seconds: int | None = None,
+) -> bool:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    job.bump_progress(5, stage="starting", message="Workflow started", force=True)
+    cancelled = False
     try:
-        result = await handler
+        async with asyncio.timeout(max_runtime_seconds):
+            stream = getattr(handler, "stream_events", None)
+            if callable(stream):
+                async for event in stream():
+                    _apply_event_progress(job, event)
+            result = await handler
         payload = _serialize_result(result)
         artifacts = recorded_artifacts(job.job_id)
         if artifacts:
@@ -314,36 +691,137 @@ async def _run_workflow(job: JobState, handler: Any) -> None:
         job.result = payload
         job.agent_data_id = _agent_data_id_from(payload)
         job.status = "completed"
-    except Exception as exc:
-        logger.exception("Job %s failed", job.job_id)
+        job.progress = 100
+        job.stage = "completed"
+        job.stage_message = "Job completed"
+    except TimeoutError:
+        logger.error(
+            "Job %s exceeded the %ss workflow deadline",
+            job.job_id,
+            max_runtime_seconds,
+        )
         job.status = "failed"
-        job.error = str(exc)
+        job.error = (
+            f"Workflow exceeded its {max_runtime_seconds}s deadline; retry the job"
+        )
+        job.stage = "failed"
+        job.stage_message = job.error[:240]
+    except Exception as exc:
+        nested = _scrutiny_after_index_error(exc)
+        if nested is not None:
+            logger.exception(
+                "Job %s failed after index: scrutiny defects did not run",
+                job.job_id,
+            )
+            job.status = "failed"
+            job.error = str(nested)
+            job.agent_data_id = nested.agent_data_id
+            job.result = {"agent_data_id": nested.agent_data_id}
+        else:
+            logger.exception("Job %s failed", job.job_id)
+            job.status = "failed"
+            job.error = str(exc)
+        job.stage = "failed"
+        job.stage_message = (job.error or "Job failed")[:240]
+    except asyncio.CancelledError:
+        cancelled = True
+        job.stage = "retrying"
+        job.stage_message = "Worker stopped before completion; awaiting retry"
+        raise
     finally:
-        job.completed_at = datetime.now(UTC).isoformat()
+        job.updated_at = datetime.now(UTC).isoformat()
+        if not cancelled:
+            job.completed_at = job.updated_at
         artifacts = recorded_artifacts(job.job_id)
         if job.result is None and artifacts:
             job.result = {"artifacts": artifacts}
         elif isinstance(job.result, dict) and artifacts:
             job.result["artifacts"] = artifacts
-        await notify_job_finished(
-            callback_url=job.callback_url,
-            job_id=job.job_id,
-            kind=job.kind,
-            status=job.status,
-            agent_data_id=job.agent_data_id,
-            organization_id=job.organization_id,
-            workspace_id=job.workspace_id,
-            error=job.error,
-            result=job.result,
-            artifacts=artifacts,
-            event_id=job.event_id,
-        )
+        if cancelled:
+            job.persist(force=True)
+        else:
+            persisted = job.persist(force=True)
+            if persisted or not require_durable_status:
+                job.callback_delivered = bool(
+                    await notify_job_finished(
+                        callback_url=job.callback_url,
+                        job_id=job.job_id,
+                        kind=job.callback_kind or job.kind,
+                        status=job.status,
+                        agent_data_id=job.agent_data_id,
+                        organization_id=job.organization_id,
+                        workspace_id=job.workspace_id,
+                        error=job.error,
+                        result=job.result,
+                        artifacts=artifacts,
+                        event_id=job.event_id,
+                    )
+                )
+                persisted = job.persist(force=True) and persisted
+            if require_durable_status and not persisted:
+                raise RuntimeError(
+                    f"Could not persist terminal status for {job.job_id}"
+                )
+    return job.callback_delivered
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     handler = process_file_workflow.run(start_event=event)
     await _run_workflow(job, handler)
+
+
+def _file_event_http(payload: dict[str, Any]) -> FileEvent:
+    try:
+        return FileEvent(**payload)
+    except (ValidationError, ValueError) as exc:
+        if isinstance(exc, ValidationError):
+            detail = [
+                {"loc": list(err.get("loc") or ()), "msg": err.get("msg")}
+                for err in exc.errors()
+            ]
+        else:
+            detail = str(exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=detail,
+        ) from exc
+
+
+def _accept_process_file(
+    event: FileEvent,
+    *,
+    callback_url: str | None,
+    background_tasks: BackgroundTasks,
+    callback_kind: JobKind | None = None,
+) -> JobAccepted:
+    job_id = str(uuid.uuid4())
+    job = JobState(
+        job_id=job_id,
+        kind="process_file",
+        organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
+        user_id=event.user_id,
+    )
+    job.callback_url = callback_url
+    if callback_kind:
+        job.callback_kind = callback_kind
+    JOBS[job_id] = job
+    _persist_accepted_job(job)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "process_file",
+                "callback_kind": job.callback_kind,
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_process_file, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
 async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
@@ -358,7 +836,16 @@ def require_api_key(
 ) -> None:
     expected = (os.getenv("JUBEEX_API_KEY") or "").strip()
     if not expected:
-        return
+        if (os.getenv("JUBEEX_ALLOW_UNAUTHENTICATED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API authentication is not configured",
+        )
     token = (x_api_key or "").strip()
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
@@ -402,9 +889,10 @@ async def health() -> dict[str, str]:
 async def catalog() -> dict[str, Any]:
     return {
         "filing_types": list(JUBEEX_FILING_TYPES),
+        "special_categories": special_categories_for_catalog(),
         "split_upload_types": ui_catalog(),
         "collection": FILING_COLLECTION,
-        "job_types": ["upload_compiled", "upload_separate"],
+        "job_types": list(CATALOG_JOB_TYPES),
         "config": config_identity(),
     }
 
@@ -422,53 +910,145 @@ async def create_filing(
 ) -> JobAccepted:
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
-    try:
-        event = FileEvent(**payload)
-    except (ValidationError, ValueError) as exc:
-        if isinstance(exc, ValidationError):
-            detail = [
-                {"loc": list(err.get("loc") or ()), "msg": err.get("msg")}
-                for err in exc.errors()
-            ]
-        else:
-            detail = str(exc)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
-        ) from exc
-
-    job_id = str(uuid.uuid4())
-    job = JobState(
-        job_id=job_id,
-        kind="process_file",
-        organization_id=event.organization_id,
-        workspace_id=event.workspace_id,
-        user_id=event.user_id,
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
     )
-    job.callback_url = body.callback_url
-    JOBS[job_id] = job
-    if sqs_enabled():
-        enqueue_job(
-            {
-                "job_id": job_id,
-                "kind": "process_file",
-                "event_id": job.event_id,
-                "callback_url": job.callback_url,
-                "event": event.model_dump(exclude_none=True),
-            }
-        )
-    else:
-        background_tasks.add_task(_start_process_file, job, event)
-    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
+@app.post(
+    "/v1/filings/split-petition",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def split_petition(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "split_petition"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v2/filings/split-petition",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def split_petition_v2(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same split as /v1/filings/split-petition. filing_type skips LlamaClassify."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "split_petition"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/verify-document",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def verify_document(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "verify_document"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/extract",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_only(
+    body: FilingDocumentsRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "extract_only"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+@app.post(
+    "/v1/filings/extract-front",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["filings"],
+    dependencies=[Depends(require_api_key)],
+)
+async def extract_front(
+    body: ExtractFrontRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Same body as extract, with one compiled PDF. Parses the whole PDF once."""
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload.pop("special_category", None)
+    payload["job_type"] = "extract_front"
+    event = _file_event_http(payload)
+    return _accept_process_file(
+        event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
 
 
 @app.get(
     "/v1/jobs/{job_id}",
     response_model=JobRecordOut,
     tags=["jobs"],
+    operation_id="getJob",
+    summary=(
+        "Poll a filing job; result.artifacts.visual is the D093 last-page mark index"
+    ),
     dependencies=[Depends(require_api_key)],
 )
 async def get_job(job_id: str) -> JobRecordOut:
+    # Prefer S3 snapshot so API can poll jobs running on the SQS worker.
+    stored = load_job_status(job_id)
+    if stored:
+        try:
+            return JobRecordOut.model_validate(stored)
+        except ValidationError:
+            logger.warning("Invalid stored job status for %s", job_id, exc_info=True)
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id")
@@ -484,7 +1064,36 @@ def _as_data_dict(data: Any) -> dict[str, Any]:
     return {}
 
 
-async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
+def _assert_filing_scope(
+    data: dict[str, Any],
+    *,
+    organization_id: str | None,
+    workspace_id: str | None,
+) -> None:
+    raw_metadata = data.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_vector = metadata.get("vector_index")
+    vector: dict[str, Any] = raw_vector if isinstance(raw_vector, dict) else {}
+    for label, requested in (
+        ("organization_id", organization_id),
+        ("workspace_id", workspace_id),
+    ):
+        if not requested:
+            continue
+        stored = str(vector.get(label) or metadata.get(label) or data.get(label) or "")
+        if not stored or stored != requested:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Filing does not belong to the requested {label}",
+            )
+
+
+async def prepare_extracted_filing_for_scrutiny(
+    agent_data_id: str,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
     """Move LlamaExtract job status off the review-status field before the worker runs."""
     client = get_llama_cloud_client()
     try:
@@ -496,6 +1105,9 @@ async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
         )
         return
     data = _as_data_dict(getattr(item, "data", None))
+    _assert_filing_scope(
+        data, organization_id=organization_id, workspace_id=workspace_id
+    )
     current = str(data.get("status") or "").strip().lower()
     if current == "rejected":
         raise HTTPException(
@@ -520,7 +1132,37 @@ async def prepare_extracted_filing_for_scrutiny(agent_data_id: str) -> None:
         )
 
 
+async def _require_scrutiny_before_annexure_index(agent_data_id: str) -> None:
+    """Annexure descriptions run only after defects have been saved."""
+    item = await _load_filing_item(agent_data_id)
+    data = _as_data_dict(getattr(item, "data", None))
+    raw_metadata = data.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    if not metadata.get("scrutiny_report"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Annexure index runs after scrutiny. Run index or scrutiny first.",
+        )
+
+
 def _filing_out(agent_data_id: str, item: Any, data: Any) -> dict[str, Any]:
+    data = _as_data_dict(data)
+    metadata = dict(data.get("metadata") or {})
+    report = metadata.get("scrutiny_report")
+    vector = metadata.get("vector_index") or {}
+    if report:
+        from .scrutiny.schema import scrutiny_report_is_current
+
+        metadata["scrutiny_report_status"] = (
+            "current"
+            if scrutiny_report_is_current(
+                report,
+                file_hash=str(data.get("file_hash") or "") or None,
+                index_generation=str(vector.get("generation") or "") or None,
+            )
+            else "stale"
+        )
+        data["metadata"] = metadata
     return {
         "id": getattr(item, "id", agent_data_id),
         "collection": FILING_COLLECTION,
@@ -532,12 +1174,32 @@ async def _load_filing_item(agent_data_id: str) -> Any:
     client = get_llama_cloud_client()
     try:
         return await client.beta.agent_data.get(agent_data_id)
-    except Exception as exc:
-        logger.exception("Failed to load Agent Data %s", agent_data_id)
+    except NotFoundError as exc:
+        logger.info("Agent Data %s was not found", agent_data_id)
         raise HTTPException(
             status_code=404,
             detail=f"Filing not found: {agent_data_id}",
         ) from exc
+    except Exception as exc:
+        logger.exception("Failed to load Agent Data %s", agent_data_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not verify the filing with LlamaCloud.",
+        ) from exc
+
+
+async def _require_filing_for_index(
+    agent_data_id: str,
+    *,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
+    item = await _load_filing_item(agent_data_id)
+    _assert_filing_scope(
+        _as_data_dict(getattr(item, "data", None)),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
 
 
 @app.patch(
@@ -569,6 +1231,145 @@ async def update_filing(
     )
 
 
+def _require_configured_scrutiny_model(tier: str) -> str:
+    """Reject a tier whose env model is empty before any job side effect."""
+    try:
+        return scrutiny_model(tier)
+    except ScrutinyModelError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+def _accept_scrutiny(
+    *,
+    event: ScrutinyEvent,
+    callback_url: str | None,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue a defects-only scrutiny job (kind=scrutiny → SCRUTINY_* webhooks)."""
+    job_id = str(uuid.uuid4())
+    job = JobState(
+        job_id=job_id,
+        kind="scrutiny",
+        organization_id=event.organization_id,
+        workspace_id=event.workspace_id,
+    )
+    job.callback_url = callback_url
+    job.callback_kind = "scrutiny"
+    JOBS[job_id] = job
+    _persist_accepted_job(job)
+    if sqs_enabled():
+        enqueue_job(
+            {
+                "job_id": job_id,
+                "kind": "scrutiny",
+                "callback_kind": "scrutiny",
+                "event_id": job.event_id,
+                "callback_url": job.callback_url,
+                "event": event.model_dump(exclude_none=True),
+            }
+        )
+    else:
+        background_tasks.add_task(_start_scrutiny, job, event)
+    return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
+def _index_event(agent_data_id: str, body: IndexFilingRequest) -> FileEvent:
+    payload = body.model_dump(exclude_none=True)
+    payload.pop("callback_url", None)
+    payload["job_type"] = "index_parsed"
+    payload["agent_data_id"] = agent_data_id
+    payload["edited"] = parse_edited_flag(body.edited)
+    return _file_event_http(payload)
+
+
+def _accept_index_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue ``index_parsed``. Webhook kind is ``scrutiny``."""
+    return _accept_process_file(
+        _index_event(agent_data_id, body),
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+        callback_kind="scrutiny",
+    )
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/index",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Index vectors then run Registry scrutiny defects",
+    dependencies=[Depends(require_api_key)],
+)
+async def index_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Assemble→Scrutiny: Pinecone index, then nested defect checks.
+
+    Worker kind is ``process_file`` / ``index_parsed``. Webhook kind is
+    ``scrutiny`` so JubeeX ``scrutiny_jobs`` resolve correctly.
+    """
+    _require_configured_scrutiny_model(body.model_tier)
+    await _require_filing_for_index(
+        agent_data_id,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+    )
+    return _accept_index_filing(agent_data_id, body, background_tasks)
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/reindex",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Delete workspace vectors, then index and run scrutiny",
+    dependencies=[Depends(require_api_key)],
+)
+async def reindex_filing(
+    agent_data_id: str,
+    body: IndexFilingRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Delete this workspace's Pinecone records, then run the index job.
+
+    The filing is loaded before the delete. A missing ``workspace_id`` or an
+    unconfigured ``model_tier`` returns 422. A failed delete returns 502 and
+    does not start the job.
+    """
+    _require_configured_scrutiny_model(body.model_tier)
+    if not body.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="workspace_id is required",
+        )
+    await _require_filing_for_index(
+        agent_data_id,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+    )
+    try:
+        await asyncio.to_thread(delete_workspace_records, body.workspace_id)
+    except Exception as exc:
+        logger.exception(
+            "Failed to delete Pinecone records for workspace_id=%s",
+            body.workspace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not delete Pinecone records for this workspace.",
+        ) from exc
+    return _accept_index_filing(agent_data_id, body, background_tasks)
+
+
 @app.post(
     "/v1/filings/{agent_data_id}/scrutiny",
     response_model=JobAccepted,
@@ -579,38 +1380,86 @@ async def update_filing(
 async def create_scrutiny(
     agent_data_id: str,
     background_tasks: BackgroundTasks,
-    body: CreateScrutinyRequest | None = None,
+    body: CreateScrutinyRequest,
 ) -> JobAccepted:
-    await prepare_extracted_filing_for_scrutiny(agent_data_id)
+    """Defects-only scrutiny (vectors already indexed)."""
+    _require_configured_scrutiny_model(body.model_tier)
+    await prepare_extracted_filing_for_scrutiny(
+        agent_data_id,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+    )
     event = ScrutinyEvent(
         agent_data_id=agent_data_id,
-        file_hash=(body.file_hash if body else None),
-        file_url=(body.file_url if body else None),
-        organization_id=(body.organization_id if body else None),
-        workspace_id=(body.workspace_id if body else None),
+        file_hash=body.file_hash,
+        file_url=body.file_url,
+        organization_id=body.organization_id,
+        workspace_id=body.workspace_id,
+        filing_type=body.filing_type,
+        special_category=body.special_category,
+        court=body.court,
+        model_tier=body.model_tier,
     )
+    return _accept_scrutiny(
+        event=event,
+        callback_url=body.callback_url,
+        background_tasks=background_tasks,
+    )
+
+
+def _accept_annexure_index(
+    *,
+    event: AnnexureIndexEvent,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Queue annexure descriptions (kind=annexure_index → ANNEXURE_INDEX_* webhooks)."""
     job_id = str(uuid.uuid4())
-    job = JobState(
-        job_id=job_id,
-        kind="scrutiny",
-        organization_id=event.organization_id,
-        workspace_id=event.workspace_id,
-    )
-    job.callback_url = body.callback_url if body else None
+    job = JobState(job_id=job_id, kind="annexure_index")
+    job.callback_kind = "annexure_index"
     JOBS[job_id] = job
+    _persist_accepted_job(job)
     if sqs_enabled():
         enqueue_job(
             {
                 "job_id": job_id,
-                "kind": "scrutiny",
+                "kind": "annexure_index",
+                "callback_kind": "annexure_index",
                 "event_id": job.event_id,
                 "callback_url": job.callback_url,
                 "event": event.model_dump(exclude_none=True),
             }
         )
     else:
-        background_tasks.add_task(_start_scrutiny, job, event)
+        background_tasks.add_task(_start_annexure_index, job, event)
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
+
+
+async def _start_annexure_index(job: JobState, event: AnnexureIndexEvent) -> None:
+    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    handler = annexure_index_workflow.run(start_event=event)
+    await _run_workflow(job, handler)
+
+
+@app.post(
+    "/v1/filings/{agent_data_id}/annexure-index",
+    response_model=JobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["scrutiny"],
+    summary="Describe annexures for a new index page",
+    dependencies=[Depends(require_api_key)],
+)
+async def create_annexure_index(
+    agent_data_id: str,
+    body: AnnexureIndexRequest,
+    background_tasks: BackgroundTasks,
+) -> JobAccepted:
+    """Last step: List of Dates plus annexure pages, after Pinecone and defects."""
+    await _require_scrutiny_before_annexure_index(agent_data_id)
+    event = AnnexureIndexEvent(
+        agent_data_id=agent_data_id,
+        annexures=list(body.annexures),
+    )
+    return _accept_annexure_index(event=event, background_tasks=background_tasks)
 
 
 def main() -> None:

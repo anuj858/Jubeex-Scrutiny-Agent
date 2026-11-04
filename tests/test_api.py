@@ -5,9 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from extraction_review.api import JOBS, app
+from extraction_review.api import JOBS, DocumentIn, app
 from extraction_review.config import JUBEEX_FILING_TYPES, JUBEEX_UPLOAD_FILING_TYPES
 from extraction_review.process_file import BundlePrepared
 
@@ -27,17 +28,29 @@ class ImmediateHandler:
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     JOBS.clear()
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
+    monkeypatch.setenv("JUBEEX_ALLOW_UNAUTHENTICATED", "true")
     monkeypatch.delenv("JUBEEX_SQS_ENABLED", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_INGESTION_QUEUE_URL", raising=False)
     monkeypatch.delenv("JUBEEX_SQS_SCRUTINY_QUEUE_URL", raising=False)
 
-    async def _skip_prepare(_agent_data_id: str) -> None:
+    async def _skip_prepare(_agent_data_id: str, **_scope: object) -> None:
         return None
 
     monkeypatch.setattr(
         "extraction_review.api.prepare_extracted_filing_for_scrutiny",
         _skip_prepare,
     )
+
+    async def _existing_filing(_agent_data_id: str, **_scope: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        _existing_filing,
+    )
+    monkeypatch.setenv("SCRUTINY_MODEL_LOW", "google/gemini-low")
+    monkeypatch.setenv("SCRUTINY_MODEL_MEDIUM", "google/gemini-medium")
+    monkeypatch.setenv("SCRUTINY_MODEL_HIGH", "google/gemini-high")
     return TestClient(app)
 
 
@@ -47,6 +60,15 @@ def test_health(client: TestClient) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_document_input_preserves_compiled_page_span() -> None:
+    document = DocumentIn(
+        name="Index.pdf",
+        document_id="document-1",
+        page_span=[{"start": 2, "end": 4}],
+    )
+    assert document.page_span == [{"start": 2, "end": 4}]
+
+
 def test_catalog(client: TestClient) -> None:
     response = client.get("/v1/catalog")
     assert response.status_code == 200
@@ -54,6 +76,9 @@ def test_catalog(client: TestClient) -> None:
     assert body["filing_types"] == list(JUBEEX_FILING_TYPES)
     assert "CIVIL_APPEAL" in body["filing_types"]
     assert "MISCELLANEOUS_APPLICATION" in body["filing_types"]
+    assert "Motor Vehical Act" in body["special_categories"]["SLP_CIVIL"]
+    assert "Appeal (Armed Forces)" in body["special_categories"]["CIVIL_APPEAL"]
+    assert "Motor Vehical Act" not in body["special_categories"]["SLP_CRIMINAL"]
     assert set(body["split_upload_types"]) == set(JUBEEX_UPLOAD_FILING_TYPES)
     assert "CIVIL_APPEAL" in body["split_upload_types"]
     assert "MISCELLANEOUS_APPLICATION" in body["split_upload_types"]
@@ -62,8 +87,8 @@ def test_catalog(client: TestClient) -> None:
     assert "TRANSFER_PETITION_CIVIL" in body["split_upload_types"]
     assert body["config"]["config_id"] == "jubeex_parse"
     assert body["config"]["classify"]["config_version"] == "1.0.0"
-    assert body["config"]["extract"]["config_version"] == "1.0.0"
-    assert body["config"]["split"]["config_version"] == "1.0.0"
+    assert body["config"]["extract"]["config_version"] == "1.0.2"
+    assert body["config"]["split"]["config_version"] == "1.0.37"
 
 
 def test_create_filing_rejects_empty_body(client: TestClient) -> None:
@@ -221,6 +246,7 @@ def test_unknown_job_is_404(client: TestClient) -> None:
 def test_api_key_required(monkeypatch: pytest.MonkeyPatch) -> None:
     JOBS.clear()
     monkeypatch.setenv("JUBEEX_API_KEY", "secret-key")
+    monkeypatch.delenv("JUBEEX_ALLOW_UNAUTHENTICATED", raising=False)
     guarded = TestClient(app)
     denied = guarded.get("/v1/catalog")
     assert denied.status_code == 401
@@ -233,9 +259,7 @@ def test_api_key_required(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JUBEEX_API_KEY", raising=False)
 
 
-def test_approve_filing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_approve_filing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     stored = {
         "status": "pending_review",
         "file_name": "Cover Page.pdf",
@@ -299,7 +323,10 @@ def test_create_scrutiny(client: TestClient, monkeypatch: pytest.MonkeyPatch) ->
         "extraction_review.api.scrutiny_workflow.run",
         lambda start_event: ImmediateHandler(result),
     )
-    response = client.post("/v1/filings/agd-scr-1/scrutiny", json={})
+    response = client.post(
+        "/v1/filings/agd-scr-1/scrutiny",
+        json={"model_tier": "low"},
+    )
     assert response.status_code == 202
     job_id = response.json()["job_id"]
     polled = None
@@ -334,12 +361,14 @@ def test_create_scrutiny_accepts_hash_and_url(
     response = client.post(
         "/v1/filings/agd-scr-2/scrutiny",
         json={
+            "model_tier": "Medium",
             "file_hash": "abc123hash",
             "file_url": "https://example.com/Defect_SLP_Civil.pdf",
         },
     )
     assert response.status_code == 202
     event = captured["event"]
+    assert getattr(event, "model_tier") == "medium"
     assert getattr(event, "file_hash") == "abc123hash"
     assert getattr(event, "file_url") == "https://example.com/Defect_SLP_Civil.pdf"
 
@@ -362,7 +391,10 @@ def test_create_scrutiny_accepts_download_url_alias(
     )
     response = client.post(
         "/v1/filings/agd-scr-4/scrutiny",
-        json={"download_url": "https://example.com/compiled.pdf"},
+        json={
+            "model_tier": "high",
+            "download_url": "https://example.com/compiled.pdf",
+        },
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "file_url") == "https://example.com/compiled.pdf"
@@ -386,7 +418,11 @@ def test_create_scrutiny_drops_swagger_placeholders(
     )
     response = client.post(
         "/v1/filings/agd-scr-3/scrutiny",
-        json={"file_hash": "string", "file_url": "string"},
+        json={
+            "model_tier": "low",
+            "file_hash": "string",
+            "file_url": "string",
+        },
     )
     assert response.status_code == 202
     event = captured["event"]
@@ -422,3 +458,569 @@ async def test_prepare_extracted_filing_normalizes_llamaextract_error(
     await prepare_extracted_filing_for_scrutiny("agd-err-1")
     assert stored["status"] == "pending_review"
     assert stored["metadata"]["extract_status"] == "error"
+
+
+def _doc(name: str, url: str = "https://example.com/file.pdf") -> dict[str, str]:
+    return {"name": name, "download_url": url}
+
+
+def test_serialize_verify_result_is_only_match_documents() -> None:
+    from extraction_review.api import _serialize_result
+
+    payload = _serialize_result(
+        BundlePrepared(
+            filing_type="SLP_CIVIL",
+            match=False,
+            verified_documents=[
+                {"name": "cover_page.pdf", "match": True},
+                {"name": "vakalatnama.pdf", "match": False},
+            ],
+            result={"match": False, "documents": []},
+        )
+    )
+    assert payload == {
+        "type": "DocumentsVerified",
+        "match": False,
+        "documents": [
+            {"name": "cover_page.pdf", "match": True},
+            {"name": "vakalatnama.pdf", "match": False},
+        ],
+    }
+
+
+def test_catalog_lists_new_job_types(client: TestClient) -> None:
+    body = client.get("/v1/catalog").json()
+    for job_type in (
+        "split_petition",
+        "verify_document",
+        "extract_only",
+        "extract_front",
+        "index_parsed",
+    ):
+        assert job_type in body["job_types"]
+
+
+def test_split_petition_requires_filing_type(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/split-petition",
+        json={"documents": [_doc("Main_Petition.pdf")]},
+    )
+    assert response.status_code == 422
+
+
+def test_split_petition_accepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", parsed_slots=[])
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(prepared),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/split-petition",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("Main_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "job_type") == "split_petition"
+
+
+def test_split_petition_v2_accepts_like_split(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", parsed_slots=[])
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v2/filings/split-petition",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [_doc("Main_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"]
+    assert body["poll_url"] == f"/v1/jobs/{body['job_id']}"
+    assert getattr(captured["event"], "job_type") == "split_petition"
+    assert getattr(captured["event"], "filing_type") == "SLP_CIVIL"
+
+
+def test_split_petition_post_is_not_shadowed_by_filing_id(client: TestClient) -> None:
+    response = client.post("/v1/filings/split-petition", json={})
+    assert response.status_code != 405
+
+
+def test_verify_document_accepts_multiple_files(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verified = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        match=False,
+        verified_documents=[
+            {"name": "cover_page.pdf", "match": True},
+            {"name": "vakalatnama.pdf", "match": False},
+        ],
+        result={
+            "match": False,
+            "documents": [
+                {"name": "cover_page.pdf", "match": True},
+                {"name": "vakalatnama.pdf", "match": False},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: ImmediateHandler(verified),
+    )
+    response = client.post(
+        "/v1/filings/verify-document",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("vakalatnama.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    body = polled.json()
+    assert body["status"] == "completed"
+    result = body["result"]
+    assert result["match"] is False
+    names = {item["name"]: item["match"] for item in result["documents"]}
+    assert names["cover_page.pdf"] is True
+    assert names["vakalatnama.pdf"] is False
+    assert result["type"] == "DocumentsVerified"
+    assert set(result.keys()) <= {"type", "match", "documents", "artifacts"}
+    assert {"type", "match", "documents"} <= set(result.keys())
+
+
+def test_extract_only_accepts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-extract-1",
+        parsed_slots=["petition", "cover_page"],
+        result="agd-extract-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "agent_data_id": "agd-existing",
+            "documents": [
+                _doc("01_Petition.pdf"),
+                _doc("cover_page.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "job_type") == "extract_only"
+    assert getattr(captured["event"], "agent_data_id") == "agd-existing"
+
+
+def test_extract_front_accepts_like_extract(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-front-1",
+        parsed_slots=["petition"],
+        result="agd-front-1",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "special_category": "Tax Matters",
+            "documents": [_doc("compiled.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job_id"]
+    assert body["poll_url"] == f"/v1/jobs/{body['job_id']}"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "extract_front"
+    assert getattr(event, "special_category") is None
+    assert len(getattr(event, "documents")) == 1
+
+
+def test_extract_front_classifies_when_filing_type_is_missing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        parsed_slots=["petition"],
+        result={"filing_type": "SLP_CIVIL"},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={"documents": [_doc("compiled.pdf")]},
+    )
+
+    assert response.status_code == 202
+    event = captured["event"]
+    assert event.job_type == "extract_front"
+    assert event.filing_type is None
+
+
+def test_extract_front_rejects_split_documents(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/extract-front",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("01_Petition.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index-1",
+        result="agd-index-1",
+        report={"schema_name": "scrutiny_finding_v1", "agent_data_id": "agd-index-1"},
+    )
+    captured: dict[str, object] = {}
+    notified: dict[str, object] = {}
+
+    def fake_run(start_event):
+        captured["event"] = start_event
+        return ImmediateHandler(prepared)
+
+    async def fake_notify(**kwargs):
+        notified.update(kwargs)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        fake_run,
+    )
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+    response = client.post(
+        "/v1/filings/agd-index-1/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "edited": "yes",
+            "model_tier": "Low",
+            "parsed_slots": ["cover_page", "petition"],
+            "special_category": "Eviction Matters",
+            "documents": [
+                _doc("cover_page.pdf"),
+                _doc("01_Petition.pdf"),
+                _doc("annexure_p1.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    assert polled.json()["status"] == "completed"
+    assert polled.json()["kind"] == "process_file"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "index_parsed"
+    assert getattr(event, "agent_data_id") == "agd-index-1"
+    assert getattr(event, "edited") is True
+    assert getattr(event, "model_tier") == "low"
+    assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
+    assert notified.get("kind") == "scrutiny"
+
+
+def test_index_edited_false(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-index-2")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: (
+            captured.update(event=start_event) or ImmediateHandler(prepared)
+        ),
+    )
+    response = client.post(
+        "/v1/filings/agd-index-2/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "edited": False,
+            "model_tier": "medium",
+            "parsed_slots": ["petition"],
+            "documents": [
+                {**_doc("01_Petition.pdf"), "file_hash": "a" * 64},
+                _doc("index.pdf"),
+            ],
+        },
+    )
+    assert response.status_code == 202
+    assert getattr(captured["event"], "edited") is False
+    assert getattr(captured["event"], "job_type") == "index_parsed"
+    assert getattr(captured["event"], "documents")[0].file_hash == "a" * 64
+
+
+def test_index_rejects_malformed_document_hash(client: TestClient) -> None:
+    response = client.post(
+        "/v1/filings/agd-index-invalid-hash/index",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "high",
+            "workspace_id": "workspace-invalid-hash",
+            "organization_id": "organization-invalid-hash",
+            "documents": [
+                {**_doc("01_Petition.pdf"), "file_hash": "caller-controlled-value"}
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "64-character hexadecimal SHA-256" in response.text
+
+
+def test_reindex_deletes_workspace_vectors_then_queues_index(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-reindex-1")
+    captured: dict[str, object] = {}
+    notified: dict[str, object] = {}
+    deleted: list[str] = []
+
+    async def fake_notify(**kwargs):
+        notified.update(kwargs)
+
+    def fake_delete(workspace_id: str) -> None:
+        deleted.append(workspace_id)
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+    monkeypatch.setattr("extraction_review.api.delete_workspace_records", fake_delete)
+
+    missing = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert missing.status_code == 422
+    assert deleted == []
+
+    async def missing_filing(*_args: object, **_kwargs: object) -> None:
+        raise HTTPException(status_code=404, detail="Filing not found: agd-reindex-1")
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        missing_filing,
+    )
+    unknown = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert unknown.status_code == 404
+    assert deleted == []
+    assert "event" not in captured
+
+    async def existing_filing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        existing_filing,
+    )
+
+    def failing_delete(_workspace_id: str) -> None:
+        raise RuntimeError("pinecone down")
+
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        failing_delete,
+    )
+    failed = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "low",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert failed.status_code == 502
+    assert "event" not in captured
+
+    monkeypatch.setattr("extraction_review.api.delete_workspace_records", fake_delete)
+    response = client.post(
+        "/v1/filings/agd-reindex-1/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "high",
+            "workspace_id": "ws-reindex-1",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 202
+    assert deleted == ["ws-reindex-1"]
+    job_id = response.json()["job_id"]
+    polled = None
+    for _ in range(40):
+        polled = client.get(f"/v1/jobs/{job_id}")
+        if polled.json()["status"] != "running":
+            break
+    assert polled is not None
+    assert polled.json()["status"] == "completed"
+    event = captured["event"]
+    assert getattr(event, "job_type") == "index_parsed"
+    assert getattr(event, "agent_data_id") == "agd-reindex-1"
+    assert getattr(event, "workspace_id") == "ws-reindex-1"
+    assert getattr(event, "model_tier") == "high"
+    assert notified.get("kind") == "scrutiny"
+
+
+@pytest.mark.parametrize("model_tier", [None, "", "   ", "turbo"])
+def test_index_rejects_missing_or_invalid_model_tier(
+    client: TestClient, model_tier: str | None
+) -> None:
+    payload = {
+        "filing_type": "SLP_CIVIL",
+        "documents": [_doc("01_Petition.pdf")],
+    }
+    if model_tier is not None:
+        payload["model_tier"] = model_tier
+    response = client.post("/v1/filings/agd-index-tier/index", json=payload)
+    assert response.status_code == 422
+    assert "model_tier" in response.text
+
+
+def test_reindex_rejects_unset_tier_model_before_delete(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deleted: list[str] = []
+    monkeypatch.delenv("SCRUTINY_MODEL_MEDIUM", raising=False)
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        lambda workspace_id: deleted.append(workspace_id),
+    )
+    response = client.post(
+        "/v1/filings/agd-reindex-tier/reindex",
+        json={
+            "filing_type": "SLP_CIVIL",
+            "model_tier": "medium",
+            "workspace_id": "ws-reindex-tier",
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert response.status_code == 422
+    assert "SCRUTINY_MODEL_MEDIUM" in response.text
+    assert deleted == []
+
+
+def test_job_record_out_has_duplicates() -> None:
+    from extraction_review.api import JobState
+
+    state_with_dups = JobState(job_id="job-1", kind="process_file")
+    state_with_dups.status = "completed"
+    state_with_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": True,
+        "parts": [
+            {"slot_id": "index_1", "duplicate": True, "start_page": 5, "end_page": 11},
+            {"slot_id": "index_2", "duplicate": True, "start_page": 202, "end_page": 202},
+        ],
+    }
+    out_with_dups = state_with_dups.as_out()
+    assert out_with_dups.has_duplicates is True
+    assert out_with_dups.model_dump()["has_duplicates"] is True
+
+    state_no_dups = JobState(job_id="job-2", kind="process_file")
+    state_no_dups.status = "completed"
+    state_no_dups.result = {
+        "filing_type": "SLP_CIVIL",
+        "has_duplicates": False,
+        "parts": [
+            {"slot_id": "petition", "duplicate": False, "start_page": 1, "end_page": 10},
+        ],
+    }
+    out_no_dups = state_no_dups.as_out()
+    assert out_no_dups.has_duplicates is False
+    assert out_no_dups.model_dump()["has_duplicates"] is False
+
+    state_other = JobState(job_id="job-3", kind="process_file")
+    state_other.status = "completed"
+    state_other.result = {"match": True}
+    assert state_other.as_out().has_duplicates is None

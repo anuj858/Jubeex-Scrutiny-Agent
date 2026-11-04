@@ -13,11 +13,12 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .scrutiny.rules import Defect, normalize_filing_type
+from .scrutiny.rules import Defect, check_requirement, normalize_filing_type
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 
@@ -41,54 +42,59 @@ PINECONE_QUERY_MAX_CHARS = 110
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
 
+
+@dataclass(frozen=True)
+class WhereToLookGuidance:
+    """Structured retrieval meaning extracted from catalogue location guidance."""
+
+    include_parts: tuple[str, ...]
+    exclude_parts: tuple[str, ...]
+    ambiguous_clauses: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class EvidenceQuery:
+    """One deterministic search intent and the part filter it requires."""
+
+    text: str
+    document_part: str | None = None
+    document_subtype_id: str | None = None
+    purpose: str = "semantic"
+
+
+@dataclass(frozen=True)
+class RetrievalPlan:
+    """Retrieval-only inputs kept separate from final validation instructions."""
+
+    queries: tuple[EvidenceQuery, ...]
+    include_parts: tuple[str, ...]
+    exclude_parts: tuple[str, ...]
+    strategy: str
+    ambiguous_guidance: tuple[str, ...] = ()
+
+
 # Split label for the Form 28 body only. Slot id stays `petition`.
 # "Petition" / "Matter" in product language means the full filing PDF.
 MAIN_PETITION_PART = "Main Petition"
 _LEGACY_PART_NAMES = {
     "petition": MAIN_PETITION_PART,
-    "aor's declaration": "AOR's Certificate",
-    "aors declaration": "AOR's Certificate",
-    "aor declaration": "AOR's Certificate",
-}
-
-CATEGORY_TO_PARTS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": (MAIN_PETITION_PART, "Affidavit"),
-    "advocate_checklist": ("Advocate's Checklist", "Vakalatnama"),
-    "listing_proforma": ("Listing Proforma",),
-    "petition_presentation": (
-        MAIN_PETITION_PART,
-        "AOR's Certificate",
-        "Listing Proforma",
-        "Advocate's Checklist",
-    ),
-    "applications": (
-        MAIN_PETITION_PART,
-        "Annexures",
-        "Index",
-        "Application",
-    ),
-    "annexures": ("Annexures", "Index", "List of Dates & Events"),
-    "parties": ("Memo of Parties", "Cover Page", MAIN_PETITION_PART),
-    "dates_execution": (
-        MAIN_PETITION_PART,
-        "Affidavit",
-        "Vakalatnama",
-        "PoA/BR",
-    ),
-    "index_paper_book": ("Index",),
-    "limitation": ("Office Report on Limitation", MAIN_PETITION_PART),
-    # Affidavit is the inspect target; Main Petition is only retrieval context.
-    "affidavit": ("Affidavit", MAIN_PETITION_PART),
-    "translations": ("Annexures", "Vakalatnama", "PoA/BR"),
-    "vakalatnama": ("Vakalatnama", "Memo of Appearance", "PoA/BR"),
-    "memo_of_appearance": ("Memo of Appearance", "Vakalatnama"),
-    "list_of_dates": ("List of Dates & Events", "Synopsis"),
+    "aor's declaration": "AOR's Declaration",
+    "aors declaration": "AOR's Declaration",
+    "aor declaration": "AOR's Declaration",
 }
 
 # Extra catalogue phrases → Split labels (beyond the config name/description).
 _PART_ALIASES: dict[str, tuple[str, ...]] = {
-    # Do not alias bare "declaration" / "check the declaration": those words
-    # on the Advocate's Check List are not this page.
+    "AOR's Declaration": (
+        "aor's declaration",
+        "aors declaration",
+        "aor declaration",
+        "declaration curing defects",
+        "declaration for curing defects",
+        "decleartion",
+    ),
+    # Do not alias bare "declaration" / "check the declaration" to the
+    # Certificate: those words describe a separate refiling document.
     "AOR's Certificate": (
         "advocate's certificate",
         "advocate-on-record certificate",
@@ -102,8 +108,6 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
         "court/tribunal whose order is challenged",
         "this certificate is given on the basis of the instructions",
         "c e r t i f i c a t e",
-        "aor's declaration",
-        "aors declaration",
     ),
     "Affidavit": (
         "a f f i d a v i t",
@@ -125,72 +129,11 @@ _PART_ALIASES: dict[str, tuple[str, ...]] = {
 # that the named document was filed or signed.
 _NON_CONTENT_PARTS = frozenset({"Index"})
 
-# Structured CoreFilingRecord keys sent to the model for that category.
-# Always include court / petition_type; never dump unused party lists.
-CATEGORY_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
-    "filing_formalities": (
-        "court",
-        "petition_type",
-        "cause_title",
-        "impugned_orders",
-        "relief_sort",
-        "documents",
-    ),
-    "advocate_checklist": (
-        "court",
-        "petition_type",
-        "advocates_on_record",
-    ),
-    "listing_proforma": (
-        "court",
-        "petition_type",
-        "cause_title",
-    ),
-    "petition_presentation": (
-        "court",
-        "petition_type",
-        "documents",
-    ),
-    "applications": ("court", "petition_type", "documents"),
-    "annexures": ("court", "petition_type", "documents"),
-    "parties": (
-        "court",
-        "petition_type",
-        "cause_title",
-        "impugned_orders",
-    ),
-    "dates_execution": ("court", "petition_type", "documents"),
-    "index_paper_book": ("court", "petition_type", "documents"),
-    "limitation": ("court", "petition_type", "impugned_orders", "documents"),
-    "affidavit": ("court", "petition_type"),
-    "translations": ("court", "petition_type", "documents"),
-    "vakalatnama": ("court", "petition_type", "advocates_on_record", "documents"),
-    "memo_of_appearance": ("court", "petition_type", "advocates_on_record"),
-    "list_of_dates": ("court", "petition_type", "documents"),
-}
-
 ALWAYS_RECORD_FIELDS: tuple[str, ...] = ("court", "petition_type")
 
 # Ceiling on page excerpts sent to the LLM (summary is extra). Narrow checks
 # do not need the global SCRUTINY_MAX_CHUNKS dump. Multi-part checks then
 # raise this to PAGES_PER_TARGET_PART each.
-CATEGORY_MAX_CHUNKS: dict[str, int] = {
-    "listing_proforma": 3,
-    "advocate_checklist": 3,
-    "filing_formalities": 10,
-    "petition_presentation": 12,
-    "applications": 4,
-    "annexures": 6,
-    "parties": 6,
-    "dates_execution": 6,
-    "index_paper_book": 4,
-    "limitation": 4,
-    "affidavit": 6,
-    "translations": 4,
-    "vakalatnama": 3,
-    "memo_of_appearance": 3,
-    "list_of_dates": 3,
-}
 
 # At least this many page excerpts per document part the check must open.
 PAGES_PER_TARGET_PART = 3
@@ -207,7 +150,9 @@ _LANDMARK_STOP = re.compile(
     r"|[.;]",
     re.IGNORECASE,
 )
-_PLACEMENT_PAREN = re.compile(r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I)
+_PLACEMENT_PAREN = re.compile(
+    r"\((?:placed|found|located|situated)\b[^)]{0,240}\)", re.I
+)
 
 # Keep a page chunk only if ln(best_score / this_score) is below this.
 # 0.36 ≈ keep scores at least ~70% of the best hit; farther neighbours are dropped.
@@ -253,11 +198,14 @@ def split_part_names() -> tuple[str, ...]:
 
 
 def _fold(text: str) -> str:
-    return re.sub(
-        r"\s+", " ", (text or "").replace("\u2019", "'").replace("\u2018", "'")
-    ).strip().lower()
+    return (
+        re.sub(r"\s+", " ", (text or "").replace("\u2019", "'").replace("\u2018", "'"))
+        .strip()
+        .lower()
+    )
 
 
+@lru_cache(maxsize=256)
 def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     """Search phrases for one Split part: official name plus description nicknames."""
     needles: list[str] = []
@@ -280,10 +228,13 @@ def _needles_for_part(name: str, description: str = "") -> tuple[str, ...]:
     return tuple(needles)
 
 
+@lru_cache(maxsize=1024)
 def normalize_part_name(name: str | None) -> str:
     if not name:
         return ""
-    text = re.sub(r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")).strip()
+    text = re.sub(
+        r"\s+", " ", name.replace("\u2019", "'").replace("\u2018", "'")
+    ).strip()
     folded = _fold(text)
     if folded in _LEGACY_PART_NAMES:
         return _LEGACY_PART_NAMES[folded]
@@ -358,21 +309,53 @@ def format_page_span(pages: list[int]) -> str:
     return prefix + ", ".join(bits)
 
 
+def page_ranges(pages: list[int]) -> list[dict[str, int]]:
+    """Contiguous page runs, e.g. [{'start': 3, 'end': 5}, {'start': 9, 'end': 9}]."""
+    return [{"start": a, "end": b} for a, b in _contiguous_groups(pages)]
+
+
 def _format_page_span(pages: list[int]) -> str:
     return format_page_span(pages)
 
 
-# Later pages labelled the same part after this many skipped pages are a
-# mis-tag (second Index, second Cover), not a continuation.
-_FIRST_PART_GAP = 20
+# Outer SCI paper-book parts keep the *first* contiguous run. A later High Court
+# writ mislabeled as Main Petition must not replace the real Form 28 body. Index
+# is the exception: master and volume indexes can be separate legitimate runs.
+_FIRST_RUN_OUTER_PARTS = frozenset(
+    {
+        MAIN_PETITION_PART,
+        "Cover Page",
+        "Advocate's Checklist",
+        "Office Report on Limitation",
+        "Listing Proforma",
+        "Synopsis",
+        "List of Dates & Events",
+        "Impugned Order",
+        "AOR's Declaration",
+        "AOR's Certificate",
+        "Affidavit",
+        "Appendix",
+        "Vakalatnama",
+        "Memo of Appearance",
+        "Memo of Parties",
+        "Filing Memo",
+        "Court Fees",
+        "PoA/BR",
+        # Record of Proceedings uses longest-run: a stray early page is common noise.
+    }
+)
 
 
 def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
-    """Keep the first occurrence of each Split part, including nearby pages.
+    """Keep one contiguous run of each Split part.
 
-    Index at 5–7 is kept; Index at 55–57 is dropped (that page is something
-    else). A mixed page can still keep its other label. Main Petition at 17 then
-    25–35 is kept (other documents sit in between).
+    All Index runs are kept because master and volume indexes are distinct valid
+    sections. Main Petition at 15–23 is
+    kept; a later Main Petition island (often a High Court writ) is dropped —
+    first run wins for outer paper-book parts. Record of Proceedings keeps the
+    longest run (stray early pages are common noise). Annexure P-2 at 29–30 is
+    kept; later P-2 islands at 100–102 and 104 are dropped. Generic unnumbered
+    Annexures stay until they are labelled P-n.
     """
     pages_by_part: dict[str, list[int]] = {}
     for page, names in page_parts.items():
@@ -381,11 +364,31 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
 
     keep: set[tuple[int, str]] = set()
     for part, pages in pages_by_part.items():
-        last_kept: int | None = None
-        for page in sorted(set(pages)):
-            if last_kept is None or page - last_kept <= _FIRST_PART_GAP:
-                keep.add((page, part))
-                last_kept = page
+        unique = sorted(set(pages))
+        if part == "Index":
+            keep.update((page, part) for page in unique)
+            continue
+        if family_split_name(part) == ANNEXURE_FAMILY and not _is_numbered_annexure(
+            part
+        ):
+            keep.update((page, part) for page in unique)
+            continue
+        groups = _contiguous_groups(unique)
+        if not groups:
+            continue
+        folded = _fold(part)
+        numbered_app = bool(re.fullmatch(r"application \d+", folded))
+        if (
+            _is_numbered_annexure(part)
+            or numbered_app
+            or part in _FIRST_RUN_OUTER_PARTS
+        ):
+            start, end = groups[0]
+        else:
+            start, end = max(
+                groups, key=lambda group: (group[1] - group[0] + 1, -group[0])
+            )
+        keep.update((page, part) for page in unique if start <= page <= end)
 
     collapsed: PagePartMap = {}
     for page, names in page_parts.items():
@@ -400,7 +403,7 @@ def collapse_repeated_split_pages(page_parts: PagePartMap) -> PagePartMap:
 COMBINED_DOCUMENT_GROUPS: tuple[tuple[frozenset[str], str], ...] = (
     (
         frozenset({"Synopsis", "List of Dates & Events"}),
-        "Synopsis + List of Dates & Events",
+        "Synopsis & List of Dates & Events",
     ),
     (
         frozenset({"Memo of Appearance", "Vakalatnama"}),
@@ -451,14 +454,14 @@ def _collapse_combined_document_parts(
     return merged_order, merged_pages
 
 
-def documents_from_page_parts(page_parts: PagePartMap | dict[int, str]) -> dict[str, Any]:
+def documents_from_page_parts(
+    page_parts: PagePartMap | dict[int, str],
+) -> dict[str, Any]:
     """Build a count/items list of Split parts with page spans."""
     order, pages_by_part = _collapse_combined_document_parts(
         *_pages_by_part(page_parts)
     )
-    items = [
-        f"{name} ({_format_page_span(pages_by_part[name])})" for name in order
-    ]
+    items = [f"{name} ({_format_page_span(pages_by_part[name])})" for name in order]
     return {"count": len(items), "items": items}
 
 
@@ -513,17 +516,195 @@ def filing_type_label(filing_type: str | None) -> str:
     return raw or "this filing"
 
 
-MAX_NUMBERED_PART = 999
 ANNEXURE_FAMILY = "Annexures"
 APPLICATION_FAMILY = "Application"
 
+
+def canonical_document_part_id(name: str | None) -> str:
+    """Stable scalar id used for pre-top-k Pinecone metadata filtering."""
+
+    normalized = normalize_part_name(name)
+    if not normalized:
+        return "unknown"
+    family = family_split_name(normalized)
+    token = re.sub(r"[^a-z0-9]+", "_", family.casefold()).strip("_")
+    return token or "unknown"
+
+
+_APPLICATION_SUBTYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "application_exemption_certified_copy",
+        re.compile(
+            r"(?:exemption|dispens(?:e|ing))[^\n]{0,100}(?:certified\s+copy|"
+            r"filing\s+(?:a\s+)?certified)|certified\s+copy[^\n]{0,100}exemption",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_condonation_delay",
+        re.compile(r"condonation\s+of\s+delay|condone\s+the\s+delay", re.IGNORECASE),
+    ),
+    (
+        "application_permission_slp",
+        re.compile(
+            r"permission\s+to\s+file[^\n]{0,80}(?:special\s+leave|s\.?l\.?p\.?)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_exemption_translation",
+        re.compile(
+            r"exemption[^\n]{0,100}(?:official\s+translation|translated\s+copy)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "application_interim_relief",
+        re.compile(
+            r"interim\s+(?:relief|stay)|application\s+for\s+stay", re.IGNORECASE
+        ),
+    ),
+    (
+        "application_impleadment",
+        re.compile(r"implead(?:ment|ing)|addition\s+of\s+part(?:y|ies)", re.IGNORECASE),
+    ),
+    (
+        "application_substitution",
+        re.compile(
+            r"substitution|bring(?:ing)?\s+legal\s+representatives", re.IGNORECASE
+        ),
+    ),
+)
+
+
+def application_subtype_id(text: str | None) -> str | None:
+    """Return a conservative semantic subtype only for a distinctive heading."""
+
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return None
+    for subtype, pattern in _APPLICATION_SUBTYPE_PATTERNS:
+        if pattern.search(value):
+            return subtype
+    return None
+
+
+def document_subtype_id(part: str | None, text: str | None) -> str | None:
+    """Subtype is separate from the canonical part family."""
+
+    normalized = normalize_part_name(part)
+    if family_split_name(normalized) == APPLICATION_FAMILY:
+        return application_subtype_id(text)
+    slot = numbered_part_slot_id(normalized)
+    if slot and slot not in {"applications", "annexures"}:
+        return slot
+    return None
+
+
+@dataclass(frozen=True)
+class AnnexureMark:
+    """Printed exhibit stamp: Annexure P-1 / E-2 / R-3.
+
+    Series letters:
+    - ``P`` — Petitioner
+    - ``R`` — Respondent
+    - ``E`` — exhibit alias on many bank/HC sheets; normalized to ``P``
+      (paper-book Index uses petitioner ``P-n`` for those same pages)
+    """
+
+    number: int
+    series: str = "P"
+
+    def __post_init__(self) -> None:
+        letter = (self.series or "P").strip().upper()[:1] or "P"
+        if not letter.isalpha():
+            letter = "P"
+        # Underlying exhibit stamps use E-n; paper-book Index uses P-n.
+        if letter == "E":
+            letter = "P"
+        object.__setattr__(self, "series", letter)
+
+    @property
+    def label(self) -> str:
+        return f"Annexure {self.series}-{self.number}"
+
+    @property
+    def slot_id(self) -> str:
+        return f"annexure_{self.series.lower()}{self.number}"
+
+
+def _strip_heading_markup(raw_line: str) -> str:
+    """Remove LlamaParse presentation markup without changing heading text."""
+    line = re.sub(r"^\s{0,3}#{1,6}\s*", "", raw_line or "")
+    line = re.sub(r"</?[^>\n]+>", "", line)
+    line = re.sub(r"^\s*(?:[*_~]{1,3}\s*)+", "", line)
+    return re.sub(r"(?:\s*[*_~]{1,3})+\s*$", "", line).strip()
+
+
+# OCR: ANNEXURE - E-1, ANNEXURE-:-- E-5, ANNEXURE-P/4, ANNEXURE P-1.
+# Filing stamps also commonly quote the label: Annexure “P-1”.
 _ANNEXURE_HEADING_RE = re.compile(
-    r"(?:annexure|annx\.?)\s*(?:no\.?\s*)?(?:[pr]|petitioner|respondent)?"
-    r"\s*[-/:]?\s*(\d{1,3})\b"
-    r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?[PR][-\s]?(\d{1,3})\b",
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
+    # Handwritten slash is commonly parsed as ``f`` (A/20 -> Af20).
+    r"[-–—/:.~f\s\"'“”‘’]*)?"
+    # OCR frequently renders the handwritten digit 1 as I/l (``P-I``/``PI``).
+    # This alternative exists only after the explicit ANNEXURE word and a
+    # series token; bare I/l tokens remain invalid.
+    r"(?P<num>\d+|[Il])[\"'“”‘’]?(?!\w)"
+    r"|(?:^|\n)\s*(?:marked\s+)?(?:as\s+)?"
+    r"(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)\b",
     re.IGNORECASE,
 )
-_APPLICATION_CAUSE_RE = re.compile(r"in the supreme court of india", re.IGNORECASE)
+# Paper-book title or stamp line (not an Index row like "15. ANNEXURE-P/4").
+_ANNEXURE_TITLE_LINE_RE = re.compile(
+    r"^[^A-Za-z0-9\s]{0,4}\s*(?:\d{1,4}\s+)?"
+    r"(?:"
+    r"(?:annexure|annx\.?)\s*[-–—:.~\s\"'“”‘’]*?(?:no\.?\s*)?"
+    r"(?:(?P<series>[A-Za-z]|petitioner|respondent)\s*"
+    r"[-–—/:.~f\s\"'“”‘’]*)?"
+    r"(?P<num>\d+|[Il])[\"'“”‘’]?(?!\w)"
+    r"|(?P<bare_series>[PREpre])[-\s]?(?P<bare_num>\d+)"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
+_INDEX_ROW_ANNEXURE_RE = re.compile(
+    r"^\d{1,3}[.\)]\s*(?:annexure|annx\.?)\b",
+    re.IGNORECASE,
+)
+_ANNEXURE_PAGE_CITE_RE = re.compile(
+    r"^[\[\(]?\s*(?:pg|pgs?|pages?|pp)\b|"
+    r"^\d{1,4}\s*[-–—]\s*\d{1,4}\b|"
+    r"\[?\s*pg\s*[_\.\-–—\s]*to\b|"
+    r"\ba\s+true\b|\btrue\s+cop",
+    re.IGNORECASE,
+)
+_ANNEXURE_CITATION_PREV_RE = re.compile(
+    r"annexed\s+(?:herewith|hereto|to|with)\b|hereto\s+annexed|"
+    r"marked\s+as|true\s+cop(?:y|ies)\s+of|"
+    r"produced\s+(?:herewith|hereto|with|as)\b|"
+    r"(?:appended|attached)\s+(?:as|hereto|herewith|to)\b",
+    re.IGNORECASE,
+)
+_APPLICATION_CAUSE_RE = re.compile(
+    r"in\s+the\s+(?:hon['’]?ble\s+)?supreme\s+court\s+of\s+india",
+    re.IGNORECASE,
+)
+_AFFIDAVIT_HEADING_RE = re.compile(
+    r"(?m)^\s*(?:#{1,6}\s*)?(?:<[^>\n]+>\s*)*(?:[*_]{1,3}\s*)?"
+    r"(?:A\s+F\s+F\s+I\s+D\s+A\s+V\s+I\s+T|AFFIDAVIT)"
+    r"(?:\s*[*_]{1,3})?(?:\s*</[^>\n]+>)*"
+    r"\s*(?:$|[:\-–—]|(?:OF|ON\s+BEHALF\s+OF|BY)\b)",
+    re.IGNORECASE,
+)
+_CERTIFICATE_HEADING_RE = re.compile(
+    r"(?m)^(?:C\s+E\s+R\s+T\s+I\s+F\s+I\s+C\s+A\s+T\s+E|CERTIFICATE)\b",
+    re.IGNORECASE,
+)
+_PROTECTED_HEADING_PARTS = frozenset(
+    {"Cover Page", "Index", "AOR's Declaration", "AOR's Certificate", "Affidavit"}
+)
+_RECLASSIFY_FAMILIES = frozenset({MAIN_PETITION_PART, APPLICATION_FAMILY})
 
 
 def family_split_name(name: str) -> str:
@@ -536,47 +717,905 @@ def family_split_name(name: str) -> str:
     return name
 
 
+_NUMBERED_ANNEXURE_RE = re.compile(r"^annexure [a-z]-?\d+$")
+
+
+def _is_numbered_annexure(name: str) -> bool:
+    return bool(_NUMBERED_ANNEXURE_RE.fullmatch(_fold(name)))
+
+
+def _normalize_annexure_series(raw: str | None) -> str:
+    """Map stamp/Index series tokens to P (Petitioner) or R (Respondent).
+
+    ``E`` / exhibit aliases become ``P``. Other single letters are kept as-is
+    (uppercase) so unusual series are not silently forced to P.
+    """
+    token = (raw or "").strip().lower()
+    if token.startswith("pet"):
+        return "P"
+    if token.startswith("res"):
+        return "R"
+    if token.startswith("exh") or token == "e":
+        return "P"
+    if token and token[0].isalpha():
+        letter = token[0].upper()
+        if letter == "E":
+            return "P"
+        return letter
+    return "P"
+
+
+def _annexure_mark_from_match(match: re.Match[str]) -> AnnexureMark | None:
+    groups = match.groupdict()
+    number_raw = groups.get("num") or groups.get("bare_num")
+    if not number_raw:
+        # Legacy positional groups (older callers / tests).
+        number_raw = next((g for g in match.groups() if g and str(g).isdigit()), None)
+    if not number_raw:
+        return None
+    number = 1 if str(number_raw).casefold() in {"i", "l"} else int(number_raw)
+    if number < 1:
+        return None
+    series = _normalize_annexure_series(
+        groups.get("series") or groups.get("bare_series")
+    )
+    return AnnexureMark(number=number, series=series)
+
+
 def numbered_part_slot_id(name: str) -> str | None:
-    """Map `Annexure P-12` / `Application 7` onto a dynamic slot id."""
+    """Map `Annexure P-12` / `Annexure E-2` / `Application 7` onto a dynamic slot id."""
     folded = _fold(name)
     if folded in {"annexures", "annexure"}:
         return "annexures"
-    match = re.fullmatch(r"annexure p-?(\d{1,3})", folded)
+    match = re.fullmatch(r"annexure ([a-z])-?(\d+)", folded)
     if match:
-        number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
-            return f"annexure_p{number}"
+        series = match.group(1)
+        number = int(match.group(2))
+        if number >= 1:
+            return f"annexure_{series}{number}"
     if folded == "application":
         return "applications"
-    match = re.fullmatch(r"application (\d{1,3})", folded)
+    match = re.fullmatch(r"application (\d+)", folded)
     if match:
         number = int(match.group(1))
-        if 1 <= number <= MAX_NUMBERED_PART:
+        if number >= 1:
             return f"application_{number}"
     return None
 
 
-def annexure_mark_in_heading(text: str) -> int | None:
-    head = "\n".join((text or "").splitlines()[:15])[:1200]
-    match = _ANNEXURE_HEADING_RE.search(head)
+def _annexure_mark_in_window(text: str) -> AnnexureMark | None:
+    match = _ANNEXURE_HEADING_RE.search(text or "")
     if not match:
         return None
-    number = int(match.group(1) or match.group(2) or 0)
-    if 1 <= number <= MAX_NUMBERED_PART:
-        return number
+    return _annexure_mark_from_match(match)
+
+
+def _looks_like_lower_court_exhibit_list(text: str) -> bool:
+    """A case-qualified judgment appendix lists exhibits, not outer documents.
+
+    Kerala judgments, for example, finish with ``APPENDIX OF WP(C) ...``
+    and ``PETITIONER EXHIBITS``. Their P1/P2 rows and wrapped descriptions
+    belong to the judgment. This identifies the enclosed list even when an
+    explicit outer stamp or APPENDIX title precedes it.
+    """
+    head = _heading_window(text, lines=16)
+    return bool(
+        re.search(
+            r"(?im)^\s*appendix\s+of\s+(?:w\.?\s*p\b|w\.?\s*a\b|r\.?\s*f\.?\s*a\b|"
+            r"o\.?\s*p\b|c\.?\s*r\.?\s*p\b|civil\s+appeal\b)",
+            head,
+        )
+        and re.search(r"(?i)\b(?:petitioner|respondent)s?\s+exhibits\b", head)
+    )
+
+
+_BANK_TRANSFER_FORM_CUES = (
+    r"\btransaction reference\b",
+    r"\bmessage type\b",
+    r"\bbeneficiar(?:y|ies)\b",
+    r"\bremitter\b",
+    r"\bcredit (?:status|confirmed|date|time)\b",
+    r"\brtgs\b|\bneft\b",
+)
+
+
+def _looks_like_bank_transfer_form(text: str) -> bool:
+    """Return true when a bare P08-like token is a bank field, not a stamp."""
+    window = (text or "")[:5000]
+    return (
+        sum(bool(re.search(cue, window, re.I)) for cue in _BANK_TRANSFER_FORM_CUES) >= 2
+    )
+
+
+def _annexure_mark_from_title_or_stamp(
+    text: str, *, require_series: bool = False
+) -> AnnexureMark | None:
+    """Series+number from a title line near the top or a short foot stamp line."""
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
+    if not lines:
+        return None
+    nested_exhibits = _looks_like_lower_court_exhibit_list(text)
+    bank_transfer_form = _looks_like_bank_transfer_form(text)
+
+    # LlamaParse preserves visual objects in the reading-order line.  A real
+    # top-right paper-book stamp can therefore arrive as one long line such as
+    # ``1 | icon: circular mark | icon: handwritten mark | Annexure A/21
+    # FIRST ADDITIONAL DISTRICT ...``.  The older title detector required a
+    # short line and a match within six characters, discarding the explicit
+    # outer owner even though the parse contained it.  Accept only harmless
+    # leading folio/icon cells here; ordinary prose (``That the Annexure...``),
+    # Index rows and page-range citations remain excluded.
+    first_line_match = _ANNEXURE_HEADING_RE.search(lines[0])
+    if (
+        first_line_match
+        and not _INDEX_ROW_ANNEXURE_RE.match(lines[0])
+        and not _looks_like_index_table(text)
+    ):
+        groups = first_line_match.groupdict()
+        # This tolerant path is only for the explicit word ``Annexure``.
+        # Bare P22/R7 tokens still need the stricter next-line checks below;
+        # they are frequently internal folios on witness continuations.
+        has_series = bool(groups.get("num") and groups.get("series"))
+        prefix = lines[0][: first_line_match.start()]
+        prefix = re.sub(
+            r"(?i)\bicon\s*:\s*[^|]{0,80}(?=\||$)", "", prefix
+        )
+        prefix = re.sub(r"[\d\s|:;,.~_\-–—/\\()[\]{}]+", "", prefix)
+        remainder = lines[0][first_line_match.end() :].strip(" .;:-~_|")
+        if (
+            not prefix
+            and has_series
+            and not _ANNEXURE_PAGE_CITE_RE.search(remainder)
+            and not re.match(r"(?i)^is\s+(?:annexed|a\s+copy)\b", remainder)
+        ):
+            mark = _annexure_mark_from_match(first_line_match)
+            if mark is not None:
+                return mark
+
+    # LlamaParse may flatten a visual stamp and the paper-book folio into
+    # table cells on one long reporter-header line:
+    # ``... | Annexure - PI | 22``.  Treat an exact Annexure cell followed by
+    # an isolated numeric cell as an outer stamp.  Index tables are excluded,
+    # so a catalogue row mentioning an annexure cannot become a boundary.
+    if not _looks_like_index_table(text):
+        for line in lines[:6]:
+            cells = [cell.strip() for cell in line.split("|")]
+            for position, cell in enumerate(cells[:-1]):
+                # Markdown Index rows use ``| 18. | Annexure P-7 | ...``.
+                # The serial cell proves that this is inventory, not a stamp.
+                if position and re.fullmatch(r"\d{1,3}[.)]", cells[position - 1]):
+                    continue
+                match = _ANNEXURE_TITLE_LINE_RE.match(cell)
+                if (
+                    match
+                    and match.end() == len(cell)
+                    and (
+                        match.groupdict().get("series")
+                        or match.groupdict().get("bare_series")
+                    )
+                    and re.fullmatch(r"\d{1,4}", cells[position + 1])
+                ):
+                    mark = _annexure_mark_from_match(match)
+                    if mark is not None:
+                        return mark
+
+    # An outer paper-book stamp can sit above an enclosed tribunal document's
+    # own MASTER INDEX. Preserve that first-line stamp; the local Index is not
+    # the Supreme Court paper-book Index and must not hide the A-n boundary.
+    stamped_local_index = bool(
+        first_line_match
+        and len(lines[0]) <= 80
+        and first_line_match.start() <= 6
+        and (
+            first_line_match.groupdict().get("series")
+            or first_line_match.groupdict().get("bare_series")
+        )
+        and re.search(
+            r"(?i)\b(?:before|in)\s+the\s+(?:hon['’]?ble\s+)?"
+            r"(?:national\s+company\s+law\s+appellate\s+tribunal|"
+            r"high\s+court|tribunal)\b",
+            "\n".join(lines[1:16]),
+        )
+        and re.search(r"(?im)^\s*(?:master\s+)?index\s*$", text or "")
+    )
+    if stamped_local_index:
+        mark = _annexure_mark_from_match(first_line_match)
+        if mark is not None:
+            return mark
+
+    # Some compiled paper-books place the outer Annexure stamp in the footer
+    # of the enclosed document's first page.  Llama/PDF text extraction then
+    # returns the local MASTER INDEX first and the real outer stamp immediately
+    # before one or two standalone folio numbers (Defect File 011, A-15).
+    # Recognize only that strong footer shape before rejecting Index pages;
+    # ordinary Index rows have a numbered prefix and/or a printed page range.
+    tail_start = max(0, len(lines) - 6)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
+        match = _ANNEXURE_TITLE_LINE_RE.match(line)
+        if not match or _INDEX_ROW_ANNEXURE_RE.match(line):
+            continue
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
+            continue
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        if remainder:
+            continue
+        following = lines[index + 1 :]
+        if not following or len(following) > 3:
+            continue
+        if not all(re.fullmatch(r"\d{1,5}", value) for value in following):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is not None and (
+            not require_series
+            or match.groupdict().get("series")
+            or match.groupdict().get("bare_series")
+        ):
+            return mark
+    if _looks_like_index_table(text) or _looks_like_sci_interlocutory(text):
+        return None
+
+    # Image OCR can put folio noise before a real first-line stamp
+    # ("i so ANNEXURE-P-11") or append the printed folio after it
+    # ("ANNEXURE-P-14 185").  Accept that compact top-of-page form.  An
+    # isolated Index serial immediately before ANNEXURE still blocks it, so
+    # continuation rows such as "18. ANNEXURE P/6 ..." are not stamps.
+    for index, line in enumerate(lines[:1]):
+        match = _ANNEXURE_HEADING_RE.search(line)
+        if not match or len(line) > 80:
+            continue
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
+            continue
+        # A real first-line stamp begins at the left margin (allowing only a
+        # few OCR-noise characters such as ``i so ANNEXURE-P-11``).  Petition
+        # prose like ``That the Annexure P-1 to Annexure P-11 ...`` must not
+        # open an annexure run and swallow the remaining petition/affidavit.
+        if match.start() > 6:
+            continue
+        if index and re.fullmatch(r"\d{1,3}[.)]", lines[index - 1]):
+            continue
+        if re.match(r"^\s*\d{1,3}[.)]", line):
+            continue
+        mark = _annexure_mark_from_match(match)
+        if mark is None or not (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
+            continue
+        # A carried sentence can begin a new PDF page with text such as
+        # ``as ANNEXURE-P8 is a copy ...``.  Its early position is a page-break
+        # artifact, not an outer paper-book stamp. Keep noisy real stamps such
+        # as ``i so ANNEXURE-P-11 as`` and stamps followed by a document title.
+        prefix = line[: match.start()].strip()
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        if prefix.casefold() == "as" and re.match(r"(?i)^is\s+a\s+copy\b", remainder):
+            continue
+        if match.groupdict().get("bare_num") and len(lines) > 1:
+            # A bare folio at the top of a scanned continuation is not an
+            # annexure stamp. In particular, OCR reads the printed folio
+            # "P22" above continuing witness testimony as Annexure P-22.
+            # Keep bare stamps whose next line actually opens a document.
+            next_line = lines[1].lstrip("_ .;:–—-\t")
+            if next_line and next_line[0].islower():
+                continue
+        return mark
+
+    def _mark_from_title_line(
+        line: str, *, allow_body_tail: bool, prev_context: str = ""
+    ) -> AnnexureMark | None:
+        if _INDEX_ROW_ANNEXURE_RE.match(line):
+            return None
+        prev_line = prev_context.splitlines()[-1] if prev_context else ""
+        if re.fullmatch(r"\d{1,3}[.)]", prev_line.strip()):
+            return None
+        # AOR address lines ("E-28, Second Floor, Lajpat Nagar") are not stamps.
+        if re.search(
+            r"\bfloor\b|\bnagar\b|\bdelhi\b|\bmumbai\b|\broad\b|\bstreet\b|"
+            r"\bph\.?:|\bemail\b|@",
+            line,
+            re.I,
+        ):
+            return None
+        match = _ANNEXURE_TITLE_LINE_RE.match(line)
+        if not match:
+            return None
+        if (nested_exhibits or bank_transfer_form) and match.groupdict().get(
+            "bare_num"
+        ):
+            return None
+        if require_series and re.match(
+            r"(?i)^\s*(?:\d{1,4}\s+)?annexure\s*(?:no\.?\s*)\d+\b",
+            line,
+        ):
+            return None
+        if require_series and not (
+            match.groupdict().get("series") or match.groupdict().get("bare_series")
+        ):
+            return None
+        mark = _annexure_mark_from_match(match)
+        if mark is None:
+            return None
+        # LOD narrative: "... marked as" / "annexed herewith" then ANNEXURE P-n [Pg].
+        # OCR commonly wraps "is annexed herewith and marked as" over two or
+        # three lines before the ANNEXURE P-n reference.  Looking at only the
+        # immediately previous line promoted List-of-Dates/Main-Petition prose
+        # into an attached-document boundary.
+        if _ANNEXURE_CITATION_PREV_RE.search(prev_context):
+            return None
+        # Narrative citations like "ANNEXURE-P/4 (Pg 72-95)." are not stamps.
+        remainder = line[match.end() :].strip(" .;:-~_|")
+        bare = bool(match.groupdict().get("bare_num"))
+        if bare and line == lines[0] and len(lines) > 1:
+            next_line = lines[1].lstrip("_ .;:–—-\t")
+            if next_line and next_line[0].islower():
+                return None
+        # OCR body noise such as "e 2 ." must not open Annexure E-2. Real
+        # bare paper-book stamps use an uppercase series letter.
+        if bare and line.lstrip()[:1] not in {"P", "R", "E"}:
+            return None
+        if bare and remainder and not remainder.isdigit():
+            # Bare "E-28, Second Floor" / "P-1 continued text" without ANNEXURE word.
+            return None
+        if remainder:
+            if _ANNEXURE_PAGE_CITE_RE.search(remainder):
+                return None
+            if not remainder.isdigit() and not re.match(
+                r"(?i)^(?:true\s+(?:typed\s+|translated\s+)?cop(?:y|ies)|"
+                r"exhibit\s*[-–—/:.]?\s*[a-z]?\s*[-–—/:.]?\s*\d+)\b",
+                remainder,
+            ):
+                return None
+        return mark
+
+    for index, line in enumerate(lines[:24]):
+        context_start = max(0, index - 4)
+        previous = "\n".join(lines[context_start:index])
+        mark = _mark_from_title_line(line, allow_body_tail=True, prev_context=previous)
+        if mark is not None:
+            return mark
+    tail_start = max(0, len(lines) - 10)
+    for index in range(tail_start, len(lines)):
+        line = lines[index]
+        if len(line) > 40:
+            continue
+        context_start = max(0, index - 4)
+        previous = "\n".join(lines[context_start:index])
+        mark = _mark_from_title_line(line, allow_body_tail=False, prev_context=previous)
+        if mark is not None:
+            return mark
     return None
 
 
+@lru_cache(maxsize=4096)
+def annexure_ref_in_heading(text: str) -> AnnexureMark | None:
+    """Return printed Annexure series+number from a page title or stamp."""
+    folded_head = _fold(_heading_window(text, lines=6))
+    scan_head = (text or "")[:4000]
+    # Capture a possible stamp first, but do not return it until serial/table
+    # evidence has been checked. Tesseract emits a continued Index row as
+    # separate blocks and appends a geometry-rebuilt tab row.
+    explicit = _annexure_mark_from_title_or_stamp(text, require_series=True)
+    serial_rows = re.findall(r"(?m)^\s*\d{1,2}[.)]\s*$", scan_head)
+    annexure_rows = re.findall(
+        r"(?mi)^\s*[\[(]?\s*annexure\s*[-~–—:.\s]*[per]?"
+        r"\s*[-~–—/:.\s]*\d+\b",
+        scan_head,
+    )
+    rebuilt_index_marks = {
+        (match.group(1).upper(), int(match.group(2)))
+        for match in re.finditer(
+            r"(?mi)^\s*\d{1,3}[.)]\t[^\n]*?annexure\s*[-~–—:.\s]*"
+            r"([PRE])\s*[-~–—/:.\s]*(\d+)\b[^\n]*\t\s*"
+            r"(?:\d{1,4}|[A-Z]{1,2})(?:\s*[-–—]\s*"
+            r"(?:\d{1,4}|[A-Z]{1,2}))?\s*$",
+            text or "",
+        )
+    }
+    explicit_is_rebuilt_index_row = bool(
+        explicit and (explicit.series.upper(), explicit.number) in rebuilt_index_marks
+    )
+    # An Annexure name printed *inside* an already opened document is an
+    # inventory/citation, not the physical start of that Annexure. OCR can
+    # split ``ANNEXURE-P/1 (Page 24-54)`` into a standalone-looking line and
+    # hide the narrative words which normally make _mark_from_title_line reject
+    # it. Apply this to every explicit filing-document heading, not only Index
+    # and LOD. Preserve a genuine outer stamp when it occurs before the enclosed
+    # heading (``ANNEXURE P-1`` followed by a reproduced AFFIDAVIT, for example).
+    lines = [
+        normalized
+        for line in (text or "").splitlines()
+        if (normalized := _strip_heading_markup(line))
+    ]
+    protected_heading_at = next(
+        (
+            index
+            for index, line in enumerate(lines[:24])
+            if re.match(
+                r"(?i)^(?:cover\s+page|"
+                r"index(?:\s+of\s+(?:papers|documents))?|"
+                r"synopsis(?:\s+(?:and|&)\s+list\s+of\s+dates)?|"
+                r"list\s+of\s+(?:dates(?:\s+(?:and|&)\s+events)?|events)|"
+                r"(?:special\s+leave|transfer|writ|review|curative)\s+petition|"
+                r"petition\s+for\s+special\s+leave|application(?:\s+no\.?)?|"
+                r"affidavit|vakalatnama|memo\s+of\s+(?:appearance|parties)|"
+                r"aor(?:'s)?\s+(?:certificate|declaration)|certificate|"
+                r"record\s+of\s+proceedings|office\s+report(?:\s+on\s+limitation)?|"
+                r"listing\s+(?:proforma|performa)|filing\s+memo|"
+                r"advocate(?:'s)?\s+checklist|appendix)\b",
+                line,
+            )
+        ),
+        None,
+    )
+    annexure_line_at = next(
+        (
+            index
+            for index, line in enumerate(lines[:24])
+            if (line_match := _ANNEXURE_HEADING_RE.search(line))
+            and (line_mark := _annexure_mark_from_match(line_match)) is not None
+            and explicit is not None
+            and line_mark == explicit
+        ),
+        None,
+    )
+    annexure_has_outer_footer_shape = bool(
+        annexure_line_at is not None
+        and (
+            (
+                annexure_line_at == len(lines) - 1
+                and annexure_line_at > 0
+                and re.fullmatch(r"\d{1,5}", lines[annexure_line_at - 1])
+            )
+            or (
+                annexure_line_at >= max(0, len(lines) - 6)
+                and 1 <= len(lines[annexure_line_at + 1 :]) <= 3
+                and all(
+                    re.fullmatch(r"\d{1,5}", value)
+                    for value in lines[annexure_line_at + 1 :]
+                )
+            )
+        )
+    )
+    annexure_is_embedded_reference = bool(
+        protected_heading_at is not None
+        and annexure_line_at is not None
+        and protected_heading_at < annexure_line_at
+        and not annexure_has_outer_footer_shape
+    )
+    if (
+        explicit_is_rebuilt_index_row
+        or annexure_is_embedded_reference
+        or (explicit is None and _looks_like_index_table(text))
+        or (len(serial_rows) >= 2 and len(annexure_rows) >= 2)
+        or (
+            explicit is None
+            and (
+                _looks_like_sci_interlocutory(text)
+                or "list of dates" in folded_head
+                or folded_head.startswith("synopsis")
+            )
+        )
+    ):
+        return None
+    # Preserve a genuine outer stamp above a reproduced tribunal MASTER INDEX
+    # after excluding a matching serial-numbered Index row.
+    if explicit is not None:
+        return explicit
+    # Numbered pleading paragraphs ("12. That the petitioner…") are not stamps.
+    # Only inspect the heading — annexed HC bodies often contain that pattern.
+    if re.search(
+        r"(?m)^\s*\d{1,2}\.\s+that\s+the\b",
+        _heading_window(text, lines=8),
+        re.I,
+    ):
+        return None
+    # Judgment evidence tables use local exhibit rows such as ``3 P-3`` and
+    # ``4 P-4``. OCR can isolate those cells and make them look like an outer
+    # paper-book stamp. Multiple numbered P/R rows plus sale/exhibit columns
+    # are table evidence, never Annexure boundaries.
+    table_rows = re.findall(r"(?i)\b[PRE]\s*[-/]\s*\d+\b", scan_head)
+    lower_record = re.search(
+        r"(?i)\b(?:RFA|FAO|LPA|W\.?P\.?|CIVIL\s+APPEAL)\b|"
+        r"\bother\s+connected\s+cases\b",
+        _heading_window(text, lines=12),
+    )
+    table_cues = re.search(
+        r"(?i)\b(?:sale\s+deed|exh\.?|rate\s+per\s+acre|total\s+amount)\b",
+        text or "",
+    )
+    explicit_annexure = re.search(r"(?i)\bannexure\b", _heading_window(text, lines=24))
+    if not explicit_annexure and (
+        (table_cues and (len(table_rows) >= 2 or lower_record))
+        or (lower_record and len(table_rows) >= 3)
+    ):
+        return None
+    # A reproduced local Annexure No. 1 does not suppress an explicit outer
+    # P/R stamp at the foot of the same sheet.
+    # Reproduced lower-court records often have their own local numbering
+    # ("ANNEXURE NO. 1"). It is not the Supreme Court paper-book's P/R number.
+    # Leave the outer boundary to the Supreme Court Index / repair pass.
+    lower_court_caption = bool(
+        re.search(
+            r"(?i)\bin\s+the\s+(?:high\s+court|district\s+court|"
+            r"court\s+of\s+the\s+\w+|tribunal)\b",
+            _heading_window(text, lines=12),
+        )
+    )
+    if (
+        lower_court_caption
+        and re.search(
+            r"(?i)\bannexure\s*(?:no\.?\s*)\d+\b", _heading_window(text, lines=8)
+        )
+        and not re.search(
+            r"(?i)\bannexure\s*[-–—:/\s]*[pr]\s*[-–—./\s]*\d+\b",
+            _heading_window(text, lines=8),
+        )
+    ):
+        return None
+    return _annexure_mark_from_title_or_stamp(text)
+
+
+def annexure_mark_in_heading(text: str) -> int | None:
+    """Return printed annexure number from a page title or stamp (any series)."""
+    mark = annexure_ref_in_heading(text)
+    return mark.number if mark else None
+
+
+def annexure_label_from_text(text: str) -> str | None:
+    """Label like ``Annexure E-1`` when the page prints that stamp."""
+    mark = annexure_ref_in_heading(text)
+    return mark.label if mark else None
+
+
 def page_starts_application(text: str) -> bool:
-    head = "\n".join((text or "").splitlines()[:12])[:1200]
+    if _looks_like_lower_court_exhibit_list(text):
+        return False
+    if _is_sci_application_start(text):
+        return True
+    head = "\n".join((text or "").splitlines()[:20])[:2000]
     if re.search(
         r"(?m)^(?:A\s+P\s+P\s+L\s+I\s+C\s+A\s+T\s+I\s+O\s+N|APPLICATION)\b",
         head,
     ):
         return True
+    if re.search(r"\bcrl\.?\s*m\.?p\.?\b", head, re.I):
+        return True
+    if re.search(r"application seeking exemption", head, re.I):
+        return True
     return bool(
         _APPLICATION_CAUSE_RE.search(head) and re.search(r"(?m)^APPLICATION\b", head)
     )
+
+
+def _heading_window(text: str, lines: int = 12) -> str:
+    raw_lines = (text or "").splitlines()[:lines]
+    return "\n".join(_strip_heading_markup(line) for line in raw_lines)[:1200]
+
+
+def _is_sci_application_start(text: str) -> bool:
+    head = _fold(_heading_window(text, lines=20))
+    window = _fold((text or "")[:2000])
+    if not _APPLICATION_CAUSE_RE.search(text[:2000] or ""):
+        return False
+    # Paper-book covers list pending I.A.s; that is not an application start.
+    if re.search(
+        r"for\s+(?:(?:the|detailed)\s+)?index\s+(?:kindly|please)\s+see\s+inside|"
+        r"\{\s*cover\s+page\s*\}|"
+        r"\bp\s*a\s*p\s*e\s*r\s*b\s*o\s*o\s*k\b",
+        text[:2200] or "",
+        re.IGNORECASE,
+    ):
+        return False
+    # A disposed Supreme Court order commonly ends with “Pending
+    # interlocutory application(s), if any, is/are disposed of.” That body
+    # sentence is not an Application heading.
+    if re.search(r"(?mi)^\s*o\s*r\s*d\s*e\s*r\s*$", text[:2000] or "") and re.search(
+        r"(?i)pending\s+interlocutory\s+application", text[:2000] or ""
+    ):
+        return False
+    return bool(
+        re.search(r"(?m)^application\b", head)
+        or re.search(r"\bi\.?\s*a\.?\b", head)
+        or "interlocutory application" in head
+        or "crl. mp" in head
+        or "crl mp" in head
+        or "application seeking" in window
+    )
+
+
+def _is_strong_document_start(text: str) -> bool:
+    head = _heading_window(text)
+    return bool(
+        _is_sci_application_start(text)
+        or _AFFIDAVIT_HEADING_RE.search(head)
+        or _CERTIFICATE_HEADING_RE.search(head)
+        or re.search(r"(?m)^VAKALAT\s*NAMA\b", head, re.I)
+        or re.search(r"(?m)^MEMO OF PART", head, re.I)
+    )
+
+
+def _page_has_protected_part(names: Sequence[str] | None) -> bool:
+    return any(name in _PROTECTED_HEADING_PARTS for name in parts_on_page(names))
+
+
+def _stealable_family(names: Sequence[str] | None) -> str | None:
+    for name in parts_on_page(names):
+        family = family_split_name(name)
+        if family in _RECLASSIFY_FAMILIES:
+            return family
+    return None
+
+
+_UNCATEGORIZED_LABELS = frozenset(
+    {"uncategorized", "undefined", "unknown", "other", "n/a", "na"}
+)
+_CARRY_BLOCKING_PARTS = frozenset(
+    {
+        "Cover Page",
+        "Index",
+        "Record of Proceedings",
+        # Checklist / Listing / OR may span 2 pages — allow forward carry.
+    }
+)
+
+
+def _is_index_heading_line(value: str) -> bool:
+    """Recognize a standalone Index heading, including letter-spaced scans.
+
+    PDF text layers and OCR commonly preserve typographic tracking as
+    ``I N D E X``.  Normal whitespace folding intentionally keeps those
+    spaces, so heading recognition must compact this one short line without
+    removing spaces from ordinary prose or table cells.
+    """
+    plain = re.sub(r"<[^>]+>", " ", value or "")
+    plain = re.sub(r"[#*_`|]+", " ", plain)
+    plain = plain.strip()
+    if not plain or len(plain) > 48:
+        return False
+    compact = re.sub(r"[^a-z]", "", plain.casefold())
+    return compact in {"index", "indexofpaper", "indexofpapers"}
+
+
+def _is_real_split_label(name: str) -> bool:
+    folded = _fold(name)
+    return bool(folded) and folded not in _UNCATEGORIZED_LABELS
+
+
+def _looks_like_index_table(text: str) -> bool:
+    head_text = text[:1400]
+    head = _fold(head_text)
+    has_index_heading = any(
+        _is_index_heading_line(line) for line in head_text.splitlines()[:12]
+    )
+    if not (
+        ("index" in head or has_index_heading)
+        and ("particulars" in head or "page no" in head or "part i" in head)
+    ):
+        return False
+
+    # A reproduced lower-court pleading can begin with the outer paper-book
+    # stamp and then carry its own INDEX.  The stamp precedes both the court
+    # caption and that nested index; it is an Annexure start, not another page
+    # of the Supreme Court paper-book Index.  Outer Index rows put INDEX first
+    # and their Annexure references later, so they remain Index pages.
+    index_at = re.search(r"(?im)^\s*index\b", head_text)
+    stamped_at = re.search(
+        r"(?im)^\s*(?:\d{1,4}\s+)?annexure\s*[-–—:./\s]*[pr]\s*[-–—:./\s]*\d+\b",
+        head_text,
+    )
+    lower_caption_at = re.search(
+        r"(?i)\bin\s+the\s+(?:hon['’]?ble\s+)?(?:high\s+court|district\s+court|"
+        r"court\s+of|tribunal)\b",
+        head_text,
+    )
+    if (
+        index_at
+        and stamped_at
+        and lower_caption_at
+        and stamped_at.start() < lower_caption_at.start() < index_at.start()
+    ):
+        return False
+
+    return ("index" in head or has_index_heading) and (
+        "particulars" in head or "page no" in head or "part i" in head
+    )
+
+
+def _looks_like_sci_interlocutory(text: str) -> bool:
+    """True for this-Court I.A. / application pages that only mention annexures."""
+    if _is_sci_application_start(text):
+        return True
+    blob = _fold(text[:1600])
+    cites_annexure = "annexure" in blob
+    ia_prose = (
+        "true translated copy" in blob
+        or "prima facie case" in blob
+        or "exempt" in blob
+        and "translation" in blob
+        or "balance of convenience" in blob
+    )
+    # Lower-court appeals/applications can contain the same phrases and carry
+    # the *outer* paper-book Annexure stamp at the foot of the page. Do not
+    # suppress that stamp. An SCI application continuation, however, may omit
+    # the Supreme Court caption and still needs the original citation guard.
+    lower_court_caption = bool(
+        re.search(
+            r"(?i)^\s*(?:\d{1,4}\s+)?(?:(?:in|before)\s+the\s+"
+            r"(?:hon['’]?ble\s+)?)?(?:high\s+court|court\s+of|tribunal)\b",
+            _heading_window(text, lines=12),
+        )
+    )
+    return bool(cites_annexure and ia_prose and not lower_court_caption)
+
+
+def _memo_of_parties_heading(text: str) -> bool:
+    """True for an explicit party/judgment memo title, never an Index row."""
+    head = _heading_window(text, lines=30)
+    # Column extraction can split MEMO in the middle ("AMENDED ME\nMO OF
+    # PARTIES"). Join only that distinctive title fragment before matching.
+    head = re.sub(r"(?i)\bme\s*\n\s*mo\b", "MEMO", head)
+    title = (
+        r"(?:amended\s+)?memo(?:randum)?\s+of\s+"
+        r"(?:part(?:y|ies)|parities|judg(?:e)?ment)\b"
+    )
+    if re.search(rf"(?m)^\s*\d{{1,3}}[.\)]\s*{title}", head, re.IGNORECASE):
+        return False
+    for line in head.splitlines():
+        match = re.match(rf"\s*{title}", line, re.IGNORECASE)
+        if not match:
+            continue
+        remainder = line[match.end() :].strip(" \t.:;,-–—()[]")
+        if not remainder:
+            return True
+        # A heading may qualify the memo by court or judgment. Do not accept
+        # ordinary judgment prose merely because OCR wrapped a sentence so
+        # that "Memo of Parties" happens to begin a line.
+        if re.fullmatch(
+            r"(?:(?:before|in)\s+the\s+(?:hon['’]?ble\s+)?high\s+court|"
+            r"of\s+(?:the\s+)?(?:impugned\s+)?judg(?:e)?ment)",
+            remainder,
+            re.IGNORECASE,
+        ):
+            return True
+    # Scanning software often prefixes continuation sheets with a filename
+    # such as ``RFA_665_2018_MEMO_OF_PARTIES`` rather than repeating the title.
+    first_lines = "\n".join((text or "").splitlines()[:4])
+    return bool(
+        "_" in first_lines
+        and re.search(
+            r"(?:^|[_\s])memo[_\s]+of[_\s]+part(?:y|ies)\b",
+            first_lines,
+            re.I,
+        )
+    )
+
+
+def _vakalatnama_heading(text: str) -> bool:
+    """True only for a Vakalatnama title line — not narrative 'filing Vakalatnama'."""
+    # Detailed SCI captions can consume 15–20 lines before the instrument
+    # title. The exact standalone-line requirement below prevents narrative
+    # references later in a petition from becoming a Vakalatnama boundary.
+    head = _heading_window(text, lines=30)
+    # Accept common spelling and OCR variants: Vakalatnama, Vakalat Name,
+    # Vakaltnama (missing the second "a"), and punctuated letter spacing.
+    title = r"v\W*a\W*k\W*a\W*l\W*a?\W*t\W*n\W*a\W*m\W*a"
+    if re.search(rf"(?m)^\s*{title}\b", head, re.I):
+        return True
+    # Spaced OCR title on its own line.
+    if re.search(
+        r"(?m)^\s*v\s*a\s*k\s*a\s*l\s*a?\s*t\s*n\s*a\s*m\s*a\s*$",
+        head,
+        re.I,
+    ):
+        return True
+    return False
+
+
+def _can_override_with_annexure(names: Sequence[str] | None, text: str) -> bool:
+    """True when a printed Annexure P-n stamp should win over the current label."""
+    parts = parts_on_page(names)
+    if not parts:
+        return True
+    if any(not _is_real_split_label(name) for name in parts):
+        return True
+    if _looks_like_index_table(text):
+        return False
+    if any(name in _CARRY_BLOCKING_PARTS for name in parts):
+        return False
+    if _stealable_family(parts):
+        return True
+    # Checklist exhibits often mislabel body pages as Affidavit.
+    if any(name == "Affidavit" for name in parts):
+        return True
+    return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
+
+
+def _replace_stealable_with_annexure(names: list[str], label: str) -> list[str]:
+    replaced: list[str] = []
+    for name in names:
+        family = family_split_name(name)
+        if family in _RECLASSIFY_FAMILIES or name == "Affidavit":
+            if label not in replaced:
+                replaced.append(label)
+            continue
+        if name not in replaced:
+            replaced.append(name)
+    if label not in replaced:
+        replaced.append(label)
+    return replaced
+
+
+def reclassify_pages_from_headings(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+) -> PagePartMap:
+    """Force Annexure P-n when a Main Petition/Application page prints that banner.
+
+    Extends forward only through the same wrong family, consecutive pages, until
+    the next annexure heading or an SCI Application / Affidavit / Certificate
+    start. A later Main Petition block with no banner is left alone. Affidavit
+    mislabels on stamped annexure pages are also retagged.
+    """
+    updated = {page: list(names) for page, names in page_parts.items()}
+    if not updated:
+        return updated
+    last_page = max(updated)
+    page = min(updated)
+    while page <= last_page:
+        names = updated.get(page)
+        text = page_text.get(page, "")
+        mark = annexure_ref_in_heading(text)
+        if not names:
+            page += 1
+            continue
+        if _page_has_protected_part(names) and not (
+            mark and _can_override_with_annexure(names, text)
+        ):
+            page += 1
+            continue
+        wrong_family = _stealable_family(names)
+        affidavit_only = parts_on_page(names) == ["Affidavit"]
+        if not mark or (not wrong_family and not affidavit_only):
+            page += 1
+            continue
+        label = mark.label
+        updated[page] = _replace_stealable_with_annexure(updated[page], label)
+        cursor = page + 1
+        while cursor in updated:
+            nxt_names = updated[cursor]
+            nxt_text = page_text.get(cursor, "")
+            if annexure_ref_in_heading(nxt_text):
+                break
+            if _is_strong_document_start(nxt_text):
+                break
+            if _page_has_protected_part(nxt_names) and not _can_override_with_annexure(
+                nxt_names, nxt_text
+            ):
+                break
+            nxt_family = _stealable_family(nxt_names)
+            nxt_affidavit = parts_on_page(nxt_names) == ["Affidavit"]
+            if (
+                wrong_family
+                and nxt_family not in {wrong_family, None}
+                and not nxt_affidavit
+            ):
+                break
+            if not wrong_family and not nxt_affidavit and nxt_family:
+                break
+            if nxt_family or nxt_affidavit or _annexure_claimable(nxt_names):
+                updated[cursor] = _replace_stealable_with_annexure(nxt_names, label)
+            else:
+                break
+            cursor += 1
+        page = cursor if cursor > page else page + 1
+    return updated
 
 
 def _replace_family_label(names: list[str], family: str, label: str) -> list[str]:
@@ -594,10 +1633,85 @@ def _annexure_claimable(names: Sequence[str] | None) -> bool:
     return all(family_split_name(name) == ANNEXURE_FAMILY for name in parts)
 
 
+def _annexure_number_from_label(name: str) -> int | None:
+    match = re.fullmatch(r"annexure [a-z]-?(\d+)", _fold(name))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number if number >= 1 else None
+
+
+def _page_annexure_number(names: Sequence[str] | None) -> int | None:
+    for name in parts_on_page(names):
+        number = _annexure_number_from_label(name)
+        if number is not None:
+            return number
+    return None
+
+
+def _contiguous_annexure_pages(
+    start: int,
+    stop_before: int,
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str] | None = None,
+    *,
+    keep_number: int | None = None,
+) -> list[int]:
+    """Already-labelled annexure pages from start. Stops at a gap or other document."""
+    texts = page_text or {}
+    pages: list[int] = []
+    for page in range(start, stop_before):
+        names = page_parts.get(page)
+        if names is None:
+            break
+        if not _annexure_claimable(names):
+            break
+        existing = _page_annexure_number(names)
+        if (
+            keep_number is not None
+            and existing is not None
+            and existing > keep_number
+            and len((texts.get(page) or "").strip()) < 40
+            and page > start
+        ):
+            # Image-only later Llama P-n after this stamp — stop extending.
+            break
+        pages.append(page)
+    return pages
+
+
+def _contiguous_gap_pages(
+    start: int,
+    stop_before: int,
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str] | None = None,
+    *,
+    keep_number: int | None = None,
+) -> list[int]:
+    """Claimable pages in a bounded heading gap, including unlabeled leaves."""
+    texts = page_text or {}
+    pages: list[int] = []
+    for page in range(start, stop_before):
+        names = page_parts.get(page)
+        if not _annexure_claimable(names):
+            break
+        existing = _page_annexure_number(names)
+        if (
+            keep_number is not None
+            and existing is not None
+            and existing > keep_number
+            and len((texts.get(page) or "").strip()) < 40
+            and page > start
+        ):
+            break
+        pages.append(page)
+    return pages
+
+
 def _assign_gap_to_missing_marks(
-    pages: Sequence[int], missing: Sequence[int]
+    pages: Sequence[int], missing: Sequence[AnnexureMark]
 ) -> dict[int, str]:
-    """Split gap pages across skipped P-n marks in order.
+    """Split gap pages across skipped annexure marks in order.
 
     One skipped number gets the whole gap. Several skipped numbers share
     the pages as evenly as possible, earlier marks first.
@@ -612,7 +1726,7 @@ def _assign_gap_to_missing_marks(
     for offset, mark in enumerate(missing):
         count = base + (1 if offset < extra else 0)
         for _ in range(count):
-            labels[int(pages[index])] = f"Annexure P-{mark}"
+            labels[int(pages[index])] = mark.label
             index += 1
     return labels
 
@@ -621,62 +1735,88 @@ def _annexure_printed_labels(
     page_parts: PagePartMap,
     page_text: Mapping[int, str],
 ) -> dict[int, str] | None:
-    """Label annexure pages from printed P-n marks, including unlabeled gaps.
+    """Label annexure pages from the printed series+number heading on the page.
 
-    Consecutive marks (P-2 then P-3) keep body pages with the earlier mark.
-    A skipped mark (P-2 then P-4) assigns the in-between pages to P-3.
+    Printed ``ANNEXURE-E-n`` stamps normalize to paper-book ``Annexure P-n``.
+    Consecutive marks keep body pages with the earlier mark. A short skipped
+    heading gap (P-2 then P-4 over a few sheets) invents the missing P-3. A
+    long body between P-1 and P-4 keeps P-1. Never overwrite a differently
+    numbered Llama annexure (P-7) with an earlier stamp run (P-6).
     """
     annexure_pages = sorted(
         page
         for page, names in page_parts.items()
-        if any(family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names))
+        if any(
+            family_split_name(name) == ANNEXURE_FAMILY for name in parts_on_page(names)
+        )
     )
     if not annexure_pages:
         return None
     first = annexure_pages[0]
     last = annexure_pages[-1]
-    starts: list[tuple[int, int]] = []
-    seen_marks: set[int] = set()
+    starts: list[tuple[int, AnnexureMark]] = []
     for page in range(first, last + 1):
         if not _annexure_claimable(page_parts.get(page)):
             continue
-        mark = annexure_mark_in_heading(page_text.get(page, ""))
-        if mark and mark not in seen_marks:
-            seen_marks.add(mark)
+        mark = annexure_ref_in_heading(page_text.get(page, ""))
+        if mark:
             starts.append((page, mark))
-    if len(starts) < 2:
+    if not starts:
         return None
 
     labels: dict[int, str] = {}
     first_start, first_mark = starts[0]
-    for page in range(first, first_start):
-        if _annexure_claimable(page_parts.get(page)):
-            labels[page] = f"Annexure P-{first_mark}"
+    page = first_start - 1
+    while page >= first and _annexure_claimable(page_parts.get(page)):
+        existing = _page_annexure_number(page_parts.get(page))
+        if existing is not None and existing > first_mark.number:
+            break
+        labels[page] = first_mark.label
+        page -= 1
 
     for index, (start_page, mark) in enumerate(starts):
         if index + 1 < len(starts):
             next_page, next_mark = starts[index + 1]
-            if next_mark == mark + 1:
-                for page in range(start_page, next_page):
-                    if _annexure_claimable(page_parts.get(page)):
-                        labels[page] = f"Annexure P-{mark}"
-            elif next_mark > mark + 1:
+            same_series = next_mark.series == mark.series
+            # Between two printed stamps, the gap belongs to this run (or short
+            # invented missing marks). Do not preserve stray Llama P-7 mid-gap.
+            if same_series and next_mark.number > mark.number + 1:
                 if _annexure_claimable(page_parts.get(start_page)):
-                    labels[start_page] = f"Annexure P-{mark}"
-                gap = [
-                    page
-                    for page in range(start_page + 1, next_page)
-                    if _annexure_claimable(page_parts.get(page))
-                ]
-                labels.update(
-                    _assign_gap_to_missing_marks(gap, range(mark + 1, next_mark))
+                    labels[start_page] = mark.label
+                gap = _contiguous_gap_pages(
+                    start_page + 1,
+                    next_page,
+                    page_parts,
+                    page_text,
                 )
-            elif _annexure_claimable(page_parts.get(start_page)):
-                labels[start_page] = f"Annexure P-{mark}"
+                missing = [
+                    AnnexureMark(number=n, series=mark.series)
+                    for n in range(mark.number + 1, next_mark.number)
+                ]
+                # Short heading skips invent missing P-n; long exhibit bodies
+                # between distant stamps keep the earlier mark.
+                if len(gap) <= max(3, len(missing) * 2):
+                    labels.update(_assign_gap_to_missing_marks(gap, missing))
+                else:
+                    for page in gap:
+                        labels[page] = mark.label
+            else:
+                for page in _contiguous_gap_pages(
+                    start_page,
+                    next_page,
+                    page_parts,
+                    page_text,
+                ):
+                    labels[page] = mark.label
             continue
-        for page in range(start_page, last + 1):
-            if _annexure_claimable(page_parts.get(page)):
-                labels[page] = f"Annexure P-{mark}"
+        for page in _contiguous_annexure_pages(
+            start_page,
+            last + 1,
+            page_parts,
+            page_text,
+            keep_number=mark.number,
+        ):
+            labels[page] = mark.label
     return labels
 
 
@@ -739,20 +1879,35 @@ def explode_repeating_split_parts(
 ) -> PagePartMap:
     """Split a merged Annexures/Application run into P-n / Application n.
 
-    Annexure numbers come from printed P-n marks: consecutive marks keep body
-    pages with the earlier annexure; a skipped mark fills the gap as the
-    missing P-n, including unlabeled pages between the first and last
-    annexure page. Applications stay sequential at each new cause title.
+    Printed ANNEXURE-Pn banners retag Main Petition/Application pages first.
+    The printed mark on the page is the annexure number: a heading Annexure P-1
+    is Annexure P-1 even if LlamaSplit ordered that segment as P-2. Consecutive
+    marks keep body pages with the earlier annexure; a skipped mark fills the
+    gap as the missing P-n. Applications stay sequential at each new cause
+    title. Each numbered Annexure P-n keeps only its first contiguous page run.
+    Other types keep only their longest contiguous page run.
     """
     updated = {page: list(names) for page, names in page_parts.items()}
     texts = page_text or {}
     if texts:
+        updated = reclassify_pages_from_headings(updated, texts)
         annexure_labels = _annexure_printed_labels(updated, texts)
         if annexure_labels:
             for page, label in annexure_labels.items():
                 updated[page] = _replace_family_label(
                     updated.get(page, []), ANNEXURE_FAMILY, label
                 )
+        for page, names in list(updated.items()):
+            if _page_has_protected_part(names):
+                continue
+            mark = annexure_ref_in_heading(texts.get(page, ""))
+            if not mark:
+                continue
+            label = mark.label
+            if _stealable_family(names):
+                updated[page] = _replace_stealable_with_annexure(names, label)
+            elif _annexure_claimable(names):
+                updated[page] = _replace_family_label(names, ANNEXURE_FAMILY, label)
         app_pages = sorted(
             page
             for page, names in updated.items()
@@ -771,7 +1926,7 @@ def explode_repeating_split_parts(
                 updated[page] = _replace_family_label(
                     updated.get(page, []), APPLICATION_FAMILY, label
                 )
-    return updated
+    return collapse_repeated_split_pages(updated)
 
 
 def page_parts_from_split(job: Any) -> PagePartMap:
@@ -784,8 +1939,6 @@ def page_parts_from_split(job: Any) -> PagePartMap:
         return {}
 
     mapping: PagePartMap = {}
-    annexure_groups: list[list[int]] = []
-    application_groups: list[list[int]] = []
     for segment in segments:
         if isinstance(segment, dict):
             category = segment.get("category")
@@ -799,24 +1952,31 @@ def page_parts_from_split(job: Any) -> PagePartMap:
                 numbers.append(int(page))
             except (TypeError, ValueError):
                 continue
-        parts = parts_on_page(category)
+        parts = [part for part in parts_on_page(category) if _is_real_split_label(part)]
         for part in parts:
-            family = family_split_name(part)
             for page in numbers:
                 current = mapping.setdefault(page, [])
-                if family not in current:
-                    current.append(family)
-        if any(family_split_name(part) == ANNEXURE_FAMILY for part in parts):
-            annexure_groups.append(numbers)
-        if any(family_split_name(part) == APPLICATION_FAMILY for part in parts):
-            application_groups.append(numbers)
-    collapsed = collapse_repeated_split_pages(mapping)
-    numbered = _apply_segment_numbers(
-        collapsed, annexure_groups, ANNEXURE_FAMILY, "Annexure P-{}"
+                if part not in current:
+                    current.append(part)
+    return mapping
+
+
+def complete_split_page_coverage(
+    page_parts: PagePartMap,
+    page_text: Mapping[int, str],
+    *,
+    page_count: int,
+) -> PagePartMap:
+    """Hybrid repair after LlamaSplit (anchors, nesting, first-run outer parts).
+
+    Prefer :func:`repair_compiled_split` when duplicate metadata is needed.
+    """
+    from .split_repair import repair_compiled_split
+
+    repaired, _duplicates = repair_compiled_split(
+        page_parts, page_text, page_count=page_count
     )
-    return _apply_segment_numbers(
-        numbered, application_groups, APPLICATION_FAMILY, "Application {}"
-    )
+    return repaired
 
 
 def parts_named_in_text(text: str) -> list[str]:
@@ -878,14 +2038,74 @@ def catalogue_exclude_parts(defect: Defect) -> list[str] | None:
     return _normalize_part_list(raw)
 
 
+_NEGATIVE_LOCATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|not\s+in|exclude|excluding|except|other\s+than|"
+    r"instead\s+of|must\s+not|should\s+not)\b",
+    re.IGNORECASE,
+)
+_GUIDANCE_SPLIT_RE = re.compile(
+    r"(?<=[.;])\s+|\s*,\s*(?=(?:but\s+)?(?:do\s+not|not\s+in|exclude|except))|"
+    r"\s+\bbut\b\s+|\s+\band\b\s+(?=(?:do\s+not|not\s+in|exclude|except)\b)",
+    re.IGNORECASE,
+)
+
+
+def where_to_look_guidance(defect: Defect) -> WhereToLookGuidance:
+    """Resolve positive and negative locations without promoting exclusions.
+
+    Authored ``inspect_parts`` / ``context_parts`` / ``exclude_parts`` are the
+    source of truth. Negative clauses are still honored when they narrow those
+    structured fields. Ambiguous negative prose is retained for the validation
+    prompt but contributes no positive retrieval target.
+    """
+
+    inspect = catalogue_inspect_parts(defect)
+    context = catalogue_context_parts(defect)
+    explicit_exclude = catalogue_exclude_parts(defect)
+    parsed_include: list[str] = []
+    parsed_exclude: list[str] = []
+    ambiguous: list[str] = []
+    for step in list(getattr(defect, "where_to_look", None) or []):
+        clauses = [
+            clause.strip(" ,")
+            for clause in _GUIDANCE_SPLIT_RE.split(_strip_landmark_clauses(step))
+            if clause.strip(" ,")
+        ]
+        for clause in clauses:
+            named = parts_named_in_text(clause)
+            if not named:
+                if _NEGATIVE_LOCATION_RE.search(clause):
+                    ambiguous.append(clause)
+                continue
+            destination = (
+                parsed_exclude
+                if _NEGATIVE_LOCATION_RE.search(clause)
+                else parsed_include
+            )
+            for part in named:
+                if part not in destination:
+                    destination.append(part)
+
+    excluded = list(explicit_exclude or [])
+    for part in parsed_exclude:
+        if part not in excluded:
+            excluded.append(part)
+    if inspect or context or explicit_exclude is not None:
+        included = list(inspect)
+        for part in context:
+            if part not in included:
+                included.append(part)
+    else:
+        included = parsed_include
+    included = [part for part in included if part not in excluded]
+    return WhereToLookGuidance(
+        tuple(included), tuple(excluded), tuple(dict.fromkeys(ambiguous))
+    )
+
+
 def _parts_parsed_from_where_to_look(defect: Defect) -> list[str]:
     """Fallback: parse Split names from where_to_look, ignoring landmarks."""
-    found: list[str] = []
-    for step in defect.where_to_look:
-        for name in parts_named_in_text(_strip_landmark_clauses(step)):
-            if name not in found:
-                found.append(name)
-    return found
+    return list(where_to_look_guidance(defect).include_parts)
 
 
 def parts_named_in_where_to_look(defect: Defect) -> list[str]:
@@ -894,26 +2114,12 @@ def parts_named_in_where_to_look(defect: Defect) -> list[str]:
     Prefers catalogue inspect_parts + context_parts. Falls back to parsing
     where_to_look when those fields are empty (legacy rows).
     """
-    inspect = catalogue_inspect_parts(defect)
-    context = catalogue_context_parts(defect)
-    if inspect or context:
-        parts = list(inspect)
-        for name in context:
-            if name not in parts:
-                parts.append(name)
-        return parts
-    return _parts_parsed_from_where_to_look(defect)
+    return list(where_to_look_guidance(defect).include_parts)
 
 
 def preferred_parts_for_defect(defect: Defect) -> list[str]:
-    """Retrieval targets: catalogue/parsed parts first, then category defaults."""
-    named = parts_named_in_where_to_look(defect)
-    category = list(CATEGORY_TO_PARTS.get(defect.category_id or "", ()))
-    parts = list(named)
-    for name in category:
-        if name not in parts:
-            parts.append(name)
-    return parts
+    """Retrieval targets from catalogue inspect/context parts (or parsed where_to_look)."""
+    return parts_named_in_where_to_look(defect)
 
 
 def pool_search_queries() -> list[str]:
@@ -955,7 +2161,11 @@ _PRESENCE_QUERY_HINTS: tuple[tuple[str, str], ...] = (
 def _presence_queries_for_defect(defect: Defect) -> list[str]:
     """Extra Pinecone queries so stamps, seals and layout marks are retrieved."""
     blob = " ".join(
-        [defect.defect, defect.requirement, *defect.where_to_look]
+        [
+            str(getattr(defect, "defect", "") or ""),
+            check_requirement(defect),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
     ).lower()
     queries: list[str] = []
     for needle, query in _PRESENCE_QUERY_HINTS:
@@ -964,36 +2174,214 @@ def _presence_queries_for_defect(defect: Defect) -> list[str]:
     return queries
 
 
-def pinecone_queries_for_defect(defect: Defect) -> list[str]:
-    """Queries sent to Pinecone: target part names, short headings, and cues.
+def _evidence_payload_hint(defect: Defect) -> str:
+    """Name the concrete filing values retrieval should return, not a verdict."""
 
-    Long where-to-look sentences are not sent — they mention landmarks
-    ("before the Cover Page") and pull the wrong pages.
+    wording = " ".join(
+        [
+            check_requirement(defect),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    ).casefold()
+    if any(
+        term in wording for term in ("respondent", "petitioner", "parties", "party")
+    ):
+        return "the actual names, descriptions, designations, and addresses for every party"
+    if any(
+        term in wording for term in ("case number", "judgment", "order under challenge")
+    ):
+        return "the actual case numbers, dates, courts, and surrounding references"
+    if any(
+        term in wording for term in ("signature", "signed", "stamp", "seal", "notary")
+    ):
+        return "the visible signature, stamp, seal, associated label, or blank field"
+    if "date" in wording:
+        return "the actual date value, its label, and the surrounding clause"
+    return "the actual clause, field value, omission, or blank and its surrounding text"
+
+
+_GENERIC_RETRIEVAL_TERMS = frozenset(
+    {
+        "application",
+        "dates",
+        "date",
+        "events",
+        "new delhi",
+        "supreme court",
+        "petition",
+        "document",
+        "page",
+        "filed",
+    }
+)
+
+
+def distinctive_trigger_phrases(defect: Defect) -> list[str]:
+    """Keep useful recognition cues without issuing one search per token."""
+
+    phrases: list[str] = []
+    for raw in re.split(r"[;|]", str(getattr(defect, "trigger_words", "") or "")):
+        phrase = re.sub(r"\s+", " ", raw).strip(" ,.;")
+        folded = phrase.casefold()
+        if not phrase or folded in _GENERIC_RETRIEVAL_TERMS:
+            continue
+        if len(phrase) < 4:
+            continue
+        if phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def retrieval_strategy_for_defect(defect: Defect) -> str:
+    """Choose the minimum evidence scope that can support the legal check."""
+
+    wording = " ".join(
+        [
+            str(getattr(defect, "defect", "") or ""),
+            check_requirement(defect),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    ).casefold()
+    if re.search(
+        r"chronological\s+order|inspect\s+every|each\s+(?:page|entry|date|party)|"
+        r"every\s+(?:page|entry|date|party)|all\s+(?:pages|entries|dates|parties)|"
+        r"(?:each|every|all)\s+applications?|"
+        r"consecutively?\s+numbered\s+(?:paragraphs?|pages?)|"
+        r"paragraph\s+\d+[a-z]?|"
+        r"complete\s+(?:list|particulars|addresses)|entire\s+(?:part|section)",
+        wording,
+    ):
+        return "exhaustive_part"
+    if re.search(
+        r"signature|signed|execution\s+date|below\s+the\s+prayer|true\s+cop|"
+        r"certif(?:ied|ication)|stamp|seal|last\s+page|end\s+of",
+        wording,
+    ):
+        return "boundary_and_neighbors"
+    return "semantic"
+
+
+def _query_text_for_part(
+    defect: Defect,
+    *,
+    part: str | None,
+    phrases: list[str],
+) -> str:
+    location = part or "the filing"
+    requirement = re.sub(r"\s+", " ", check_requirement(defect)).strip()
+    sections = [
+        f"Document part: {location}.",
+        f"Evidence sought: {_evidence_payload_hint(defect)}.",
+        f"Legal requirement: {requirement}",
+    ]
+    if phrases:
+        rendered = "; ".join(f'"{phrase}"' for phrase in phrases)
+        sections.append(f"Distinctive text or equivalent wording: {rendered}.")
+    return " ".join(sections)
+
+
+def retrieval_plan_for_defect(defect: Defect) -> RetrievalPlan:
+    """Build a small, deterministic plan of evidence-oriented searches.
+
+    Requirements are preserved in full. ``ai_note`` and final decision
+    instructions are intentionally excluded because they guide adjudication,
+    not candidate retrieval.
     """
-    queries: list[str] = []
-    queries.extend(parts_named_in_where_to_look(defect))
-    queries.extend(_presence_queries_for_defect(defect))
-    if defect.trigger_words:
-        queries.extend(
-            p.strip()
-            for p in re.split(r"[;|]", defect.trigger_words)
-            if p.strip()
+
+    guidance = where_to_look_guidance(defect)
+    parts = list(guidance.include_parts) or preferred_parts_for_defect(defect)
+    excluded = set(guidance.exclude_parts)
+    parts = [part for part in parts if part not in excluded]
+    phrases = distinctive_trigger_phrases(defect)
+    presence = _presence_queries_for_defect(defect)
+    grouped_phrases = _unique_terms([*phrases, *presence])
+    subtype = application_subtype_id(
+        " ".join(
+            [
+                str(getattr(defect, "defect", "") or ""),
+                check_requirement(defect),
+                *list(getattr(defect, "where_to_look", None) or []),
+            ]
         )
-    for step in defect.where_to_look:
-        heading = _heading_from_where_to_look(step)
-        if heading:
-            queries.append(heading)
-        clipped = _clip_query(_bare_where_to_look(_strip_landmark_clauses(step)))
-        if clipped and len(clipped) <= 80:
-            queries.append(clipped)
-    if not queries:
-        queries.extend(preferred_parts_for_defect(defect))
-    return _unique_terms(queries)
+    )
+
+    queries: list[EvidenceQuery] = []
+    targets: list[str | None] = parts or [None]
+    for part in targets:
+        part_subtype = (
+            subtype if part and family_split_name(part) == APPLICATION_FAMILY else None
+        )
+        queries.append(
+            EvidenceQuery(
+                text=_query_text_for_part(defect, part=part, phrases=grouped_phrases),
+                document_part=part,
+                document_subtype_id=part_subtype,
+                purpose="semantic_and_exact" if grouped_phrases else "semantic",
+            )
+        )
+
+    # Legacy rows may have no structured part but a short, positive form
+    # heading. Keep one such locator; never promote a negative/ambiguous clause.
+    if not parts:
+        for step in list(getattr(defect, "where_to_look", None) or []):
+            if _NEGATIVE_LOCATION_RE.search(step):
+                continue
+            heading = _heading_from_where_to_look(step)
+            if heading and heading.casefold() not in _GENERIC_RETRIEVAL_TERMS:
+                queries.append(
+                    EvidenceQuery(
+                        text=(
+                            f"Form or heading: {heading}. Legal requirement: "
+                            f"{check_requirement(defect)}"
+                        ),
+                        purpose="heading",
+                    )
+                )
+                break
+
+    deduped: list[EvidenceQuery] = []
+    seen: set[tuple[str, str | None, str | None]] = set()
+    for query in queries:
+        key = (
+            re.sub(r"\s+", " ", query.text).strip().casefold(),
+            query.document_part,
+            query.document_subtype_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(query)
+    return RetrievalPlan(
+        queries=tuple(deduped),
+        include_parts=tuple(parts),
+        exclude_parts=guidance.exclude_parts,
+        strategy=retrieval_strategy_for_defect(defect),
+        ambiguous_guidance=guidance.ambiguous_clauses,
+    )
+
+
+def evidence_seeking_queries_for_defect(defect: Defect) -> list[str]:
+    """Compatibility wrapper returning the plan's exact Pinecone text."""
+
+    return [query.text for query in retrieval_plan_for_defect(defect).queries]
+
+
+def evidence_seeking_query_for_defect(defect: Defect) -> str:
+    """Return the primary evidence query for callers needing one string."""
+
+    return evidence_seeking_queries_for_defect(defect)[0]
+
+
+def pinecone_queries_for_defect(defect: Defect) -> list[str]:
+    """Exact text inputs sent to Pinecone for this defect."""
+
+    return evidence_seeking_queries_for_defect(defect)
 
 
 def match_terms_for_defect(defect: Defect) -> list[str]:
     """Phrases to score an in-memory chunk against this defect."""
-    terms = list(pinecone_queries_for_defect(defect))
+    terms = distinctive_trigger_phrases(defect)
+    terms.extend(_presence_queries_for_defect(defect))
     terms.extend(preferred_parts_for_defect(defect))
     return _unique_terms(terms)
 
@@ -1024,13 +2412,6 @@ def required_parts_for_defect(defect: Defect) -> list[str]:
     if not named:
         return preferred_parts_for_defect(defect)
 
-    category = defect.category_id or ""
-    if category == "affidavit":
-        primary = [p for p in named if p == "Affidavit"]
-        return primary or named[:1]
-    if category == "parties":
-        primary = [p for p in named if p in {MAIN_PETITION_PART, "Memo of Parties"}]
-        return primary or named[:1]
     if len(named) > 3 and defect.where_to_look:
         first = parts_named_in_text(_strip_landmark_clauses(defect.where_to_look[0]))
         if first:
@@ -1056,8 +2437,6 @@ def allows_index_evidence(defect: Defect) -> bool:
     inspect = catalogue_inspect_parts(defect)
     if inspect:
         return "Index" in inspect
-    if (defect.category_id or "") == "index_paper_book":
-        return True
     return "Index" in _parts_parsed_from_where_to_look(defect)
 
 
@@ -1066,9 +2445,7 @@ def chunks_cover_part(chunks: list[dict[str, Any]], part: str) -> bool:
     return any(_part_match(c, [part]) for c in pages)
 
 
-def missing_required_parts(
-    defect: Defect, chunks: list[dict[str, Any]]
-) -> list[str]:
+def missing_required_parts(defect: Defect, chunks: list[dict[str, Any]]) -> list[str]:
     return [
         part
         for part in required_parts_for_defect(defect)
@@ -1077,11 +2454,12 @@ def missing_required_parts(
 
 
 def _bare_where_to_look(step: str) -> str:
+    step = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", step.strip())
     return re.sub(
         r"^(check|read|look at|look for|examine|verify|confirm|review|go to|search)\s+"
         r"(the\s+|for\s+the\s+|for\s+|a\s+|for a\s+)?",
         "",
-        step.strip(),
+        step,
         flags=re.IGNORECASE,
     )
 
@@ -1106,20 +2484,64 @@ def max_chunks_for_defect(defect: Defect, *, ceiling: int) -> int:
     must open several documents get PAGES_PER_TARGET_PART each so a
     high-scoring Affidavit cannot crowd out Vakalatnama.
     """
-    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(
-        defect
-    )
-    budget = CATEGORY_MAX_CHUNKS.get(defect.category_id or "", ceiling)
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    if (
+        _requires_annexure_collection_coverage(defect)
+        or _requires_index_collection_coverage(defect)
+        or _requires_complete_part_coverage(defect)
+    ):
+        return max(1, ceiling)
+    budget = ceiling
     need = max(len(targets), 1) * PAGES_PER_TARGET_PART
     budget = max(budget, min(need, ceiling))
-    # One document part stays small even when the category budget is large
-    # (signature audits raise petition_presentation to 12 pages).
+    # One document part stays small so a high-scoring neighbour cannot crowd it.
     if len(targets) <= 1:
         tight = 3 if len(defect.where_to_look) <= 2 else 6
         if defect.parent_check_id:
             tight = max(tight, 4)
         budget = min(budget, tight)
     return max(1, min(budget, ceiling))
+
+
+def _requires_annexure_collection_coverage(defect: Defect) -> bool:
+    """Whether the check must sample distinct annexures, not one good page.
+
+    Semantic search naturally ranks pages containing phrases such as ``true
+    copy`` above a non-compliant annexure that omits them.  Checks quantified
+    over each annexure therefore need breadth across the numbered documents.
+    """
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    if not any(family_split_name(part) == ANNEXURE_FAMILY for part in targets):
+        return False
+    wording = " ".join(
+        [defect.defect, check_requirement(defect), *defect.where_to_look]
+    ).casefold()
+    return bool(
+        re.search(r"\b(?:each|every|all)\s+annexure", wording)
+        or re.search(r"\b(?:any\s+)?vernacular\b", wording)
+        or re.search(
+            r"\bannexures?\b.{0,100}\b(?:chronological|match|true cop)", wording
+        )
+    )
+
+
+def _requires_index_collection_coverage(defect: Defect) -> bool:
+    """Whether every available Index page is needed to judge completeness."""
+    targets = parts_named_in_where_to_look(defect) or preferred_parts_for_defect(defect)
+    if "Index" not in targets:
+        return False
+    wording = " ".join(
+        [defect.defect, check_requirement(defect), *defect.where_to_look]
+    ).casefold()
+    return "common index" in wording and bool(
+        re.search(r"\b(?:running|complete|continuous)?\s*pagination\b", wording)
+    )
+
+
+def _requires_complete_part_coverage(defect: Defect) -> bool:
+    """Whether a semantic sample cannot support the required conclusion."""
+
+    return retrieval_strategy_for_defect(defect) == "exhaustive_part"
 
 
 def _chunk_score(chunk: dict[str, Any]) -> float:
@@ -1168,12 +2590,9 @@ def slice_record_for_defect(
 ) -> dict[str, Any] | None:
     if not record:
         return record
-    fields = CATEGORY_RECORD_FIELDS.get(defect.category_id or "")
-    if not fields:
-        keys = list(ALWAYS_RECORD_FIELDS)
-        keys.extend(k for k in record if k not in keys)
-        fields = tuple(keys)
-    sliced = {key: record[key] for key in fields if key in record}
+    keys = list(ALWAYS_RECORD_FIELDS)
+    keys.extend(k for k in record if k not in keys)
+    sliced = {key: record[key] for key in keys if key in record}
     return sliced or record
 
 
@@ -1228,6 +2647,25 @@ def _term_hits(chunk: dict[str, Any], terms: list[str]) -> int:
     return sum(1 for term in terms if term.lower() in text)
 
 
+def _needs_preceding_table_context(chunk: dict[str, Any]) -> bool:
+    """Whether a table page needs a prior-page row or inherited header."""
+
+    if chunk.get("content_kind") != "table_rows":
+        return False
+    lines = [
+        line.strip()
+        for line in str(chunk.get("text") or "").splitlines()
+        if line.strip()
+    ]
+    if any(re.match(r"^Column \d+:\s*", line) for line in lines[:6]):
+        return True
+    first = lines[0] if lines else ""
+    if not first or ":" not in first:
+        return False
+    value = first.split(":", 1)[1].strip()
+    return bool(value) and not bool(re.match(r"^\(?\d+[.)]\s*", value))
+
+
 def select_chunks_for_defect(
     pool: list[dict[str, Any]],
     defect: Defect,
@@ -1250,7 +2688,9 @@ def select_chunks_for_defect(
     preferred = preferred_parts_for_defect(defect)
     terms = match_terms_for_defect(defect)
     summary = [c for c in pool if c.get("chunk_kind") == "summary"]
-    pages = [c for c in pool if c.get("chunk_kind") != "summary"]
+    # Page-manifest records preserve empty/image-only pages for coverage and
+    # auditing, but their synthetic marker is never evidence sent to the LLM.
+    pages = [c for c in pool if c.get("chunk_kind") == "page"]
     excluded = {p.lower() for p in excluded_parts_for_defect(defect)}
     if excluded:
         pages = [
@@ -1258,25 +2698,22 @@ def select_chunks_for_defect(
             for c in pages
             if not (
                 parts_on_page(c.get("document_part"))
-                and {
-                    name.lower() for name in parts_on_page(c.get("document_part"))
-                }
+                and {name.lower() for name in parts_on_page(c.get("document_part"))}
                 <= excluded
             )
         ]
 
-    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, int, float]:
+    def rank_key(chunk: dict[str, Any]) -> tuple[int, int, float, int, float]:
         look_hit = 1 if look_parts and _part_match(chunk, look_parts) else 0
         part_hit = 1 if _part_match(chunk, preferred) else 0
+        rerank = float(chunk.get("rerank_score") or 0)
         hits = _term_hits(chunk, terms)
         score = _chunk_score(chunk)
-        return (look_hit, part_hit, hits, score)
+        return (look_hit, part_hit, rerank, hits, score)
 
     ranked = sorted(pages, key=rank_key, reverse=True)
     focused = [
-        c
-        for c in ranked
-        if _part_match(c, preferred) or _term_hits(c, terms) > 0
+        c for c in ranked if _part_match(c, preferred) or _term_hits(c, terms) > 0
     ]
     candidates = focused if focused else ranked
     if not candidates:
@@ -1301,6 +2738,100 @@ def select_chunks_for_defect(
             if record_id:
                 used.add(record_id)
             break
+
+    # LlamaParse can split one table row across physical pages or omit repeated
+    # headers on the next page. Reserve the immediately preceding table page
+    # for an unnumbered continuation or generic Column N labels.
+    anchors = list(chosen)
+    anchor_index = 0
+    while anchor_index < len(anchors):
+        anchor = anchors[anchor_index]
+        anchor_index += 1
+        if len(chosen) >= page_budget or not _needs_preceding_table_context(anchor):
+            continue
+        try:
+            previous_page = int(anchor.get("page")) - 1
+        except (TypeError, ValueError):
+            continue
+        for chunk in ranked:
+            record_id = str(chunk.get("record_id") or "")
+            has_table = chunk.get("content_kind") == "table_rows" or "table" in (
+                chunk.get("item_types") or []
+            )
+            if record_id in used or not has_table:
+                continue
+            if chunk.get("page") != previous_page:
+                continue
+            if not _part_match(chunk, parts_on_page(anchor.get("document_part"))):
+                continue
+            chosen.append(chunk)
+            anchors.append(chunk)
+            if record_id:
+                used.add(record_id)
+            break
+
+    if _requires_annexure_collection_coverage(defect):
+        covered_annexures = {
+            name.casefold()
+            for chunk in chosen
+            for name in parts_on_page(chunk.get("document_part"))
+            if _is_numbered_annexure(name)
+        }
+        for chunk in ranked:
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            if record_id in used:
+                continue
+            numbered = next(
+                (
+                    name
+                    for name in parts_on_page(chunk.get("document_part"))
+                    if _is_numbered_annexure(name)
+                ),
+                None,
+            )
+            if numbered is None or numbered.casefold() in covered_annexures:
+                continue
+            chosen.append(chunk)
+            covered_annexures.add(numbered.casefold())
+            if record_id:
+                used.add(record_id)
+
+    if _requires_index_collection_coverage(defect):
+        covered_pages = {chunk.get("page") for chunk in chosen}
+        for chunk in ranked:
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            page = chunk.get("page")
+            if record_id in used or page in covered_pages:
+                continue
+            if not _part_match(chunk, ["Index"]):
+                continue
+            chosen.append(chunk)
+            covered_pages.add(page)
+            if record_id:
+                used.add(record_id)
+
+    if _requires_complete_part_coverage(defect):
+        covered_pages = {chunk.get("page") for chunk in chosen}
+        target_parts = look_parts or preferred
+        for chunk in sorted(
+            ranked, key=lambda item: (item.get("page") is None, item.get("page") or 0)
+        ):
+            if len(chosen) >= page_budget:
+                break
+            record_id = str(chunk.get("record_id") or "")
+            page = chunk.get("page")
+            if record_id in used or page in covered_pages:
+                continue
+            if not _part_match(chunk, target_parts):
+                continue
+            chosen.append(chunk)
+            covered_pages.add(page)
+            if record_id:
+                used.add(record_id)
 
     remaining = page_budget - len(chosen)
     if remaining > 0:

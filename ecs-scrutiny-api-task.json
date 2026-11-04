@@ -22,6 +22,10 @@
       ],
       "environment": [
         {
+          "name": "SPLIT_OUTPUT_DOCUMENTS",
+          "value": "All"
+        },
+        {
           "name": "VECTOR_BACKEND",
           "value": "pinecone"
         },
@@ -51,7 +55,31 @@
         },
         {
           "name": "OPENROUTER_MODEL",
-          "value": "google/gemini-3.8-flash"
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "LLM_PROVIDER",
+          "value": "openrouter"
+        },
+        {
+          "name": "SCRUTINY_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "VISION_PROVIDER",
+          "value": "openrouter"
+        },
+        {
+          "name": "VISION_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "OPENROUTER_VISION_MODEL",
+          "value": "openai/gpt-6-luna"
+        },
+        {
+          "name": "VISION_MAX_PAGE_FRACTION",
+          "value": "0.30"
         },
         {
           "name": "OPENROUTER_BASE_URL",
@@ -60,6 +88,14 @@
         {
           "name": "OPENROUTER_TIMEOUT_S",
           "value": "180"
+        },
+        {
+          "name": "OPENROUTER_MAX_ATTEMPTS",
+          "value": "4"
+        },
+        {
+          "name": "VISION_REQUEST_TIMEOUT_S",
+          "value": "120"
         },
         {
           "name": "OPENROUTER_APP_TITLE",
@@ -74,8 +110,20 @@
           "value": "all"
         },
         {
+          "name": "SCRUTINY_CATALOGUE_SOURCE",
+          "value": "db"
+        },
+        {
+          "name": "SCRUTINY_REVIEW_CONFIDENCE",
+          "value": "0.6"
+        },
+        {
+          "name": "OPENROUTER_VISION_ENABLED",
+          "value": "true"
+        },
+        {
           "name": "SCRUTINY_CONCURRENCY",
-          "value": "6"
+          "value": "8"
         },
         {
           "name": "SCRUTINY_TOP_K",
@@ -103,14 +151,22 @@
         },
         {
           "name": "JUBEEX_CALLBACK_URL",
-          "value": "http://3.111.86.61/api/v1/webhooks/ai-agent"
+          "value": "http://3.111.86.61:8000/api/v1/webhooks/ai-agent"
         },
         {
           "name": "AWS_S3_BUCKET",
           "value": "jubeex-893338224943-ap-south-1-an"
+        },
+        {
+          "name": "JUBEEX_REMOTE_FILE_HOSTS",
+          "value": "jubeex-893338224943-ap-south-1-an.s3.ap-south-1.amazonaws.com,s3.ap-south-1.amazonaws.com"
         }
       ],
       "secrets": [
+        {
+          "name": "CATALOGUE_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:CATALOGUE_DATABASE_URL::"
+        },
         {
           "name": "LLAMA_CLOUD_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/llamaindex/api-key-jhcG3b:LLAMA_CLOUD_API_KEY::"
@@ -130,6 +186,18 @@
         {
           "name": "JUBEEX_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-api-key-3zVFXj:JUBEEX_API_KEY::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_LOW",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_LOW::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_MEDIUM",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_MEDIUM::"
+        },
+        {
+          "name": "SCRUTINY_MODEL_HIGH",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:893338224943:secret:jubeex/scrutiny-agent-DFHpAn:SCRUTINY_MODEL_HIGH::"
         }
       ],
       "healthCheck": {

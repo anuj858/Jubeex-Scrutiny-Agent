@@ -1,0 +1,1513 @@
+"""Provider-neutral page-image detector for legally relevant ink marks."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+import os
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from ..document_parts import family_split_name
+from ..llm import (
+    DEFAULT_BASE_URL,
+    DEFAULT_TIMEOUT_S,
+    LLMError,
+    LLMFatalError,
+    _close_truncated_json,
+    _extract_content,
+    _headers,
+    acquire_openrouter_slot,
+    generate_vision_json,
+    llm_enabled,
+    llm_model,
+    llm_provider,
+    openrouter_api_key,
+    parse_openrouter_usage,
+)
+from ..process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
+from ..scrutiny.schema import LlmUsage
+from .pages import (
+    coerce_pages_by_slot,
+    eligible_formality_page_count,
+    global_page_sources,
+    select_formality_pages,
+)
+from .prompt import (
+    VISION_BATCH_SYSTEM_PROMPT,
+    VISION_SYSTEM_PROMPT,
+    batch_user_prompt,
+    user_prompt,
+)
+from .references import load_reference_assets
+from .render import jpeg_data_url, preview_dpi, render_page_jpeg
+from .schema import (
+    PROMPT_VERSION,
+    SIGNATURE_ROLES,
+    SUPPORTED_TYPES,
+    TYPE_ALIASES,
+    VISUAL_SCHEMA,
+    VisualFieldAssessment,
+    VisualMark,
+    VisualPageTarget,
+    VisualQualityAssessment,
+    empty_visual_index,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_VISION_CONCURRENCY = 4
+DEFAULT_VISION_RENDER_CONCURRENCY = 1
+DEFAULT_VISION_PAGES_PER_REQUEST = 4
+DEFAULT_VISION_MAX_TOKENS = 2800
+DEFAULT_VISION_REQUEST_TIMEOUT_S = 120.0
+ADVOCATE_LABELS = re.compile(
+    r"\b(advocate(?:-on-record)?|aor|counsel|drawn\s*&\s*filed|filed\s+by)\b",
+    re.IGNORECASE,
+)
+DEPONENT_LABELS = re.compile(r"\b(deponent|verification)\b", re.IGNORECASE)
+PETITIONER_LABELS = re.compile(r"\b(petitioner|appellant|executant)\b", re.IGNORECASE)
+RESPONDENT_LABELS = re.compile(r"\b(respondent|opposite\s+party)\b", re.IGNORECASE)
+NOTARY_WORDS = re.compile(
+    r"\b(notary|notarial|oath\s+commissioner|before\s+me|reg\.?\s*no)\b",
+    re.IGNORECASE,
+)
+
+
+def visual_detection_enabled() -> bool:
+    raw = (
+        (os.getenv("VISION_ENABLED") or os.getenv("OPENROUTER_VISION_ENABLED") or "")
+        .strip()
+        .lower()
+    )
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return _vision_provider_enabled()
+    return _vision_provider_enabled()
+
+
+def vision_provider() -> str:
+    """Allow vision to use OpenRouter independently of scrutiny text."""
+    raw = (os.getenv("VISION_PROVIDER") or "").strip().casefold()
+    if not raw:
+        return llm_provider()
+    if raw in {"openrouter", "or"}:
+        return "openrouter"
+    if raw in {"gemini", "genai", "google_ai", "ai_studio"}:
+        return "gemini"
+    if raw in {"vertex", "vertex_ai", "vertexai"}:
+        return "vertex"
+    return llm_provider()
+
+
+def _vision_provider_enabled() -> bool:
+    provider = vision_provider()
+    if provider == "openrouter":
+        return bool(openrouter_api_key())
+    return provider == llm_provider() and llm_enabled()
+
+
+def vision_model() -> str:
+    provider = vision_provider()
+    if provider == "openrouter":
+        return (
+            os.getenv("OPENROUTER_VISION_MODEL")
+            or os.getenv("OPENROUTER_MODEL")
+            or "google/gemini-4-argon"
+        ).strip()
+    raw = (
+        os.getenv("VISION_MODEL")
+        or (os.getenv("GEMINI_VISION_MODEL") if provider == "gemini" else None)
+        or os.getenv("OPENROUTER_VISION_MODEL")
+        or llm_model()
+    ).strip()
+    if provider in {"vertex", "gemini"} and raw.startswith("google/"):
+        return raw[len("google/") :]
+    return raw
+
+
+def vision_fallback_model() -> str | None:
+    raw = (
+        os.getenv("VISION_FALLBACK_MODEL")
+        or os.getenv("OPENROUTER_VISION_FALLBACK_MODEL")
+        or ""
+    ).strip()
+    return raw or None
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def vision_pages_per_request() -> int:
+    """Number of document pages carried by one synchronous vision request.
+
+    OpenRouter accepts multiple image content parts in one request. Keep the
+    bound deliberately small: it cuts request count while preserving per-page
+    output, manageable payloads, and a cheap single-page fallback.
+    """
+    if vision_provider() != "openrouter":
+        return 1
+    return max(
+        1,
+        min(
+            4,
+            _int_env("VISION_PAGES_PER_REQUEST", DEFAULT_VISION_PAGES_PER_REQUEST),
+        ),
+    )
+
+
+def vision_request_timeout_s() -> float:
+    """Maximum wall time for all model attempts for one rendered page."""
+    raw = (
+        os.getenv("VISION_REQUEST_TIMEOUT_S")
+        or os.getenv("OPENROUTER_TIMEOUT_S")
+        or str(DEFAULT_VISION_REQUEST_TIMEOUT_S)
+    )
+    try:
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_VISION_REQUEST_TIMEOUT_S
+
+
+def safe_normalized_bbox(value: Any) -> dict[str, float] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        try:
+            x, y, width, height = (float(item) for item in value)
+        except (TypeError, ValueError):
+            return None
+        value = {"x": x, "y": y, "width": width, "height": height}
+    if not isinstance(value, dict):
+        return None
+    raw = value
+    if "w" in raw and "width" not in raw:
+        raw = {**raw, "width": raw.get("w")}
+    if "h" in raw and "height" not in raw:
+        raw = {**raw, "height": raw.get("h")}
+    try:
+        bbox = {key: float(raw[key]) for key in ("x", "y", "width", "height")}
+    except (KeyError, TypeError, ValueError):
+        return None
+    tolerance = 0.002
+    if any(
+        bbox[key] < -tolerance or bbox[key] > 1 + tolerance
+        for key in ("x", "y", "width", "height")
+    ):
+        return None
+    bbox = {key: max(0.0, min(1.0, item)) for key, item in bbox.items()}
+    if (
+        bbox["x"] + bbox["width"] > 1 + tolerance
+        or bbox["y"] + bbox["height"] > 1 + tolerance
+    ):
+        return None
+    bbox["width"] = min(bbox["width"], 1 - bbox["x"])
+    bbox["height"] = min(bbox["height"], 1 - bbox["y"])
+    area = bbox["width"] * bbox["height"]
+    if (
+        bbox["width"] < 0.005
+        or bbox["height"] < 0.005
+        or area < 0.00005
+        or area >= 0.85
+    ):
+        return None
+    return {
+        "x": round(bbox["x"], 6),
+        "y": round(bbox["y"], 6),
+        "w": round(bbox["width"], 6),
+        "h": round(bbox["height"], 6),
+    }
+
+
+def _probable_type(raw: Any) -> str:
+    probable_type = re.sub(r"[^a-z0-9]+", "_", str(raw or "").casefold()).strip("_")
+    probable_type = TYPE_ALIASES.get(probable_type, probable_type)
+    if probable_type not in SUPPORTED_TYPES:
+        return "unknown_relevant_visual"
+    return probable_type
+
+
+def _signature_role(raw: Any, probable_type: str) -> str:
+    if probable_type != "signature_like_mark":
+        return "not_applicable"
+    role = re.sub(r"[^a-z0-9]+", "_", str(raw or "").casefold()).strip("_")
+    if role in {"aor", "counsel", "advocate_on_record"}:
+        return "advocate"
+    if role in SIGNATURE_ROLES:
+        return role
+    return "unknown"
+
+
+def infer_signature_role(
+    role: str,
+    *,
+    document_type: str,
+    page_text: str,
+    associated_label: str,
+) -> str:
+    if role not in {"unknown", "not_applicable"}:
+        return role
+    blob = f"{associated_label} {page_text}"
+    hits = {
+        "advocate": bool(ADVOCATE_LABELS.search(blob)),
+        "deponent": bool(DEPONENT_LABELS.search(blob)),
+        "petitioner": bool(PETITIONER_LABELS.search(blob)),
+        "respondent": bool(RESPONDENT_LABELS.search(blob)),
+    }
+    present = [name for name, found in hits.items() if found]
+    if len(present) == 1:
+        return present[0]
+    if document_type == "Main Petition":
+        return "advocate"
+    if role == "not_applicable":
+        return role
+    return "unknown"
+
+
+def _strip_code_fence(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        cleaned = cleaned.removeprefix("json").strip()
+    return cleaned
+
+
+def _extract_complete_objects(text: str) -> list[dict[str, Any]]:
+    """Keep complete objects from a truncated JSON array; drop the cut-off tail."""
+    items: list[dict[str, Any]] = []
+    start = text.find("{")
+    while start != -1:
+        in_string = False
+        escape = False
+        depth = 0
+        end: int | None = None
+        for index, char in enumerate(text[start:], start):
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            break
+        try:
+            value = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            break
+        if isinstance(value, dict):
+            items.append(value)
+        start = text.find("{", end + 1)
+    return items
+
+
+def _parse_vision_json(content: str) -> Any:
+    """Parse Gemini vision JSON: object, array, or truncated array of elements."""
+    text = _strip_code_fence(content)
+    if not text:
+        raise LLMError("Model returned empty content")
+    candidates = [text]
+    repaired = _close_truncated_json(text)
+    if repaired and repaired not in candidates:
+        candidates.append(repaired)
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        last_error = LLMError(
+            f"Response JSON was not a list or object: {content[:400]}"
+        )
+    complete = _extract_complete_objects(text)
+    if complete:
+        return complete
+    raise LLMError(
+        "Response was truncated or not JSON: " + content[:400]
+    ) from last_error
+
+
+def _is_chat_text_part(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and "text" in item
+        and "probable_type" not in item
+        and item.get("type") in {None, "text"}
+    )
+
+
+def _elements_from_parsed(parsed: Any) -> list[Any]:
+    if isinstance(parsed, list):
+        if parsed and all(_is_chat_text_part(item) for item in parsed):
+            joined = "".join(
+                str(item.get("text") or "") for item in parsed if isinstance(item, dict)
+            )
+            if not joined.strip():
+                return []
+            return _elements_from_parsed(_parse_vision_json(joined))
+        return parsed
+    if isinstance(parsed, dict):
+        elements = parsed.get("elements")
+        if isinstance(elements, list):
+            return elements
+        if parsed.get("probable_type") is not None:
+            return [parsed]
+        return []
+    if isinstance(parsed, str):
+        if not parsed.strip():
+            return []
+        return _elements_from_parsed(_parse_vision_json(parsed))
+    return []
+
+
+def parse_vision_elements(
+    content: Any,
+    *,
+    page_number: int,
+    document_type: str,
+    page_text: str = "",
+    slot_id: str | None = None,
+    local_page: int | None = None,
+) -> list[VisualMark]:
+    try:
+        elements = _elements_from_parsed(content)
+    except LLMError:
+        elements = (
+            _extract_complete_objects(content) if isinstance(content, str) else []
+        )
+    if not isinstance(elements, list):
+        return []
+    marks: list[VisualMark] = []
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        bbox = safe_normalized_bbox(item.get("bbox_normalized") or item.get("bbox"))
+        if bbox is None:
+            continue
+        probable_type = _probable_type(item.get("probable_type"))
+        area = bbox["w"] * bbox["h"]
+        aspect_ratio = bbox["w"] / max(bbox["h"], 0.000001)
+        if (
+            probable_type
+            in {
+                "notary_seal",
+                "government_stamp",
+                "revenue_stamp",
+                "ordinary_seal_or_stamp",
+            }
+            and area > 0.45
+        ):
+            continue
+        if probable_type == "signature_like_mark" and (
+            area > 0.15 or (bbox["w"] > 0.5 and aspect_ratio > 15)
+        ):
+            continue
+        try:
+            confidence = float(item.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        visible = item.get("visible_text")
+        if isinstance(visible, list):
+            visible_text = " ".join(
+                str(value).strip() for value in visible if str(value).strip()
+            )
+        else:
+            visible_text = str(visible or "")
+        associated = str(item.get("associated_label") or item.get("near_label") or "")
+        role = infer_signature_role(
+            _signature_role(item.get("signature_role"), probable_type),
+            document_type=document_type,
+            page_text=page_text,
+            associated_label=associated,
+        )
+        marks.append(
+            VisualMark(
+                page=page_number,
+                document_type=document_type,
+                marking_type=probable_type,
+                signature_role=role,
+                bbox=bbox,
+                confidence=max(0.0, min(1.0, confidence)),
+                visible_text=visible_text[:2000],
+                associated_label=associated[:200],
+                slot_id=slot_id,
+                local_page=local_page,
+            )
+        )
+    return marks
+
+
+def parse_vision_quality(
+    parsed: Any,
+    *,
+    target: VisualPageTarget,
+) -> VisualQualityAssessment | None:
+    """Parse the complete-page legibility assessment returned by vision."""
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("page_quality"), dict):
+        return None
+    raw = parsed["page_quality"]
+    readable = raw.get("readable")
+    if not isinstance(readable, bool):
+        return None
+    try:
+        confidence = float(raw.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    return VisualQualityAssessment(
+        page=target.page,
+        document_type=_document_type_for_page(target),
+        readable=readable,
+        issue=str(raw.get("issue") or "")[:300],
+        confidence=max(0.0, min(1.0, confidence)),
+        slot_id=target.slot_id,
+        local_page=target.local_page,
+    )
+
+
+def _document_type_for_page(target: VisualPageTarget) -> str:
+    if target.document_types:
+        return target.document_types[0]
+    return "unknown"
+
+
+_AOR_SIGN_FAMILIES = frozenset(
+    {
+        "main petition",
+        "advocate's checklist",
+        "listing proforma",
+        "aor's certificate",
+        "application",
+        "filing memo",
+        "memo of parties",
+        "vakalatnama",
+        "memo of appearance",
+        "annexures",
+    }
+)
+
+
+def _folded_families(document_types: Sequence[str]) -> set[str]:
+    families: set[str] = set()
+    for name in document_types:
+        cleaned = str(name).strip()
+        if not cleaned:
+            continue
+        families.add(cleaned.casefold())
+        families.add(family_split_name(cleaned).casefold())
+    return families
+
+
+def _references_for_target(
+    assets: Sequence[Any], document_types: Sequence[str]
+) -> list[Any]:
+    names = _folded_families(document_types)
+    selected: list[Any] = []
+    for asset in assets:
+        class_name = getattr(asset, "class_name", "")
+        role = getattr(asset, "expected_role", "")
+        if class_name == "notary_seal" and names & {"affidavit", "vakalatnama"}:
+            selected.append(asset)
+        elif class_name == "signature_like_mark" and role == "advocate":
+            if names & _AOR_SIGN_FAMILIES:
+                selected.append(asset)
+        elif (
+            class_name == "signature_like_mark"
+            and role == "deponent"
+            and names & {"affidavit", "vakalatnama"}
+        ):
+            selected.append(asset)
+    return selected
+
+
+def _expand_marks_for_parts(
+    marks: list[VisualMark], target: VisualPageTarget
+) -> list[VisualMark]:
+    """Duplicate a detected box onto each formality label present on the page."""
+    types = target.document_types or [_document_type_for_page(target)]
+    expanded: list[VisualMark] = []
+    for mark in marks:
+        for document_type in types:
+            payload = mark.model_dump()
+            payload["document_type"] = document_type
+            payload["signature_role"] = infer_signature_role(
+                mark.signature_role,
+                document_type=document_type,
+                page_text=target.markdown,
+                associated_label=mark.associated_label,
+            )
+            expanded.append(VisualMark.model_validate(payload))
+    return expanded
+
+
+async def _download_pdf(url: str, http: httpx.AsyncClient) -> bytes:
+    from ..remote_download import download_remote_pdf
+
+    data = await download_remote_pdf(
+        url,
+        timeout_seconds=FILE_DOWNLOAD_TIMEOUT_S,
+        client=http,
+    )
+    if not data:
+        raise ValueError(f"Downloaded empty body from {url}")
+    _require_pdf_bytes(data, url)
+    return data
+
+
+async def analyze_page_image(
+    *,
+    page_image: bytes,
+    target: VisualPageTarget,
+    references: Sequence[Any],
+    model: str,
+    http: httpx.AsyncClient,
+) -> tuple[list[VisualMark], VisualQualityAssessment | None, LlmUsage]:
+    prompt = user_prompt(
+        page_number=target.page,
+        document_types=target.document_types,
+        nearby_text=target.markdown,
+    )
+    max_tokens = _int_env("VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS)
+
+    if vision_provider() in {"vertex", "gemini"}:
+        images: list[tuple[bytes, str]] = [(page_image, "image/jpeg")]
+        ref_notes: list[str] = []
+        for reference in references:
+            ref_notes.append(
+                f"REFERENCE SHEET {reference.reference_id}: "
+                f"{reference.description} Do not return any element from this image."
+            )
+            images.append((reference.content, "image/jpeg"))
+        user_text = prompt
+        if ref_notes:
+            user_text = prompt + "\n\n" + "\n".join(ref_notes)
+        content, usage = await generate_vision_json(
+            system_prompt=VISION_SYSTEM_PROMPT,
+            user_prompt=user_text,
+            images=images,
+            model=model,
+            max_tokens=max_tokens,
+        )
+        logger.info(
+            "Vision page=%s model=%s tokens=%s cost=%s",
+            target.page,
+            usage.model or model,
+            usage.total_tokens,
+            usage.cost_usd,
+        )
+        try:
+            parsed = _parse_vision_json(content)
+        except LLMError as exc:
+            raise LLMError(str(exc), usage=usage) from exc
+        marks = parse_vision_elements(
+            parsed,
+            page_number=target.page,
+            document_type=_document_type_for_page(target),
+            page_text=target.markdown,
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+        return marks, parse_vision_quality(parsed, target=target), usage
+
+    content_parts: list[dict[str, Any]] = [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": jpeg_data_url(page_image)}},
+    ]
+    for reference in references:
+        content_parts.append(
+            {
+                "type": "text",
+                "text": (
+                    f"REFERENCE SHEET {reference.reference_id}: "
+                    f"{reference.description} Do not return any element from this image."
+                ),
+            }
+        )
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": jpeg_data_url(reference.content)},
+            }
+        )
+    messages = [
+        {"role": "system", "content": VISION_SYSTEM_PROMPT},
+        {"role": "user", "content": content_parts},
+    ]
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    await acquire_openrouter_slot()
+    response = await http.post(
+        f"{base_url}/chat/completions",
+        headers=_headers(),
+        json=payload,
+    )
+    if response.status_code in (408, 409, 429) or response.status_code >= 500:
+        raise LLMError(
+            f"Retryable vision status {response.status_code}: {response.text[:300]}"
+        )
+    if response.status_code == 402:
+        body_text = response.text[:2000]
+
+        if "in_flight_budget_exhausted" in body_text:
+            retry_after = response.headers.get("Retry-After", "30")
+
+            try:
+                retry_after_s = max(1, min(int(retry_after), 180))
+            except (TypeError, ValueError):
+                retry_after_s = 30
+
+            logger.warning(
+                "[VISION] OpenRouter in-flight budget exhausted "
+                "page=%s model=%s; retrying after %ss",
+                target.page,
+                model,
+                retry_after_s,
+            )
+
+            await asyncio.sleep(retry_after_s)
+
+            await acquire_openrouter_slot()
+            response = await http.post(
+                f"{base_url}/chat/completions",
+                headers=_headers(),
+                json=payload,
+            )
+
+            if response.status_code == 402:
+                body_text = response.text[:2000]
+
+                if "in_flight_budget_exhausted" in body_text:
+                    raise LLMError(
+                        "OpenRouter in-flight budget still exhausted "
+                        f"after retry: {body_text[:300]}"
+                    )
+
+        else:
+            logger.error(
+                "[VISION] OpenRouter 402 body=%s",
+                body_text,
+            )
+            raise LLMFatalError(f"OpenRouter 402 (billing): {body_text[:300]}")
+
+    if response.status_code in (401, 403):
+        logger.error(
+            "[VISION] OpenRouter error status=%s body=%s",
+            response.status_code,
+            response.text[:2000],
+        )
+        raise LLMFatalError(f"OpenRouter {response.status_code}: {response.text[:300]}")
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise LLMError("Vision response was not a JSON object")
+    usage = parse_openrouter_usage(body, model=model)
+    logger.info(
+        "Vision page=%s model=%s tokens=%s cost=%s",
+        target.page,
+        usage.model or model,
+        usage.total_tokens,
+        usage.cost_usd,
+    )
+    try:
+        parsed = _parse_vision_json(_extract_content(body))
+    except LLMError as exc:
+        raise LLMError(str(exc), usage=usage) from exc
+    marks = parse_vision_elements(
+        parsed,
+        page_number=target.page,
+        document_type=_document_type_for_page(target),
+        page_text=target.markdown,
+        slot_id=target.slot_id,
+        local_page=target.local_page,
+    )
+    return marks, parse_vision_quality(parsed, target=target), usage
+
+
+async def analyze_page_images(
+    *,
+    page_images: Sequence[tuple[VisualPageTarget, bytes]],
+    references: Sequence[Any],
+    model: str,
+    http: httpx.AsyncClient,
+) -> tuple[dict[int, tuple[list[VisualMark], VisualQualityAssessment | None]], LlmUsage]:
+    """Inspect several pages in one synchronous OpenRouter request.
+
+    This is deliberately different from OpenRouter's asynchronous Batch API:
+    the live job waits for one ordinary response containing several image
+    parts, so it preserves interactive latency and private base64 inputs.
+    """
+    if not page_images:
+        return {}, LlmUsage(model=model)
+    pages = [
+        {
+            "page": target.page,
+            "document_types": list(target.document_types),
+            "nearby_text": target.markdown,
+        }
+        for target, _image in page_images
+    ]
+    content_parts: list[dict[str, Any]] = [
+        {"type": "text", "text": batch_user_prompt(pages)}
+    ]
+    for target, image in page_images:
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": jpeg_data_url(image)},
+            }
+        )
+    for reference in references:
+        content_parts.append(
+            {
+                "type": "text",
+                "text": (
+                    f"REFERENCE SHEET {reference.reference_id}: "
+                    f"{reference.description} This is not filing evidence."
+                ),
+            }
+        )
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": jpeg_data_url(reference.content)},
+            }
+        )
+    max_tokens_per_page = _int_env(
+        "VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS
+    )
+    max_tokens = min(8000, max_tokens_per_page * len(page_images))
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": VISION_BATCH_SYSTEM_PROMPT},
+            {"role": "user", "content": content_parts},
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    await acquire_openrouter_slot(
+        model_name=model,
+        request_label=(
+            "vision-pages:" + ",".join(str(target.page) for target, _ in page_images)
+        ),
+    )
+    response = await http.post(
+        f"{base_url}/chat/completions",
+        headers=_headers(),
+        json=payload,
+    )
+    if response.status_code in (408, 409, 429) or response.status_code >= 500:
+        raise LLMError(
+            f"Retryable batched vision status {response.status_code}: "
+            f"{response.text[:300]}"
+        )
+    if response.status_code == 402:
+        body_text = response.text[:2000]
+        if "in_flight_budget_exhausted" in body_text:
+            raise LLMError(f"OpenRouter vision budget exhausted: {body_text[:300]}")
+        raise LLMFatalError(f"OpenRouter 402 (billing): {body_text[:300]}")
+    if response.status_code in (401, 403):
+        raise LLMFatalError(
+            f"OpenRouter {response.status_code}: {response.text[:300]}"
+        )
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise LLMError("Batched vision response was not a JSON object")
+    usage = parse_openrouter_usage(body, model=model)
+    try:
+        parsed = _parse_vision_json(_extract_content(body))
+    except LLMError as exc:
+        raise LLMError(str(exc), usage=usage) from exc
+    raw_pages = parsed.get("pages") if isinstance(parsed, dict) else None
+    if not isinstance(raw_pages, list):
+        raise LLMError("Batched vision response omitted the pages array", usage=usage)
+    by_page: dict[int, Mapping[str, Any]] = {}
+    for item in raw_pages:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            continue
+        by_page[page] = item
+    expected = {target.page for target, _image in page_images}
+    if not expected.issubset(by_page):
+        missing = sorted(expected - set(by_page))
+        raise LLMError(
+            f"Batched vision response omitted physical page(s) {missing}", usage=usage
+        )
+    results: dict[
+        int, tuple[list[VisualMark], VisualQualityAssessment | None]
+    ] = {}
+    for target, _image in page_images:
+        item = by_page[target.page]
+        marks = parse_vision_elements(
+            item,
+            page_number=target.page,
+            document_type=_document_type_for_page(target),
+            page_text=target.markdown,
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+        results[target.page] = (
+            marks,
+            parse_vision_quality(item, target=target),
+        )
+    logger.info(
+        "Vision pages=%s model=%s tokens=%s cost=%s",
+        sorted(results),
+        usage.model or model,
+        usage.total_tokens,
+        usage.cost_usd,
+    )
+    return results, usage
+
+
+async def _analyze_batch_with_fallback(
+    *,
+    page_images: Sequence[tuple[VisualPageTarget, bytes]],
+    references: Sequence[Any],
+    http: httpx.AsyncClient,
+) -> tuple[
+    dict[int, tuple[list[VisualMark], VisualQualityAssessment | None]],
+    Exception | None,
+    LlmUsage,
+]:
+    models = [vision_model()]
+    fallback = vision_fallback_model()
+    if fallback and fallback not in models:
+        models.append(fallback)
+    combined = LlmUsage()
+    last_error: Exception | None = None
+    document_types = [
+        name
+        for target, _image in page_images
+        for name in target.document_types
+    ]
+    selected_references = _references_for_target(references, document_types)
+    for model in models:
+        try:
+            found, usage = await analyze_page_images(
+                page_images=page_images,
+                references=selected_references,
+                model=model,
+                http=http,
+            )
+            return found, None, combined.plus(usage)
+        except LLMFatalError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            break
+        except LLMError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.warning(
+                "Batched vision failed pages=%s model=%s: %s",
+                [target.page for target, _image in page_images],
+                model,
+                str(exc)[:300],
+            )
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError) as exc:
+            last_error = exc
+            logger.warning(
+                "Batched vision failed pages=%s model=%s: %s",
+                [target.page for target, _image in page_images],
+                model,
+                str(exc)[:300],
+            )
+    return {}, last_error, combined
+
+
+async def _analyze_with_fallback(
+    *,
+    page_image: bytes,
+    target: VisualPageTarget,
+    references: Sequence[Any],
+    http: httpx.AsyncClient,
+) -> tuple[
+    list[VisualMark], VisualQualityAssessment | None, Exception | None, LlmUsage
+]:
+    models = [vision_model()]
+    fallback = vision_fallback_model()
+    if fallback and fallback not in models:
+        models.append(fallback)
+    last_error: Exception | None = None
+    combined = LlmUsage()
+    for model in models:
+        try:
+            found, quality, usage = await analyze_page_image(
+                page_image=page_image,
+                target=target,
+                references=_references_for_target(references, target.document_types),
+                model=model,
+                http=http,
+            )
+            return found, quality, None, combined.plus(usage)
+        except LLMFatalError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.error(
+                "Vision billing/auth failure page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
+            break
+        except LLMError as exc:
+            last_error = exc
+            combined = combined.plus(exc.usage)
+            logger.warning(
+                "Vision analysis failed page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
+        except (
+            httpx.HTTPError,
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+        ) as exc:
+            last_error = exc
+            logger.warning(
+                "Vision analysis failed page=%s model=%s: %s",
+                target.page,
+                model,
+                str(exc)[:300],
+            )
+    if last_error:
+        logger.warning(
+            "Skipping visual marks for page %s after vision failures",
+            target.page,
+        )
+    return [], None, last_error, combined
+
+
+@dataclass(frozen=True)
+class _PageVisionResult:
+    marks: list[VisualMark]
+    quality: VisualQualityAssessment | None = None
+    reason: str | None = None
+    detail: str | None = None
+    usage: LlmUsage | None = None
+
+
+_DATE_FIELD = re.compile(
+    r"(?im)^\s*(?:dated|date)\s*[:\-]\s*(?P<value>[^\r\n]{0,60})$"
+)
+_DATE_VALUE = re.compile(
+    r"\b(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|"
+    r"\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _field_assessments_for_page(
+    target: VisualPageTarget, marks: list[VisualMark]
+) -> list[VisualFieldAssessment]:
+    """Record inspected labelled fields, including reliable blank fields."""
+    match = _DATE_FIELD.search(target.markdown or "")
+    if not match:
+        return []
+    raw_value = " ".join((match.group("value") or "").split()).strip(" .")
+    typed_value = bool(_DATE_VALUE.search(raw_value))
+    visual_values = [
+        mark
+        for mark in marks
+        if mark.marking_type == "handwritten_field_value"
+        and "date" in (mark.associated_label or "").casefold()
+    ]
+    visible = raw_value or next(
+        (mark.visible_text for mark in visual_values if mark.visible_text), ""
+    )
+    value_present = typed_value or bool(visual_values)
+    document_type = target.document_types[0] if target.document_types else "unknown"
+    return [
+        VisualFieldAssessment(
+            page=target.page,
+            document_type=document_type,
+            field="execution_date",
+            label_found=True,
+            value_present=value_present,
+            readable=True,
+            confidence=0.95 if value_present else 0.9,
+            visible_text=visible[:200],
+            slot_id=target.slot_id,
+            local_page=target.local_page,
+        )
+    ]
+
+
+def _usage_payload(usage: LlmUsage | None) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    if usage.calls <= 0 and usage.cost_usd is None and usage.total_tokens <= 0:
+        return None
+    return {
+        "cost_usd": usage.cost_usd,
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "calls": usage.calls,
+        "model": usage.model,
+    }
+
+
+def _openrouter_cost_note(usage: LlmUsage | None) -> str:
+    if usage is None or usage.cost_usd is None:
+        return ""
+    return f", OpenRouter {usage.cost_usd:.6f} USD"
+
+
+def _failure_row(
+    target: VisualPageTarget, reason: str, detail: str | None = None
+) -> dict[str, Any]:
+    return {
+        "page": target.page,
+        "slot_id": target.slot_id,
+        "document_types": list(target.document_types),
+        "reason": reason,
+        "detail": (detail or "")[:300] or None,
+    }
+
+
+def _dominant_error(failures: Sequence[Mapping[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for item in failures:
+        reason = str(item.get("reason") or "vision_failed")
+        counts[reason] = counts.get(reason, 0) + 1
+    if not counts:
+        return "vision_failed"
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def _target_label(target: VisualPageTarget) -> str:
+    types = ", ".join(target.document_types) or "unknown"
+    return (
+        f"page {target.page} {types} slot={target.slot_id or '-'} "
+        f"local={target.local_page} file_id={target.file_id or 'no'} "
+        f"url={'yes' if (target.file_url or '').strip() else 'no'}"
+    )
+
+
+async def _emit_log(on_log: Any, message: str) -> None:
+    logger.info("%s", message)
+    if on_log is None:
+        return
+    result = on_log(message)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _default_download_file_id(file_id: str) -> bytes:
+    from ..clients import get_llama_cloud_client
+    from ..process_file import _download_file_bytes
+
+    return await _download_file_bytes(get_llama_cloud_client(), file_id)
+
+
+async def detect_visual_marks(
+    *,
+    parts: Sequence[Any],
+    pages_by_slot: Mapping[str, Mapping[Any, Any]] | None,
+    page_parts: Mapping[int, Sequence[str]],
+    page_markdown: Mapping[int, str] | None = None,
+    omit_empty: bool = False,
+    on_log: Any = None,
+    download_file_id: Any = None,
+) -> dict[str, Any]:
+    """Render selected formality pages and return a visual_index_v1 payload."""
+    del page_parts
+    enabled = visual_detection_enabled()
+    await _emit_log(
+        on_log,
+        (
+            f"Visual detection enabled={enabled} provider={vision_provider()} "
+            f"model={vision_model() or '-'}"
+        ),
+    )
+    if not enabled:
+        return empty_visual_index(status="skipped", error="vision_disabled")
+    slot_pages = coerce_pages_by_slot(pages_by_slot)
+    sources = global_page_sources(parts, slot_pages, omit_empty=omit_empty)
+    targets = select_formality_pages(sources, page_markdown=page_markdown)
+    eligible_count = eligible_formality_page_count(sources)
+    if not targets:
+        await _emit_log(on_log, "Visual: no visual-relevant formality pages; skipping")
+        return {
+            "schema": VISUAL_SCHEMA,
+            "prompt_version": PROMPT_VERSION,
+            "status": "ok",
+            "error": None,
+            "pages": [],
+            "targets": [],
+            "failures": [],
+            "marks": [],
+            "field_assessments": [],
+            "quality_assessments": [],
+        }
+
+    await _emit_log(
+        on_log,
+        (
+            f"Visual: {len(targets)} of {eligible_count} eligible formality page(s) "
+            f"selected ({max(0, eligible_count - len(targets))} page(s) avoided)"
+        ),
+    )
+    for target in targets:
+        await _emit_log(on_log, f"Visual target {_target_label(target)}")
+
+    dpi = preview_dpi(os.getenv("VISION_PREVIEW_DPI"))
+    concurrency = max(1, _int_env("VISION_CONCURRENCY", DEFAULT_VISION_CONCURRENCY))
+    render_concurrency = max(
+        1,
+        _int_env("VISION_RENDER_CONCURRENCY", DEFAULT_VISION_RENDER_CONCURRENCY),
+    )
+    timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    vision_timeout = vision_request_timeout_s()
+    references = load_reference_assets()
+    pdf_by_slot: dict[str, bytes] = {}
+    pdf_errors: dict[str, tuple[str, str]] = {}
+    fetch_file = download_file_id or _default_download_file_id
+    marks: list[VisualMark] = []
+    field_assessments: list[VisualFieldAssessment] = []
+    quality_assessments: list[VisualQualityAssessment] = []
+    analyzed_pages: list[int] = []
+    failures: list[dict[str, Any]] = []
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(max(timeout, FILE_DOWNLOAD_TIMEOUT_S)),
+        follow_redirects=True,
+    ) as http:
+        for target in targets:
+            slot = target.slot_id
+            if slot in pdf_by_slot or slot in pdf_errors:
+                continue
+            url = (target.file_url or "").strip()
+            file_id = (target.file_id or "").strip()
+            if not url and not file_id:
+                pdf_errors[slot] = ("missing_pdf", "slot has no file_url or file_id")
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: missing file_url and file_id",
+                )
+                continue
+            try:
+                if url:
+                    pdf_by_slot[slot] = await _download_pdf(url, http)
+                else:
+                    data = await fetch_file(file_id)
+                    if not data:
+                        raise ValueError(f"Empty PDF for file_id={file_id}")
+                    _require_pdf_bytes(data, file_id)
+                    pdf_by_slot[slot] = data
+                await _emit_log(
+                    on_log,
+                    (f"Visual downloaded slot={slot} {len(pdf_by_slot[slot])} bytes"),
+                )
+            except ValueError as exc:
+                reason = "not_pdf" if "is not a PDF" in str(exc) else "download_failed"
+                pdf_errors[slot] = (reason, str(exc)[:300])
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: {exc}",
+                )
+            except (httpx.HTTPError, OSError, RuntimeError, TypeError, KeyError) as exc:
+                pdf_errors[slot] = ("download_failed", str(exc)[:300])
+                await _emit_log(
+                    on_log,
+                    f"Visual download failed slot={slot}: {exc}",
+                )
+
+        # PyMuPDF performs rendering in native code. Rendering every target in
+        # parallel can crash the whole worker (SIGSEGV) and also keeps every
+        # rendered JPEG resident while the model requests wait. Bound the
+        # complete render-and-analyse operation, and serialize rendering by
+        # default, while still allowing model requests to overlap.
+        request_semaphore = asyncio.Semaphore(concurrency)
+        render_semaphore = asyncio.Semaphore(render_concurrency)
+
+        async def analyze_rendered(
+            target: VisualPageTarget, image: bytes
+        ) -> _PageVisionResult:
+            try:
+                analyzed = await asyncio.wait_for(
+                    _analyze_with_fallback(
+                        page_image=image,
+                        target=target,
+                        references=references,
+                        http=http,
+                    ),
+                    timeout=vision_timeout,
+                )
+                if len(analyzed) == 3:
+                    found, vision_error, usage = analyzed
+                    quality = None
+                else:
+                    found, quality, vision_error, usage = analyzed
+            except TimeoutError:
+                detail = (
+                    f"Vision request exceeded {vision_timeout:g}s; "
+                    "continuing without marks for this page"
+                )
+                logger.warning(
+                    "Vision timeout page=%s timeout=%ss",
+                    target.page,
+                    vision_timeout,
+                )
+                return _PageVisionResult(
+                    marks=[], reason="vision_timeout", detail=detail
+                )
+            if vision_error is not None:
+                return _PageVisionResult(
+                    marks=[],
+                    reason="vision_failed",
+                    detail=str(vision_error)[:300],
+                    usage=usage,
+                )
+            return _PageVisionResult(
+                marks=_expand_marks_for_parts(found, target),
+                quality=quality,
+                usage=usage,
+            )
+
+        async def run_one(target: VisualPageTarget) -> _PageVisionResult:
+            pdf_bytes = pdf_by_slot.get(target.slot_id)
+            if not pdf_bytes:
+                reason, detail = pdf_errors.get(
+                    target.slot_id, ("missing_pdf", "PDF not loaded")
+                )
+                return _PageVisionResult(marks=[], reason=reason, detail=detail)
+            async with request_semaphore:
+                try:
+                    async with render_semaphore:
+                        image = await asyncio.to_thread(
+                            render_page_jpeg,
+                            pdf_bytes,
+                            target.local_page,
+                            dpi=dpi,
+                        )
+                except (ValueError, OSError, RuntimeError) as exc:
+                    logger.warning(
+                        "Could not render page %s (local %s) for vision",
+                        target.page,
+                        target.local_page,
+                        exc_info=True,
+                    )
+                    return _PageVisionResult(
+                        marks=[],
+                        reason="render_failed",
+                        detail=str(exc)[:300],
+                    )
+                return await analyze_rendered(target, image)
+
+        async def run_many(
+            batch: Sequence[VisualPageTarget],
+        ) -> list[_PageVisionResult]:
+            output: dict[int, _PageVisionResult] = {}
+            rendered: list[tuple[VisualPageTarget, bytes]] = []
+            async with request_semaphore:
+                for target in batch:
+                    pdf_bytes = pdf_by_slot.get(target.slot_id)
+                    if not pdf_bytes:
+                        reason, detail = pdf_errors.get(
+                            target.slot_id, ("missing_pdf", "PDF not loaded")
+                        )
+                        output[target.page] = _PageVisionResult(
+                            marks=[], reason=reason, detail=detail
+                        )
+                        continue
+                    try:
+                        async with render_semaphore:
+                            image = await asyncio.to_thread(
+                                render_page_jpeg,
+                                pdf_bytes,
+                                target.local_page,
+                                dpi=dpi,
+                            )
+                    except (ValueError, OSError, RuntimeError) as exc:
+                        output[target.page] = _PageVisionResult(
+                            marks=[], reason="render_failed", detail=str(exc)[:300]
+                        )
+                        continue
+                    rendered.append((target, image))
+                if not rendered:
+                    return [output[target.page] for target in batch]
+                if len(rendered) == 1:
+                    target, image = rendered[0]
+                    output[target.page] = await analyze_rendered(target, image)
+                    return [output[target.page] for target in batch]
+                try:
+                    found_by_page, batch_error, usage = await asyncio.wait_for(
+                        _analyze_batch_with_fallback(
+                            page_images=rendered,
+                            references=references,
+                            http=http,
+                        ),
+                        timeout=vision_timeout,
+                    )
+                except TimeoutError:
+                    found_by_page = {}
+                    batch_error = TimeoutError(
+                        f"Batched vision exceeded {vision_timeout:g}s"
+                    )
+                    usage = LlmUsage()
+                if batch_error is None:
+                    first_page = rendered[0][0].page
+                    for target, _image in rendered:
+                        found, quality = found_by_page[target.page]
+                        output[target.page] = _PageVisionResult(
+                            marks=_expand_marks_for_parts(found, target),
+                            quality=quality,
+                            # Count one request once, rather than once per page.
+                            usage=usage if target.page == first_page else None,
+                        )
+                else:
+                    logger.warning(
+                        "Falling back to single-page vision for pages=%s: %s",
+                        [target.page for target, _image in rendered],
+                        str(batch_error)[:300],
+                    )
+                    for target, image in rendered:
+                        output[target.page] = await analyze_rendered(target, image)
+                return [output[target.page] for target in batch]
+
+        pages_per_request = vision_pages_per_request()
+        if pages_per_request <= 1:
+            results = await asyncio.gather(
+                *(run_one(target) for target in targets),
+                return_exceptions=True,
+            )
+        else:
+            batches = [
+                targets[index : index + pages_per_request]
+                for index in range(0, len(targets), pages_per_request)
+            ]
+            await _emit_log(
+                on_log,
+                (
+                    f"Visual: grouping {len(targets)} page(s) into "
+                    f"{len(batches)} synchronous request(s), up to "
+                    f"{pages_per_request} page(s) each"
+                ),
+            )
+            grouped = await asyncio.gather(
+                *(run_many(batch) for batch in batches),
+                return_exceptions=True,
+            )
+            results = []
+            for batch, item in zip(batches, grouped, strict=True):
+                if isinstance(item, Exception):
+                    results.extend([item] * len(batch))
+                else:
+                    results.extend(item)
+
+    succeeded = 0
+    combined_usage = LlmUsage()
+    for target, result in zip(targets, results, strict=True):
+        analyzed_pages.append(target.page)
+        if isinstance(result, Exception):
+            logger.warning(
+                "Visual detection failed for page %s: %s",
+                target.page,
+                result,
+            )
+            failures.append(_failure_row(target, "vision_failed", str(result)))
+            await _emit_log(
+                on_log,
+                f"Visual page {target.page} failed: {result}",
+            )
+            continue
+        if result.usage:
+            combined_usage = combined_usage.plus(result.usage)
+        if result.reason:
+            failures.append(_failure_row(target, result.reason, result.detail))
+            await _emit_log(
+                on_log,
+                (
+                    f"Visual page {target.page} {result.reason}"
+                    + (f": {result.detail}" if result.detail else "")
+                    + _openrouter_cost_note(result.usage)
+                ),
+            )
+            continue
+        succeeded += 1
+        marks.extend(result.marks)
+        field_assessments.extend(_field_assessments_for_page(target, result.marks))
+        if result.quality is not None:
+            quality_assessments.append(result.quality)
+        await _emit_log(
+            on_log,
+            (
+                f"Visual page {target.page}: {len(result.marks)} mark(s)"
+                + _openrouter_cost_note(result.usage)
+            ),
+        )
+
+    status = "error" if succeeded == 0 else "ok"
+    error = _dominant_error(failures) if status == "error" else None
+    usage_payload = _usage_payload(combined_usage)
+    await _emit_log(
+        on_log,
+        (
+            f"Visual summary: {len(targets)} targets, {succeeded} ok, "
+            f"{len(failures)} failed, {len(marks)} marks"
+            + _openrouter_cost_note(combined_usage)
+        ),
+    )
+    payload: dict[str, Any] = {
+        "schema": VISUAL_SCHEMA,
+        "prompt_version": PROMPT_VERSION,
+        "status": status,
+        "error": error,
+        "pages": analyzed_pages,
+        "targets": [
+            {"page": target.page, "document_types": list(target.document_types)}
+            for target in targets
+        ],
+        "failures": failures,
+        "marks": [mark.model_dump() for mark in marks],
+        "field_assessments": [
+            assessment.model_dump() for assessment in field_assessments
+        ],
+        "quality_assessments": [
+            assessment.model_dump() for assessment in quality_assessments
+        ],
+    }
+    if usage_payload:
+        payload["usage"] = usage_payload
+    return payload
