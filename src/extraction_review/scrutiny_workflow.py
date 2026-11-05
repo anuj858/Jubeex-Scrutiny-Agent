@@ -96,6 +96,7 @@ from .scrutiny.schema import (
     apply_deterministic_postclassification_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
+    apply_final_evidence_contract_policy,
     apply_grounded_defect_policy,
     apply_internal_contradiction_policy,
     apply_margin_layout_policy,
@@ -939,6 +940,7 @@ async def _run_defect(
         scope_complete=coverage.scope_complete,
     )
     response = apply_conditional_manifest_policy(defect, response, layout)
+    response = apply_final_evidence_contract_policy(response)
 
     return build_finding(
         defect,
