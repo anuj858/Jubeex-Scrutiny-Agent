@@ -14,6 +14,7 @@ from typing import Any
 
 from ..document_parts import (
     catalogue_inspect_parts,
+    distinctive_trigger_phrases,
     family_split_name,
     filing_type_label,
     format_document_parts,
@@ -149,9 +150,10 @@ equivalent wording, unless the Standard explicitly says the exact wording is man
 below 0.6, and one stored chunk that was not shown could decide the row. \
 Otherwise use action none. adjacent asks for the previous or next 1 or 2 \
 chunks of an excerpt already shown, inside the same inspect part. search_text \
-is filing words that will be embedded and matched to normalized_text. It is \
-not a keyword filter and not a field name. Do not ask for more context when \
-the excerpts already decide the row.
+is the clause as printed on the missing page, embedded against normalized_text. \
+Put that printed clause first. Do not copy the Standard. It is not a keyword \
+filter and not a field name. Do not ask for more context when the excerpts \
+already decide the row.
 
 How to decide:
 
@@ -1612,8 +1614,7 @@ def _indexed_chunks_note(defect: Defect) -> str:
     """Tell the model how stored chunks can be requested, and from where."""
     parts = required_parts_for_defect(defect)
     listed = ", ".join(parts) if parts else "the document types listed above"
-    return "\n".join(
-        [
+    lines = [
             (
                 "Each excerpt is one stored chunk, not the whole page. "
                 f"This check may use only these document parts: {listed}."
@@ -1637,14 +1638,24 @@ def _indexed_chunks_note(defect: Defect) -> str:
                 "inspect part."
             ),
             (
-                "search_text is at most 200 characters of words that would "
-                "appear in the filing. That string is embedded and matched by "
-                "meaning to normalized_text. It is not a keyword filter and "
-                "not a metadata field name. document_part must be one of the "
-                "inspect parts above, or null to search all of them."
+                "search_text is at most 200 characters of the clause as it is "
+                "printed on the missing page. That whole string is embedded and "
+                "matched by meaning to normalized_text. Put the printed clause "
+                "first. Do not copy the Standard or this task's defect sentence. "
+                "It is not a keyword filter and not a metadata field name. "
+                "document_part must be one of the inspect parts above, or null "
+                "to search all of them."
             ),
-        ]
-    )
+    ]
+    phrases = distinctive_trigger_phrases(defect)
+    if phrases:
+        shown = "; ".join(phrases[:8])
+        lines.append(
+            "Phrases printed on this document when the clause is present: "
+            f"{shown}. Use one of these, or the same words as printed in the "
+            "filing, as search_text. Do not replace them with the Standard."
+        )
+    return "\n".join(lines)
 
 
 def build_defect_prompt(
@@ -1770,8 +1781,9 @@ def build_defect_prompt(
             "needs_review, confidence is below 0.6, and one stored chunk "
             "that was not shown could decide the row. adjacent uses "
             "direction previous or next and count 1 or 2. search_text is "
-            "filing words to embed against normalized_text, at most 200 "
-            "characters, not a field name. document_part is one inspect "
+            "the clause printed on the missing page, embedded against "
+            "normalized_text, at most 200 characters. Put that clause first "
+            "and do not copy the Standard. document_part is one inspect "
             "part or null."
         )
     )

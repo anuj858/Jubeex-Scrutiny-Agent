@@ -2948,6 +2948,23 @@ async def test_cross_part_neighbor_and_empty_fetch_do_not_call_again(
     assert result.coverage.context_followup is False
 
 
+def test_search_phrase_keeps_printed_words_and_adds_form_language() -> None:
+    from extraction_review.scrutiny.context_followup import search_phrase_for_followup
+    from extraction_review.scrutiny.rules import check_requirement, get_catalogue
+
+    defect = get_catalogue().defect("D-98")
+    phrase = search_phrase_for_followup(defect, "expired on 12 January 2020")
+    assert phrase.startswith("expired on 12 January 2020")
+    assert "date of death" in phrase
+    assert "legal representatives" in phrase
+    assert len(phrase) <= 200
+
+    copied = search_phrase_for_followup(defect, check_requirement(defect))
+    assert copied.startswith("date of death")
+    assert "expired on" in copied
+    assert "where an application" not in copied.casefold()
+
+
 @pytest.mark.asyncio
 async def test_search_embeds_the_phrase_inside_inspect_parts(monkeypatch) -> None:
     from extraction_review.scrutiny import context_followup
@@ -3001,7 +3018,10 @@ async def test_search_embeds_the_phrase_inside_inspect_parts(monkeypatch) -> Non
     )
 
     assert len(calls) == 2
-    assert captured[0][0] == "expired on 12 January 2020"
+    assert captured[0][0].startswith("expired on 12 January 2020")
+    assert "date of death" in captured[0][0]
+    assert "legal representatives" in captured[0][0]
+    assert len(captured[0][0]) <= 200
     assert captured[0][1]["document_part"] == "Application"
     assert captured[0][1]["chunk_kind"] == "page"
     assert "Affidavit" not in str(captured[0][1].get("part_labels"))
@@ -3060,15 +3080,19 @@ async def test_context_hop_does_not_also_run_the_full_part_retry(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_none_request_still_uses_the_existing_full_part_retry(monkeypatch) -> None:
+async def test_none_request_sends_the_rest_of_the_part_on_the_first_call(
+    monkeypatch,
+) -> None:
     import extraction_review.scrutiny_workflow as workflow
     from extraction_review.scrutiny.rules import get_catalogue
     from extraction_review.scrutiny.schema import LlmUsage
 
     labels: list[str] = []
+    prompts: list[str] = []
 
     async def call(**kwargs: object) -> tuple[DefectResponse, LlmUsage]:
         labels.append(str(kwargs["request_label"]))
+        prompts.append(str(kwargs["user_prompt"]))
         return (
             _followup_response(
                 gap="element_page_not_in_excerpts",
@@ -3098,9 +3122,8 @@ async def test_none_request_still_uses_the_existing_full_part_retry(monkeypatch)
         model="google/gemini-test",
     )
 
-    assert labels[0] == "scrutiny:D-98"
-    assert any("complete-evidence-retry" in label for label in labels)
-    assert all("context-followup" not in label for label in labels)
+    assert labels == ["scrutiny:D-98"]
+    assert "Later page of the same application." in prompts[0]
 
 
 @pytest.mark.asyncio
@@ -3156,7 +3179,7 @@ async def test_exhaustive_followup_cannot_become_compliant(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_followup_cannot_become_compliant_from_two_chunks(
+async def test_followup_can_confirm_compliance_when_every_part_page_is_shown(
     monkeypatch,
 ) -> None:
     from extraction_review.scrutiny import context_followup
@@ -3196,14 +3219,14 @@ async def test_local_followup_cannot_become_compliant_from_two_chunks(
             },
             8: {
                 "document_part": "Application",
-                "text": "A further application page was not part of this follow-up.",
+                "text": "A further application page supplied with the layout.",
             },
         },
     )
 
     assert len(calls) == 2
-    assert result.status == "needs_review"
-    assert result.coverage.scope_complete is False
+    assert result.status == "compliant"
+    assert result.coverage.scope_complete is True
 
 
 @pytest.mark.asyncio

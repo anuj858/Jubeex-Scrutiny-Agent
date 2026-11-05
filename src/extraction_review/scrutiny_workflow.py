@@ -586,15 +586,38 @@ def _complete_layout_chunks_for_defect(
         text = _layout_page_text(page)
         if not text:
             continue
+        stored = next(
+            (
+                chunk
+                for chunk in chunks
+                if chunk.get("chunk_kind") != "summary"
+                and chunk.get("page") == page_number
+                and chunk.get("record_id")
+            ),
+            None,
+        )
+        # Keep the Pinecone id when this page was already retrieved. The
+        # follow-up addresses the next stored chunk from that id.
+        record_id = (
+            str(stored.get("record_id"))
+            if stored is not None
+            else f"layout-complete:{page_number}"
+        )
+        raw_index = stored.get("chunk_index") if stored is not None else 0
+        try:
+            chunk_index = int(raw_index) if raw_index is not None else 0
+        except (TypeError, ValueError):
+            chunk_index = 0
         complete.append(
             {
-                "record_id": f"layout-complete:{page_number}",
+                "record_id": record_id,
                 "score": 0.0,
                 "chunk_kind": "page",
                 "page": page_number,
                 "page_end": page_number,
                 "document_part": names,
                 "text": text,
+                "chunk_index": chunk_index,
                 "layout_fallback": True,
                 "complete_part_retry": True,
             }

@@ -25,6 +25,7 @@ from typing import Any
 from ..document_parts import (
     catalogue_context_parts,
     chunks_cover_part,
+    distinctive_trigger_phrases,
     required_parts_for_defect,
     slice_record_for_defect,
 )
@@ -37,7 +38,7 @@ from ..vector_store import (
     search_filing_chunks,
 )
 from .prompts import MAX_EVIDENCE_CHARS, build_defect_prompt
-from .rules import Catalogue, Defect
+from .rules import Catalogue, Defect, check_requirement
 from .schema import (
     DefectResponse,
     EvidenceRequest,
@@ -56,8 +57,68 @@ _CONTEXT_GAPS = frozenset(
     }
 )
 _MAX_NEIGHBOR_PAGES = 4
-_SEARCH_FOLLOWUP_HITS = 3
+_SEARCH_FOLLOWUP_HITS = 5
 _TOOLS = frozenset({"adjacent", "search"})
+_QUERY_LIMIT = 200
+_QUERY_STOP = frozenset(
+    {
+        "that",
+        "this",
+        "with",
+        "from",
+        "have",
+        "been",
+        "were",
+        "will",
+        "shall",
+        "must",
+        "into",
+        "such",
+        "than",
+        "then",
+        "them",
+        "they",
+        "their",
+        "there",
+        "these",
+        "those",
+        "which",
+        "while",
+        "where",
+        "when",
+        "what",
+        "does",
+        "not",
+        "and",
+        "the",
+        "for",
+        "are",
+        "was",
+        "has",
+        "had",
+        "its",
+        "any",
+        "all",
+        "each",
+        "every",
+        "only",
+        "also",
+        "under",
+        "over",
+        "after",
+        "before",
+        "between",
+        "within",
+        "without",
+        "against",
+        "whether",
+        "required",
+        "requirement",
+        "filing",
+        "document",
+        "page",
+    }
+)
 
 
 @dataclass
@@ -120,6 +181,52 @@ def _layout_page_text(page: dict[str, Any]) -> str:
     from ..scrutiny_workflow import _layout_page_text as read_text
 
     return read_text(page)
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z][a-z'-]{3,}", text.casefold())
+        if word not in _QUERY_STOP
+    }
+
+
+def search_phrase_for_followup(defect: Defect, model_text: str) -> str:
+    """Phrase embedded against normalized_text.
+
+    A short clause the model copied from the filing stays first. A restatement
+    of the Standard is replaced by the catalogue phrases that are printed on
+    the page. Up to two of those phrases are added when the model's clause is
+    short, so the embedding still names the surrounding form language.
+    """
+    text = re.sub(r"\s+", " ", model_text or "").strip()
+    triggers = distinctive_trigger_phrases(defect)
+    words = _content_words(text)
+    source = _content_words(
+        f"{getattr(defect, 'defect', '')} {check_requirement(defect)}"
+    )
+    overlap = (len(words & source) / len(words)) if words else 0.0
+    restatement = overlap >= 0.7 and len(text) >= 80
+    if restatement or not text:
+        phrase = ". ".join(triggers)
+    else:
+        phrase = text
+        if len(text) <= 120:
+            added = 0
+            for trigger in triggers:
+                if trigger.casefold() in phrase.casefold():
+                    continue
+                candidate = f"{phrase}. {trigger}"
+                if len(candidate) > _QUERY_LIMIT:
+                    break
+                phrase = candidate
+                added += 1
+                if added >= 2:
+                    break
+    phrase = re.sub(r"\s+", " ", phrase).strip(" .")
+    if not phrase:
+        phrase = text
+    return phrase[:_QUERY_LIMIT].rsplit(" ", 1)[0] if len(phrase) > _QUERY_LIMIT else phrase
 
 
 def resolve_context_request(
@@ -577,6 +684,16 @@ async def serve_context_followup(
                 reason,
             )
         return None
+    if request.action == "search":
+        embedded = search_phrase_for_followup(defect, request.search_text or "")
+        if embedded and embedded != (request.search_text or ""):
+            logger.info(
+                "[ContextFollowup] check=%s search_phrase=%r model_phrase=%r",
+                defect.check_id,
+                embedded,
+                request.search_text,
+            )
+            request = request.model_copy(update={"search_text": embedded})
     prior_call_id = f"scrutiny:{defect.check_id}"
     logger.info(
         "[ContextFollowup] check=%s tool=%s prior_call=%s generation=%s",

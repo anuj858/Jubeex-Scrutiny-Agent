@@ -1815,12 +1815,10 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
 def build_front_extract_pack_markdown(
     page_markdown: Mapping[int, str],
     page_layout: Mapping[int, Mapping[str, Any]] | None = None,
-    opening_pages: int = 30,
 ) -> str:
     """Every parsed page of the compiled filing, with its own page number."""
     from .config import front_special_category_description
 
-    del opening_pages
     category = front_special_category_description(_front_special_category_names())
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
