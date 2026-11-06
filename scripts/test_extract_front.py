@@ -40,7 +40,6 @@ from extraction_review.clients import get_llama_cloud_client
 from extraction_review.config import FrontExtractRecord, LegalExtractRecord
 from extraction_review.extract_record import unwrap_extracted_record
 from extraction_review.process_file import (
-    FRONT_EXTRACT_PAGE_LIMIT,
     _upload_slot_pdf,
     remember_file_bytes,
 )
@@ -289,12 +288,12 @@ def write_human_summary_card(
     kf = summary["extracted_fields"]
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
-        f.write("JUBEEX EXTRACT-FRONT (FIRST 30 PAGES) SUMMARY CARD\n")
+        f.write("JUBEEX EXTRACT-FRONT SUMMARY CARD\n")
         f.write("=" * 80 + "\n\n")
 
         f.write(f"File Name           : {summary['filename']}\n")
         f.write(f"Original Pages      : {summary['total_pages']}\n")
-        f.write(f"Pages Parsed        : 1 to {min(summary['total_pages'], FRONT_EXTRACT_PAGE_LIMIT)} (Front Slice)\n")
+        f.write(f"Pages Parsed        : all {summary['total_pages']}\n")
         f.write(f"File Size           : {summary['file_size_mb']:.2f} MB\n")
         f.write(f"Processing Time     : {summary['processing_time_seconds']}s\n")
         f.write(f"Job ID              : {summary['job_id']}\n")
@@ -428,7 +427,7 @@ def write_master_reports(all_summaries: list[dict[str, Any]], output_dir: Path) 
             orders_cnt = len(kf.get("impugned_orders") or [])
 
             f.write(
-                f"| {idx} | `{item['filename']}` | {item['total_pages']} (slice: 30) | "
+                f"| {idx} | `{item['filename']}` | {item['total_pages']} | "
                 f"**{f_type}** | `{spec_cat}` | {cause} | {lead_adv} | "
                 f"{orders_cnt} | {item['processing_time_seconds']}s | `{item['status']}` |\n"
             )
@@ -440,7 +439,7 @@ def write_master_reports(all_summaries: list[dict[str, Any]], output_dir: Path) 
             kf = item.get("extracted_fields") or {}
             f.write(f"### {idx}. `{item['filename']}`\n\n")
             f.write(f"- **Status**: `{item['status']}`\n")
-            f.write(f"- **Original Pages**: {item['total_pages']} (parsed first 30 pages)\n")
+            f.write(f"- **Original Pages**: {item['total_pages']} (parsed all pages)\n")
             f.write(f"- **Processing Time**: {item['processing_time_seconds']} seconds\n")
             f.write(f"- **Court**: `{kf.get('court') or 'N/A'}`\n")
             f.write(f"- **Petition Type**: `{kf.get('petition_type') or 'N/A'}`\n")
@@ -511,7 +510,7 @@ async def process_single_pdf(
 
     filing_type = filing_type_override or infer_filing_type(filename)
     print(f"  - Total Pages        : {total_pages}")
-    print(f"  - Sliced For Extract : Pages 1 to {min(total_pages, FRONT_EXTRACT_PAGE_LIMIT)}")
+    print(f"  - Pages Parsed       : all {total_pages}")
     print(f"  - File Size          : {file_size_mb:.2f} MB")
     print(f"  - Selected Type      : {filing_type}")
     print(f"  - Court Code         : {court}")

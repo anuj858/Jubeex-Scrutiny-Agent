@@ -587,6 +587,189 @@ def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     assert [chunk["page"] for chunk in chunks] == [12, 28]
 
 
+def test_certificate_after_the_petition_is_not_replaced_by_the_checklist() -> None:
+    defect = SimpleNamespace(
+        inspect_parts=["AOR's Certificate"],
+        context_parts=[],
+        exclude_parts=None,
+        where_to_look=[
+            "AOR's Certificate: the certificate after the Main Petition."
+        ],
+        defect="AOR Certificate has not been filed",
+        requirement="The AOR Certificate must be filed.",
+    )
+    layout = {
+        1: {
+            "document_part": "Advocate's Checklist",
+            "text": (
+                "ADVOCATE'S CHECK LIST\n"
+                "1. Whether the petition is within time YES\n"
+                "I hereby declare that I have personally verified the petition\n"
+                "Aslam Ahmed\nAdvocate-on-record\nCode 3381"
+            ),
+        },
+        8: {
+            "document_part": "Main Petition",
+            "text": "MOST RESPECTFULLY SHOWETH\nMAIN PRAYER\nGrant special leave",
+        },
+        9: {
+            "document_part": "Main Petition",
+            "text": (
+                "IN THE SUPREME COURT OF INDIA\n"
+                "CERTIFICATE\n"
+                "Certified that the Special Leave Petition is confined only "
+                "to the pleadings\nAdvocate-on-Record"
+            ),
+        },
+    }
+    checklist = {
+        "record_id": "checklist",
+        "chunk_kind": "page",
+        "page": 1,
+        "document_part": "Advocate's Checklist",
+        "text": layout[1]["text"],
+    }
+
+    chunks = _add_layout_fallback_chunks(
+        defect, [checklist], layout=layout, max_chunks=4
+    )
+
+    assert [chunk["page"] for chunk in chunks] == [9]
+    assert chunks[0]["document_part"] == ["AOR's Certificate"]
+    assert "Certified that the Special Leave Petition" in chunks[0]["text"]
+    assert "CHECK LIST" not in chunks[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_missing_aor_certificate_is_a_defect_not_a_checklist_review(
+    monkeypatch,
+) -> None:
+    import extraction_review.scrutiny_workflow as workflow
+    from extraction_review.scrutiny.rules import get_catalogue
+
+    async def fail_if_called(**_kwargs: object) -> tuple[DefectResponse, object]:
+        raise AssertionError("the model must not review the checklist")
+
+    monkeypatch.setattr(workflow, "call_structured", fail_if_called)
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D-324")
+    layout = {
+        1: {
+            "document_part": "Advocate's Checklist",
+            "text": (
+                "ADVOCATE'S CHECK LIST\n1. Whether the petition is within time YES\n"
+                "Aslam Ahmed Advocate-on-record Code 3381"
+            ),
+        },
+        2: {
+            "document_part": "Main Petition",
+            "text": "MOST RESPECTFULLY SHOWETH\nMAIN PRAYER",
+        },
+        3: {
+            "document_part": None,
+            "text": "A later note that is not a certificate.",
+        },
+    }
+
+    finding = await workflow._run_defect(
+        defect,
+        catalogue=catalogue,
+        record={},
+        chunks=[],
+        filing_type="SLP_CRIMINAL",
+        layout=layout,
+        model="google/gemini-test",
+    )
+
+    assert finding.status == "defect_found"
+    assert finding.summary == "The AOR's Certificate is missing from the case file."
+
+
+@pytest.mark.asyncio
+async def test_certificate_page_after_the_petition_is_sent_to_the_check(
+    monkeypatch,
+) -> None:
+    import extraction_review.scrutiny_workflow as workflow
+    from extraction_review.scrutiny.rules import get_catalogue
+    from extraction_review.scrutiny.schema import LlmUsage
+
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D-324")
+    layout = {
+        1: {
+            "document_part": "Advocate's Checklist",
+            "text": (
+                "ADVOCATE'S CHECK LIST\n1. Whether the petition is within time YES\n"
+                "Aslam Ahmed Advocate-on-record Code 3381"
+            ),
+        },
+        8: {
+            "document_part": "Main Petition",
+            "text": "MOST RESPECTFULLY SHOWETH\nMAIN PRAYER\nGrant special leave",
+        },
+        9: {
+            "document_part": "Main Petition",
+            "text": (
+                "IN THE SUPREME COURT OF INDIA\nCERTIFICATE\n"
+                "Certified that the Special Leave Petition is confined only "
+                "to the pleadings\nAdvocate-on-Record"
+            ),
+        },
+    }
+    chunks = workflow._add_layout_fallback_chunks(
+        defect,
+        [
+            {
+                "record_id": "checklist",
+                "chunk_kind": "page",
+                "page": 1,
+                "document_part": "Advocate's Checklist",
+                "text": layout[1]["text"],
+            }
+        ],
+        layout=layout,
+        max_chunks=4,
+    )
+    prompts: list[str] = []
+
+    async def call(**kwargs: object) -> tuple[DefectResponse, LlmUsage]:
+        prompts.append(str(kwargs["user_prompt"]))
+        return (
+            DefectResponse(
+                check_id="D-324",
+                status="compliant",
+                confidence=0.9,
+                summary="The certificate is filed.",
+                observed="The certificate says the petition is confined to the pleadings.",
+                conclusion="The certificate is filed.",
+                evidence=[
+                    EvidenceRef(
+                        chunk_id="c1",
+                        quote="Certified that the Special Leave Petition is confined only to the pleadings",
+                    )
+                ],
+                evidence_request={"action": "none"},
+            ),
+            LlmUsage(calls=1),
+        )
+
+    monkeypatch.setattr(workflow, "call_structured", call)
+    finding = await workflow._run_defect(
+        defect,
+        catalogue=catalogue,
+        record={},
+        chunks=chunks,
+        filing_type="SLP_CRIMINAL",
+        layout=layout,
+        model="google/gemini-test",
+    )
+
+    assert prompts
+    assert "Certified that the Special Leave Petition is confined" in prompts[0]
+    assert "CHECK LIST" not in prompts[0]
+    assert finding.summary != "The AOR's Certificate is missing from the case file."
+
+
 def test_layout_fallback_reserves_explicit_petition_paragraph_page() -> None:
     defect = SimpleNamespace(
         defect="Paragraph 3 declaration is missing",
@@ -1426,6 +1609,44 @@ def test_needs_review_names_the_unshown_paragraph_without_excerpt_ids() -> None:
     assert "Order XXI Rule 3(5)" in reasoning
     assert "cannot be determined" in reasoning
     assert not re.search(r"\bc\d+\b", reasoning)
+
+
+def test_second_pass_does_not_call_a_reviewed_document_missing() -> None:
+    from extraction_review.scrutiny.schema import (
+        apply_reviewed_document_policy,
+        review_reason_for_response,
+    )
+
+    defect = _scrutiny_row(inspect_parts=["Application"])
+    response = DefectResponse(
+        check_id="D-98",
+        status="needs_review",
+        confidence=0.4,
+        summary="The application was not in the excerpts.",
+        observed="The application was not shown.",
+        conclusion="The document type was not found.",
+        gap="part_not_in_excerpts",
+        gap_detail="Application",
+        evidence=[],
+    )
+    chunks = [
+        {
+            "chunk_kind": "page",
+            "page": 4,
+            "document_part": "Application",
+            "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+        }
+    ]
+
+    decided = apply_reviewed_document_policy(defect, response, chunks)
+
+    assert decided.gap == "element_page_not_in_excerpts"
+    reason = review_reason_for_response(decided)
+    assert reason is not None
+    assert "required document was not available" not in reason
+    reasoning = compose_reasoning(defect, decided, chunks=chunks)
+    assert "was not among the pages reviewed" not in reasoning
+    assert "Application" in reasoning
 
 
 def test_missing_part_reasoning_does_not_repeat_the_article() -> None:
@@ -2307,3 +2528,799 @@ def test_internal_party_side_contradiction_is_defect() -> None:
     decided = apply_internal_contradiction_policy(defect, response)
     assert decided.status == "defect_found"
     assert decided.gap is None
+
+
+def _followup_response(**overrides: object) -> DefectResponse:
+    from extraction_review.scrutiny.schema import EvidenceRequest
+
+    payload: dict[str, object] = {
+        "check_id": "D-98",
+        "status": "needs_review",
+        "confidence": 0.4,
+        "summary": "The age may be on the next chunk.",
+        "observed": "The shown application text does not state the age.",
+        "conclusion": "The age is not shown.",
+        "gap": "ambiguous",
+        "gap_detail": "age",
+        "evidence": [],
+        "evidence_request": EvidenceRequest(
+            action="adjacent",
+            direction="next",
+            count=2,
+            anchor_chunk_id="c1",
+            document_part="Application",
+        ),
+    }
+    payload.update(overrides)
+    return DefectResponse.model_validate(payload)
+
+
+def _application_chunk() -> dict[str, object]:
+    return {
+        "record_id": "abc:page:4:0",
+        "chunk_kind": "page",
+        "page": 4,
+        "chunk_index": 0,
+        "document_part": "Application",
+        "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+    }
+
+
+async def _run_followup(monkeypatch, first: DefectResponse, **kwargs: object):
+    import extraction_review.scrutiny_workflow as workflow
+    from extraction_review.scrutiny.rules import get_catalogue
+    from extraction_review.scrutiny.schema import LlmUsage
+
+    calls: list[dict[str, object]] = []
+
+    async def call(**call_kwargs: object) -> tuple[DefectResponse, LlmUsage]:
+        calls.append(call_kwargs)
+        label = str(call_kwargs["request_label"])
+        if label.endswith(":context-followup"):
+            second = kwargs.get("second")
+            if not isinstance(second, DefectResponse):
+                raise AssertionError("second response was not provided")
+            return second, LlmUsage(calls=1)
+        return first, LlmUsage(calls=1)
+
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(workflow, "call_structured", call)
+    monkeypatch.setattr(context_followup, "call_structured", call)
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D-98")
+    chunks = kwargs.get("chunks") or [_application_chunk()]
+    layout = kwargs.get("layout")
+    result = await workflow._run_defect(
+        defect,
+        catalogue=catalogue,
+        record={},
+        chunks=list(chunks),  # type: ignore[arg-type]
+        filing_type="SLP_CIVIL",
+        layout=layout if isinstance(layout, dict) or layout is None else None,
+        model="google/gemini-test",
+        file_hash=kwargs.get("file_hash") if isinstance(kwargs.get("file_hash"), str) else None,
+        use_pinecone=bool(kwargs.get("use_pinecone")),
+    )
+    return result, calls
+
+
+def test_indexed_chunk_prompt_names_storage_and_inspect_parts() -> None:
+    from extraction_review.scrutiny.prompts import (
+        build_defect_prompt,
+        build_system_prompt,
+    )
+    from extraction_review.scrutiny.rules import Catalogue, get_catalogue
+
+    catalogue = get_catalogue()
+    defect = catalogue.defect("D-98")
+    prompt = build_defect_prompt(
+        defect,
+        record=None,
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "expired on 1 January 2020",
+            }
+        ],
+        catalogue=catalogue,
+    )
+    system = build_system_prompt(
+        Catalogue(
+            catalogue_id="test",
+            schema_version="1",
+            catalogue_version="1",
+            jurisdiction="Supreme Court of India",
+        )
+    )
+
+    assert "normalized_text" in prompt
+    assert "document_part" in prompt
+    assert "chunk 1" in prompt
+    assert "Application" in prompt
+    assert "embedded" in prompt.casefold()
+    assert "keyword" in prompt.casefold()
+    assert "normalized_text" in system
+    assert "evidence_request" in system
+
+
+def test_malformed_context_request_becomes_none() -> None:
+    from extraction_review.scrutiny.schema import EvidenceRequest
+
+    request = EvidenceRequest.model_validate(
+        {
+            "action": "adjacent",
+            "direction": "next",
+            "count": 3,
+            "anchor_chunk_id": "c1",
+        }
+    )
+    assert request.action == "none"
+
+
+@pytest.mark.asyncio
+async def test_decided_and_confident_rows_are_not_called_twice(monkeypatch) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    fetched: list[list[str]] = []
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        fetched.append(list(ids))
+        return {}
+
+    monkeypatch.setattr(context_followup, "fetch_chunks_by_id", fake_fetch)
+    quote = "The petitioner expired on."
+    decided = [
+        _followup_response(
+            status="defect_found",
+            confidence=0.95,
+            evidence=[EvidenceRef(chunk_id="c1", quote=quote)],
+            evidence_request=None,
+        ),
+        _followup_response(
+            status="compliant",
+            confidence=0.95,
+            evidence=[EvidenceRef(chunk_id="c1", quote=quote)],
+            evidence_request=None,
+        ),
+        _followup_response(
+            status="not_applicable",
+            confidence=0.95,
+            gap=None,
+            evidence_request=None,
+        ),
+        _followup_response(confidence=0.6),
+        _followup_response(evidence_request={"action": "none"}),
+        _followup_response(gap="unreadable"),
+        _followup_response(gap="conflict"),
+        _followup_response(
+            status="defect_found",
+            confidence=0.4,
+            evidence=[EvidenceRef(chunk_id="c1", quote=quote)],
+        ),
+    ]
+    for first in decided:
+        fetched.clear()
+        result, calls = await _run_followup(monkeypatch, first)
+        assert len(calls) == 1
+        assert fetched == []
+        if first.status in {"defect_found", "compliant"} and first.confidence >= 0.6:
+            assert result.status == first.status
+        if first.status == "defect_found" and first.confidence < 0.6:
+            assert result.status == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_next_two_chunks_are_same_part_records_and_stop_at_two_calls(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    asked: list[str] = []
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        asked.extend(ids)
+        return {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42",
+            },
+            "abc:page:4:2": {
+                "record_id": "abc:page:4:2",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 2,
+                "document_part": "Application",
+                "text": "son of the deceased",
+            },
+        }
+
+    monkeypatch.setattr(context_followup, "fetch_chunks_by_id", fake_fetch)
+    second = _followup_response(
+        status="defect_found",
+        confidence=0.92,
+        gap=None,
+        summary="The application states an age and does not state the relationship.",
+        observed="The application states an age and does not state the relationship.",
+        conclusion="The relationship is missing.",
+        evidence=[EvidenceRef(chunk_id="c2", quote="aged about 42")],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(),
+        second=second,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            },
+            5: {
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT ONLY this page is a different document.",
+            },
+        },
+    )
+
+    assert [call["request_label"] for call in calls] == [
+        "scrutiny:D-98",
+        "scrutiny:D-98:context-followup",
+    ]
+    assert asked == ["abc:page:4:1", "abc:page:4:2"]
+    follow_prompt = str(calls[1]["user_prompt"])
+    assert "aged about 42" in follow_prompt
+    assert "son of the deceased" in follow_prompt
+    assert "AFFIDAVIT ONLY" not in follow_prompt
+    assert "Previous call id: scrutiny:D-98" in follow_prompt
+    assert "The age may be on the next chunk." in follow_prompt
+    assert "It is not text from the filing." in follow_prompt
+    assert result.status == "defect_found"
+    assert any("aged about 42" in item.quote for item in result.evidence)
+    assert result.coverage.context_followup is True
+    assert result.coverage.context_followup_action == "adjacent"
+    assert result.coverage.context_followup_pages == [4]
+
+
+@pytest.mark.asyncio
+async def test_followup_drops_pages_outside_the_inspect_parts(monkeypatch) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        return {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42",
+            }
+        }
+
+    monkeypatch.setattr(context_followup, "fetch_chunks_by_id", fake_fetch)
+    second = _followup_response(
+        status="defect_found",
+        confidence=0.92,
+        gap=None,
+        summary="The application states an age and does not state the relationship.",
+        observed="The application states an age.",
+        conclusion="The relationship is missing.",
+        evidence=[EvidenceRef(chunk_id="c2", quote="aged about 42")],
+        evidence_request={"action": "none"},
+    )
+    _result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(evidence_request={
+            "action": "adjacent",
+            "direction": "next",
+            "count": 1,
+            "anchor_chunk_id": "c1",
+        }),
+        second=second,
+        chunks=[
+            _application_chunk(),
+            {
+                "record_id": "affidavit-page",
+                "chunk_kind": "page",
+                "page": 20,
+                "chunk_index": 0,
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT ONLY this page is not the application.",
+            },
+        ],
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            }
+        },
+    )
+
+    assert [call["request_label"] for call in calls] == [
+        "scrutiny:D-98",
+        "scrutiny:D-98:context-followup",
+    ]
+    assert "AFFIDAVIT ONLY" not in str(calls[0]["user_prompt"])
+    follow_prompt = str(calls[1]["user_prompt"])
+    assert "aged about 42" in follow_prompt
+    assert "expired on" in follow_prompt
+    assert "AFFIDAVIT ONLY" not in follow_prompt
+
+
+@pytest.mark.asyncio
+async def test_second_call_keeps_the_document_type_that_was_already_checked(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(
+        context_followup,
+        "fetch_chunks_by_id",
+        lambda _ids: {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42",
+            }
+        },
+    )
+    second = _followup_response(
+        status="needs_review",
+        confidence=0.45,
+        gap="part_not_in_excerpts",
+        gap_detail="Application",
+        summary="The application was not found.",
+        observed="The document type was not in the excerpts.",
+        conclusion="The document type was not found.",
+        evidence=[],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(
+            evidence_request={
+                "action": "adjacent",
+                "direction": "next",
+                "count": 1,
+                "anchor_chunk_id": "c1",
+            }
+        ),
+        second=second,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            }
+        },
+    )
+
+    assert len(calls) == 2
+    assert result.status == "needs_review"
+    assert "was not among the pages reviewed" not in result.reasoning
+    assert "required document was not available" not in (result.review_reason or "")
+    assert "Application" in result.reasoning
+
+
+@pytest.mark.asyncio
+async def test_cross_part_neighbor_and_empty_fetch_do_not_call_again(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        assert all(":page:4:" in item for item in ids)
+        return {
+            "abc:page:5:0": {
+                "record_id": "abc:page:5:0",
+                "chunk_kind": "page",
+                "page": 5,
+                "chunk_index": 0,
+                "document_part": "Affidavit",
+                "text": "AFFIDAVIT ONLY",
+            }
+        }
+
+    monkeypatch.setattr(context_followup, "fetch_chunks_by_id", fake_fetch)
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(),
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            },
+            5: {"document_part": "Affidavit", "text": "AFFIDAVIT ONLY"},
+        },
+    )
+
+    assert len(calls) == 1
+    assert result.status == "needs_review"
+    assert result.coverage.context_followup is False
+
+
+def test_previous_followup_reads_the_last_chunk_of_the_previous_page(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny.context_followup import load_adjacent_chunks
+    from extraction_review.scrutiny.schema import EvidenceRequest
+
+    asked: list[str] = []
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        asked.extend(ids)
+        return {
+            "abc:page:3:7": {
+                "record_id": "abc:page:3:7",
+                "chunk_kind": "page",
+                "page": 3,
+                "chunk_index": 7,
+                "document_part": "Application",
+                "text": "last words of the previous page",
+            },
+            "abc:page:3:2": {
+                "record_id": "abc:page:3:2",
+                "chunk_kind": "page",
+                "page": 3,
+                "chunk_index": 2,
+                "document_part": "Application",
+                "text": "an earlier chunk that is not adjacent",
+            },
+        }
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.context_followup.fetch_chunks_by_id",
+        fake_fetch,
+    )
+    selected = load_adjacent_chunks(
+        EvidenceRequest(
+            action="adjacent",
+            direction="previous",
+            count=1,
+            anchor_chunk_id="c1",
+            document_part="Application",
+        ),
+        chunks=[
+            {
+                **_application_chunk(),
+                "excerpt_id": "c1",
+            }
+        ],
+        layout={
+            3: {
+                "document_part": "Application",
+                "text": "earlier application page",
+            },
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            },
+        },
+        base_id="abc",
+    )
+
+    assert "abc:page:3:7" in asked
+    assert [chunk["record_id"] for chunk in selected] == ["abc:page:3:7"]
+    assert selected[0]["text"] == "last words of the previous page"
+
+
+def test_search_phrase_keeps_printed_words_and_adds_form_language() -> None:
+    from extraction_review.scrutiny.context_followup import search_phrase_for_followup
+    from extraction_review.scrutiny.rules import check_requirement, get_catalogue
+
+    defect = get_catalogue().defect("D-98")
+    phrase = search_phrase_for_followup(defect, "expired on 12 January 2020")
+    assert phrase.startswith("expired on 12 January 2020")
+    assert "date of death" in phrase
+    assert "legal representatives" in phrase
+    assert len(phrase) <= 200
+
+    copied = search_phrase_for_followup(defect, check_requirement(defect))
+    assert copied.startswith("date of death")
+    assert "expired on" in copied
+    assert "where an application" not in copied.casefold()
+
+
+@pytest.mark.asyncio
+async def test_search_embeds_the_phrase_inside_inspect_parts(monkeypatch) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    def fake_search(query: str, **kwargs: object) -> list[dict[str, object]]:
+        captured.append((query, kwargs))
+        return [
+            {
+                "record_id": "abc:page:9:0",
+                "chunk_kind": "page",
+                "page": 9,
+                "chunk_index": 0,
+                "document_part": "Application",
+                "text": "expired on 12 January 2020 aged about 42",
+            }
+        ]
+
+    monkeypatch.setattr(context_followup, "search_filing_chunks", fake_search)
+    second = _followup_response(
+        status="defect_found",
+        confidence=0.91,
+        gap=None,
+        summary="The application omits the address.",
+        observed="The application says expired on 12 January 2020.",
+        conclusion="The address is missing.",
+        evidence=[
+            EvidenceRef(chunk_id="c2", quote="expired on 12 January 2020 aged about 42")
+        ],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(
+            evidence_request={
+                "action": "search",
+                "search_text": "expired on 12 January 2020",
+                "document_part": "Affidavit",
+            }
+        ),
+        second=second,
+        file_hash="abc",
+        use_pinecone=True,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION expired on",
+            }
+        },
+    )
+
+    assert len(calls) == 2
+    assert captured[0][0].startswith("expired on 12 January 2020")
+    assert "date of death" in captured[0][0]
+    assert "legal representatives" in captured[0][0]
+    assert len(captured[0][0]) <= 200
+    assert captured[0][1]["document_part"] == "Application"
+    assert captured[0][1]["chunk_kind"] == "page"
+    assert "Affidavit" not in str(captured[0][1].get("part_labels"))
+    assert result.status == "defect_found"
+
+
+@pytest.mark.asyncio
+async def test_context_hop_does_not_also_run_the_full_part_retry(monkeypatch) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(
+        context_followup,
+        "fetch_chunks_by_id",
+        lambda ids: {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42 resident of Delhi",
+            }
+        },
+    )
+    second = _followup_response(
+        status="needs_review",
+        confidence=0.45,
+        gap="element_page_not_in_excerpts",
+        gap_detail="address",
+        evidence_request={"action": "none"},
+    )
+    _result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(gap="element_page_not_in_excerpts", evidence_request={
+            "action": "adjacent",
+            "direction": "next",
+            "count": 1,
+            "anchor_chunk_id": "c1",
+        }),
+        second=second,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION expired on",
+            },
+            6: {
+                "document_part": "Application",
+                "text": "A later application page that the full retry would load.",
+            },
+        },
+    )
+
+    labels = [str(call["request_label"]) for call in calls]
+    assert labels == ["scrutiny:D-98", "scrutiny:D-98:context-followup"]
+    assert all("complete-evidence-retry" not in label for label in labels)
+
+
+@pytest.mark.asyncio
+async def test_none_request_sends_the_rest_of_the_part_on_the_first_call(
+    monkeypatch,
+) -> None:
+    import extraction_review.scrutiny_workflow as workflow
+    from extraction_review.scrutiny.rules import get_catalogue
+    from extraction_review.scrutiny.schema import LlmUsage
+
+    labels: list[str] = []
+    prompts: list[str] = []
+
+    async def call(**kwargs: object) -> tuple[DefectResponse, LlmUsage]:
+        labels.append(str(kwargs["request_label"]))
+        prompts.append(str(kwargs["user_prompt"]))
+        return (
+            _followup_response(
+                gap="element_page_not_in_excerpts",
+                evidence_request={"action": "none"},
+            ),
+            LlmUsage(calls=1),
+        )
+
+    monkeypatch.setattr(workflow, "call_structured", call)
+    catalogue = get_catalogue()
+    await workflow._run_defect(
+        catalogue.defect("D-98"),
+        catalogue=catalogue,
+        record={},
+        chunks=[_application_chunk()],
+        filing_type="SLP_CIVIL",
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION expired on",
+            },
+            6: {
+                "document_part": "Application",
+                "text": "Later page of the same application.",
+            },
+        },
+        model="google/gemini-test",
+    )
+
+    assert labels == ["scrutiny:D-98"]
+    assert "Later page of the same application." in prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_exhaustive_followup_cannot_become_compliant(monkeypatch) -> None:
+    import extraction_review.scrutiny_workflow as workflow
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(
+        context_followup,
+        "fetch_chunks_by_id",
+        lambda _ids: {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42 resident of Delhi",
+            }
+        },
+    )
+    plan = SimpleNamespace(strategy="exhaustive_part")
+    monkeypatch.setattr(workflow, "retrieval_plan_for_defect", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(workflow, "_retrieval_evidence_complete", lambda *_args, **_kwargs: False)
+    second = _followup_response(
+        status="compliant",
+        confidence=0.93,
+        gap=None,
+        summary="The shown chunks contain the particulars.",
+        observed="The application states the age.",
+        conclusion="The requirement is met on the shown chunks.",
+        evidence=[EvidenceRef(chunk_id="c2", quote="aged about 42 resident of Delhi")],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(),
+        second=second,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION expired on",
+            },
+            8: {
+                "document_part": "Application",
+                "text": "A further application page was not part of this follow-up.",
+            },
+        },
+    )
+
+    assert len(calls) == 2
+    assert result.status == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_followup_can_confirm_compliance_when_every_part_page_is_shown(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(
+        context_followup,
+        "fetch_chunks_by_id",
+        lambda _ids: {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42",
+            }
+        },
+    )
+    second = _followup_response(
+        status="compliant",
+        confidence=0.93,
+        gap=None,
+        summary="The shown chunks contain the particulars.",
+        observed="The application states the age.",
+        conclusion="The requirement is met on the shown chunks.",
+        evidence=[EvidenceRef(chunk_id="c2", quote="aged about 42")],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(
+        monkeypatch,
+        _followup_response(),
+        second=second,
+        layout={
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            },
+            8: {
+                "document_part": "Application",
+                "text": "A further application page supplied with the layout.",
+            },
+        },
+    )
+
+    assert len(calls) == 2
+    assert result.status == "compliant"
+    assert result.coverage.scope_complete is True
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_followup_defect_stays_in_review(monkeypatch) -> None:
+    from extraction_review.scrutiny import context_followup
+
+    monkeypatch.setattr(
+        context_followup,
+        "fetch_chunks_by_id",
+        lambda _ids: {
+            "abc:page:4:1": {
+                "record_id": "abc:page:4:1",
+                "chunk_kind": "page",
+                "page": 4,
+                "chunk_index": 1,
+                "document_part": "Application",
+                "text": "aged about 42 resident of Delhi",
+            }
+        },
+    )
+    second = _followup_response(
+        status="defect_found",
+        confidence=0.4,
+        gap=None,
+        evidence=[EvidenceRef(chunk_id="c2", quote="aged about 42 resident of Delhi")],
+        evidence_request={"action": "none"},
+    )
+    result, calls = await _run_followup(monkeypatch, _followup_response(), second=second)
+
+    assert len(calls) == 2
+    assert result.status == "needs_review"
+

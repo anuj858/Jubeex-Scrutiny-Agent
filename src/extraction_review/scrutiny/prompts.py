@@ -19,6 +19,7 @@ from ..document_parts import (
     format_document_parts,
     parts_on_page,
     pinecone_queries_for_defect,
+    required_parts_for_defect,
 )
 from ..layout_index import page_entry
 from .rules import (
@@ -144,6 +145,14 @@ wording as evidence. If OCR and stored visual observations conflict, return \
 needs_review rather than defect_found.
 15. Do not require an exact phrase when the requirement can be satisfied by \
 equivalent wording, unless the Standard explicitly says the exact wording is mandatory.
+16. evidence_request is null unless status is needs_review, confidence is \
+below 0.6, and one stored chunk that was not shown could decide the row. \
+Otherwise use action none. adjacent asks for the previous or next 1 or 2 \
+chunks of an excerpt already shown, inside the same inspect part. search_text \
+is the clause as printed on the missing page, embedded against normalized_text. \
+Put that printed clause first. Do not copy the Standard. It is not a keyword \
+filter and not a field name. Do not ask for more context when the excerpts \
+already decide the row.
 
 How to decide:
 
@@ -227,6 +236,8 @@ def _document_page(
 def _format_evidence(
     chunks: list[dict[str, Any]],
     layout: dict[int, dict[str, Any]] | None = None,
+    *,
+    start_index: int = 0,
 ) -> str:
     if not chunks:
         return "No document excerpts could be retrieved."
@@ -237,7 +248,7 @@ def _format_evidence(
     blocks: list[str] = []
     budget = MAX_EVIDENCE_CHARS
     truncated = 0
-    excerpt_n = 0
+    excerpt_n = start_index
 
     for chunk in chunks:
         kind = chunk.get("chunk_kind")
@@ -271,6 +282,9 @@ def _format_evidence(
                     else f"{row_start}-{row_end}"
                 )
                 provenance.append(f"table rows {rows}")
+            chunk_index = chunk.get("chunk_index")
+            if chunk_index is not None:
+                provenance.append(f"chunk {chunk_index}")
             if provenance:
                 place += " | " + " | ".join(provenance)
             header = f"[{label} | {place}]" if label else f"[{place}]"
@@ -1567,6 +1581,74 @@ def _document_types_for_prompt(defect: Defect) -> str:
     return "\n".join(lines)
 
 
+def _format_prior_decision(
+    *,
+    check_id: str,
+    prior: dict[str, Any],
+    call_id: str | None,
+    generation_id: str | None,
+) -> str:
+    """Show this check's first answer. It is not filing text."""
+    lines = [
+        (
+            f"This is your earlier answer for {check_id}, the same defect. "
+            "It is not text from the filing. Revise it from the excerpts. "
+            "If the added chunks do not decide the row, keep needs_review "
+            "and correct the reasoning. Do not quote this block."
+        )
+    ]
+    if call_id:
+        lines.append(f"Previous call id: {call_id}")
+    if generation_id:
+        lines.append(f"Generation id: {generation_id}")
+    for key in ("status", "confidence", "gap", "gap_detail", "summary", "observed", "conclusion"):
+        value = prior.get(key)
+        if value is None or value == "":
+            continue
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def _indexed_chunks_note(defect: Defect) -> str:
+    """Tell the model how stored chunks can be requested, and from where."""
+    parts = required_parts_for_defect(defect)
+    listed = ", ".join(parts) if parts else "the document types listed above"
+    lines = [
+            (
+                "Each excerpt is one stored chunk, not the whole page. "
+                f"This check may use only these document parts: {listed}."
+            ),
+            (
+                "The chunk body is stored as normalized_text and embedded with "
+                "llama-text-embed-v2. Ids run in reading order as page and "
+                "chunk_index. A page can contain several chunks. A long page "
+                "may include 200 characters from the previous or next page "
+                "only when both pages are the same document_part."
+            ),
+            (
+                "Set evidence_request only when status is needs_review, "
+                "confidence is below 0.6, and one more stored chunk could "
+                "decide this row. Otherwise action is none."
+            ),
+            (
+                "adjacent asks for the previous or next 1 or 2 chunks of an "
+                "excerpt already shown. anchor_chunk_id is that excerpt label. "
+                "The server reads only those chunks, and only inside the same "
+                "inspect part."
+            ),
+            (
+                "search_text is at most 200 characters of the clause as it is "
+                "printed on the missing page. That whole string is embedded and "
+                "matched by meaning to normalized_text. Put the printed clause "
+                "first. Do not copy the Standard or this task's defect sentence. "
+                "It is not a keyword filter and not a metadata field name. "
+                "document_part must be one of the inspect parts above, or null "
+                "to search all of them."
+            ),
+    ]
+    return "\n".join(lines)
+
+
 def build_defect_prompt(
     defect: Defect,
     *,
@@ -1575,6 +1657,11 @@ def build_defect_prompt(
     catalogue: Catalogue | None = None,
     visual_index: dict[str, Any] | None = None,
     layout: dict[int, dict[str, Any]] | None = None,
+    extra_chunks: list[dict[str, Any]] | None = None,
+    context_followup: bool = False,
+    prior_decision: dict[str, Any] | None = None,
+    prior_call_id: str | None = None,
+    prior_generation_id: str | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     search = "\n".join(
@@ -1637,17 +1724,68 @@ def build_defect_prompt(
             "## Structured filing record",
             _format_record(record),
             "",
+            "## Indexed chunks",
+            _indexed_chunks_note(defect),
+            "",
             "## Document excerpts",
             _format_evidence(chunks, layout),
             "",
             "## Stored visual observations",
             _format_visual_observations(defect, visual_index),
+        ]
+    )
+    if context_followup and prior_decision:
+        sections.extend(
+            [
+                "",
+                "## Previous decision",
+                _format_prior_decision(
+                    check_id=defect.check_id,
+                    prior=prior_decision,
+                    call_id=prior_call_id,
+                    generation_id=prior_generation_id,
+                ),
+            ]
+        )
+    if extra_chunks:
+        shown = sum(1 for chunk in chunks if chunk.get("excerpt_id"))
+        sections.extend(
+            [
+                "",
+                "## Additional context",
+                (
+                    "These chunks were read from storage for this check's "
+                    "inspect parts. Quote only text that appears in the "
+                    "excerpts. If they do not show the element, stay "
+                    "needs_review. Do not describe a page that was not "
+                    "supplied. evidence_request.action must be none."
+                ),
+                "",
+                _format_evidence(extra_chunks, layout, start_index=shown),
+            ]
+        )
+    request_rule = (
+        "evidence_request.action must be none. Do not ask for more context."
+        if context_followup
+        else (
+            "evidence_request is null, or action none, unless status is "
+            "needs_review, confidence is below 0.6, and one stored chunk "
+            "that was not shown could decide the row. adjacent uses "
+            "direction previous or next and count 1 or 2. search_text is "
+            "the clause printed on the missing page, embedded against "
+            "normalized_text, at most 200 characters. Put that clause first "
+            "and do not copy the Standard. document_part is one inspect "
+            "part or null."
+        )
+    )
+    sections.extend(
+        [
             "",
             "## Output",
             (
                 f'Return JSON with check_id "{defect.check_id}", status, '
                 "confidence, summary, observed, elements, gap, gap_detail, "
-                "conclusion, and evidence. "
+                "conclusion, evidence, and evidence_request. "
                 "summary is one plain sentence naming the exact failed or satisfied "
                 "element in this filing and this defect only — do not copy the Standard "
                 "paragraph. observed is one or two sentences on what this filing "
@@ -1667,7 +1805,8 @@ def build_defect_prompt(
                 "Use multiple quotes when multiple elements or documents must be compared. "
                 "Do not quote an Index listing "
                 "line that merely names that document. If the quote is "
-                "not from an excerpt, set chunk_id and page to null."
+                "not from an excerpt, set chunk_id and page to null. "
+                f"{request_rule}"
             ),
         ]
     )

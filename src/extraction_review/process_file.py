@@ -350,28 +350,6 @@ PETITION_SPLIT_JOB_TYPES = frozenset({"split_petition"})
 VERIFY_JOB_TYPES = frozenset({"verify_document"})
 EXTRACT_ONLY_JOB_TYPES = frozenset({"extract_only"})
 EXTRACT_FRONT_JOB_TYPES = frozenset({"extract_front"})
-FRONT_EXTRACT_PAGE_LIMIT = 30
-FRONT_EXTRACT_END_PAGE_LIMIT = 5
-
-
-def front_extract_included_pages(total: int) -> set[int]:
-    """Original page numbers kept in the opening slice and the closing slice."""
-    opening = front_extract_opening_pages(total)
-    included = set(range(1, opening + 1))
-    end_start = max(opening, total - FRONT_EXTRACT_END_PAGE_LIMIT)
-    if end_start < total:
-        included.update(range(end_start + 1, total + 1))
-    return included
-
-
-def front_extract_opening_pages(total: int) -> int:
-    """How many opening pages to parse from a compiled PDF.
-
-    Split has not run, so a field may sit on any of these pages. A file of
-    30 pages or fewer is read in full. A longer file is read from its first
-    30 pages. The last 5 pages are still attached for the closing block.
-    """
-    return min(FRONT_EXTRACT_PAGE_LIMIT, max(total, 0))
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
@@ -392,66 +370,6 @@ def _pdf_text_layer(pdf_bytes: bytes) -> dict[int, str]:
         }
     finally:
         document.close()
-
-
-def _front_extract_text_layer(pdf_bytes: bytes, sliced: bytes) -> dict[int, str]:
-    """Sliced pages, plus a party schedule that sits outside that slice.
-
-    Closing pages are renumbered inside the slice. A schedule on an original
-    page such as 37 is added under that original page number.
-    """
-    from .extract_record import supplemental_front_party_pages
-
-    layer = _pdf_text_layer(sliced)
-    full = _pdf_text_layer(pdf_bytes)
-    for page, text in supplemental_front_party_pages(
-        full, front_extract_included_pages(len(full))
-    ).items():
-        # Closing pages are renumbered to 31…35. Do not overwrite those keys.
-        if page not in layer:
-            layer[page] = text
-    return layer
-
-
-def first_pages_pdf(
-    pdf_bytes: bytes,
-    page_limit: int = FRONT_EXTRACT_PAGE_LIMIT,
-    end_page_limit: int = FRONT_EXTRACT_END_PAGE_LIMIT,
-) -> bytes:
-    """Keep the opening pages and the last pages, without repeating the overlap.
-
-    The last pages are included because the advocate block is often printed
-    there. Those pages are not assumed to be a Vakalatnama.
-    """
-    if page_limit < 1:
-        raise ValueError("page_limit must be at least 1")
-    if end_page_limit < 0:
-        raise ValueError("end_page_limit must be at least 0")
-    source = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        total = source.page_count
-        if total < 1:
-            raise ValueError("Compiled PDF has no pages")
-        opening = min(page_limit, total)
-        end_start = max(opening, total - end_page_limit)
-        if end_start >= total:
-            if opening == total:
-                return pdf_bytes
-            sliced = pymupdf.open()
-            try:
-                sliced.insert_pdf(source, from_page=0, to_page=opening - 1)
-                return sliced.tobytes()
-            finally:
-                sliced.close()
-        sliced = pymupdf.open()
-        try:
-            sliced.insert_pdf(source, from_page=0, to_page=opening - 1)
-            sliced.insert_pdf(source, from_page=end_start, to_page=total - 1)
-            return sliced.tobytes()
-        finally:
-            sliced.close()
-    finally:
-        source.close()
 
 
 INDEX_JOB_TYPES = frozenset({"index_parsed"})
@@ -998,6 +916,7 @@ class FileEvent(StartEvent):
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
 
@@ -3326,11 +3245,11 @@ async def _extract_sliced_parts(
     skip_extract: bool = False,
     stitch_in_request_order: bool = False,
     front_extract: bool = False,
-    front_opening_pages: int = FRONT_EXTRACT_PAGE_LIMIT,
     edited: bool = False,
     parsed_slots: list[str] | None = None,
     agent_data_id: str | None = None,
     special_category: str | None = None,
+    special_categories: list[str] | None = None,
     model_tier: str | None = None,
     court: str | None = None,
     reuse_pages_by_slot: dict[str, dict[str, str]] | None = None,
@@ -3366,12 +3285,12 @@ async def _extract_sliced_parts(
             skip_extract=skip_extract,
             stitch_in_request_order=stitch_in_request_order,
             front_extract=front_extract,
-            front_opening_pages=front_opening_pages,
             front_text_layer=front_text_layer or {},
             edited=edited,
             parsed_slots=list(parsed_slots or []),
             agent_data_id=agent_data_id,
             special_category=special_category,
+            special_categories=special_categories,
             model_tier=model_tier,
             court=court,
             reuse_pages_by_slot=reuse_pages_by_slot or {},
@@ -3671,6 +3590,7 @@ async def _run_split_from_file_event(
         parsed_slots=parsed_slots,
         agent_data_id=agent_data_id,
         special_category=event.special_category,
+        special_categories=event.special_categories,
         model_tier=event.model_tier,
         court=event.court,
         reuse_pages_by_slot=reuse_pages if index_only else {},
@@ -3790,7 +3710,6 @@ async def _run_extract_front(
         skip_index=True,
         stitch_in_request_order=True,
         front_extract=True,
-        front_opening_pages=total_pages,
         front_text_layer=_pdf_text_layer(pdf_bytes),
         special_category=None,
         court=None,

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from ..document_parts import (
     _part_match,
     allows_index_evidence,
+    catalogue_context_parts,
     chunks_cover_part,
     missing_required_parts,
     parts_named_in_where_to_look,
@@ -167,6 +168,88 @@ GapKind = Literal[
 ]
 
 
+class EvidenceRequest(BaseModel):
+    """One optional fetch. Null action means the first answer is final."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["none", "adjacent", "search"] = "none"
+    direction: Literal["previous", "next"] | None = Field(
+        default=None,
+        description="previous or next. Required for adjacent. Null otherwise.",
+    )
+    count: int | None = Field(
+        default=None,
+        description="1 or 2 stored chunks. Required for adjacent. Null otherwise.",
+    )
+    anchor_chunk_id: str | None = Field(
+        default=None,
+        description=(
+            "Excerpt label already shown, such as c3. Required for adjacent. "
+            "Null otherwise."
+        ),
+    )
+    search_text: str | None = Field(
+        default=None,
+        description=(
+            "Filing words to embed and match against normalized_text. "
+            "At most 200 characters. Required for search. Not a field name "
+            "and not the legal requirement. Null otherwise."
+        ),
+    )
+    document_part: str | None = Field(
+        default=None,
+        description=(
+            "One inspect part for this check, or null to stay within every "
+            "inspect part. Any other part is ignored."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_only_a_concrete_fetch(cls, data: Any) -> Any:
+        """Drop a malformed request instead of failing the whole decision."""
+        if not isinstance(data, dict):
+            return {"action": "none"}
+        action = str(data.get("action") or "none").strip()
+        if action not in {"none", "adjacent", "search"}:
+            action = "none"
+        direction = data.get("direction")
+        if direction not in {"previous", "next"}:
+            direction = None
+        raw_count = data.get("count")
+        count: int | None
+        if isinstance(raw_count, bool) or raw_count is None:
+            count = None
+        else:
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                count = None
+        if count not in {1, 2}:
+            count = None
+        anchor = data.get("anchor_chunk_id")
+        anchor = anchor.strip() if isinstance(anchor, str) else None
+        text = data.get("search_text")
+        text = re.sub(r"\s+", " ", text).strip() if isinstance(text, str) else None
+        if text == "":
+            text = None
+        part = data.get("document_part")
+        part = part.strip() if isinstance(part, str) else None
+        if action == "adjacent" and (direction is None or count is None or not anchor):
+            action = "none"
+        if action == "search" and (not text or len(text) > 200):
+            action = "none"
+        return {
+            "action": action,
+            "direction": direction if action == "adjacent" else None,
+            "count": count if action == "adjacent" else None,
+            "anchor_chunk_id": anchor if action == "adjacent" else None,
+            "search_text": text if action == "search" else None,
+            "document_part": part or None,
+        }
+
+
 class ElementFinding(BaseModel):
     """One element of this row, as the Note for AI lists them."""
 
@@ -246,6 +329,15 @@ class DefectResponse(BaseModel):
         ),
     )
     evidence: list[EvidenceRef]
+    evidence_request: EvidenceRequest | None = Field(
+        default=None,
+        description=(
+            "Null unless status is needs_review and confidence is below 0.6. "
+            "Asks for the previous or next 1 or 2 stored chunks of an excerpt, "
+            "or for a short phrase embedded against normalized_text. "
+            "Null when the shown excerpts already decide the row."
+        ),
+    )
 
     @property
     def reasoning(self) -> str:
@@ -282,6 +374,10 @@ class Coverage(BaseModel):
     visual_required: bool = False
     visual_complete: bool = False
     visual_pages_reviewed: list[int] = Field(default_factory=list)
+    context_followup: bool = False
+    context_followup_action: str | None = None
+    context_followup_pages: list[int] = Field(default_factory=list)
+    context_followup_query: str | None = None
 
 
 class LlmUsage(BaseModel):
@@ -2011,6 +2107,40 @@ def apply_manifest_absence_policy(
     response.conclusion = sentence
     response.gap = None
     response.evidence = []
+    return response
+
+
+def apply_reviewed_document_policy(
+    defect: Defect,
+    response: DefectResponse,
+    chunks: list[dict[str, Any]],
+) -> DefectResponse:
+    """Do not report a document as missing when its pages were reviewed.
+
+    A second pass can repeat ``part_not_in_excerpts`` from a batch or a model
+    answer even though the same chunks already used for a defect contain that
+    document. Only a part that is actually absent keeps that gap.
+    """
+    if response.status != "needs_review" or response.gap != "part_not_in_excerpts":
+        return response
+    known = list(
+        dict.fromkeys(
+            [
+                *required_parts_for_defect(defect),
+                *catalogue_context_parts(defect),
+            ]
+        )
+    )
+    detail = response.gap_detail or ""
+    named = [part for part in known if part.casefold() in detail.casefold()]
+    if not named:
+        named = list(required_parts_for_defect(defect))
+    absent = [part for part in named if not chunks_cover_part(chunks, part)]
+    if absent:
+        response.gap_detail = ", ".join(absent)
+        return response
+    response.gap = "element_page_not_in_excerpts"
+    response.gap_detail = "the element required to decide this check"
     return response
 
 

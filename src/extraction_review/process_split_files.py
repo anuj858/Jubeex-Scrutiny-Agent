@@ -210,12 +210,12 @@ class SplitFilesEvent(StartEvent):
     skip_extract: bool = False
     stitch_in_request_order: bool = False
     front_extract: bool = False
-    front_opening_pages: int = 30
     front_text_layer: dict[int, str] = Field(default_factory=dict)
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -276,11 +276,11 @@ class SplitFilesState(BaseModel):
     skip_extract: bool = False
     stitch_in_request_order: bool = False
     front_extract: bool = False
-    front_opening_pages: int = 30
     edited: bool = False
     parsed_slots: list[str] = Field(default_factory=list)
     agent_data_id: str | None = None
     special_category: str | None = None
+    special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
@@ -585,11 +585,11 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.skip_extract = event.skip_extract
             state.stitch_in_request_order = event.stitch_in_request_order
             state.front_extract = event.front_extract
-            state.front_opening_pages = event.front_opening_pages
             state.edited = event.edited
             state.parsed_slots = parsed_slots
             state.agent_data_id = event.agent_data_id
             state.special_category = event.special_category
+            state.special_categories = event.special_categories
             state.model_tier = event.model_tier
             state.court = event.court
             state.pages_by_slot = pages_by_slot
@@ -702,7 +702,6 @@ class ProcessSplitFilesWorkflow(Workflow):
             pack_text = build_front_extract_pack_markdown(
                 page_markdown,
                 page_layout=coerce_page_layout(state.page_layout),
-                opening_pages=state.front_opening_pages,
             )
         else:
             pack_text = build_extract_pack_markdown(
@@ -1886,6 +1885,7 @@ async def _run_nested_scrutiny(
             workspace_id=state.workspace_id,
             filing_type=state.filing_type,
             special_category=state.special_category,
+            special_categories=state.special_categories,
             model_tier=state.model_tier,
             court=state.court,
         )
