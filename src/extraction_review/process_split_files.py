@@ -1649,6 +1649,7 @@ async def _detect_visual_for_state(
             page_markdown=coerce_page_markdown(state.page_markdown),
             omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
             on_log=on_log,
+            model_tier=state.model_tier,
         )
     except Exception:
         logger.exception("Visual ink detection failed for %s", state.filename)
