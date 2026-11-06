@@ -114,20 +114,33 @@ def _vision_provider_enabled() -> bool:
     return provider == llm_provider() and llm_enabled()
 
 
-def vision_model() -> str:
+def vision_model(tier: str | None = None) -> str:
+    """Vision model for this job.
+
+    A selected scrutiny tier uses that same configured model
+    (``SCRUTINY_MODEL_LOW``, ``SCRUTINY_MODEL_MEDIUM``, or
+    ``SCRUTINY_MODEL_HIGH``). The id is formatted for the vision provider.
+    Calls without a tier keep the standalone vision model settings.
+    """
     provider = vision_provider()
-    if provider == "openrouter":
-        return (
+    selected = str(tier).strip() if tier is not None else ""
+    if selected:
+        from ..llm import configured_scrutiny_model
+
+        raw = configured_scrutiny_model(selected)
+    elif provider == "openrouter":
+        raw = (
             os.getenv("OPENROUTER_VISION_MODEL")
             or os.getenv("OPENROUTER_MODEL")
             or "google/gemini-4-argon"
         ).strip()
-    raw = (
-        os.getenv("VISION_MODEL")
-        or (os.getenv("GEMINI_VISION_MODEL") if provider == "gemini" else None)
-        or os.getenv("OPENROUTER_VISION_MODEL")
-        or llm_model()
-    ).strip()
+    else:
+        raw = (
+            os.getenv("VISION_MODEL")
+            or (os.getenv("GEMINI_VISION_MODEL") if provider == "gemini" else None)
+            or os.getenv("OPENROUTER_VISION_MODEL")
+            or llm_model()
+        ).strip()
     if provider in {"vertex", "gemini"} and raw.startswith("google/"):
         return raw[len("google/") :]
     return raw
@@ -899,12 +912,13 @@ async def _analyze_batch_with_fallback(
     page_images: Sequence[tuple[VisualPageTarget, bytes]],
     references: Sequence[Any],
     http: httpx.AsyncClient,
+    model: str | None = None,
 ) -> tuple[
     dict[int, tuple[list[VisualMark], VisualQualityAssessment | None]],
     Exception | None,
     LlmUsage,
 ]:
-    models = [vision_model()]
+    models = [model or vision_model()]
     fallback = vision_fallback_model()
     if fallback and fallback not in models:
         models.append(fallback)
@@ -955,10 +969,11 @@ async def _analyze_with_fallback(
     target: VisualPageTarget,
     references: Sequence[Any],
     http: httpx.AsyncClient,
+    model: str | None = None,
 ) -> tuple[
     list[VisualMark], VisualQualityAssessment | None, Exception | None, LlmUsage
 ]:
-    models = [vision_model()]
+    models = [model or vision_model()]
     fallback = vision_fallback_model()
     if fallback and fallback not in models:
         models.append(fallback)
@@ -1149,15 +1164,17 @@ async def detect_visual_marks(
     omit_empty: bool = False,
     on_log: Any = None,
     download_file_id: Any = None,
+    model_tier: str | None = None,
 ) -> dict[str, Any]:
     """Render selected formality pages and return a visual_index_v1 payload."""
     del page_parts
     enabled = visual_detection_enabled()
+    selected_model = vision_model(model_tier)
     await _emit_log(
         on_log,
         (
             f"Visual detection enabled={enabled} provider={vision_provider()} "
-            f"model={vision_model() or '-'}"
+            f"model={selected_model or '-'} tier={model_tier or '-'}"
         ),
     )
     if not enabled:
@@ -1271,6 +1288,7 @@ async def detect_visual_marks(
                         target=target,
                         references=references,
                         http=http,
+                        model=selected_model,
                     ),
                     timeout=vision_timeout,
                 )
@@ -1377,6 +1395,7 @@ async def detect_visual_marks(
                             page_images=rendered,
                             references=references,
                             http=http,
+                            model=selected_model,
                         ),
                         timeout=vision_timeout,
                     )
