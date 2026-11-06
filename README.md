@@ -91,9 +91,9 @@ and `high` read `SCRUTINY_MODEL_LOW`, `SCRUTINY_MODEL_MEDIUM`, and
 before the job starts. `SCRUTINY_MODEL` remains in config and is not a
 fallback for these requests. Vertex and the Gemini Developer API strip a
 `google/` prefix; OpenRouter keeps it. Visual-mark detection on the same job
-uses that selected tier model, formatted for the vision provider. `VERTEX_MODEL`
+reads that same tier variable, formatted for the vision provider. `VERTEX_MODEL`
 and `OPENROUTER_MODEL` stay independent, so a defect-check tier does not change
-extraction. `OPENROUTER_VISION_MODEL` is used only when a run has no tier.
+extraction.
 For ECS queue, lease, callback, and rollout checks see
 [`docs/ecs-worker-operations.md`](docs/ecs-worker-operations.md). Gemini 4
 Argon must be validated for project access, latency, 429 rate, cost, and defect

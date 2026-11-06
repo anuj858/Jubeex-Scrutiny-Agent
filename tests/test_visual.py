@@ -96,12 +96,13 @@ def test_vision_can_use_openrouter_while_scrutiny_uses_gemini(
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("VISION_ENABLED", "true")
     monkeypatch.setenv("VISION_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
-    monkeypatch.setenv("OPENROUTER_VISION_MODEL", "google/gemini-4-argon")
+    monkeypatch.setenv("SCRUTINY_MODEL_LOW", "openai/gpt-6-luna")
 
     assert vision_provider() == "openrouter"
-    assert vision_model() == "google/gemini-4-argon"
+    assert vision_model("low") == "openai/gpt-6-luna"
     assert visual_detection_enabled() is True
 
 
@@ -118,7 +119,7 @@ def test_vision_uses_the_selected_scrutiny_tier_model(
     assert vision_model("low") == "moonshotai/kimi-k3"
     assert vision_model("LOW") == "moonshotai/kimi-k3"
     assert vision_model("medium") == "openai/gpt-6.1-terra"
-    assert vision_model() == "google/gemini-4-argon"
+    assert vision_model("high") == "google/gemini-4-argon"
 
     monkeypatch.setenv("VISION_PROVIDER", "vertex")
     monkeypatch.setenv("SCRUTINY_MODEL_HIGH", "google/gemini-4-argon")

@@ -26,7 +26,6 @@ from ..llm import (
     acquire_openrouter_slot,
     generate_vision_json,
     llm_enabled,
-    llm_model,
     llm_provider,
     openrouter_api_key,
     parse_openrouter_usage,
@@ -117,30 +116,14 @@ def _vision_provider_enabled() -> bool:
 def vision_model(tier: str | None = None) -> str:
     """Vision model for this job.
 
-    A selected scrutiny tier uses that same configured model
-    (``SCRUTINY_MODEL_LOW``, ``SCRUTINY_MODEL_MEDIUM``, or
-    ``SCRUTINY_MODEL_HIGH``). The id is formatted for the vision provider.
-    Calls without a tier keep the standalone vision model settings.
+    Visual-mark detection uses the same tier variable as defect checks:
+    ``SCRUTINY_MODEL_LOW``, ``SCRUTINY_MODEL_MEDIUM``, or ``SCRUTINY_MODEL_HIGH``.
+    The id is formatted for the vision provider.
     """
-    provider = vision_provider()
-    selected = str(tier).strip() if tier is not None else ""
-    if selected:
-        from ..llm import configured_scrutiny_model
+    from ..llm import configured_scrutiny_model
 
-        raw = configured_scrutiny_model(selected)
-    elif provider == "openrouter":
-        raw = (
-            os.getenv("OPENROUTER_VISION_MODEL")
-            or os.getenv("OPENROUTER_MODEL")
-            or "google/gemini-4-argon"
-        ).strip()
-    else:
-        raw = (
-            os.getenv("VISION_MODEL")
-            or (os.getenv("GEMINI_VISION_MODEL") if provider == "gemini" else None)
-            or os.getenv("OPENROUTER_VISION_MODEL")
-            or llm_model()
-        ).strip()
+    raw = configured_scrutiny_model(tier or "")
+    provider = vision_provider()
     if provider in {"vertex", "gemini"} and raw.startswith("google/"):
         return raw[len("google/") :]
     return raw
@@ -1169,7 +1152,9 @@ async def detect_visual_marks(
     """Render selected formality pages and return a visual_index_v1 payload."""
     del page_parts
     enabled = visual_detection_enabled()
-    selected_model = vision_model(model_tier)
+    selected_model = (
+        vision_model(model_tier) if str(model_tier or "").strip() else ""
+    )
     await _emit_log(
         on_log,
         (
