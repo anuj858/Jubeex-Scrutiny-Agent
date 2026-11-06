@@ -2948,6 +2948,71 @@ async def test_cross_part_neighbor_and_empty_fetch_do_not_call_again(
     assert result.coverage.context_followup is False
 
 
+def test_previous_followup_reads_the_last_chunk_of_the_previous_page(
+    monkeypatch,
+) -> None:
+    from extraction_review.scrutiny.context_followup import load_adjacent_chunks
+    from extraction_review.scrutiny.schema import EvidenceRequest
+
+    asked: list[str] = []
+
+    def fake_fetch(ids: list[str]) -> dict[str, dict[str, object]]:
+        asked.extend(ids)
+        return {
+            "abc:page:3:7": {
+                "record_id": "abc:page:3:7",
+                "chunk_kind": "page",
+                "page": 3,
+                "chunk_index": 7,
+                "document_part": "Application",
+                "text": "last words of the previous page",
+            },
+            "abc:page:3:2": {
+                "record_id": "abc:page:3:2",
+                "chunk_kind": "page",
+                "page": 3,
+                "chunk_index": 2,
+                "document_part": "Application",
+                "text": "an earlier chunk that is not adjacent",
+            },
+        }
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.context_followup.fetch_chunks_by_id",
+        fake_fetch,
+    )
+    selected = load_adjacent_chunks(
+        EvidenceRequest(
+            action="adjacent",
+            direction="previous",
+            count=1,
+            anchor_chunk_id="c1",
+            document_part="Application",
+        ),
+        chunks=[
+            {
+                **_application_chunk(),
+                "excerpt_id": "c1",
+            }
+        ],
+        layout={
+            3: {
+                "document_part": "Application",
+                "text": "earlier application page",
+            },
+            4: {
+                "document_part": "Application",
+                "text": "APPLICATION FOR SUBSTITUTION. The petitioner expired on.",
+            },
+        },
+        base_id="abc",
+    )
+
+    assert "abc:page:3:7" in asked
+    assert [chunk["record_id"] for chunk in selected] == ["abc:page:3:7"]
+    assert selected[0]["text"] == "last words of the previous page"
+
+
 def test_search_phrase_keeps_printed_words_and_adds_form_language() -> None:
     from extraction_review.scrutiny.context_followup import search_phrase_for_followup
     from extraction_review.scrutiny.rules import check_requirement, get_catalogue

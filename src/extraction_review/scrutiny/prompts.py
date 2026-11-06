@@ -14,7 +14,6 @@ from typing import Any
 
 from ..document_parts import (
     catalogue_inspect_parts,
-    distinctive_trigger_phrases,
     family_split_name,
     filing_type_label,
     format_document_parts,
@@ -1647,14 +1646,6 @@ def _indexed_chunks_note(defect: Defect) -> str:
                 "to search all of them."
             ),
     ]
-    phrases = distinctive_trigger_phrases(defect)
-    if phrases:
-        shown = "; ".join(phrases[:8])
-        lines.append(
-            "Phrases printed on this document when the clause is present: "
-            f"{shown}. Use one of these, or the same words as printed in the "
-            "filing, as search_text. Do not replace them with the Standard."
-        )
     return "\n".join(lines)
 
 

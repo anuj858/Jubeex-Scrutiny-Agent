@@ -963,7 +963,12 @@ async def _run_defect(
         scope_complete=coverage.scope_complete,
     )
     response = apply_conditional_manifest_policy(defect, response, layout)
-    response = apply_final_evidence_contract_policy(response)
+    # A context followup is one extra chunk, not the complete-document retry.
+    # The contract below turns a leftover retrieval gap into not_determined
+    # only after that retry has already run. Applying it here would hide a
+    # partial followup as a technical failure and would claim the retry ran.
+    if not followed_up:
+        response = apply_final_evidence_contract_policy(response)
 
     return build_finding(
         defect,

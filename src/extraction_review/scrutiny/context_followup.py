@@ -57,6 +57,10 @@ _CONTEXT_GAPS = frozenset(
     }
 )
 _MAX_NEIGHBOR_PAGES = 4
+# A stored page is split into windows of about 3,500 characters. Sixteen
+# windows covers a long parsed page. "Previous" must read the last window
+# that exists, which can sit above index 3.
+_MAX_PAGE_CHUNK_INDEX = 15
 _SEARCH_FOLLOWUP_HITS = 5
 _TOOLS = frozenset({"adjacent", "search"})
 _QUERY_LIMIT = 200
@@ -337,9 +341,8 @@ def _adjacent_slots(
             if index - offset >= 0:
                 slots.append((page, index - offset))
         earlier = [item for item in part_pages if item < page][-_MAX_NEIGHBOR_PAGES:]
-        probe = max(3, index)
         for prev_page in reversed(earlier):
-            for slot_index in range(probe, -1, -1):
+            for slot_index in range(_MAX_PAGE_CHUNK_INDEX, -1, -1):
                 slots.append((prev_page, slot_index))
     unique: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
