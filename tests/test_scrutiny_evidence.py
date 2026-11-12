@@ -1001,9 +1001,9 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The system is only 40% sure about what the document shows. It must be at "
-        "least 60% sure before marking this as Defect or Compliant. Please check "
-        "the relevant document manually."
+        "The system is only 40% sure about what the document shows. Please check "
+        "the relevant document manually because at least 60% certainty is required "
+        "for Defect or Compliant."
     )
 
 
@@ -1064,6 +1064,31 @@ def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> Non
     reason = review_reason_for_response(response)
 
     assert reason == response.review_reason
+
+
+def test_verbose_model_review_reason_is_compacted_to_two_short_sentences() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.82,
+        summary="The signature area is obscured.",
+        gap="unreadable",
+        review_reason=(
+            "A dark stamp covers the signature area in the Vakalatnama. "
+            "The extracted text does not resolve whether a signature is underneath. "
+            "This uncertainty prevents a reliable decision. "
+            "Please inspect the original signature area."
+        ),
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason == (
+        "A dark stamp covers the signature area in the Vakalatnama. "
+        "Please inspect the original signature area."
+    )
+    assert len(reason.split()) <= 45
 
 
 def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:

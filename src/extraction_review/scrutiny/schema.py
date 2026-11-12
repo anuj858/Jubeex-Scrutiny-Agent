@@ -242,7 +242,8 @@ class DefectResponse(BaseModel):
         default="",
         max_length=800,
         description=(
-            "Only for needs_review. In two short plain-language sentences, state "
+            "Only for needs_review. In no more than 45 words and two short "
+            "plain-language sentences, state "
             "the exact document, wording, date, signature, seal, or field that is "
             "uncertain; explain why that uncertainty prevents a Defect or Compliant "
             "decision; and tell the user exactly what to check. Do not mention OCR, "
@@ -541,6 +542,37 @@ def review_confidence_threshold() -> float:
     return min(1.0, max(0.0, value))
 
 
+def _compact_review_reason(reason: str) -> str:
+    """Keep the user-facing reason to two short, useful sentences."""
+    value = " ".join(reason.split()).strip()
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", value)
+        if item.strip()
+    ]
+    if len(sentences) > 2:
+        action = next(
+            (
+                item
+                for item in reversed(sentences[1:])
+                if re.search(
+                    r"\b(check|review|confirm|compare|verify|inspect)\b",
+                    item,
+                    flags=re.I,
+                )
+            ),
+            sentences[-1],
+        )
+        value = f"{sentences[0]} {action}"
+
+    words = value.split()
+    if len(words) > 45:
+        value = " ".join(words[:45]).rstrip(" ,;:") + "."
+    if len(value) > 360:
+        value = value[:357].rsplit(" ", 1)[0].rstrip(" ,;:") + "."
+    return value
+
+
 def review_reason_for_response(
     response: DefectResponse,
     coverage: Coverage | None = None,
@@ -574,7 +606,7 @@ def review_reason_for_response(
                 " A page-image check was also required, but the image was not "
                 "available or could not be inspected. Please check the original page."
             )
-        return model_reason
+        return _compact_review_reason(model_reason)
 
     detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
     detail = re.sub(r"\bexcerpts?\b", "pages available to the system", detail, flags=re.I)
@@ -586,8 +618,8 @@ def review_reason_for_response(
         if response.confidence < review_confidence_threshold():
             reason = (
                 f"The system is only {score}% sure about what the document shows. "
-                f"It must be at least {threshold}% sure before marking this as Defect "
-                "or Compliant. Please check the relevant document manually."
+                f"Please check the relevant document manually because at least "
+                f"{threshold}% certainty is required for Defect or Compliant."
             )
         else:
             reason = (
@@ -636,13 +668,20 @@ def review_reason_for_response(
         )
 
     if detail and response.gap != "low_confidence":
-        reason = f"{reason} What needs checking: {detail}."
+        first_sentence = re.split(r"(?<=[.!?])\s+", reason, maxsplit=1)[0]
+        if response.gap == "unreadable":
+            reason = (
+                f"{first_sentence} Please check the original page, specifically: "
+                f"{detail}."
+            )
+        else:
+            reason = f"{first_sentence} Please check manually: {detail}."
     if coverage and coverage.visual_required and not coverage.visual_complete:
         reason += (
             " A page-image check was also required, but the image was not available "
             "or could not be inspected. Please check the original page."
         )
-    return reason
+    return _compact_review_reason(reason)
 
 
 def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
