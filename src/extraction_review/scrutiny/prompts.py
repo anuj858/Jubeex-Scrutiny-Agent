@@ -1646,7 +1646,7 @@ def build_defect_prompt(
             "## Output",
             (
                 f'Return JSON with check_id "{defect.check_id}", status, '
-                "confidence, summary, observed, elements, gap, gap_detail, "
+                "confidence, summary, observed, elements, gap, gap_detail, review_reason, "
                 "conclusion, and evidence. "
                 "summary is one plain sentence naming the exact failed or satisfied "
                 "element in this filing and this defect only — do not copy the Standard "
@@ -1655,6 +1655,19 @@ def build_defect_prompt(
                 "the Requirement. Start each element name with a plain lettered "
                 "label such as 'a. Court/Tribunal' and never '(a)'. "
                 "gap is null unless status is needs_review. "
+                "A clear contradiction between two readable filing documents is "
+                "defect_found when this requirement requires those particulars to "
+                "match or be consistent; it is not needs_review. Use the conflict "
+                "gap only when extracted text disagrees with the visible page, a mark "
+                "obscures the value, or the available material genuinely cannot show "
+                "which reading is correct. "
+                "review_reason is empty unless status is needs_review. For needs_review, "
+                "write two short plain-language sentences: name the exact document, "
+                "wording, date, signature, seal, or field that is uncertain; explain "
+                "why that uncertainty prevents a Defect or Compliant decision; and tell "
+                "the user exactly what to check. Do not use generic wording such as "
+                "'insufficient evidence' or mention OCR, chunks, excerpts, retrieval, "
+                "prompts, confidence gates, or other internal system terms. "
                 "conclusion is one sentence and may cite a rule only when the "
                 "Requirement writes that citation. Do not mention excerpt ids, "
                 "page numbers, location_source, SCI_CHECKLIST, handbook PDF pages, "
