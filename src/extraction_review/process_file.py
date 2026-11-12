@@ -57,6 +57,7 @@ from .config import (
     ParseConfig,
     SplitConfig,
     dump_api_configuration,
+    llama_parse_tier,
     load_config_payload,
     with_config_identity,
 )
@@ -2503,7 +2504,7 @@ def _split_parse_create_kwargs(
         return {
             "file_id": parse_file_id,
             "configuration_id": parse_config.configuration_id,
-            "tier": parse_config.tier,
+            "tier": llama_parse_tier(parse_config.tier),
             "version": parse_config.version,
             "project_id": project_id,
         }
@@ -4080,7 +4081,11 @@ class ProcessFileWorkflow(Workflow):
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
-                        message="Running agentic OCR and layout parsing for every source page",
+                        message=(
+                            "Running "
+                            f"{llama_parse_tier(parse_config.tier) or 'cost_effective'} "
+                            "OCR and layout parsing for every source page"
+                        ),
                     )
                 )
                 (

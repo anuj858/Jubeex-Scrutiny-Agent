@@ -1,7 +1,7 @@
 {
   "config_id": "jubeex_parse",
   "schema_version": "1.0",
-  "config_version": "1.0.37",
+  "config_version": "1.0.38",
   "pipeline_versions": {
     "classify": {
       "schema_version": "1.0",
@@ -9,11 +9,11 @@
     },
     "extract": {
       "schema_version": "1.0",
-      "config_version": "1.0.2"
+      "config_version": "1.0.3"
     },
     "split": {
       "schema_version": "1.0",
-      "config_version": "1.0.37"
+      "config_version": "1.0.38"
     }
   },
   "classify": {
@@ -938,7 +938,8 @@
       "title": "LegalExtractRecord",
       "type": "object"
     },
-    "tier": "agentic",
+    "tier": "cost_effective",
+    "parse_tier": "cost_effective",
     "version": "latest",
     "extraction_target": "per_doc",
     "system_prompt": null,
@@ -948,7 +949,7 @@
   "parse": {
     "product_type": "parse_v2",
     "configuration_id": null,
-    "tier": "agentic",
+    "tier": "cost_effective",
     "version": "latest",
     "output_options": {
       "granular_bboxes": [
