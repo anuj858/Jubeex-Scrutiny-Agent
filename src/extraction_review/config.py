@@ -6,6 +6,7 @@ Adapted for JubeeX Core Filing Record schema with deep descriptive context.
 
 import json
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -725,12 +726,92 @@ class Config(BaseModel):
 
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
+_SHARED_LLAMA_TIERS = frozenset({"agentic", "agentic_plus", "cost_effective"})
+_PARSE_TIERS = _SHARED_LLAMA_TIERS | {"fast"}
+_EXTRACT_TIERS = _SHARED_LLAMA_TIERS | {"turbo"}
 _API_EXCLUDE = {
     "configuration_id",
     "product_type",
     "schema_version",
     "config_version",
 }
+
+
+def _tier_from_env(
+    names: tuple[str, ...],
+    *,
+    fallback: str | None,
+    allowed: frozenset[str],
+) -> str | None:
+    for name in names:
+        value = (os.getenv(name) or "").strip().lower()
+        if not value:
+            continue
+        if value not in allowed:
+            choices = ", ".join(sorted(allowed))
+            raise RuntimeError(f"{name} must be one of: {choices}")
+        return value
+    return fallback
+
+
+def llama_parse_tier(fallback: str | None = None) -> str | None:
+    """Resolve the Parse tier from its override and then the shared setting."""
+    return _tier_from_env(
+        ("LLAMA_PARSE_TIER", "LLAMA_CLOUD_TIER"),
+        fallback=fallback,
+        allowed=_PARSE_TIERS,
+    )
+
+
+def llama_secondary_parse_tier(fallback: str | None = None) -> str | None:
+    """Resolve the secondary Parse tier, including the legacy override."""
+    return _tier_from_env(
+        ("FAST_PARSE_TIER", "LLAMA_PARSE_TIER", "LLAMA_CLOUD_TIER"),
+        fallback=fallback,
+        allowed=_PARSE_TIERS,
+    )
+
+
+def llama_split_parse_tier(fallback: str | None = None) -> str | None:
+    """Resolve LlamaSplit's internal Parse tier from runtime settings."""
+    return _tier_from_env(
+        ("LLAMA_SPLIT_PARSE_TIER", "LLAMA_PARSE_TIER", "LLAMA_CLOUD_TIER"),
+        fallback=fallback,
+        allowed=_PARSE_TIERS,
+    )
+
+
+def llama_extract_tier(fallback: str | None = None) -> str | None:
+    """Resolve the Extract tier from its override and shared setting."""
+    return _tier_from_env(
+        ("LLAMA_EXTRACT_TIER", "LLAMA_CLOUD_TIER"),
+        fallback=fallback,
+        allowed=_EXTRACT_TIERS,
+    )
+
+
+def llama_extract_parse_tier(fallback: str | None = None) -> str | None:
+    """Resolve Extract's internal Parse tier from runtime settings."""
+    return _tier_from_env(
+        ("LLAMA_EXTRACT_PARSE_TIER", "LLAMA_PARSE_TIER", "LLAMA_CLOUD_TIER"),
+        fallback=fallback,
+        allowed=_PARSE_TIERS,
+    )
+
+
+def with_runtime_llama_tiers(config: BaseModel) -> BaseModel:
+    """Apply environment overrides without mutating the resource config."""
+    payload = config.model_dump()
+    if isinstance(config, ExtractConfig):
+        payload["tier"] = llama_extract_tier(config.tier)
+        payload["parse_tier"] = llama_extract_parse_tier(config.parse_tier)
+    elif isinstance(config, ParseConfig):
+        payload["tier"] = llama_parse_tier(config.tier)
+    elif isinstance(config, SplitConfig):
+        payload["parse_tier"] = llama_split_parse_tier(config.parse_tier)
+    else:
+        return config
+    return type(config).model_validate(payload)
 
 
 def _block_versions(block: Any) -> dict[str, str]:
@@ -780,6 +861,7 @@ def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
     Only LlamaCloud's own fields are forwarded. Version keys stay on our
     metadata and S3 artifacts.
     """
+    config = with_runtime_llama_tiers(config)
     dumped = config.model_dump(exclude_none=True)
     for key in _API_EXCLUDE:
         dumped.pop(key, None)

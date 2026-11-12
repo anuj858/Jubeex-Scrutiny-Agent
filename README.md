@@ -9,6 +9,7 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
 1. Clone this repo and install [`uv`](https://docs.astral.sh/uv/).
 2. Set environment variables (typically in `.env`):
    - `LLAMA_CLOUD_API_KEY` — required for LlamaCloud classify/extract
+   - `LLAMA_CLOUD_TIER` — shared Parse/Extract tier (`cost_effective`, `agentic`, or `agentic_plus`); optional `LLAMA_PARSE_TIER`, `LLAMA_SPLIT_PARSE_TIER`, `LLAMA_EXTRACT_TIER`, and `LLAMA_EXTRACT_PARSE_TIER` override individual stages
    - `LLAMA_DEPLOY_PROJECT_ID` — optional project scope
    - `LLAMA_CLOUD_BASE_URL` — optional non-production endpoint
    - `LLAMA_DEPLOY_DEPLOYMENT_NAME` — set automatically when deployed

@@ -25,6 +25,8 @@ from .config import (
     LegalExtractRecord,
     ParseConfig,
     config_identity,
+    llama_parse_tier,
+    llama_secondary_parse_tier,
     with_config_identity,
 )
 from .document_parts import overlay_split_documents
@@ -136,11 +138,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PARSE_CONCURRENCY = 8
 DEFAULT_INGEST_CONCURRENCY = 8
-# OCRia-1 is selected by LlamaParse v2 through the agentic tier with the
-# configured "latest" version. Keep FAST_PARSE_TIER as the environment key for
-# backwards compatibility, but default secondary document parts to OCRia-1 as
-# well instead of downgrading them to the non-AI fast tier.
-DEFAULT_FAST_PARSE_TIER = "agentic"
+# FAST_PARSE_TIER remains a backwards-compatible override for secondary parts.
+# Otherwise they follow LLAMA_PARSE_TIER / LLAMA_CLOUD_TIER and finally the
+# safe cost-effective fallback.
+DEFAULT_FAST_PARSE_TIER = "cost_effective"
 PARSE_CONCURRENCY = DEFAULT_PARSE_CONCURRENCY
 VECTOR_INDEX_METADATA_KEY = "vector_index"
 
@@ -154,8 +155,9 @@ def ingest_concurrency() -> int:
 
 
 def fast_parse_tier() -> str:
-    raw = (os.getenv("FAST_PARSE_TIER") or "").strip()
-    return raw or DEFAULT_FAST_PARSE_TIER
+    return (
+        llama_secondary_parse_tier(DEFAULT_FAST_PARSE_TIER) or DEFAULT_FAST_PARSE_TIER
+    )
 
 
 def parse_create_kwargs(
@@ -164,12 +166,17 @@ def parse_create_kwargs(
     file_id: str,
     precise: bool,
 ) -> dict[str, Any]:
+    effective_parse_tier = llama_parse_tier(parse_config.tier)
     create_kwargs: dict[str, Any] = {
         "file_id": file_id,
         "project_id": project_id,
     }
+    if not precise:
+        effective_parse_tier = fast_parse_tier()
     if parse_config.configuration_id:
         create_kwargs["configuration_id"] = parse_config.configuration_id
+        if effective_parse_tier:
+            create_kwargs["tier"] = effective_parse_tier
         return merge_granular_bboxes(create_kwargs)
     create_kwargs.update(
         parse_config.model_dump(
@@ -177,8 +184,8 @@ def parse_create_kwargs(
             exclude_none=True,
         )
     )
-    if not precise:
-        create_kwargs["tier"] = fast_parse_tier()
+    if effective_parse_tier:
+        create_kwargs["tier"] = effective_parse_tier
     return merge_granular_bboxes(create_kwargs)
 
 
@@ -462,7 +469,8 @@ class ProcessSplitFilesWorkflow(Workflow):
                 message=(
                     f"Parsing {len(parts)} labeled document(s) for {catalog.label} "
                     f"(concurrency {parse_concurrency()}; "
-                    f"extract sources {parse_config.tier or 'agentic'}, "
+                    f"extract sources "
+                    f"{llama_parse_tier(parse_config.tier) or 'cost_effective'}, "
                     f"others {fast_parse_tier()})"
                 ),
             )
