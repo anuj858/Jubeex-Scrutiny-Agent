@@ -1184,8 +1184,9 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The evidence confidence is 40%, below the 60% threshold required to "
-        "classify this as a confirmed defect or compliance result."
+        "The system is only 40% sure about what the document shows. It must be at "
+        "least 60% sure before marking this as Defect or Compliant. Please check "
+        "the relevant document manually."
     )
 
 
@@ -1203,8 +1204,104 @@ def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
     reason = review_reason_for_response(response)
 
     assert reason is not None
-    assert "below the 60% threshold" not in reason
-    assert "confidence in sending this finding for manual review" in reason
+    assert "at least 60% sure" not in reason
+    assert "does not mean the defect is 90% certain" in reason
+
+
+def test_review_reason_explains_the_problem_and_next_step_in_plain_language() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.8,
+        summary="The signature needs review.",
+        gap="unreadable",
+        gap_detail="OCR excerpt for the signature field is unclear",
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason is not None
+    assert "extracted text" in reason
+    assert "pages available to the system" in reason
+    assert "Please check the original page" in reason
+
+
+def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.82,
+        summary="The signature area is obscured.",
+        gap="unreadable",
+        gap_detail="A dark stamp covers the executant signature area",
+        review_reason=(
+            "A dark stamp covers the executant signature area in the Vakalatnama, "
+            "so it is unclear whether a signature is present underneath it. This "
+            "prevents a safe Defect or Compliant decision; please inspect the "
+            "original signature area."
+        ),
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason == response.review_reason
+
+
+def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:
+    defect = _scrutiny_row(
+        defect="The cause title does not correctly identify the challenged court",
+        requirement=(
+            "The court named in the Main Petition must match the court that passed "
+            "the Impugned Order."
+        ),
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="needs_review",
+        confidence=0.85,
+        summary="The court names require review.",
+        observed=(
+            "The Main Petition names the High Court of Maharashtra, while the "
+            "Impugned Order names the Delhi High Court."
+        ),
+        gap="conflict",
+        gap_detail="The court name in the Main Petition does not match the order",
+        review_reason=(
+            "The Main Petition names Maharashtra while the Impugned Order names "
+            "Delhi. Please compare the two court names."
+        ),
+        evidence=[
+            EvidenceRef(page=1, quote="High Court of Maharashtra at Aurangabad"),
+            EvidenceRef(page=9, quote="IN THE HIGH COURT OF DELHI AT NEW DELHI"),
+        ],
+    )
+
+    decided = apply_internal_contradiction_policy(defect, response)
+
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+    assert decided.review_reason == ""
+
+
+def test_generic_model_review_reason_uses_the_safe_specific_fallback() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.8,
+        summary="The signature needs review.",
+        gap="unreadable",
+        gap_detail="The executant signature is faint",
+        review_reason="Manual verification is required.",
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason is not None
+    assert "signature" in reason
+    assert "Please check the original page" in reason
 
 
 def test_confident_defect_stays_defect_found() -> None:
