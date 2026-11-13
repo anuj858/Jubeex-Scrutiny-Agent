@@ -561,22 +561,129 @@ FRONT_SPECIAL_CATEGORIES: tuple[str, ...] = (
     "Transfer Petition",
 )
 
+_SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
+    "motor vehicle act": (
+        "the dispute arises under motor-vehicle law: an accident claim, compensation, "
+        "permit, registration, licence, or vehicle seizure. "
+        "Also Motor Vehicles Act, MV Act, MACT matter. "
+        "A vehicle mentioned only as background does not count. "
+        "May stand with Matters involving/pertaining to minors when both are the subject."
+    ),
+    "demolition matters": (
+        "the challenged action directs, permits, stays, or concerns demolition of a building or structure. "
+        "Also razing, removal of structure. "
+        "Sealing, possession, or construction without a demolition issue does not count. "
+        "May stand with PIL when both are the subject."
+    ),
+    "tax matters": (
+        "the dispute concerns assessment, levy, demand, exemption, refund, penalty, or recovery "
+        "of a tax, duty, cess, or GST. Also taxation matter, fiscal matter, GST dispute. "
+        "A fee, fine, compensation, or contractual payment called a tax informally does not count. "
+        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+    ),
+    "eviction matters": (
+        "the challenged action requires or concerns eviction, ejectment, or removal of an occupant "
+        "or tenant. Also ejectment, dispossession of tenant. "
+        "Title or possession without an eviction issue does not count. "
+        "May stand with Demolition Matters when both are the subject."
+    ),
+    "matters involving/pertaining to minors": (
+        "a minor child's custody, guardianship, welfare, rights, property, compensation, or legal status "
+        "is directly in issue. Also minor involved, child custody, juvenile concerned. "
+        "A passing mention of children does not count. "
+        "May stand with Transfer Petition when both are the subject."
+    ),
+    "indigent person": (
+        "a party seeks or was denied permission to sue or appeal as an indigent person "
+        "because they cannot pay the court fee. Also indigent litigant, pauper, unable to pay court fee. "
+        "A statement that a party is poor, or a request for ordinary legal aid, does not count."
+    ),
+    "jail petition": (
+        "the incarcerated petitioner submits the petition from jail or through the prison authorities. "
+        "Printed in the petition opening. Also petition from prison, prisoner petition. "
+        "A regular petition that only says the petitioner is in custody does not count. "
+        "May stand with Bail Applications/Bail Matters when both are the subject."
+    ),
+    "bail applications/bail matters": (
+        "the relief or the challenged order concerns grant, refusal, cancellation, conditions, "
+        "or continuation of bail or anticipatory bail. Also bail application, cancellation of bail. "
+        "Custody with no bail decision does not count. "
+        "May stand with Jail Petition when both are the subject."
+    ),
+    "civil appeal with high court certificate": (
+        "a civil appeal is brought on a certificate granted by a High Court. "
+        "Printed in the petition opening. Also certificate appeal, Article 133 certificate. "
+        "A civil appeal or special leave petition without that certificate does not count. "
+        "May stand with Tax Matters when both are the subject."
+    ),
+    "appeal (armed forces)": (
+        "the appeal challenges an Armed Forces Tribunal decision or concerns armed-forces service law. "
+        "Also AFT appeal, military service appeal. "
+        "An armed-forces member in an unrelated private dispute does not count."
+    ),
+    "advocates act, 1961": (
+        "the dispute arises under the Advocates Act, 1961: enrolment, professional misconduct, "
+        "discipline, or a Bar Council decision. Also Bar Council matter, advocate disciplinary matter. "
+        "An advocate appearing as counsel, or as a party in an unrelated dispute, does not count. "
+        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+    ),
+    "consumer protection act, 2019": (
+        "the challenged proceeding arises under the Consumer Protection Act, 2019 or from a consumer commission. "
+        "Also consumer dispute, consumer commission matter. "
+        "An ordinary contract dispute that mentions a customer does not count. "
+        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+    ),
+    "pil": (
+        "the proceeding is brought in public interest for relief affecting the public or a class, "
+        "rather than the petitioner's private grievance. Printed in the petition opening. "
+        "Also public interest litigation, public interest petition. "
+        "A private dispute described as having public importance does not count. "
+        "May stand with Demolition Matters when both are the subject."
+    ),
+    "criminal appeal with high court certificate": (
+        "a criminal appeal is brought on a certificate granted by a High Court. "
+        "Printed in the petition opening. Also criminal certificate appeal, certificate of fitness, "
+        "Article 134 certificate. "
+        "A criminal appeal or special leave petition without that certificate does not count."
+    ),
+    "re-filing defect": (
+        "the challenged decision concerns delay, defects, rejection, or refusal connected with "
+        "re-filing a returned case. Also re-filing delay, defective re-filing, delay in re-presentation. "
+        "An ordinary filing defect or a limitation delay unrelated to re-filing does not count."
+    ),
+    "transfer petition": (
+        "the relief sought is transfer of a pending case from one court or forum to another. "
+        "Printed in the petition opening. Also transfer of proceedings, transfer under Section 25. "
+        "An earlier transfer mentioned only as history does not count. "
+        "May stand with Matters involving/pertaining to minors when both are the subject."
+    ),
+}
+
+
 def front_special_category_description(names: Sequence[str]) -> str:
     """LlamaExtract instruction. ``names`` are the exact database strings."""
-    listed = "; ".join(name.strip() for name in names if name and str(name).strip())
-    if not listed:
+    lines: list[str] = []
+    for name in names:
+        stored = str(name).strip()
+        if not stored:
+            continue
+        key = stored.casefold()
+        if key == "motor vehical act":
+            key = "motor vehicle act"
+        guide = _SPECIAL_CATEGORY_GUIDE.get(key)
+        lines.append(f"{stored}: {guide}." if guide else f"{stored}.")
+    if not lines:
         raise ValueError("special category description needs the database names")
+    listed = " ".join(lines)
     return (
-        "Identify applicable special categories by reading the petition, "
-        "cause title, facts, grounds, impugned order, relief sought, "
-        "statutory provisions, and annexures. "
-        "Match synonymous terms, abbreviations, alternative legal expressions, "
-        "and contextual references against these stored categories: "
-        f"{listed}. "
+        "Identify applicable special categories from the petition opening "
+        "(Most respectfully showeth, The humble petition, Petition under Article, "
+        "In the matter of, Arising out of the impugned) and the impugned order "
+        "(its case number, the Act, and what that order decides). "
+        "Ignore the index, the listing proforma, a Yes/No checklist, and a passing word in the facts. "
+        f"Use only these stored names. {listed} "
         "Return only these exact names, comma-separated, up to 3, "
         "and only when a category is substantively applicable. "
-        "Do not match an isolated keyword, a generic reference, a checklist question, "
-        "or the listing proforma. "
         "The petition type itself, such as Special Leave Petition, Writ Petition, "
         "Review Petition, Civil Appeal, or Transfer Petition, is not a special category. "
         "This field is a classification into the stored names, not a copy of the printed words. "
