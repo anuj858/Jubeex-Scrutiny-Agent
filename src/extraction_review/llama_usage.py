@@ -93,7 +93,25 @@ def usage_job(
 
 
 def summarize_llamacloud_usage(jobs: list[dict[str, Any]]) -> dict[str, Any]:
-    billed = [row for row in jobs if row.get("credits") is not None]
+    unique_jobs: list[dict[str, Any]] = []
+    keyed: dict[tuple[str, str], int] = {}
+    for row in jobs:
+        product = str(row.get("product") or "other")
+        job_id = str(row.get("job_id") or "").strip()
+        if not job_id:
+            unique_jobs.append(row)
+            continue
+        key = (product, job_id)
+        previous_index = keyed.get(key)
+        if previous_index is None:
+            keyed[key] = len(unique_jobs)
+            unique_jobs.append(row)
+            continue
+        previous = unique_jobs[previous_index]
+        if previous.get("credits") is None and row.get("credits") is not None:
+            unique_jobs[previous_index] = row
+
+    billed = [row for row in unique_jobs if row.get("credits") is not None]
     total = sum(float(row["credits"]) for row in billed) if billed else None
     by_product: dict[str, float] = {}
     for row in billed:
@@ -104,9 +122,11 @@ def summarize_llamacloud_usage(jobs: list[dict[str, Any]]) -> dict[str, Any]:
         "credits": total,
         "estimated_usd": estimated,
         "credit_usd_rate": CREDIT_USD_RATE,
-        "pending_jobs": sum(1 for row in jobs if row.get("credits") is None),
+        "pending_jobs": sum(
+            1 for row in unique_jobs if row.get("credits") is None
+        ),
         "by_product": {key: by_product[key] for key in sorted(by_product)},
-        "jobs": jobs,
+        "jobs": unique_jobs,
         "note": (
             "LlamaCloud credits from expand=usage on each finished job. "
             "Null credits mean billing had not recorded that job yet. "

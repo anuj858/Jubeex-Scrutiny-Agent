@@ -3088,6 +3088,24 @@ def test_slot_is_extract_source_for_fill_slots_only() -> None:
         )
         == "parse"
     )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="all",
+            reuse_slots={"petition"},
+        )
+        == "reuse"
+    )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="extract_sources",
+            reuse_slots={"petition"},
+        )
+        == "reuse"
+    )
 
 
 def test_parse_artifact_round_trip_merges_new_slots() -> None:

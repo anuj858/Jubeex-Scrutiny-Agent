@@ -81,6 +81,22 @@ def test_summarize_llamacloud_usage_sums_billed_jobs() -> None:
     assert "LlamaCloud 36 credits" in usage_status_message(summary)
 
 
+def test_summarize_usage_counts_a_reused_parse_job_only_once() -> None:
+    pending = usage_job(product="parse", job_id="pjb-reused", slot_id="petition")
+    billed = usage_job(
+        product="parse",
+        job_id="pjb-reused",
+        payload={"job": {"usage": {"credits": 12}}},
+        slot_id="annexure_p1",
+    )
+
+    summary = summarize_llamacloud_usage([pending, billed, billed])
+
+    assert summary["credits"] == 12.0
+    assert summary["pending_jobs"] == 0
+    assert len(summary["jobs"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_collect_parse_usage_retries_null_credits(
     monkeypatch: pytest.MonkeyPatch,

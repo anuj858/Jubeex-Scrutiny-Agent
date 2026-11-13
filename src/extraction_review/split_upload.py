@@ -709,6 +709,8 @@ def parse_action_for_slot(
     if scope == "extract_sources":
         if not slot_is_extract_source(part, catalog):
             return "skip"
+        if slot in reused:
+            return "reuse"
         return "parse"
     if scope == "supplied":
         if slot in reused:
@@ -718,7 +720,7 @@ def parse_action_for_slot(
         if slot in reused:
             return "reuse"
         return "parse"
-    return "parse"
+    return "reuse" if slot in reused else "parse"
 
 
 PARSE_ARTIFACT_URL_KEY = "parse_artifact_url"
@@ -956,7 +958,7 @@ def pages_for_source_span(
     return out
 
 
-def compiled_index_reuse(
+def compiled_parse_reuse(
     book: Mapping[str, Any],
     parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
     *,
@@ -969,7 +971,7 @@ def compiled_index_reuse(
     dict[str, str],
     list[str],
 ]:
-    """Cut the saved book parse into slot pages. Skip a slot that was edited."""
+    """Cut a saved compiled-book parse into reusable per-slot page artifacts."""
     book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
     book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
     book_structured = (
@@ -1011,6 +1013,28 @@ def compiled_index_reuse(
             jobs[slot] = job_id
         slots.append(slot)
     return pages_by_slot, layouts, structured, jobs, slots
+
+
+def compiled_index_reuse(
+    book: Mapping[str, Any],
+    parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
+    *,
+    edited: bool,
+    reusable_slots: set[str],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+    list[str],
+]:
+    """Backward-compatible name for compiled parse reuse during indexing."""
+    return compiled_parse_reuse(
+        book,
+        parts,
+        edited=edited,
+        reusable_slots=reusable_slots,
+    )
 
 
 def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:

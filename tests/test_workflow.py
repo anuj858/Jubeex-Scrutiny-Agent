@@ -243,6 +243,96 @@ async def test_extract_only_skips_index_and_limits_parse_scope(
 
 
 @pytest.mark.asyncio
+async def test_extract_only_slices_and_reuses_the_compiled_source_book(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.process_file import _run_split_from_file_event
+    from extraction_review.split_upload import dump_source_book
+
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-reused-book"
+
+    source_book = dump_source_book(
+        pages={1: "cover", 2: "petition one", 3: "petition two", 4: "affidavit"},
+        layout={2: {"words": []}, 3: {"words": []}},
+        structured={2: {"items": []}},
+        parse_job_id="parse-full-book",
+        file_id="dfl-full-book",
+        file_hash="a" * 64,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {"source_book": source_book},
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parse_artifact_key": "org/ws/parse/source.json",
+                        "source_parse_job_id": "parse-full-book",
+                        "source_file_id": "dfl-full-book",
+                        "source_file_hash": "a" * 64,
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    event = FileEvent(
+        job_type="extract_only",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-reused-book",
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition-slice",
+                "name": "Petition.pdf",
+                "page_span": [{"start": 2, "end": 3}],
+            },
+            {
+                "slot_id": "affidavit",
+                "file_id": "dfl-affidavit-slice",
+                "name": "Affidavit.pdf",
+                "page_span": [{"start": 4, "end": 4}],
+            },
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _event: None)
+
+    result = await _run_split_from_file_event(  # type: ignore[arg-type]
+        event, ctx, FakeClient()
+    )
+
+    assert result.agent_data_id == "agd-reused-book"
+    assert captured["parse_scope"] == "extract_sources"
+    assert captured["parsed_slots"] == ["petition", "affidavit"]
+    assert captured["reuse_pages_by_slot"] == {
+        "petition": {"1": "petition one", "2": "petition two"},
+        "affidavit": {"1": "affidavit"},
+    }
+    assert captured["reuse_parse_job_ids"] == {
+        "petition": "parse-full-book",
+        "affidavit": "parse-full-book",
+    }
+    assert captured["source_book"] == source_book
+
+
+@pytest.mark.asyncio
 async def test_extract_only_recovers_when_existing_agent_data_was_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -523,7 +613,7 @@ async def test_index_edited_reingests_download_urls(
 
 
 @pytest.mark.asyncio
-async def test_index_edited_reuses_only_documents_with_matching_hashes(
+async def test_index_reuses_only_documents_with_matching_hashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ingest_calls: list[str] = []
@@ -592,7 +682,7 @@ async def test_index_edited_reuses_only_documents_with_matching_hashes(
         job_type="index_parsed",
         filing_type="SLP_CIVIL",
         agent_data_id="agd-index",
-        edited=True,
+        edited=False,
         documents=[
             {
                 "slot_id": "petition",
