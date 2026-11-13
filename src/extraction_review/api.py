@@ -289,12 +289,21 @@ class IndexFilingRequest(FilingDocumentsRequest):
         ),
     )
     parsed_slots: list[str] = Field(default_factory=list)
-    special_category: str | None = Field(
-        default=None,
-        examples=["Eviction Matters", "N/A"],
+    special_categories: list[str] = Field(
+        default_factory=list,
+        examples=[["Tax Matters", "PIL"]],
         description=(
-            "Optional matter subtype for the nested defect run. Null, omitted, "
-            "or N/A skips every catalogue defect that has a special_category."
+            "Special categories selected for this index or reindex. The same "
+            "array is sent as special_category. [] runs no special-category "
+            "defects. A slash inside one name stays one category."
+        ),
+    )
+    special_category: list[str] = Field(
+        default_factory=list,
+        examples=[["Tax Matters", "PIL"]],
+        description=(
+            "Same array as special_categories. The comma-separated text is "
+            "only the stored matter field, not this request."
         ),
     )
 
@@ -325,10 +334,18 @@ class IndexFilingRequest(FilingDocumentsRequest):
             return slots
         return []
 
-    @field_validator("special_category", mode="before")
+    @field_validator("special_category", "special_categories", mode="before")
     @classmethod
-    def _clean_special_category(cls, value: object) -> str | None:
-        return blank_or_placeholder(value)
+    def _clean_special_categories(cls, value: object) -> list[str]:
+        return _special_category_array(value)
+
+    def selected_special_categories(self) -> list[str]:
+        """The array from either request field. Empty means none selected."""
+        chosen: list[str] = []
+        for name in [*self.special_categories, *self.special_category]:
+            if name not in chosen:
+                chosen.append(name)
+        return chosen
 
 
 class UpdateFilingRequest(BaseModel):
@@ -1276,9 +1293,27 @@ def _accept_scrutiny(
     return JobAccepted(job_id=job_id, poll_url=f"/v1/jobs/{job_id}")
 
 
+def _special_category_array(value: object) -> list[str]:
+    """Index and reindex send a list. A single string is one category."""
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    names: list[str] = []
+    for item in items:
+        cleaned = blank_or_placeholder(item)
+        if not cleaned or cleaned.casefold() in {"n/a", "na", "n.a.", "n.a"}:
+            continue
+        if cleaned not in names:
+            names.append(cleaned)
+    return names
+
+
 def _index_event(agent_data_id: str, body: IndexFilingRequest) -> FileEvent:
     payload = body.model_dump(exclude_none=True)
     payload.pop("callback_url", None)
+    payload.pop("special_category", None)
+    payload.pop("special_categories", None)
+    payload["special_categories"] = body.selected_special_categories()
     payload["job_type"] = "index_parsed"
     payload["agent_data_id"] = agent_data_id
     payload["edited"] = parse_edited_flag(body.edited)
