@@ -59,7 +59,9 @@ from .config import (
     dump_api_configuration,
     llama_parse_tier,
     load_config_payload,
+    parse_cost_optimizer_requested,
     with_config_identity,
+    with_parse_cost_optimizer,
 )
 from .document_parts import (
     ANNEXURE_FAMILY,
@@ -146,6 +148,26 @@ def llama_large_upload_bytes() -> int:
     return positive_int_env(
         "LLAMA_CLOUD_LARGE_UPLOAD_BYTES", DEFAULT_LLAMA_LARGE_UPLOAD_BYTES
     )
+
+
+def split_classification_pass_enabled() -> bool:
+    """Whether the second LlamaSplit call, which names the page ranges, runs.
+
+    ``SPLIT_CLASSIFICATION_PASS`` accepts ``on``, ``true``, ``1``, ``yes`` and
+    ``off``, ``false``, ``0``, ``no``. Unset keeps the second call.
+    """
+    raw = (os.getenv("SPLIT_CLASSIFICATION_PASS") or "").strip().lower()
+    if not raw:
+        return True
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    logger.warning(
+        "SPLIT_CLASSIFICATION_PASS=%s is not on or off; keeping the second LlamaSplit call",
+        raw,
+    )
+    return True
 
 
 def split_reconciliation_mode() -> str:
@@ -2501,13 +2523,17 @@ def _split_parse_create_kwargs(
     """Create a strict, layout-aware parse request used as Split's input."""
     parse_file_id = _llama_parse_file_id(file_id)
     if parse_config.configuration_id:
-        return {
-            "file_id": parse_file_id,
-            "configuration_id": parse_config.configuration_id,
-            "tier": llama_parse_tier(parse_config.tier),
-            "version": parse_config.version,
-            "project_id": project_id,
-        }
+        tier = llama_parse_tier(parse_config.tier)
+        return with_parse_cost_optimizer(
+            {
+                "file_id": parse_file_id,
+                "configuration_id": parse_config.configuration_id,
+                "tier": tier,
+                "version": parse_config.version,
+                "project_id": project_id,
+            },
+            tier=tier,
+        )
 
     configuration = dump_api_configuration(parse_config)
     output = dict(configuration.get("output_options") or {})
@@ -2561,7 +2587,8 @@ def _split_parse_create_kwargs(
     configuration["processing_control"] = control
     # Unlike classify/split, ParsingResource.create accepts configuration
     # fields directly rather than under a ``configuration`` wrapper.
-    return {"file_id": parse_file_id, "project_id": project_id, **configuration}
+    request = {"file_id": parse_file_id, "project_id": project_id, **configuration}
+    return with_parse_cost_optimizer(request, tier=request.get("tier"))
 
 
 async def _parse_bundle_for_split(
@@ -4078,13 +4105,18 @@ class ProcessFileWorkflow(Workflow):
                 pdf_bytes=pdf_bytes,
             )
             if reused is None:
+                parse_tier = llama_parse_tier(parse_config.tier) or "cost_effective"
+                optimizer = (
+                    ", cost optimizer on"
+                    if parse_cost_optimizer_requested(parse_tier)
+                    else ""
+                )
                 ctx.write_event_to_stream(
                     Status(
                         level="info",
                         message=(
-                            "Running "
-                            f"{llama_parse_tier(parse_config.tier) or 'cost_effective'} "
-                            "OCR and layout parsing for every source page"
+                            f"Running {parse_tier} OCR and layout parsing "
+                            f"for every source page{optimizer}"
                         ),
                     )
                 )
@@ -4177,8 +4209,33 @@ class ProcessFileWorkflow(Workflow):
             proposal_issues=boundary_validation["issues"],
         )
         classification_started = start_timer()
-        split_result = await run_llama_split(api_configuration=classification_config)
-        page_parts, split_job_id, llama_split = split_result
+        run_classification = split_classification_pass_enabled()
+        if run_classification:
+            split_result = await run_llama_split(
+                api_configuration=classification_config
+            )
+            page_parts, split_job_id, llama_split = split_result
+        else:
+            logger.info(
+                "[SplitMode] skipping the second LlamaSplit call "
+                "(SPLIT_CLASSIFICATION_PASS=off)"
+            )
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Skipping the second LlamaSplit call; "
+                        "page ranges come from the first call only"
+                    ),
+                )
+            )
+            split_job_id = None
+            llama_split = {
+                "sent": None,
+                "returned": {"result": {"segments": []}},
+                "skipped": True,
+            }
+            page_parts = {}
         raw_classification_page_parts = page_parts
         classification_report = _segment_classification_report(
             llama_split, page_count=pdf_page_count
@@ -4198,7 +4255,10 @@ class ProcessFileWorkflow(Workflow):
             tuple(item["source_pages"]) for item in classification_report["segments"]
         }
         proposed_ranges = {tuple(item["pages"]) for item in boundary_proposals}
-        if proposed_ranges != raw_classified_ranges:
+        if not run_classification:
+            classification_report["issues"].append("classification_pass_skipped")
+            classification_report["status"] = "skipped"
+        elif proposed_ranges != raw_classified_ranges:
             classification_report["issues"].append(
                 "classification_ranges_differ_from_boundary_proposals"
             )
@@ -4241,17 +4301,19 @@ class ProcessFileWorkflow(Workflow):
         boundary_usage = await collect_optional_usage(
             llama_cloud_client, product="split", job_id=boundary_job_id
         )
-        split_usage = await collect_optional_usage(
-            llama_cloud_client,
-            product="split",
-            job_id=split_job_id,
-        )
         usage_jobs = [
             *(state.llamacloud_jobs or []),
             split_parse_usage,
             boundary_usage,
-            split_usage,
         ]
+        if split_job_id:
+            usage_jobs.append(
+                await collect_optional_usage(
+                    llama_cloud_client,
+                    product="split",
+                    job_id=split_job_id,
+                )
+            )
         usage_summary = summarize_llamacloud_usage(usage_jobs)
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
@@ -4367,6 +4429,7 @@ class ProcessFileWorkflow(Workflow):
         }
         split_audit["llama_segment_classification"] = {
             "job_id": split_job_id,
+            "skipped": not run_classification,
             "boundary_guidance_status": boundary_guidance_status,
             "configuration_used": _classification_call_evidence(
                 llama_split, boundary_guidance_status=boundary_guidance_status

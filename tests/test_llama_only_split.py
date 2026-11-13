@@ -18,6 +18,7 @@ from extraction_review.split_upload import ordered_parts, type_catalog, validate
 @pytest.fixture(autouse=True)
 def _preserve_all_outputs_for_legacy_contract_tests(monkeypatch):
     monkeypatch.setenv("SPLIT_OUTPUT_DOCUMENTS", "All")
+    monkeypatch.setenv("SPLIT_CLASSIFICATION_PASS", "on")
 
 
 def _pdf_bytes() -> bytes:
@@ -173,6 +174,12 @@ async def test_compiled_split_uses_llama_only_and_preserves_existing_contract(
         == "not_assessed_legacy_mode"
     )
     assert client.split.create.await_count == 2
+    assert (
+        artifact.call_args.args[1]["split_audit"]["llama_segment_classification"][
+            "skipped"
+        ]
+        is False
+    )
     # Same response fields, including compatibility fields; no added API format.
     assert "llama_split" in result.model_dump()
     assert result.agent_data_id is None
@@ -200,6 +207,81 @@ def test_split_python_rules_flag(monkeypatch, value, enabled):
     else:
         monkeypatch.setenv("SPLIT_PYTHON_RULES_ENABLED", value)
     assert process_file.split_python_rules_enabled() is enabled
+
+
+@pytest.mark.parametrize(
+    ("value", "enabled"),
+    [
+        (None, True),
+        ("", True),
+        ("on", True),
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("off", False),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("maybe", True),
+    ],
+)
+def test_split_classification_pass_flag(monkeypatch, value, enabled):
+    if value is None:
+        monkeypatch.delenv("SPLIT_CLASSIFICATION_PASS", raising=False)
+    else:
+        monkeypatch.setenv("SPLIT_CLASSIFICATION_PASS", value)
+    assert process_file.split_classification_pass_enabled() is enabled
+
+
+@pytest.mark.asyncio
+async def test_classification_pass_off_makes_one_llamacloud_split_call(
+    monkeypatch, caplog
+) -> None:
+    from extraction_review.structure_split import PageUnit
+
+    monkeypatch.setenv("SPLIT_RECONCILIATION_MODE", "llama_only")
+    monkeypatch.setenv("SPLIT_CLASSIFICATION_PASS", "off")
+    monkeypatch.setenv("SKIP_SLOT_PDF_UPLOAD", "true")
+    monkeypatch.setattr(
+        process_file, "_load_bundle_pdf", AsyncMock(return_value=_pdf_bytes())
+    )
+    monkeypatch.setattr(
+        "extraction_review.structure_split.extract_page_units",
+        Mock(
+            return_value=[PageUnit(pdf_page=i, text=f"page {i}") for i in range(1, 7)]
+        ),
+    )
+    monkeypatch.setattr(
+        process_file, "collect_optional_usage", AsyncMock(return_value={})
+    )
+    artifact = Mock()
+    monkeypatch.setattr(process_file, "upload_step_json", artifact)
+    segments = [
+        {"category": "Document Segment", "pages": [1, 2]},
+        {"category": "Document Segment", "pages": [3, 4, 5, 6]},
+    ]
+    client = _client(segments)
+    state = process_file.PrepareState(file_id="dfl-source", filename="source.pdf")
+    ctx = SimpleNamespace(
+        store=SimpleNamespace(get_state=AsyncMock(return_value=state)),
+        write_event_to_stream=Mock(),
+    )
+    with caplog.at_level("INFO"):
+        await process_file.ProcessFileWorkflow().prepare_bundle(
+            process_file.FileClassifiedEvent(filing_type="SLP_CIVIL"),
+            ctx,
+            client,
+            _config().split,
+            _config().parse,
+        )
+    assert client.split.create.await_count == 1
+    assert "SPLIT_CLASSIFICATION_PASS=off" in caplog.text
+    classification = artifact.call_args.args[1]["split_audit"][
+        "llama_segment_classification"
+    ]
+    assert classification["skipped"] is True
+    assert classification["job_id"] is None
+    assert "classification_pass_skipped" in classification["issues"]
 
 
 @pytest.mark.parametrize(

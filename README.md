@@ -10,6 +10,7 @@ This is a LlamaAgents starter. See the [LlamaAgents (llamactl) getting started g
 2. Set environment variables (typically in `.env`):
    - `LLAMA_CLOUD_API_KEY` — required for LlamaCloud classify/extract
    - `LLAMA_CLOUD_TIER` — shared Parse/Extract tier (`cost_effective`, `agentic`, or `agentic_plus`); optional `LLAMA_PARSE_TIER`, `LLAMA_SPLIT_PARSE_TIER`, `LLAMA_EXTRACT_TIER`, and `LLAMA_EXTRACT_PARSE_TIER` override individual stages
+   - `LLAMA_PARSE_COST_OPTIMIZER` — set `true` to send `processing_options.cost_optimizer.enable` on `agentic` and `agentic_plus` parse jobs. Ignored for `fast` and `cost_effective`
    - `LLAMA_DEPLOY_PROJECT_ID` — optional project scope
    - `LLAMA_CLOUD_BASE_URL` — optional non-production endpoint
    - `LLAMA_DEPLOY_DEPLOYMENT_NAME` — set automatically when deployed
@@ -82,6 +83,11 @@ The worker task definitions and llamadeploy defaults also explicitly select
 actual job mode can be checked later. Both modes perform the separate Llama
 boundary and classification passes; their latency and model-call costs have
 not yet been benchmarked.
+`SPLIT_CLASSIFICATION_PASS` turns the second LlamaSplit call on or off.
+`on`, `true`, `1`, or `yes` keeps it. `off`, `false`, `0`, or `no` skips it
+and keeps the page ranges from the first call. Unset is `on`. The document
+names normally come from that second call, so `off` is for comparison and
+will not match a two-pass split name for name.
 `SPLIT_OCR_CONCURRENCY` only tunes local OCR concurrency; it is not another
 enable/disable switch.
 

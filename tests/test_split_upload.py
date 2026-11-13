@@ -2957,6 +2957,41 @@ def test_parse_create_kwargs_overrides_tier_for_fast_slots(
     assert hosted["tier"] == "cost_effective"
 
 
+def test_parse_create_kwargs_cost_optimizer_follows_effective_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.config import ParseConfig
+
+    monkeypatch.setenv("LLAMA_PARSE_COST_OPTIMIZER", "yes")
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "agentic")
+    monkeypatch.setenv("FAST_PARSE_TIER", "cost_effective")
+    config = ParseConfig.model_validate(
+        {"product_type": "parse_v2", "tier": "cost_effective", "version": "latest"}
+    )
+    precise = parse_create_kwargs(config, file_id="file-cover", precise=True)
+    assert precise["tier"] == "agentic"
+    assert precise["processing_options"]["cost_optimizer"] == {"enable": True}
+    secondary = parse_create_kwargs(config, file_id="file-annexure", precise=False)
+    assert secondary["tier"] == "cost_effective"
+    assert "cost_optimizer" not in (secondary.get("processing_options") or {})
+
+    monkeypatch.delenv("FAST_PARSE_TIER", raising=False)
+    hosted = parse_create_kwargs(
+        ParseConfig.model_validate(
+            {
+                "product_type": "parse_v2",
+                "configuration_id": "cfg-1",
+                "tier": "agentic",
+                "version": "latest",
+            }
+        ),
+        file_id="file-hosted",
+        precise=True,
+    )
+    assert hosted["tier"] == "agentic"
+    assert hosted["processing_options"]["cost_optimizer"] == {"enable": True}
+
+
 @pytest.mark.asyncio
 async def test_ingest_labeled_parts_runs_in_parallel(
     monkeypatch: pytest.MonkeyPatch,

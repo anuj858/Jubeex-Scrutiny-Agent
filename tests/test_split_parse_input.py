@@ -36,7 +36,37 @@ def _parse_result(page_numbers: list[int]):
     )
 
 
-def test_split_parse_request_enforces_ocr_layout_and_table_quality():
+def test_split_parse_cost_optimizer_follows_agentic_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLAMA_PARSE_COST_OPTIMIZER", "true")
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "agentic")
+    request = process_file._split_parse_create_kwargs(_parse_config(), file_id="file-1")
+    assert request["tier"] == "agentic"
+    assert request["processing_options"]["cost_optimizer"] == {"enable": True}
+    assert request["processing_options"]["aggressive_table_extraction"] is True
+
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "agentic_plus")
+    plus = process_file._split_parse_create_kwargs(_parse_config(), file_id="file-1")
+    assert plus["processing_options"]["cost_optimizer"] == {"enable": True}
+
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "cost_effective")
+    cheap = process_file._split_parse_create_kwargs(_parse_config(), file_id="file-1")
+    assert "cost_optimizer" not in cheap["processing_options"]
+
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "agentic")
+    monkeypatch.setenv("LLAMA_PARSE_COST_OPTIMIZER", "off")
+    disabled = process_file._split_parse_create_kwargs(
+        _parse_config(), file_id="file-1"
+    )
+    assert "cost_optimizer" not in disabled["processing_options"]
+
+
+def test_split_parse_request_enforces_ocr_layout_and_table_quality(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "cost_effective")
+    monkeypatch.setenv("LLAMA_PARSE_COST_OPTIMIZER", "false")
     request = process_file._split_parse_create_kwargs(
         _parse_config(), file_id="dfl-source"
     )
