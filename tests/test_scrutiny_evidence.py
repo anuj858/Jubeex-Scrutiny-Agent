@@ -14,6 +14,7 @@ from extraction_review.document_parts import (
     overlay_split_documents,
     page_parts_from_split,
     parts_named_in_text,
+    parts_on_page,
     pool_search_queries,
     select_chunks_for_defect,
 )
@@ -31,16 +32,18 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
-    apply_evidence_capability_policy,
-    apply_deterministic_postclassification_policy,
     apply_conditional_manifest_policy,
+    apply_deterministic_postclassification_policy,
+    apply_evidence_capability_policy,
     apply_evidence_pages,
+    apply_final_evidence_contract_policy,
     apply_grounded_defect_policy,
     apply_internal_contradiction_policy,
     apply_legal_verification_policy,
-    apply_margin_layout_policy,
     apply_manifest_absence_policy,
+    apply_margin_layout_policy,
     apply_presence_only_policy,
+    apply_retrieval_policy,
     apply_review_reason_consistency_policy,
     apply_scope_coverage_policy,
     apply_status_policy,
@@ -56,9 +59,9 @@ from extraction_review.scrutiny.schema import (
 from extraction_review.scrutiny_workflow import (
     _absence_owner_check_ids,
     _add_layout_fallback_chunks,
-    _complete_layout_chunks_for_defect,
-    _complete_evidence_batches,
     _aggregate_complete_batch_responses,
+    _complete_evidence_batches,
+    _complete_layout_chunks_for_defect,
     _retrieval_evidence_complete,
     _visual_index_for_defect,
 )
@@ -72,6 +75,23 @@ def test_pool_queries_are_captions_not_legal_sentences() -> None:
     for query in queries:
         assert "does not follow" not in query.lower()
         assert len(query) < 120
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        (
+            "Synopsis, List of Dates & Events",
+            ["Synopsis", "List of Dates & Events"],
+        ),
+        (
+            "Memo of Appearance + Vakalatnama",
+            ["Memo of Appearance", "Vakalatnama"],
+        ),
+    ],
+)
+def test_combined_display_labels_expand_to_atomic_parts(label, expected) -> None:
+    assert parts_on_page(label) == expected
 
 
 def test_page_parts_from_split_maps_pages() -> None:
@@ -526,6 +546,27 @@ def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> Non
     assert _aggregate_complete_batch_responses([compliant, defect]) is defect
 
 
+def test_complete_batch_aggregation_does_not_publish_legal_gate_status() -> None:
+    compliant = DefectResponse(
+        check_id="D-324",
+        status="compliant",
+        confidence=0.9,
+        summary="The certificate is present.",
+        observed="Certificate inspected.",
+        conclusion="The filing satisfies the requirement.",
+        evidence=[EvidenceRef(page=35, quote="CERTIFICATE")],
+    )
+    governed = compliant.model_copy(
+        update={
+            "status": "rule_verification_pending",
+            "summary": "Catalogue authority is pending.",
+        }
+    )
+    result = _aggregate_complete_batch_responses([compliant, governed])
+    assert result.status == "needs_review"
+    assert result.status != "rule_verification_pending"
+
+
 def test_layout_fallback_keeps_first_and_last_pages_of_missing_part() -> None:
     defect = SimpleNamespace(
         inspect_parts=["Main Petition"],
@@ -682,6 +723,45 @@ def test_exhaustive_check_is_complete_only_after_every_target_page_is_reviewed()
 
     assert not _retrieval_evidence_complete(defect, partial, layout)
     assert _retrieval_evidence_complete(defect, complete, layout)
+
+
+def test_absent_optional_inspect_target_is_not_an_incomplete_retrieval() -> None:
+    defect = _scrutiny_row(
+        check_id="D-180",
+        defect="Certified copy or matching exemption route is not filed",
+        requirement=(
+            "The Impugned Order must be certified, or an Application for "
+            "exemption must accompany its true copy."
+        ),
+        inspect_parts=["Impugned Order", "Application"],
+    )
+    layout = {
+        10: {"document_part": "Impugned Order", "words": [{"t": "CERTIFIED"}]},
+        11: {"document_part": "Impugned Order", "words": [{"t": "SEAL"}]},
+    }
+    chunks = [
+        {
+            "chunk_kind": "page",
+            "page": page,
+            "document_part": "Impugned Order",
+            "text": text,
+        }
+        for page, text in ((10, "CERTIFIED"), (11, "SEAL"))
+    ]
+
+    assert _retrieval_evidence_complete(defect, chunks, layout)
+    response = DefectResponse(
+        check_id="D-180",
+        status="defect_found",
+        confidence=0.98,
+        summary="The available order fails the requirement.",
+        observed="The order lacks the required endorsement.",
+        conclusion="The filing is defective.",
+        evidence=[EvidenceRef(page=10, quote="CERTIFIED")],
+    )
+    assert apply_retrieval_policy(defect, response, chunks, layout).status == (
+        "defect_found"
+    )
 
 
 def test_exact_signature_anchor_adds_same_part_neighbors_without_crossing_boundary() -> (
@@ -921,8 +1001,9 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The evidence confidence is 40%, below the 60% threshold required to "
-        "classify this as a confirmed defect or compliance result."
+        "The system is only 40% sure about what the document shows. Please check "
+        "the relevant document manually because at least 60% certainty is required "
+        "for Defect or Compliant."
     )
 
 
@@ -940,8 +1021,129 @@ def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
     reason = review_reason_for_response(response)
 
     assert reason is not None
-    assert "below the 60% threshold" not in reason
-    assert "confidence in sending this finding for manual review" in reason
+    assert "at least 60% sure" not in reason
+    assert "does not mean the defect is 90% certain" in reason
+
+
+def test_review_reason_explains_the_problem_and_next_step_in_plain_language() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.8,
+        summary="The signature needs review.",
+        gap="unreadable",
+        gap_detail="OCR excerpt for the signature field is unclear",
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason is not None
+    assert "extracted text" in reason
+    assert "pages available to the system" in reason
+    assert "Please check the original page" in reason
+
+
+def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.82,
+        summary="The signature area is obscured.",
+        gap="unreadable",
+        gap_detail="A dark stamp covers the executant signature area",
+        review_reason=(
+            "A dark stamp covers the executant signature area in the Vakalatnama, "
+            "so it is unclear whether a signature is present underneath it. This "
+            "prevents a safe Defect or Compliant decision; please inspect the "
+            "original signature area."
+        ),
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason == response.review_reason
+
+
+def test_verbose_model_review_reason_is_compacted_to_two_short_sentences() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.82,
+        summary="The signature area is obscured.",
+        gap="unreadable",
+        review_reason=(
+            "A dark stamp covers the signature area in the Vakalatnama. "
+            "The extracted text does not resolve whether a signature is underneath. "
+            "This uncertainty prevents a reliable decision. "
+            "Please inspect the original signature area."
+        ),
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason == (
+        "A dark stamp covers the signature area in the Vakalatnama. "
+        "Please inspect the original signature area."
+    )
+    assert len(reason.split()) <= 45
+
+
+def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:
+    defect = _scrutiny_row(
+        defect="The cause title does not correctly identify the challenged court",
+        requirement=(
+            "The court named in the Main Petition must match the court that passed "
+            "the Impugned Order."
+        ),
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="needs_review",
+        confidence=0.85,
+        summary="The court names require review.",
+        observed=(
+            "The Main Petition names the High Court of Maharashtra, while the "
+            "Impugned Order names the Delhi High Court."
+        ),
+        gap="conflict",
+        gap_detail="The court name in the Main Petition does not match the order",
+        review_reason=(
+            "The Main Petition names Maharashtra while the Impugned Order names "
+            "Delhi. Please compare the two court names."
+        ),
+        evidence=[
+            EvidenceRef(page=1, quote="High Court of Maharashtra at Aurangabad"),
+            EvidenceRef(page=9, quote="IN THE HIGH COURT OF DELHI AT NEW DELHI"),
+        ],
+    )
+
+    decided = apply_internal_contradiction_policy(defect, response)
+
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+    assert decided.review_reason == ""
+
+
+def test_generic_model_review_reason_uses_the_safe_specific_fallback() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.8,
+        summary="The signature needs review.",
+        gap="unreadable",
+        gap_detail="The executant signature is faint",
+        review_reason="Manual verification is required.",
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason is not None
+    assert "signature" in reason
+    assert "Please check the original page" in reason
 
 
 def test_confident_defect_stays_defect_found() -> None:
@@ -1943,6 +2145,51 @@ def test_incomplete_scope_cannot_publish_compliance() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "element_page_not_in_excerpts"
     assert "evidence limit" in gated.gap_detail
+
+
+@pytest.mark.parametrize(
+    "gap",
+    ["part_not_in_excerpts", "element_page_not_in_excerpts"],
+)
+def test_exhausted_retrieval_gap_is_not_published_as_manual_review(gap: str) -> None:
+    response = DefectResponse(
+        check_id="D-63",
+        status="needs_review",
+        confidence=0.72,
+        summary="The complete party array was not shown.",
+        observed="Only one page was available.",
+        conclusion="The address requirement cannot be determined.",
+        gap=gap,
+        gap_detail="Main Petition continuation page",
+        evidence=[EvidenceRef(page=1, quote="POSITION OF PARTIES")],
+    )
+
+    decided = apply_final_evidence_contract_policy(response)
+
+    assert decided.status == "not_determined"
+    assert decided.gap is None
+    assert decided.confidence == 0.0
+    assert "retrieval contract" in decided.observed
+    assert "Main Petition continuation page" in decided.observed
+
+
+def test_genuine_visual_uncertainty_remains_manual_review() -> None:
+    response = DefectResponse(
+        check_id="D-176",
+        status="needs_review",
+        confidence=0.88,
+        summary="The affidavit paragraph is obscured by a seal.",
+        observed="The decisive words cannot be read beneath the seal.",
+        conclusion="Manual inspection of the original is required.",
+        gap="unreadable",
+        gap_detail="Affidavit paragraph 2",
+        evidence=[EvidenceRef(page=1, quote="That the contents...")],
+    )
+
+    decided = apply_final_evidence_contract_policy(response)
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_complete_visual_blank_date_is_a_defect() -> None:

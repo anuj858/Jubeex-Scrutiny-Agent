@@ -354,6 +354,7 @@ def _defect_from_row(row: dict[str, Any]) -> Defect:
         trigger_words=_trigger_words(row.get("trigger_words")),
         where_to_look=_string_list(row.get("where_to_look")),
         inspect_parts=_string_list(row.get("inspect_parts")),
+        dependency_parts=_string_list(row.get("dependency_parts")),
         manifest_absence_proves_defect=bool(
             row.get("missing_document_is_defect")
             or row.get("manifest_absence_proves_defect")

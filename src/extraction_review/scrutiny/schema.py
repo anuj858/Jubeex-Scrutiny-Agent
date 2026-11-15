@@ -238,6 +238,19 @@ class DefectResponse(BaseModel):
             "Empty when gap is null."
         ),
     )
+    review_reason: str = Field(
+        default="",
+        max_length=800,
+        description=(
+            "Only for needs_review. In no more than 45 words and two short "
+            "plain-language sentences, state "
+            "the exact document, wording, date, signature, seal, or field that is "
+            "uncertain; explain why that uncertainty prevents a Defect or Compliant "
+            "decision; and tell the user exactly what to check. Do not mention OCR, "
+            "chunks, excerpts, retrieval, prompts, confidence gates, or internal "
+            "system behaviour. Empty for every other status."
+        ),
+    )
     conclusion: str = Field(
         default="",
         description=(
@@ -529,53 +542,146 @@ def review_confidence_threshold() -> float:
     return min(1.0, max(0.0, value))
 
 
+def _compact_review_reason(reason: str) -> str:
+    """Keep the user-facing reason to two short, useful sentences."""
+    value = " ".join(reason.split()).strip()
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", value)
+        if item.strip()
+    ]
+    if len(sentences) > 2:
+        action = next(
+            (
+                item
+                for item in reversed(sentences[1:])
+                if re.search(
+                    r"\b(check|review|confirm|compare|verify|inspect)\b",
+                    item,
+                    flags=re.I,
+                )
+            ),
+            sentences[-1],
+        )
+        value = f"{sentences[0]} {action}"
+
+    words = value.split()
+    if len(words) > 45:
+        value = " ".join(words[:45]).rstrip(" ,;:") + "."
+    if len(value) > 360:
+        value = value[:357].rsplit(" ", 1)[0].rstrip(" ,;:") + "."
+    return value
+
+
 def review_reason_for_response(
     response: DefectResponse,
     coverage: Coverage | None = None,
 ) -> str | None:
-    """Explain a review outcome without exposing internal prompt terminology."""
+    """Explain a review outcome in plain language and give the user a next step."""
     if response.status not in {"needs_review", "rule_verification_pending"}:
         return None
 
+    model_reason = " ".join((response.review_reason or "").split()).strip()
+    model_reason = re.sub(
+        r"\bexcerpts?\b", "pages available to the system", model_reason, flags=re.I
+    )
+    model_reason = re.sub(r"\bOCR\b", "extracted text", model_reason, flags=re.I)
+    model_reason = re.sub(r"\bchunks?\b", "page sections", model_reason, flags=re.I)
+    generic_reason = re.fullmatch(
+        r"(?:manual verification (?:is )?required|needs? review|"
+        r"the available evidence is (?:insufficient|inconclusive)|"
+        r"compliance cannot be determined)[.! ]*",
+        model_reason,
+        flags=re.I,
+    )
+    if model_reason and len(model_reason.split()) >= 10 and generic_reason is None:
+        if not re.search(
+            r"\b(check|review|confirm|compare|verify|inspect)\b",
+            model_reason,
+            flags=re.I,
+        ):
+            model_reason += " Please check the named document or field manually."
+        if coverage and coverage.visual_required and not coverage.visual_complete:
+            model_reason += (
+                " A page-image check was also required, but the image was not "
+                "available or could not be inspected. Please check the original page."
+            )
+        return _compact_review_reason(model_reason)
+
     detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
+    detail = re.sub(r"\bexcerpts?\b", "pages available to the system", detail, flags=re.I)
+    detail = re.sub(r"\bOCR\b", "extracted text", detail, flags=re.I)
+    detail = re.sub(r"\bchunks?\b", "page sections", detail, flags=re.I)
     if response.gap == "low_confidence":
         score = round(response.confidence * 100)
         threshold = round(review_confidence_threshold() * 100)
         if response.confidence < review_confidence_threshold():
             reason = (
-                f"The evidence confidence is {score}%, below the {threshold}% threshold "
-                "required to classify this as a confirmed defect or compliance result."
+                f"The system is only {score}% sure about what the document shows. "
+                f"Please check the relevant document manually because at least "
+                f"{threshold}% certainty is required for Defect or Compliant."
             )
         else:
             reason = (
-                f"The evidence was not conclusive enough for a confirmed outcome. "
-                f"The {score}% score reflects confidence in sending this finding for "
-                "manual review, not confidence that the defect exists."
+                "The system could not safely decide whether this is Defect or "
+                f"Compliant. The {score}% score means it is confident that a person "
+                "should check this; it does not mean the defect is "
+                f"{score}% certain."
             )
     elif response.gap == "part_not_in_excerpts":
-        reason = "The required document was not available in the pages reviewed."
+        reason = (
+            "The document needed for this check was not available to the system. "
+            "Please confirm that the document was uploaded and check it manually."
+        )
     elif response.gap == "element_page_not_in_excerpts":
-        reason = "The specific page, clause, or field needed for this check was not available."
+        reason = (
+            "The document was available, but the page or field needed for this check "
+            "was not available. Please check that page or field manually."
+        )
     elif response.gap == "unreadable":
-        reason = "The relevant text or visual field could not be read reliably."
+        reason = (
+            "The relevant text, date, signature, seal, or other field is too unclear "
+            "for the system to read safely. Please check the original page."
+        )
     elif response.gap == "ambiguous":
         reason = (
-            "The available evidence supports more than one reasonable interpretation."
+            "The document can be understood in more than one way, so the system "
+            "cannot safely mark it as Defect or Compliant. Please review the wording "
+            "manually."
         )
     elif response.gap == "conflict":
-        reason = "The extracted text and the visible document evidence do not agree."
+        reason = (
+            "Two pieces of information do not match. For example, the extracted text "
+            "may differ from what is visible on the page. Please check the original "
+            "page and confirm which is correct."
+        )
     elif response.gap == "legal_rule_unverified":
         reason = (
-            "This check is awaiting verification of its controlling legal source."
+            "The document can be reviewed, but the legal rule behind this catalogue "
+            "check has not yet been verified. Please verify the rule before relying "
+            "on this result."
         )
     else:
-        reason = "The available evidence is insufficient for a confirmed outcome."
+        reason = (
+            "The system could not safely decide whether this is Defect or Compliant. "
+            "Please check the relevant document manually."
+        )
 
     if detail and response.gap != "low_confidence":
-        reason = f"{reason} Detail: {detail}."
+        first_sentence = re.split(r"(?<=[.!?])\s+", reason, maxsplit=1)[0]
+        if response.gap == "unreadable":
+            reason = (
+                f"{first_sentence} Please check the original page, specifically: "
+                f"{detail}."
+            )
+        else:
+            reason = f"{first_sentence} Please check manually: {detail}."
     if coverage and coverage.visual_required and not coverage.visual_complete:
-        reason += " The required visual inspection was not completed."
-    return reason
+        reason += (
+            " A page-image check was also required, but the image was not available "
+            "or could not be inspected. Please check the original page."
+        )
+    return _compact_review_reason(reason)
 
 
 def _retrieved_pages(chunks: list[dict[str, Any]]) -> set[int]:
@@ -1091,6 +1197,41 @@ def apply_scope_coverage_policy(
     )
 
 
+def apply_final_evidence_contract_policy(
+    response: DefectResponse,
+) -> DefectResponse:
+    """Keep exhausted retrieval failures out of the manual-review queue.
+
+    ``part_not_in_excerpts`` and ``element_page_not_in_excerpts`` are internal
+    retry signals.  The workflow expands them to the complete relevant parts
+    before this policy runs.  If either signal survives that retry, the check
+    did not complete technically; it is not genuine uncertainty in the filing
+    evidence and must not be presented to an AOR as ``Needs Review``.
+    """
+    if response.status != "needs_review" or response.gap not in {
+        "part_not_in_excerpts",
+        "element_page_not_in_excerpts",
+    }:
+        return response
+    original_detail = response.gap_detail.strip()
+    response.status = "not_determined"
+    response.confidence = 0.0
+    response.gap = None
+    response.gap_detail = ""
+    response.summary = (
+        "This check could not be completed because its required evidence was not "
+        "processed."
+    )
+    response.observed = (
+        "The evidence-retrieval contract remained incomplete after the "
+        "complete-document retry."
+    )
+    response.conclusion = "Retry this check after the required document pages are available to the evaluator."
+    if original_detail:
+        response.observed += f" Technical detail: {original_detail}"
+    return response
+
+
 _PARTY_ROLES = re.compile(
     r"\b(petitioner(?:s)?|appellant(?:s)?|respondent(?:s)?|intervenor(?:s)?)\b",
     re.IGNORECASE,
@@ -1104,6 +1245,81 @@ def apply_internal_contradiction_policy(
     if response.status != "needs_review" or response.gap != "conflict":
         return response
     wording = f"{defect.defect} {check_requirement(defect)}".casefold()
+    conflict_text = " ".join(
+        (
+            response.summary,
+            response.observed,
+            response.gap_detail,
+            response.review_reason,
+            response.conclusion,
+        )
+    ).casefold()
+    technical_conflict = any(
+        term in conflict_text
+        for term in (
+            "ocr",
+            "extracted text",
+            "visual mark",
+            "visible mark",
+            "page image",
+            "scan quality",
+        )
+    )
+    comparison_check = any(
+        term in wording
+        for term in (
+            "correct",
+            "consistent",
+            "correspond",
+            "match",
+            "same",
+            "inconsistent",
+            "conflict",
+        )
+    )
+    affirmative_mismatch = any(
+        term in conflict_text
+        for term in (
+            "does not match",
+            "do not match",
+            "differs from",
+            "different from",
+            "mismatch",
+            "inconsistent",
+            "contradict",
+            "conflicting",
+            "while the",
+            "whereas the",
+        )
+    )
+    grounded_quotes = {
+        ref.quote.strip().casefold()
+        for ref in response.evidence
+        if ref.page is not None and ref.quote.strip()
+    }
+    if (
+        not technical_conflict
+        and comparison_check
+        and affirmative_mismatch
+        and len(grounded_quotes) >= 2
+    ):
+        response.status = "defect_found"
+        response.confidence = max(response.confidence, 0.9)
+        response.gap = None
+        response.gap_detail = ""
+        response.review_reason = ""
+        if "review" in response.summary.casefold():
+            response.summary = (
+                "The filing contains incompatible particulars for this requirement."
+            )
+        if not response.observed:
+            response.observed = (
+                "The inspected filing documents state two incompatible values."
+            )
+        response.conclusion = (
+            "The inconsistent filing particulars do not satisfy the requirement."
+        )
+        return response
     if not any(term in wording for term in ("specify whether", "inconsistent", "correctly")):
         return response
     roles = {
@@ -1117,6 +1333,7 @@ def apply_internal_contradiction_policy(
     response.confidence = max(response.confidence, 0.9)
     response.gap = None
     response.gap_detail = ""
+    response.review_reason = ""
     response.summary = "The filing gives inconsistent party-side descriptions."
     response.observed = "The relevant filing text identifies more than one incompatible represented side."
     response.conclusion = "The required represented side is internally inconsistent."
@@ -1899,6 +2116,29 @@ def missing_parts_in_layout(
     return [part for part in required if not chunks_cover_part(pages, part)]
 
 
+def missing_dependency_parts_in_layout(
+    defect: Defect,
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[str] | None:
+    """Absent explicit dependencies; inspect targets alone never qualify."""
+    from ..document_parts import dependency_parts_for_defect
+
+    dependencies = dependency_parts_for_defect(defect)
+    if not dependencies:
+        return []
+    if not layout:
+        return None
+    pages: list[dict[str, Any]] = []
+    for page in layout.values():
+        if not isinstance(page, dict):
+            return None
+        names = parts_on_page(page.get("document_part"))
+        if not names:
+            return None
+        pages.append({"document_part": names, "chunk_kind": "page"})
+    return [part for part in dependencies if not chunks_cover_part(pages, part)]
+
+
 def manifest_absence_proven(
     defect: Defect,
     layout: dict[int, dict[str, Any]] | None,
@@ -1960,11 +2200,17 @@ def apply_retrieval_policy(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Do not treat a missing document part in the excerpt set as a defect."""
     if response.status != "defect_found":
         return response
     missing = missing_required_parts(defect, chunks)
+    manifest_missing = missing_parts_in_layout(defect, layout)
+    if manifest_missing is not None:
+        # A complete manifest makes absence evidence. Optional comparison or
+        # alternative-route targets need not produce a page excerpt.
+        missing = [part for part in missing if part not in manifest_missing]
     if missing:
         return _move_to_review(
             response,
@@ -1978,11 +2224,15 @@ def apply_undetermined_policy(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None = None,
 ) -> DefectResponse:
     """Uncertain evidence must never be promoted into a published defect."""
     if response.status != "not_determined":
         return response
     missing = missing_required_parts(defect, chunks)
+    manifest_missing = missing_parts_in_layout(defect, layout)
+    if manifest_missing is not None:
+        missing = [part for part in missing if part not in manifest_missing]
     if missing:
         return _move_to_review(
             response,

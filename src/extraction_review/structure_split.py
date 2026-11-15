@@ -102,6 +102,27 @@ _ANNEXURE_HEADING_RE = re.compile(
     re.I,
 )
 
+_INDEX_ANNEXURE_ROW_RE = re.compile(
+    r"(?mi)^\s*\|\s*\d{1,3}[.)]?\s*\|\s*annexure\s*"
+    r"[-~–—:.\s]*[PRE]?\s*[-~–—/:.\s]*\d+\b"
+)
+
+
+def _looks_like_continued_index_inventory(unit: PageUnit) -> bool:
+    """Recognize LlamaParse tables whose cells contain embedded blank lines.
+
+    ``_looks_like_index_continuation`` handles ordinary Markdown and flattened
+    OCR rows.  LlamaParse may instead emit the serial/Annexure cell on one line
+    and the description/range after blank lines.  Two independently serialized
+    Annexure rows inside a continued table prove inventory context; an outer
+    Annexure opening has one identity, not several numbered catalogue rows.
+    """
+    if "table" not in unit.layout_fingerprint:
+        return False
+    if not (unit.sentence_continues_previous or unit.paragraph_continues_previous):
+        return False
+    return len(_INDEX_ANNEXURE_ROW_RE.findall(unit.text or "")) >= 2
+
 
 def _has_explicit_annexure_heading(text: str) -> bool:
     """True only for a physical outer stamp, including flattened table cells."""
@@ -903,14 +924,15 @@ def classify_page(
         doc_type = "Filing Memo"
         score = 0.95
         signals.extend(("outer_anchor", "filing_inventory"))
-    elif normalized_hint == "Index" and (
-        _looks_like_index_continuation(text)
-        or (
-            "table" in unit.layout_fingerprint
-            and (unit.sentence_continues_previous or unit.paragraph_continues_previous)
-            and text.lstrip().startswith("|")
-        )
-    ):
+    elif (
+        normalized_hint == "Index" and _looks_like_index_continuation(text)
+    ) or _looks_like_continued_index_inventory(unit):
+        # Do not require the Llama hint to arrive before protecting an obvious
+        # continued Index table.  Local classification and reconciliation are
+        # separate stages; without this independent guard a row such as
+        # ``18. Annexure P-7 ... 54-56`` can be promoted to an outer Annexure
+        # opening and split the already-correct Index range.  An actual outer
+        # annexure page does not present as a continued multi-row table.
         doc_type = "Index"
         score = 0.92
         signals.append("index_continuation")

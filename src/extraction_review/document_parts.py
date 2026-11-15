@@ -38,6 +38,11 @@ FILING_CAPTION_QUERIES: tuple[str, ...] = (
 )
 
 PINECONE_QUERY_MAX_CHARS = 110
+# Semantic search locates likely evidence; it is not the completeness boundary.
+# All declared inspect/context parts remain in ``RetrievalPlan.include_parts`` and
+# are filled from the layout before classification.  Limiting locator queries
+# prevents broad catalogue rows from issuing one vector request per part.
+MAX_LOCATOR_QUERIES_PER_DEFECT = 4
 
 # One PDF page can carry more than one Split label (e.g. Affidavit + Vakalatnama).
 PagePartMap = dict[int, list[str]]
@@ -252,8 +257,20 @@ def normalize_part_name(name: str | None) -> str:
 # bundled pages fill the Vakalatnama and PoA/BR slots, not a combined slot.
 _LEGACY_COMBINED_VAKALATNAMA = "vakalatnama + poa/br"
 
+_COMBINED_PART_ALIASES: dict[str, tuple[str, ...]] = {
+    "synopsis & list of dates & events": ("Synopsis", "List of Dates & Events"),
+    "synopsis, list of dates & events": ("Synopsis", "List of Dates & Events"),
+    "synopsis + list of dates & events": ("Synopsis", "List of Dates & Events"),
+    "memo of appearance & vakalatnama": ("Memo of Appearance", "Vakalatnama"),
+    "memo of appearance, vakalatnama": ("Memo of Appearance", "Vakalatnama"),
+    "memo of appearance + vakalatnama": ("Memo of Appearance", "Vakalatnama"),
+}
+
 
 def _expanded_parts(part: str) -> tuple[str, ...]:
+    combined = _COMBINED_PART_ALIASES.get(_fold(part))
+    if combined:
+        return combined
     if _fold(part) == _LEGACY_COMBINED_VAKALATNAMA:
         return ("Vakalatnama", "PoA/BR")
     return (part,)
@@ -2306,7 +2323,12 @@ def retrieval_plan_for_defect(defect: Defect) -> RetrievalPlan:
     )
 
     queries: list[EvidenceQuery] = []
-    targets: list[str | None] = parts or [None]
+    dependencies = dependency_parts_for_defect(defect)
+    ordered_targets = [part for part in dependencies if part in parts]
+    ordered_targets.extend(part for part in parts if part not in ordered_targets)
+    targets: list[str | None] = (ordered_targets or [None])[
+        :MAX_LOCATOR_QUERIES_PER_DEFECT
+    ]
     for part in targets:
         part_subtype = (
             subtype if part and family_split_name(part) == APPLICATION_FAMILY else None
@@ -2417,6 +2439,37 @@ def required_parts_for_defect(defect: Defect) -> list[str]:
         if first:
             return first
     return named
+
+
+def dependency_parts_for_defect(defect: Defect) -> list[str]:
+    """Documents whose proven absence makes the check inapplicable.
+
+    This is intentionally separate from inspect_parts: inspection targets may
+    be alternatives or comparison/context sources and are not automatically
+    mandatory dependencies.
+    """
+    explicit = _normalize_part_list(getattr(defect, "dependency_parts", None))
+    if explicit:
+        return explicit
+    inspect = catalogue_inspect_parts(defect)
+    if getattr(defect, "manifest_absence_proves_defect", False):
+        return []
+    # Backward-compatible default for catalogues that predate dependency_parts:
+    # choose the document most explicitly named by the defect/requirement as
+    # the subject; other inspect entries remain comparison/retrieval targets.
+    subject_text = _fold(
+        f"{getattr(defect, 'defect', '')} {check_requirement(defect)}"
+    )
+    scored = sorted(
+        (
+            (subject_text.count(_fold(part)), -index, part)
+            for index, part in enumerate(inspect)
+        ),
+        reverse=True,
+    )
+    if scored and scored[0][0] > 0:
+        return [scored[0][2]]
+    return inspect[:1]
 
 
 def excluded_parts_for_defect(defect: Defect) -> list[str]:

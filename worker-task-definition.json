@@ -17,6 +17,10 @@
       ],
       "environment": [
         {
+          "name": "LLAMA_CLOUD_TIER",
+          "value": "cost_effective"
+        },
+        {
           "name": "SPLIT_RECONCILIATION_MODE",
           "value": "targeted"
         },

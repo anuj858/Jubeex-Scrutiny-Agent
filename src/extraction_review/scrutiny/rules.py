@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +311,9 @@ class Defect(_Strict):
     trigger_words: str | None = None
     where_to_look: list[str]
     inspect_parts: list[str] = Field(default_factory=list)
+    # Documents whose absence makes this check inapplicable. inspect_parts are
+    # evidence/retrieval targets and are not dependencies by themselves.
+    dependency_parts: list[str] = Field(default_factory=list)
     context_parts: list[str] = Field(default_factory=list)
     exclude_parts: list[str] | None = None
     manifest_absence_proves_defect: bool = False
@@ -380,6 +383,7 @@ class Defect(_Strict):
         "where_to_look",
         "how_to_cure",
         "inspect_parts",
+        "dependency_parts",
         "context_parts",
         "exclude_parts",
         mode="before",
@@ -454,6 +458,22 @@ class Catalogue(_Strict):
     defects: list[Defect] = Field(default_factory=list)
     # Filing-type key -> special-category labels. Empty means use sci_case_types.
     petition_specials: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _unique_normalized_defect_codes(self) -> "Catalogue":
+        seen: dict[str, str] = {}
+        for defect in self.defects:
+            raw = defect.check_id.strip()
+            match = re.fullmatch(r"D-\s*(\d+)", raw, flags=re.IGNORECASE)
+            normalized = f"D-{int(match.group(1))}" if match else raw.upper()
+            prior = seen.get(normalized)
+            if prior is not None:
+                raise ValueError(
+                    "Duplicate catalogue code after normalization: "
+                    f"{prior!r} and {raw!r} both resolve to {normalized}"
+                )
+            seen[normalized] = raw
+        return self
 
     @property
     def defect_order(self) -> list[str]:
@@ -583,7 +603,11 @@ def _stamp_explicit_applicability(catalogue: Catalogue) -> Catalogue:
             # Authority verification is structured policy. Let the model decide
             # the filing evidence first, then apply the authority gate in Python.
             note = re.sub(
-                r"(?m)^Legal-source gate\b.*(?:\n(?!\n).*)*",
+                r"(?ims)^\s*legal-source gate\s*[:.—-].*?"
+                r"(?=^\s*(?:documents? and portions? to inspect|inspection|"
+                r"what the requirement means|defect found|compliant|"
+                r"not applicable|needs review|evidence to record)\s*[:.—-]|"
+                r"\n\s*\n|\Z)",
                 "",
                 note,
                 count=1,

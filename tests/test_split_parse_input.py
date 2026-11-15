@@ -43,7 +43,7 @@ def test_split_parse_request_enforces_ocr_layout_and_table_quality():
     configuration = request
 
     assert request["file_id"] == "dfl-source"
-    assert configuration["tier"] == "agentic"
+    assert configuration["tier"] == "cost_effective"
     assert set(configuration["output_options"]["granular_bboxes"]) == {
         "word",
         "line",

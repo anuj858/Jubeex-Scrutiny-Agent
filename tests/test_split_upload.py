@@ -20,7 +20,11 @@ from extraction_review.bundle_slicer import (
     map_slot_pages,
     slice_bundle_pdf,
 )
-from extraction_review.config import JUBEEX_UPLOAD_FILING_TYPES, Config
+from extraction_review.config import (
+    JUBEEX_UPLOAD_FILING_TYPES,
+    Config,
+    dump_api_configuration,
+)
 from extraction_review.document_parts import (
     _split_categories,
     annexure_mark_in_heading,
@@ -143,10 +147,10 @@ def test_config_json_has_versioning() -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["config_id"] == "jubeex_parse"
     assert data["schema_version"] == "1.0"
-    assert data["config_version"] == "1.0.37"
+    assert data["config_version"] == "1.0.38"
     assert data["pipeline_versions"]["classify"]["config_version"] == "1.0.0"
-    assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.2"
-    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.37"
+    assert data["pipeline_versions"]["extract"]["config_version"] == "1.0.3"
+    assert data["pipeline_versions"]["split"]["config_version"] == "1.0.38"
     assert [rule["type"] for rule in data["classify"]["rules"]] == list(
         JUBEEX_FILING_TYPES
     )
@@ -161,10 +165,10 @@ def test_config_json_has_versioning() -> None:
     config = Config.model_validate(data)
     assert config.config_id == "jubeex_parse"
     assert config.schema_version == "1.0"
-    assert config.config_version == "1.0.37"
+    assert config.config_version == "1.0.38"
     assert config.pipeline_versions.classify.config_version == "1.0.0"
-    assert config.pipeline_versions.extract.config_version == "1.0.2"
-    assert config.pipeline_versions.split.config_version == "1.0.37"
+    assert config.pipeline_versions.extract.config_version == "1.0.3"
+    assert config.pipeline_versions.split.config_version == "1.0.38"
     classify_sent = dump_api_configuration(config.classify)
     assert "schema_version" not in classify_sent
     assert "config_version" not in classify_sent
@@ -175,6 +179,9 @@ def test_config_json_has_versioning() -> None:
     assert "schema_version" not in extract_sent
     assert "config_version" not in extract_sent
     assert extract_sent["version"] == "latest"
+    assert extract_sent["tier"] == "cost_effective"
+    assert extract_sent["parse_tier"] == "cost_effective"
+    assert config.parse.tier == "cost_effective"
     assert config.split is not None
     split_sent = _split_api_configuration(config.split)
     assert "schema_version" not in split_sent
@@ -202,8 +209,8 @@ def test_config_json_has_versioning() -> None:
     assert instructions == data["split"]["splitting_strategy"]["custom_instructions"]
     stamped = config_identity(data)
     assert stamped["classify"]["config_version"] == "1.0.0"
-    assert stamped["extract"]["config_version"] == "1.0.2"
-    assert stamped["split"]["config_version"] == "1.0.37"
+    assert stamped["extract"]["config_version"] == "1.0.3"
+    assert stamped["split"]["config_version"] == "1.0.38"
 
 
 def test_classify_dump_strips_unsupported_version_keys() -> None:
@@ -1935,8 +1942,8 @@ async def test_metadata_exposes_split_upload_types() -> None:
     assert "court_fees" not in criminal_ids
     assert result.config["config_id"] == "jubeex_parse"
     assert result.config["classify"]["config_version"] == "1.0.0"
-    assert result.config["extract"]["config_version"] == "1.0.2"
-    assert result.config["split"]["config_version"] == "1.0.37"
+    assert result.config["extract"]["config_version"] == "1.0.3"
+    assert result.config["split"]["config_version"] == "1.0.38"
     tp_civil_ids = [
         slot["id"]
         for slot in result.split_upload_types["TRANSFER_PETITION_CIVIL"]["slots"]
@@ -2803,15 +2810,49 @@ def test_parse_and_ingest_concurrency_read_env(
     monkeypatch.delenv("PARSE_CONCURRENCY", raising=False)
     monkeypatch.delenv("INGEST_CONCURRENCY", raising=False)
     monkeypatch.delenv("FAST_PARSE_TIER", raising=False)
+    monkeypatch.delenv("LLAMA_PARSE_TIER", raising=False)
+    monkeypatch.delenv("LLAMA_CLOUD_TIER", raising=False)
     assert parse_concurrency() == 8
     assert ingest_concurrency() == 8
-    assert fast_parse_tier() == "agentic"
+    assert fast_parse_tier() == "cost_effective"
     monkeypatch.setenv("PARSE_CONCURRENCY", "12")
     monkeypatch.setenv("INGEST_CONCURRENCY", "10")
     monkeypatch.setenv("FAST_PARSE_TIER", "fast")
     assert parse_concurrency() == 12
     assert ingest_concurrency() == 10
     assert fast_parse_tier() == "fast"
+
+
+def test_llama_tiers_are_runtime_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs/config.json").read_text()
+    )
+    config = Config.model_validate(data)
+    assert config.parse is not None
+    assert config.split is not None
+
+    monkeypatch.setenv("LLAMA_CLOUD_TIER", "agentic")
+    parse_sent = dump_api_configuration(config.parse)
+    extract_sent = dump_api_configuration(config.extract_jubeex)
+    split_sent = dump_api_configuration(config.split)
+    assert parse_sent["tier"] == "agentic"
+    assert extract_sent["tier"] == "agentic"
+    assert extract_sent["parse_tier"] == "agentic"
+    assert split_sent["parse_tier"] == "agentic"
+
+    monkeypatch.setenv("LLAMA_PARSE_TIER", "fast")
+    monkeypatch.setenv("LLAMA_SPLIT_PARSE_TIER", "cost_effective")
+    monkeypatch.setenv("LLAMA_EXTRACT_TIER", "turbo")
+    monkeypatch.setenv("LLAMA_EXTRACT_PARSE_TIER", "cost_effective")
+    parse_sent = dump_api_configuration(config.parse)
+    extract_sent = dump_api_configuration(config.extract_jubeex)
+    split_sent = dump_api_configuration(config.split)
+    assert parse_sent["tier"] == "fast"
+    assert extract_sent["tier"] == "turbo"
+    assert extract_sent["parse_tier"] == "cost_effective"
+    assert split_sent["parse_tier"] == "cost_effective"
 
 
 def test_pages_needing_family_text_skips_extract_sources() -> None:
@@ -2887,6 +2928,8 @@ def test_parse_create_kwargs_overrides_tier_for_fast_slots(
     from extraction_review.config import ParseConfig
 
     monkeypatch.delenv("FAST_PARSE_TIER", raising=False)
+    monkeypatch.delenv("LLAMA_PARSE_TIER", raising=False)
+    monkeypatch.delenv("LLAMA_CLOUD_TIER", raising=False)
     config = ParseConfig.model_validate(
         {"product_type": "parse_v2", "tier": "agentic", "version": "latest"}
     )
@@ -2895,7 +2938,7 @@ def test_parse_create_kwargs_overrides_tier_for_fast_slots(
     assert precise["file_id"] == "file-cover"
     assert precise["output_options"]["granular_bboxes"] == ["word", "line", "cell"]
     secondary = parse_create_kwargs(config, file_id="file-annexure", precise=False)
-    assert secondary["tier"] == "agentic"
+    assert secondary["tier"] == "cost_effective"
     assert secondary["version"] == "latest"
     assert secondary["output_options"]["granular_bboxes"] == ["word", "line", "cell"]
     hosted = parse_create_kwargs(
@@ -2911,7 +2954,7 @@ def test_parse_create_kwargs_overrides_tier_for_fast_slots(
         precise=False,
     )
     assert hosted["configuration_id"] == "cfg-1"
-    assert "tier" not in hosted
+    assert hosted["tier"] == "cost_effective"
 
 
 @pytest.mark.asyncio

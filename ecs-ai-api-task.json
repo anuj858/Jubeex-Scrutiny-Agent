@@ -20,6 +20,10 @@
       ],
       "environment": [
         {
+          "name": "LLAMA_CLOUD_TIER",
+          "value": "cost_effective"
+        },
+        {
           "name": "VECTOR_BACKEND",
           "value": "pinecone"
         },

@@ -189,8 +189,8 @@ def normalize_model_tier(value: object) -> str:
     return raw
 
 
-def scrutiny_model(tier: str) -> str:
-    """Model used only for registry defect checks at one required tier.
+def configured_scrutiny_model(tier: str) -> str:
+    """Raw model id for one required tier, before provider formatting.
 
     ``SCRUTINY_MODEL`` is not a fallback. An empty tier env value raises
     ``ScrutinyModelError``.
@@ -199,6 +199,12 @@ def scrutiny_model(tier: str) -> str:
     raw = (os.getenv(env_name) or "").strip()
     if not raw:
         raise ScrutinyModelError(f"{env_name} is not set")
+    return raw
+
+
+def scrutiny_model(tier: str) -> str:
+    """Model used for registry defect checks at one required tier."""
+    raw = configured_scrutiny_model(tier)
     if llm_provider() in {"vertex", "gemini"}:
         return _strip_google_model_prefix(raw)
     return raw
