@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import inspect
+import io
+import json
 import logging
 import os
 import re
@@ -54,6 +55,7 @@ from .bundle_slicer import (
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
+    LegalExtractRecord,
     ParseConfig,
     SplitConfig,
     dump_api_configuration,
@@ -114,6 +116,40 @@ DEFAULT_LLAMA_LARGE_UPLOAD_BYTES = 20 * 1024 * 1024
 _FILE_BYTES: dict[str, bytes] = {}
 _UPLOAD_LOCKS = tuple(asyncio.Lock() for _ in range(64))
 _LARGE_UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
+
+
+def core_extraction_input_hash(
+    filing_type: str,
+    parts: Sequence[Any],
+) -> str:
+    """Version the exact post-split input used for legal extraction.
+
+    A boundary correction changes ``page_span`` even when the generated PDF
+    hash is unchanged. A schema/prompt rollout changes the explicit version or
+    schema below. Either case must invalidate the stored structured record.
+    """
+    documents = []
+    for part in parts:
+        documents.append(
+            {
+                "slot_id": str(getattr(part, "slot_id", "") or ""),
+                "content_identity": str(
+                    getattr(part, "file_hash", "")
+                    or getattr(part, "file_id", "")
+                    or ""
+                ),
+                "page_span": getattr(part, "page_span", None) or [],
+            }
+        )
+    payload = {
+        "version": (os.getenv("CORE_EXTRACTION_VERSION") or "2").strip(),
+        "filing_type": filing_type,
+        "schema": LegalExtractRecord.model_json_schema(),
+        "documents": documents,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def positive_int_env(name: str, default: int) -> int:
@@ -3362,6 +3398,7 @@ async def _extract_sliced_parts(
     source_file_hash: str | None = None,
     source_book: dict[str, Any] | None = None,
     supplied_parse_usage: dict[str, Any] | None = None,
+    extraction_input_hash: str | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -3402,6 +3439,7 @@ async def _extract_sliced_parts(
             source_file_hash=source_file_hash,
             source_book=source_book,
             supplied_parse_usage=supplied_parse_usage,
+            extraction_input_hash=extraction_input_hash,
         )
     )
     async for ev in handler.stream_events():
@@ -3442,6 +3480,8 @@ async def _run_split_from_file_event(
     source_parse_job_id: str | None = None
     source_file_id: str | None = None
     source_file_hash: str | None = None
+    prior_core_extraction_hash: str | None = None
+    prior_core_extraction_complete = False
     agent_data_id = (event.agent_data_id or "").strip() or None
     if agent_data_id:
         try:
@@ -3473,6 +3513,12 @@ async def _run_split_from_file_event(
         raw_meta = data.get("metadata")
         if isinstance(raw_meta, dict):
             meta = raw_meta
+        prior_core_extraction_hash = (
+            str(meta.get("core_extraction_input_hash") or "").strip() or None
+        )
+        prior_core_extraction_complete = bool(
+            meta.get("core_extraction_complete")
+        )
         split_files = meta.get("split_files")
         if isinstance(split_files, dict):
             prior_file_ids = {
@@ -3644,6 +3690,31 @@ async def _run_split_from_file_event(
     extract_only = job in EXTRACT_ONLY_JOB_TYPES
     index_only = job in INDEX_JOB_TYPES
     edited = bool(event.edited)
+    extraction_parts: list[SplitPartEvent] = []
+    for part in split_parts:
+        slot = resolve_upload_slot(catalog, part.slot_id)
+        probe = SplitPartInput(
+            slot_id=part.slot_id,
+            file_id=part.file_id or "",
+            document_parts=slot.parts if slot else (),
+        )
+        if slot_is_extract_source(probe, catalog):
+            extraction_parts.append(part)
+    extraction_input_hash = core_extraction_input_hash(
+        filing_type, extraction_parts
+    )
+    extraction_current = bool(
+        index_only
+        and prior_core_extraction_complete
+        and prior_core_extraction_hash == extraction_input_hash
+    )
+    if index_only:
+        logger.info(
+            "[ExtractionReuse] %s input_hash=%s prior=%s",
+            "hit" if extraction_current else "miss",
+            extraction_input_hash[:12],
+            (prior_core_extraction_hash or "")[:12],
+        )
     if extract_only:
         parsed_slots = []
         for part in split_parts:
@@ -3659,8 +3730,10 @@ async def _run_split_from_file_event(
     parse_scope = "all"
     if extract_only:
         parse_scope = "extract_sources"
-    elif index_only:
+    elif index_only and extraction_current:
         parse_scope = "unparsed"
+    elif index_only:
+        parse_scope = "extract_sources"
     reusable_source_parts = [
         (part.slot_id, part.page_span)
         for part in split_parts
@@ -3707,7 +3780,7 @@ async def _run_split_from_file_event(
         require_all_slots=False,
         parse_scope=parse_scope,
         skip_index=extract_only,
-        skip_extract=index_only,
+        skip_extract=index_only and extraction_current,
         stitch_in_request_order=extract_only or index_only,
         edited=edited,
         parsed_slots=parsed_slots,
@@ -3723,6 +3796,7 @@ async def _run_split_from_file_event(
         source_file_id=source_file_id,
         source_file_hash=source_file_hash,
         source_book=source_book_raw,
+        extraction_input_hash=extraction_input_hash,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [

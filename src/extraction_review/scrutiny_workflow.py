@@ -13,8 +13,10 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
@@ -53,6 +55,7 @@ from .layout_index import (
 from .llm import (
     LLMError,
     call_structured,
+    create_openrouter_http_client,
     llm_enabled,
     llm_provider,
     llm_requests_per_minute,
@@ -148,6 +151,261 @@ _VISUAL_TERMS = (
     "paper size",
     "spacing",
 )
+
+
+@dataclass
+class EvidenceWorkspace:
+    """Immutable filing evidence compiled once and shared by every check."""
+
+    layout: dict[int, dict[str, Any]]
+    pages_by_part: dict[str, list[int]] = field(default_factory=dict)
+    _complete_cache: dict[tuple[str, ...], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
+
+    @classmethod
+    def from_layout(
+        cls, layout: dict[int, dict[str, Any]] | None
+    ) -> EvidenceWorkspace:
+        normalized = layout or {}
+        pages_by_part: dict[str, list[int]] = {}
+        for page_number, page in sorted(normalized.items()):
+            if not isinstance(page, dict):
+                continue
+            for part in _layout_document_parts(page.get("document_part")):
+                pages_by_part.setdefault(part, []).append(int(page_number))
+        return cls(layout=normalized, pages_by_part=pages_by_part)
+
+    def complete_chunks(self, defect: Defect) -> list[dict[str, Any]]:
+        parts = tuple(
+            dict.fromkeys(
+                [
+                    *required_parts_for_defect(defect),
+                    *(getattr(defect, "context_parts", None) or []),
+                ]
+            )
+        )
+        if not parts:
+            return []
+        key = tuple(sorted(parts, key=str.casefold))
+        cached = self._complete_cache.get(key)
+        if cached is not None:
+            return [dict(chunk) for chunk in cached]
+        chunks: list[dict[str, Any]] = []
+        for page_number, page in sorted(self.layout.items()):
+            if not isinstance(page, dict):
+                continue
+            names = _layout_document_parts(page.get("document_part"))
+            if not names or not any(
+                chunks_cover_part(
+                    [{"document_part": names, "chunk_kind": "page"}], part
+                )
+                for part in parts
+            ):
+                continue
+            text = _layout_page_text(page)
+            if text:
+                chunks.append(
+                    {
+                        "record_id": f"layout-complete:{page_number}",
+                        "score": 0.0,
+                        "chunk_kind": "page",
+                        "page": page_number,
+                        "page_end": page_number,
+                        "document_part": names,
+                        "text": text,
+                        "layout_fallback": True,
+                        "complete_part_retry": True,
+                    }
+                )
+        self._complete_cache[key] = [dict(chunk) for chunk in chunks]
+        return chunks
+
+
+class DefectBatchEnvelope(BaseModel):
+    """One independently keyed result for every check in a micro-batch."""
+
+    findings: list[DefectResponse]
+
+
+@dataclass
+class _PendingEvaluation:
+    defect: Defect
+    system_prompt: str
+    user_prompt: str
+    model: str
+    future: asyncio.Future[tuple[DefectResponse, LlmUsage]]
+
+
+class ScrutinyMicrobatcher:
+    """Coalesce compatible synchronous checks without changing their outputs."""
+
+    def __init__(self, client: httpx.AsyncClient | None) -> None:
+        mode = (os.getenv("SCRUTINY_EXECUTION_MODE") or "fast").strip().casefold()
+        configured = int(os.getenv("SCRUTINY_MICROBATCH_SIZE", "3") or "3")
+        self.size = 1 if mode == "legacy" else max(1, min(configured, 5))
+        self.window_seconds = max(
+            0.0,
+            min(
+                0.5,
+                float(os.getenv("SCRUTINY_MICROBATCH_WINDOW_MS", "75") or "75")
+                / 1000.0,
+            ),
+        )
+        self.max_chars = max(
+            10_000, int(os.getenv("SCRUTINY_MICROBATCH_MAX_CHARS", "90000"))
+        )
+        self.client = client
+        self._lock = asyncio.Lock()
+        self._queues: dict[tuple[str, ...], list[_PendingEvaluation]] = {}
+        self._flush_tasks: set[asyncio.Task[None]] = set()
+
+    @staticmethod
+    def _key(defect: Defect, model: str) -> tuple[str, ...]:
+        parts = [
+            *required_parts_for_defect(defect),
+            *(getattr(defect, "context_parts", None) or []),
+        ]
+        visual = "visual" if any(
+            term in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
+            for term in _VISUAL_TERMS
+        ) else "text"
+        return (model, visual, *sorted(set(parts), key=str.casefold))
+
+    async def evaluate(
+        self,
+        *,
+        defect: Defect,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+    ) -> tuple[DefectResponse, LlmUsage]:
+        if self.size <= 1:
+            return await call_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=DefectResponse,
+                model=model,
+                client=self.client,
+                request_label=f"scrutiny:{defect.check_id}",
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[DefectResponse, LlmUsage]] = loop.create_future()
+        pending = _PendingEvaluation(
+            defect=defect,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            future=future,
+        )
+        key = self._key(defect, model)
+        flush_now: list[_PendingEvaluation] | None = None
+        async with self._lock:
+            queue = self._queues.setdefault(key, [])
+            queue.append(pending)
+            if len(queue) >= self.size:
+                flush_now = queue[: self.size]
+                del queue[: self.size]
+            elif len(queue) == 1:
+                task = asyncio.create_task(self._delayed_flush(key))
+                self._flush_tasks.add(task)
+                task.add_done_callback(self._flush_tasks.discard)
+        if flush_now:
+            await self._flush(flush_now)
+        return await future
+
+    async def _delayed_flush(self, key: tuple[str, ...]) -> None:
+        await asyncio.sleep(self.window_seconds)
+        async with self._lock:
+            pending = self._queues.pop(key, [])
+        if pending:
+            await self._flush(pending)
+
+    @staticmethod
+    def _usage_shares(usage: LlmUsage, count: int) -> list[LlmUsage]:
+        count = max(1, count)
+        fields = (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "reasoning_tokens",
+        )
+        shares = [LlmUsage(model=usage.model) for _ in range(count)]
+        for name in fields:
+            total = int(getattr(usage, name) or 0)
+            quotient, remainder = divmod(total, count)
+            for index, share in enumerate(shares):
+                setattr(share, name, quotient + (1 if index < remainder else 0))
+        if usage.cost_usd is not None:
+            for share in shares:
+                share.cost_usd = usage.cost_usd / count
+        shares[0].calls = usage.calls
+        shares[0].generation_id = usage.generation_id
+        shares[0].generation_ids = list(usage.generation_ids or [])
+        return shares
+
+    async def _flush(self, pending: list[_PendingEvaluation]) -> None:
+        if not pending:
+            return
+        if len(pending) == 1 or sum(len(item.user_prompt) for item in pending) > self.max_chars:
+            await asyncio.gather(*(self._single(item) for item in pending))
+            return
+        system_prompt = pending[0].system_prompt + (
+            "\n\nEvaluate every numbered check independently. Return one finding "
+            "for each supplied check_id, in the same order, inside the findings array."
+        )
+        user_prompt = "\n\n".join(
+            f"# Independent check {index}: {item.defect.check_id}\n{item.user_prompt}"
+            for index, item in enumerate(pending, start=1)
+        )
+        try:
+            envelope, usage = await call_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=DefectBatchEnvelope,
+                model=pending[0].model,
+                client=self.client,
+                request_label="scrutiny:microbatch:"
+                + ",".join(item.defect.check_id for item in pending),
+            )
+            by_id = {finding.check_id: finding for finding in envelope.findings}
+            if len(envelope.findings) != len(pending) or set(by_id) != {
+                item.defect.check_id for item in pending
+            }:
+                raise ValueError("micro-batch response check_ids did not match request")
+            shares = self._usage_shares(usage, len(pending))
+            for item, share in zip(pending, shares, strict=True):
+                if not item.future.done():
+                    item.future.set_result((by_id[item.defect.check_id], share))
+        except Exception:
+            logger.warning("Micro-batch failed; retrying checks individually", exc_info=True)
+            await asyncio.gather(*(self._single(item) for item in pending))
+
+    async def _single(self, item: _PendingEvaluation) -> None:
+        try:
+            result = await call_structured(
+                system_prompt=item.system_prompt,
+                user_prompt=item.user_prompt,
+                response_model=DefectResponse,
+                model=item.model,
+                client=self.client,
+                request_label=f"scrutiny:{item.defect.check_id}",
+            )
+            if not item.future.done():
+                item.future.set_result(result)
+        except Exception as exc:
+            if not item.future.done():
+                item.future.set_exception(exc)
+
+    async def close(self) -> None:
+        async with self._lock:
+            queued = [item for queue in self._queues.values() for item in queue]
+            self._queues.clear()
+        if queued:
+            await self._flush(queued)
+        if self._flush_tasks:
+            await asyncio.gather(*list(self._flush_tasks), return_exceptions=True)
 
 
 class ScrutinyAfterIndexError(Exception):
@@ -542,6 +800,7 @@ def _complete_layout_chunks_for_defect(
     defect: Defect,
     chunks: list[dict[str, Any]],
     layout: dict[int, dict[str, Any]] | None,
+    evidence_workspace: EvidenceWorkspace | None = None,
 ) -> list[dict[str, Any]]:
     """Return every parsed page belonging to this check's required parts.
 
@@ -552,6 +811,13 @@ def _complete_layout_chunks_for_defect(
     """
     if not layout:
         return chunks
+    if evidence_workspace is not None:
+        complete = evidence_workspace.complete_chunks(defect)
+        if complete:
+            summary = [
+                chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"
+            ][:1]
+            return summary + complete
     required = required_parts_for_defect(defect)
     evidence_parts = list(
         dict.fromkeys([*required, *(getattr(defect, "context_parts", None) or [])])
@@ -604,6 +870,9 @@ async def _run_defect(
     visual_index: dict[str, Any] | None = None,
     absence_defect_parts: list[str] | None = None,
     model: str,
+    llm_client: httpx.AsyncClient | None = None,
+    evidence_workspace: EvidenceWorkspace | None = None,
+    evaluator: ScrutinyMicrobatcher | None = None,
 ) -> DefectFinding:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
@@ -637,7 +906,9 @@ async def _run_defect(
     # allowed to inspect. Oversized complete sets are handled by the existing
     # page-preserving batch retry below.
     if layout and not _retrieval_evidence_complete(defect, chunks, layout):
-        complete_chunks = _complete_layout_chunks_for_defect(defect, chunks, layout)
+        complete_chunks = _complete_layout_chunks_for_defect(
+            defect, chunks, layout, evidence_workspace
+        )
         if complete_chunks:
             chunks = complete_chunks
 
@@ -697,13 +968,22 @@ async def _run_defect(
         visual_index=check_visual_index,
         layout=layout,
     )
-    raw, usage = await call_structured(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        response_model=DefectResponse,
-        model=model,
-        request_label=f"scrutiny:{defect.check_id}",
-    )
+    if evaluator is not None:
+        raw, usage = await evaluator.evaluate(
+            defect=defect,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+        )
+    else:
+        raw, usage = await call_structured(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_model=DefectResponse,
+            model=model,
+            client=llm_client,
+            request_label=f"scrutiny:{defect.check_id}",
+        )
     response = _sanitize_response(defect, raw, chunks, check_visual_index, layout)
     response = apply_scope_coverage_policy(
         response,
@@ -720,7 +1000,9 @@ async def _run_defect(
         and response.gap in {"part_not_in_excerpts", "element_page_not_in_excerpts"}
         and layout
     ):
-        complete_chunks = _complete_layout_chunks_for_defect(defect, chunks, layout)
+        complete_chunks = _complete_layout_chunks_for_defect(
+            defect, chunks, layout, evidence_workspace
+        )
         complete_pages = {
             int(chunk["page"])
             for chunk in complete_chunks
@@ -740,7 +1022,14 @@ async def _run_defect(
             retry_usage = LlmUsage()
             retry_responses: list[DefectResponse] = []
             complete_batches = _complete_evidence_batches(complete_chunks)
-            for batch_number, batch in enumerate(complete_batches, start=1):
+            retry_concurrency = max(
+                1, int(os.getenv("SCRUTINY_EVIDENCE_RETRY_CONCURRENCY", "3"))
+            )
+            retry_semaphore = asyncio.Semaphore(retry_concurrency)
+
+            async def evaluate_complete_batch(
+                batch_number: int, batch: list[dict[str, Any]]
+            ) -> tuple[DefectResponse, LlmUsage]:
                 retry_prompt = build_defect_prompt(
                     defect,
                     record=slice_record_for_defect(record, defect),
@@ -749,18 +1038,19 @@ async def _run_defect(
                     visual_index=check_visual_index,
                     layout=layout,
                 )
-                retry_raw, batch_usage = await call_structured(
-                    system_prompt=system_prompt,
-                    user_prompt=retry_prompt,
-                    response_model=DefectResponse,
-                    model=model,
-                    request_label=(
-                        f"scrutiny:{defect.check_id}:complete-evidence-retry:"
-                        f"{batch_number}-of-{len(complete_batches)}"
-                    ),
-                )
-                retry_usage = retry_usage.plus(batch_usage)
-                retry_responses.append(
+                async with retry_semaphore:
+                    retry_raw, batch_usage = await call_structured(
+                        system_prompt=system_prompt,
+                        user_prompt=retry_prompt,
+                        response_model=DefectResponse,
+                        model=model,
+                        client=llm_client,
+                        request_label=(
+                            f"scrutiny:{defect.check_id}:complete-evidence-retry:"
+                            f"{batch_number}-of-{len(complete_batches)}"
+                        ),
+                    )
+                return (
                     _sanitize_response(
                         defect,
                         retry_raw,
@@ -768,8 +1058,19 @@ async def _run_defect(
                         check_visual_index,
                         layout,
                         enforce_retrieval=False,
-                    )
+                    ),
+                    batch_usage,
                 )
+
+            retry_results = await asyncio.gather(
+                *(
+                    evaluate_complete_batch(number, batch)
+                    for number, batch in enumerate(complete_batches, start=1)
+                )
+            )
+            for retry_response, batch_usage in retry_results:
+                retry_responses.append(retry_response)
+                retry_usage = retry_usage.plus(batch_usage)
             response = _aggregate_complete_batch_responses(retry_responses)
             chunks = complete_chunks
             usage = usage.plus(retry_usage)
@@ -833,6 +1134,7 @@ async def _chunks_for_defect(
     workspace_id: str | None = None,
     index_generation: str | None = None,
     layout: dict[int, dict[str, Any]] | None = None,
+    evidence_workspace: EvidenceWorkspace | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch this defect's excerpts. Runs inside the concurrency semaphore."""
     retrieval_plan = retrieval_plan_for_defect(defect)
@@ -874,6 +1176,21 @@ async def _chunks_for_defect(
             )
         }
         page_budget = max(page_budget, len(exhaustive_pages))
+    direct_chunks = (
+        evidence_workspace.complete_chunks(defect)
+        if evidence_workspace is not None
+        else []
+    )
+    if direct_chunks and (
+        retrieval_plan.strategy == "exhaustive_part"
+        or len(direct_chunks) <= page_budget
+    ):
+        logger.info(
+            "[Scrutiny] Direct evidence hit check=%s pages=%s",
+            defect.check_id,
+            len(direct_chunks),
+        )
+        return direct_chunks
     if not use_pinecone or not file_hash:
         return _add_layout_fallback_chunks(
             defect, [], layout=layout, max_chunks=page_budget
@@ -1730,6 +2047,7 @@ class ScrutinyWorkflow(Workflow):
             visual_url if isinstance(visual_url, str) else None,
             key=visual_key if isinstance(visual_key, str) else None,
         )
+        evidence_workspace = EvidenceWorkspace.from_layout(layout)
         if not layout:
             logger.warning(
                 "Layout index empty pages=0; defect findings will have no "
@@ -1935,6 +2253,7 @@ class ScrutinyWorkflow(Workflow):
                         workspace_id=vector_workspace_id,
                         index_generation=index_generation,
                         layout=layout,
+                        evidence_workspace=evidence_workspace,
                     )
                 )
                 retrieval_seconds = time.perf_counter() - retrieval_started
@@ -1949,6 +2268,9 @@ class ScrutinyWorkflow(Workflow):
                     visual_index=visual_index,
                     absence_defect_parts=absence_owners.get(defect.check_id),
                     model=defect_model,
+                    llm_client=llm_http_client,
+                    evidence_workspace=evidence_workspace,
+                    evaluator=microbatcher,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
@@ -1999,13 +2321,22 @@ class ScrutinyWorkflow(Workflow):
             )
             return finding
 
-        findings, stopped_early = await collect_defect_findings(
-            defects,
-            run_one,
-            concurrency=concurrency,
-            stop_on_error=False,
-            on_update=publish,
+        llm_http_client = (
+            create_openrouter_http_client() if llm_provider() == "openrouter" else None
         )
+        microbatcher = ScrutinyMicrobatcher(llm_http_client)
+        try:
+            findings, stopped_early = await collect_defect_findings(
+                defects,
+                run_one,
+                concurrency=concurrency,
+                stop_on_error=False,
+                on_update=publish,
+            )
+        finally:
+            await microbatcher.close()
+            if llm_http_client is not None:
+                await llm_http_client.aclose()
         logger.info(
             "[ScrutinyTiming] total=%.1fs checks=%s concurrency=%s rpm=%s",
             time.perf_counter() - scrutiny_started,

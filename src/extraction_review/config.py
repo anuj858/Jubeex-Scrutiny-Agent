@@ -18,7 +18,14 @@ from llama_cloud.types.classify_v2_parameters import ClassifyV2Parameters, Rule
 from llama_cloud.types.extract_v2_parameters import ExtractV2Parameters
 from llama_cloud.types.parse_v2_parameters import ParseV2Parameters
 from llama_cloud.types.split_v1_parameters import SplitV1Parameters
-from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from .json_util import create_union_schema as create_union_schema
 from .json_util import get_extraction_schema as get_extraction_schema

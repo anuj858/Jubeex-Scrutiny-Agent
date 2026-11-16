@@ -13,7 +13,6 @@ from extraction_review.config import (
     FrontExtractRecord,
     LegalExtractRecord,
 )
-from extraction_review.scrutiny.catalogue_db import special_category_names_from_rows
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
@@ -26,6 +25,7 @@ from extraction_review.process_file import (
     first_pages_pdf,
     front_extract_opening_pages,
 )
+from extraction_review.scrutiny.catalogue_db import special_category_names_from_rows
 from extraction_review.split_upload import (
     build_extract_pack_markdown,
     build_front_extract_pack_markdown,
@@ -128,7 +128,7 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     legal = list(LegalExtractRecord.model_json_schema()["properties"])
     assert "special_category" not in legal
     front = front_extract_configuration(
-        ExtractConfig.model_construct(data_schema={}, product_type="extract")
+        ExtractConfig.model_construct(data_schema={}, product_type="extract_v2")
     )
     props = list(front["data_schema"]["properties"])
     assert props.index("special_category") == props.index("petition_type") + 1

@@ -19,8 +19,8 @@ from extraction_review.llm import (
     _vertex_retry_after_seconds,
     gemini_max_attempts,
     gemini_request_timeout_seconds,
-    get_genai_client,
     genai_shared_rate_limit_enabled,
+    get_genai_client,
     llm_requests_per_minute,
     openrouter_requests_per_minute,
     vertex_max_attempts,
@@ -534,11 +534,12 @@ def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
 
 
 @pytest.mark.asyncio
-async def test_openrouter_rate_limiter_paces_requests(
+async def test_openrouter_rate_limiter_allows_configured_burst(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "2")
+    monkeypatch.setenv("OPENROUTER_BURST", "2")
     limiter = _OpenRouterRateLimiter()
     slept: list[float] = []
 
@@ -548,4 +549,4 @@ async def test_openrouter_rate_limiter_paces_requests(
     monkeypatch.setattr("extraction_review.llm.asyncio.sleep", fake_sleep)
     await limiter.acquire()
     await limiter.acquire()
-    assert slept == [pytest.approx(30.0, abs=0.1)]
+    assert slept == []

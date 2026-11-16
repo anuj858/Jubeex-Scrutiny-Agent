@@ -453,13 +453,95 @@ async def test_index_parsed_reuses_slots_when_not_edited(
     ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
     result = await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
     assert isinstance(result, BundlePrepared)
-    assert captured["skip_extract"] is True
+    assert captured["skip_extract"] is False
     assert captured["skip_index"] is False
-    assert captured["parse_scope"] == "unparsed"
+    assert captured["parse_scope"] == "extract_sources"
     assert captured["parsed_slots"] == ["petition"]
     assert captured["stitch_in_request_order"] is True
     assert "petition" in captured["reuse_pages_by_slot"]
     assert result.report is None
+
+
+@pytest.mark.asyncio
+async def test_index_parsed_skips_completed_unchanged_core_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.process_file import (
+        _run_split_from_file_event,
+        core_extraction_input_hash,
+    )
+
+    captured: dict[str, object] = {}
+    extraction_hash = core_extraction_input_hash(
+        "SLP_CIVIL",
+        [
+            SimpleNamespace(
+                slot_id="petition",
+                file_id="dfl-petition",
+                file_hash=None,
+                page_span=None,
+            )
+        ],
+    )
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "document_order": ["petition"],
+            "slots": {"petition": {"pages": {"1": "kept"}}},
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition"],
+                        "split_files": {"petition": "dfl-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                        "core_extraction_input_hash": extraction_hash,
+                        "core_extraction_complete": True,
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        parsed_slots=["petition"],
+        documents=[
+            {
+                "slot_id": "petition",
+                "file_id": "dfl-petition",
+                "name": "01_Petition.pdf",
+            }
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    result = await _run_split_from_file_event(  # type: ignore[arg-type]
+        event, ctx, FakeClient()
+    )
+
+    assert isinstance(result, BundlePrepared)
+    assert captured["skip_extract"] is True
+    assert captured["parse_scope"] == "unparsed"
+    assert captured["extraction_input_hash"] == extraction_hash
 
 
 @pytest.mark.asyncio
@@ -704,6 +786,6 @@ async def test_index_reuses_only_documents_with_matching_hashes(
     assert ingest_calls == ["https://example.com/index.pdf"]
     assert result.parts[0].file_id == "dfl-old-petition"
     assert result.parts[1].file_id == "dfl-new-index"
-    assert captured["parse_scope"] == "unparsed"
+    assert captured["parse_scope"] == "extract_sources"
     assert captured["parsed_slots"] == ["petition"]
     assert set(captured["reuse_pages_by_slot"]) == {"petition"}  # type: ignore[arg-type]

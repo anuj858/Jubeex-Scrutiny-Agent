@@ -236,6 +236,7 @@ class SplitFilesEvent(StartEvent):
     source_file_hash: str | None = None
     source_book: dict[str, Any] | None = None
     supplied_parse_usage: dict[str, Any] | None = None
+    extraction_input_hash: str | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -300,6 +301,7 @@ class SplitFilesState(BaseModel):
     source_parse_job_id: str | None = None
     source_file_id: str | None = None
     source_file_hash: str | None = None
+    extraction_input_hash: str | None = None
 
 
 async def _workspace_agent_data_item(
@@ -606,6 +608,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.source_parse_job_id = event.source_parse_job_id
             state.source_file_id = event.source_file_id
             state.source_file_hash = event.source_file_hash
+            state.extraction_input_hash = event.extraction_input_hash
 
         set_job_context(
             file_hash or filename,
@@ -898,6 +901,11 @@ class ProcessSplitFilesWorkflow(Workflow):
                 }
                 for item in state.parts
             ]
+            if state.extraction_input_hash and not state.front_extract:
+                data.metadata["core_extraction_input_hash"] = (
+                    state.extraction_input_hash
+                )
+                data.metadata["core_extraction_complete"] = True
             if state.job_type:
                 data.metadata["job_type"] = state.job_type
             if state.organization_id or state.org_id:
@@ -1095,6 +1103,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                 bool(os.getenv("PINECONE_API_KEY")),
             )
 
+        if state.job_type == "index_parsed":
+            report = await _run_nested_scrutiny(ctx, agent_data_id=str(item.id))
+            return StopEvent(result={"agent_data_id": str(item.id), "report": report})
         return StopEvent(result=item.id)
 
 

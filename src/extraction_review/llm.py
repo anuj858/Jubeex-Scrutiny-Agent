@@ -242,6 +242,21 @@ def openrouter_requests_per_minute() -> int:
         return DEFAULT_REQUESTS_PER_MINUTE
 
 
+def create_openrouter_http_client() -> httpx.AsyncClient:
+    """One connection pool for an entire workflow, instead of one per check."""
+    timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    max_connections = max(
+        1, int((os.getenv("OPENROUTER_MAX_CONNECTIONS") or "24").strip())
+    )
+    return httpx.AsyncClient(
+        timeout=timeout,
+        limits=httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_connections,
+        ),
+    )
+
+
 def llm_requests_per_minute() -> int:
     """Rate limit for the active provider.
 
@@ -330,11 +345,13 @@ def genai_request_timeout_seconds() -> int:
 
 
 class _OpenRouterRateLimiter:
-    """Process-local, evenly paced fallback limiter."""
+    """Process-local token bucket with a bounded initial/concurrency burst."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._next_allowed_at = 0.0
+        self._tokens = 0.0
+        self._last_refill_at = time.monotonic()
+        self._configured_rpm: int | None = None
 
     async def acquire(
         self,
@@ -345,16 +362,38 @@ class _OpenRouterRateLimiter:
         rpm = llm_requests_per_minute() if rpm is None else max(0, rpm)
         if rpm <= 0:
             return
-        interval_s = 60.0 / rpm
-        async with self._lock:
-            now = time.monotonic()
-            wait_s = max(0.0, self._next_allowed_at - now)
-            self._next_allowed_at = max(now, self._next_allowed_at) + interval_s
-        if wait_s > 0:
+        burst = max(
+            1,
+            min(
+                rpm,
+                int(
+                    (os.getenv("OPENROUTER_BURST") or "").strip()
+                    or (os.getenv("SCRUTINY_CONCURRENCY") or "8").strip()
+                ),
+            ),
+        )
+        refill_per_second = rpm / 60.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                if self._configured_rpm != rpm:
+                    self._configured_rpm = rpm
+                    self._tokens = float(burst)
+                    self._last_refill_at = now
+                elapsed = max(0.0, now - self._last_refill_at)
+                self._tokens = min(
+                    float(burst), self._tokens + elapsed * refill_per_second
+                )
+                self._last_refill_at = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_s = (1.0 - self._tokens) / refill_per_second
             logger.info(
-                "[LLM]%s local pacing at %s req/min; waiting %.1fs",
+                "[LLM]%s token bucket at %s req/min burst=%s; waiting %.1fs",
                 f"[{request_label}]" if request_label else "",
                 rpm,
+                burst,
                 wait_s,
             )
             await asyncio.sleep(max(wait_s, 0.05))
