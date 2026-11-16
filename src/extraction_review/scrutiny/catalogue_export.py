@@ -115,19 +115,26 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
     applicability = derive_applicability(defect)
     label = _special_label(defect)
     special_code = category_code(catalog_special_name(label)) if label else None
+    inspect_codes = _part_codes(
+        defect.inspect_parts, check_id=defect.check_id, role="inspect"
+    )
+    context_codes = _part_codes(
+        defect.context_parts, check_id=defect.check_id, role="context"
+    )
+    exclude_labels = list(defect.exclude_parts or [])
+    exclude_codes = _part_codes(
+        exclude_labels, check_id=defect.check_id, role="exclude"
+    )
     row = {
         "code": defect.check_id,
         "title": defect.defect,
         "requirement": defect.requirement,
         "rule_number": defect.applicable_rule,
         "citation": defect.location_text or defect.location_source,
-        "main_category": defect.main_category,
         "where_to_look": list(defect.where_to_look),
         "how_to_cure": list(defect.how_to_cure),
         "trigger_words": split_trigger_words(defect.trigger_words),
-        "notes": defect.notes,
-        "ivan_comment": defect.ivan_comment,
-        "notes_2": defect.notes_2,
+        "legal_verification_status": defect.legal_verification_status,
         "overlap_note": defect.overlap_note,
         "applies_to_all_petition_types": applicability.applies_to_all,
         "petition_type_codes": applicability.petition_type_codes(),
@@ -135,15 +142,21 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
         "special_category_mode": applicability.special_mode,
         "parent_code": defect.parent_check_id,
         "is_enabled": True,
-        "inspect_part_codes": _part_codes(
-            defect.inspect_parts, check_id=defect.check_id, role="inspect"
-        ),
-        "context_part_codes": _part_codes(
-            defect.context_parts, check_id=defect.check_id, role="context"
-        ),
-        "exclude_part_codes": _part_codes(
-            defect.exclude_parts, check_id=defect.check_id, role="exclude"
-        ),
+        "inspect_part_codes": inspect_codes,
+        "inspect_parts": [
+            {"label": part, "document_type_code": code}
+            for part, code in zip(defect.inspect_parts, inspect_codes, strict=True)
+        ],
+        "context_part_codes": context_codes,
+        "context_parts": [
+            {"label": part, "document_type_code": code}
+            for part, code in zip(defect.context_parts, context_codes, strict=True)
+        ],
+        "exclude_part_codes": exclude_codes,
+        "exclude_parts": [
+            {"label": part, "document_type_code": code}
+            for part, code in zip(exclude_labels, exclude_codes, strict=True)
+        ],
         "source_codes": source_codes,
         "status": "reviewed_by_legal",
         "severity": "p2",
