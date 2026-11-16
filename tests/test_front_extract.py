@@ -1,4 +1,4 @@
-"""First-30-page extract: slice, schema, and a null special category."""
+"""Front extract: the whole compiled filing, schema, and a null special category."""
 
 from __future__ import annotations
 
@@ -19,13 +19,7 @@ from extraction_review.extract_record import (
     merge_dropped_party_schedule,
     supplemental_front_party_pages,
 )
-from extraction_review.process_file import (
-    FRONT_EXTRACT_END_PAGE_LIMIT,
-    FRONT_EXTRACT_PAGE_LIMIT,
-    FileEvent,
-    first_pages_pdf,
-    front_extract_opening_pages,
-)
+from extraction_review.process_file import FileEvent
 from extraction_review.split_upload import (
     build_extract_pack_markdown,
     build_front_extract_pack_markdown,
@@ -53,75 +47,6 @@ def _pdf_bytes(page_count: int) -> bytes:
         return document.tobytes()
     finally:
         document.close()
-
-
-def _page_count(pdf_bytes: bytes) -> int:
-    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return document.page_count
-    finally:
-        document.close()
-
-
-def _marked_pdf(page_count: int) -> bytes:
-    document = pymupdf.open()
-    try:
-        for number in range(1, page_count + 1):
-            page = document.new_page()
-            page.insert_text((72, 72), f"PAGE-{number}")
-        return document.tobytes()
-    finally:
-        document.close()
-
-
-def _page_texts(pdf_bytes: bytes) -> list[str]:
-    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return [page.get_text() for page in document]
-    finally:
-        document.close()
-
-
-def test_front_slice_keeps_the_opening_and_the_last_five_pages() -> None:
-    sliced = first_pages_pdf(_marked_pdf(40))
-    texts = _page_texts(sliced)
-    assert len(texts) == FRONT_EXTRACT_PAGE_LIMIT + FRONT_EXTRACT_END_PAGE_LIMIT
-    joined = "\n".join(texts)
-    assert "PAGE-1" in joined
-    assert "PAGE-30" in joined
-    assert "PAGE-31" not in joined
-    assert "PAGE-36" in joined
-    assert "PAGE-40" in joined
-
-
-def test_front_slice_does_not_repeat_pages_already_in_the_opening() -> None:
-    sliced = first_pages_pdf(_marked_pdf(32))
-    assert _page_count(sliced) == 32
-
-
-def test_opening_is_30_pages_or_the_whole_shorter_file() -> None:
-    assert front_extract_opening_pages(12) == 12
-    assert front_extract_opening_pages(30) == 30
-    assert front_extract_opening_pages(62) == 30
-    assert front_extract_opening_pages(700) == 30
-    assert front_extract_opening_pages(5000) == FRONT_EXTRACT_PAGE_LIMIT
-
-
-def test_long_book_keeps_the_first_30_pages_and_the_closing_pages() -> None:
-    opening = front_extract_opening_pages(700)
-    sliced = first_pages_pdf(_marked_pdf(700), opening)
-    joined = "\n".join(_page_texts(sliced))
-    assert "PAGE-30" in joined
-    assert "PAGE-31" not in joined
-    assert "PAGE-696" in joined
-    assert "PAGE-700" in joined
-    assert _page_count(sliced) == opening + FRONT_EXTRACT_END_PAGE_LIMIT
-
-
-def test_first_pages_pdf_keeps_a_shorter_book() -> None:
-    raw = _pdf_bytes(12)
-    assert first_pages_pdf(raw) == raw
-    assert _page_count(first_pages_pdf(raw)) == 12
 
 
 def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -> None:
