@@ -243,6 +243,82 @@ def test_dump_layout_index_uses_string_page_keys() -> None:
     assert "12" in payload["pages"]
 
 
+def test_excerpts_use_the_document_page_not_the_stitched_page() -> None:
+    text = _format_evidence(
+        [
+            {
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "Verified at Chhattisgarh on this day of July, 2025.",
+            }
+        ],
+        layout={34: {"document_part": "Affidavit", "local_page": 2}},
+    )
+    assert "[c1 | Affidavit, page 2]" in text
+    assert "Page 34" not in text
+
+
+def test_signature_tag_uses_the_vision_mark_box() -> None:
+    attached = attach_evidence_boxes(
+        [EvidenceRef(chunk_id="c1", page=34, quote="[signature:3-11-25]")],
+        layout={
+            34: {
+                "document_part": "Affidavit",
+                "local_page": 2,
+                "slot_id": "affidavit",
+            }
+        },
+        chunks=[
+            {
+                "excerpt_id": "c1",
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "[signature:3-11-25]",
+            }
+        ],
+        visual_index={
+            "status": "ok",
+            "pages": [34],
+            "marks": [
+                {
+                    "page": 34,
+                    "local_page": 2,
+                    "document_type": "Affidavit",
+                    "marking_type": "signature_like_mark",
+                    "bbox": {"x": 0.62, "y": 0.81, "w": 0.2, "h": 0.05},
+                }
+            ],
+        },
+    )
+    assert attached[0].page == 2
+    assert attached[0].document_part == "Affidavit"
+    assert attached[0].boxes_status == "matched"
+    assert attached[0].bounding_boxes[0].page == 2
+    assert attached[0].bounding_boxes[0].x == 0.62
+
+
+def test_signature_tag_without_a_mark_stays_page_only() -> None:
+    attached = attach_evidence_boxes(
+        [EvidenceRef(chunk_id="c1", page=34, quote="[signature:3-11-22]")],
+        layout={34: {"document_part": "Affidavit", "local_page": 2}},
+        chunks=[
+            {
+                "excerpt_id": "c1",
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "[signature:3-11-22]",
+            }
+        ],
+        visual_index={"status": "ok", "pages": [], "marks": []},
+    )
+    assert attached[0].page == 2
+    assert attached[0].boxes_status == "page_only"
+    assert attached[0].bounding_boxes == []
+
+
 def test_excerpts_are_labeled_with_short_chunk_ids() -> None:
     chunks = [
         {

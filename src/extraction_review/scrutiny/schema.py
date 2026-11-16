@@ -973,11 +973,109 @@ def _choose_evidence_chunk(
     return None
 
 
+_PARSER_MARK_TAG = re.compile(
+    r"\[(?P<kind>signature|seal)\s*:[^\]]*\]",
+    re.IGNORECASE,
+)
+_TAG_DATE = re.compile(
+    r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"
+)
+_SIGNATURE_MARK_TYPES = frozenset({"signature_like_mark"})
+_SEAL_MARK_TYPES = frozenset(
+    {
+        "notary_seal",
+        "ordinary_seal_or_stamp",
+        "government_stamp",
+        "revenue_stamp",
+    }
+)
+_UNREAD_MARK_DATE = "The signature or seal date was not read from the page image."
+
+
+def _quote_is_parser_tags_only(quote: str) -> bool:
+    """True when the citation is only ``[signature:…]`` or ``[seal:…]`` tags."""
+    if not _PARSER_MARK_TAG.search(quote or ""):
+        return False
+    remainder = _PARSER_MARK_TAG.sub(" ", quote or "")
+    remainder = re.sub(r"[^A-Za-z0-9]+", " ", remainder).strip()
+    return not remainder
+
+
+def _dates_inside_mark_tags(quote: str) -> list[str]:
+    found: list[str] = []
+    for match in _PARSER_MARK_TAG.finditer(quote or ""):
+        for date in _TAG_DATE.findall(match.group(0)):
+            if date not in found:
+                found.append(date)
+    return found
+
+
+def _boxes_from_visual_marks(
+    quote: str,
+    visual_index: dict[str, Any] | None,
+    *,
+    document_part: str | None,
+    local_page: int | None,
+    global_page: int | None,
+) -> list[BoundingBox]:
+    """Copy stored vision boxes for a signature or seal tag. Never invent one."""
+    if not isinstance(visual_index, dict):
+        return []
+    kinds = {match.group("kind").casefold() for match in _PARSER_MARK_TAG.finditer(quote or "")}
+    if not kinds:
+        return []
+    wanted_types: set[str] = set()
+    if "signature" in kinds:
+        wanted_types.update(_SIGNATURE_MARK_TYPES)
+    if "seal" in kinds:
+        wanted_types.update(_SEAL_MARK_TYPES)
+    names = {name.casefold() for name in parts_on_page(document_part)}
+    boxes: list[BoundingBox] = []
+    for raw in visual_index.get("marks") or []:
+        if not isinstance(raw, dict):
+            continue
+        marking_type = str(raw.get("marking_type") or "").strip()
+        if marking_type not in wanted_types:
+            continue
+        document_type = str(raw.get("document_type") or "").strip()
+        if names and document_type.casefold() not in names:
+            continue
+        mark_local = _safe_page_number(raw.get("local_page"))
+        mark_page = _safe_page_number(raw.get("page"))
+        if local_page is not None and mark_local is not None:
+            if mark_local != local_page:
+                continue
+        elif global_page is not None and mark_page is not None:
+            if mark_page != global_page:
+                continue
+        else:
+            continue
+        bbox = raw.get("bbox") if isinstance(raw.get("bbox"), dict) else {}
+        published = local_page if local_page is not None else mark_local or mark_page
+        if published is None:
+            continue
+        try:
+            box = BoundingBox(
+                page=int(published),
+                x=float(bbox.get("x") or 0),
+                y=float(bbox.get("y") or 0),
+                w=float(bbox.get("w") or bbox.get("width") or 0),
+                h=float(bbox.get("h") or bbox.get("height") or 0),
+            )
+        except (TypeError, ValueError):
+            continue
+        if box.w <= 0 or box.h <= 0:
+            continue
+        boxes.append(box)
+    return boxes
+
+
 def attach_evidence_boxes(
     refs: list[EvidenceRef],
     *,
     layout: dict[int, dict[str, Any]] | None = None,
     chunks: list[dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
 ) -> list[FindingEvidence]:
     """Open the cited chunk's pages only. Never scan the rest of the filing."""
     attached: list[FindingEvidence] = []
@@ -997,11 +1095,18 @@ def attach_evidence_boxes(
                     )
                 )
                 continue
-            boxes, status, page = boxes_on_pages(
-                ref.quote or "",
-                _chunk_span(chunk),
-                layout,
-            )
+            span = _chunk_span(chunk)
+            tag_only = _quote_is_parser_tags_only(ref.quote or "")
+            if tag_only:
+                page = span[0] if span else None
+                boxes = []
+                status = "page_only" if page is not None else "unavailable"
+            else:
+                boxes, status, page = boxes_on_pages(
+                    ref.quote or "",
+                    span,
+                    layout,
+                )
             boxes_status: BoxesStatus = (
                 status
                 if status in ("matched", "page_only", "unavailable")
@@ -1021,6 +1126,20 @@ def attach_evidence_boxes(
                 boxes=_as_bounding_boxes(boxes),
                 boxes_status=boxes_status,
             )
+            if tag_only:
+                mark_boxes = _boxes_from_visual_marks(
+                    ref.quote or "",
+                    visual_index,
+                    document_part=document_part,
+                    local_page=local_page,
+                    global_page=page,
+                )
+                if mark_boxes:
+                    published_boxes = mark_boxes
+                    boxes_status = "matched"
+                else:
+                    published_boxes = []
+                    boxes_status = "page_only" if published_page is not None else "unavailable"
             attached.append(
                 FindingEvidence(
                     page=published_page,
@@ -1158,6 +1277,104 @@ def apply_review_reason_consistency_policy(
             "The evidence is inconclusive even though the model reported a "
             "high confidence in routing the check for review."
         )
+    return response
+
+
+def apply_catalogue_gap_policy(response: DefectResponse) -> DefectResponse:
+    """Keep a filing observation when the model picks an unverified legal source.
+
+    ``legal_rule_unverified`` is catalogue governance. It must not replace what
+    the filing shows. The published gap becomes ``ambiguous`` and the model's
+    observed text and review reason stay in place.
+    """
+    if response.gap != "legal_rule_unverified":
+        return response
+    response.gap = "ambiguous"
+    if not (response.gap_detail or "").strip():
+        response.gap_detail = (
+            "The legal source for this catalogue check is not verified."
+        )
+    return response
+
+
+def _scrub_tag_dates(text: str, dates: list[str]) -> str:
+    cleaned = text or ""
+    for date in dates:
+        cleaned = re.sub(re.escape(date), "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    return cleaned.strip(" ,;.")
+
+
+def _reviewed_visual_pages(visual_index: dict[str, Any] | None) -> set[int]:
+    if not isinstance(visual_index, dict):
+        return set()
+    if str(visual_index.get("status") or "").casefold() != "ok":
+        return set()
+    pages: set[int] = set()
+    for raw in visual_index.get("pages") or []:
+        number = _safe_page_number(raw)
+        if number is not None:
+            pages.add(number)
+    return pages
+
+
+def apply_unreviewed_handwriting_policy(
+    response: DefectResponse,
+    visual_index: dict[str, Any] | None,
+) -> DefectResponse:
+    """Do not publish a handwritten date that was only read from a parser tag.
+
+    A typed sentence such as "July 2025" may remain. A date inside
+    ``[signature:…]`` or ``[seal:…]`` is withheld when those pages were not
+    in the visual index.
+    """
+    if response.status not in {"needs_review", "defect_found"}:
+        return response
+    tag_dates: list[str] = []
+    tagged_pages: set[int] = set()
+    for ref in response.evidence:
+        dates = _dates_inside_mark_tags(ref.quote or "")
+        if not dates:
+            continue
+        for date in dates:
+            if date not in tag_dates:
+                tag_dates.append(date)
+        page = _safe_page_number(ref.page)
+        if page is not None:
+            tagged_pages.add(page)
+    if not tag_dates:
+        return response
+    reviewed = _reviewed_visual_pages(visual_index)
+    if tagged_pages and tagged_pages.issubset(reviewed):
+        return response
+    narrative = " ".join(
+        (
+            response.summary,
+            response.observed,
+            response.review_reason,
+            response.conclusion,
+            response.gap_detail,
+        )
+    )
+    if not any(date in narrative for date in tag_dates):
+        return response
+    response.status = "needs_review"
+    response.gap = "unreadable"
+    response.gap_detail = _UNREAD_MARK_DATE
+    response.summary = _UNREAD_MARK_DATE
+    response.review_reason = (
+        "The date written beside the signature or seal was not read from the "
+        "page image. Please check the original page."
+    )
+    response.conclusion = (
+        "The handwritten date on the signature or seal was not inspected."
+    )
+    observed = _scrub_tag_dates(response.observed, tag_dates)
+    if observed and not any(date in observed for date in tag_dates):
+        response.observed = observed
+    else:
+        response.observed = _UNREAD_MARK_DATE
     return response
 
 
@@ -2336,7 +2553,9 @@ def build_finding(
     refs = list(response.evidence)
     if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
-    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
+    evidence = attach_evidence_boxes(
+        refs, layout=layout, chunks=chunks, visual_index=visual_index
+    )
     evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
     reviewed_local = _local_pages(layout, reviewed_global)

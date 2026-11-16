@@ -88,6 +88,7 @@ from .scrutiny.schema import (
     ScrutinyReport,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
+    apply_catalogue_gap_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -101,6 +102,7 @@ from .scrutiny.schema import (
     apply_status_policy,
     apply_supported_evidence_policy,
     apply_undetermined_policy,
+    apply_unreviewed_handwriting_policy,
     apply_visual_conflict_policy,
     apply_visual_field_policy,
     build_finding,
@@ -296,6 +298,7 @@ def _sanitize_response(
             defect.check_id,
         )
     response.check_id = defect.check_id
+    response = apply_catalogue_gap_policy(response)
     response = apply_evidence_pages(response, chunks, defect)
     response = apply_presence_only_policy(defect, response, chunks, layout)
     response = apply_status_policy(response)
@@ -310,6 +313,7 @@ def _sanitize_response(
     response = apply_visual_conflict_policy(defect, response, visual_index)
     response = apply_visual_field_policy(defect, response, visual_index)
     response = apply_evidence_capability_policy(defect, response, visual_index)
+    response = apply_unreviewed_handwriting_policy(response, visual_index)
     return response
 
 

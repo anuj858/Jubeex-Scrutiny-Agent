@@ -32,6 +32,7 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
+    apply_catalogue_gap_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
     apply_evidence_capability_policy,
@@ -48,6 +49,7 @@ from extraction_review.scrutiny.schema import (
     apply_scope_coverage_policy,
     apply_status_policy,
     apply_supported_evidence_policy,
+    apply_unreviewed_handwriting_policy,
     apply_visual_conflict_policy,
     apply_visual_field_policy,
     manifest_absence_proven,
@@ -2429,3 +2431,65 @@ def test_internal_party_side_contradiction_is_defect() -> None:
     decided = apply_internal_contradiction_policy(defect, response)
     assert decided.status == "defect_found"
     assert decided.gap is None
+
+
+def test_unreviewed_signature_date_is_not_published() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.78,
+        summary="The July 2025 verification conflicts with the signature date 3-11-22.",
+        observed="Verified in July 2025 but the signature reads 3-11-22.",
+        review_reason="The signature date 3-11-22 does not match July 2025.",
+        conclusion="The affidavit date 3-11-22 is inconsistent.",
+        gap="conflict",
+        evidence=[EvidenceRef(page=34, quote="[signature:3-11-22]")],
+    )
+    decided = apply_unreviewed_handwriting_policy(
+        response,
+        {"status": "ok", "pages": [], "marks": []},
+    )
+    published = " ".join(
+        (
+            decided.summary,
+            decided.observed,
+            decided.review_reason,
+            decided.conclusion,
+            decided.gap_detail,
+        )
+    )
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
+    assert "3-11-22" not in published
+    assert "July 2025" in decided.observed
+
+
+def test_legal_rule_gap_keeps_the_filing_observation() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.7,
+        summary="The verification date needs a source check.",
+        observed="The verification says July 2025.",
+        review_reason="Check the verification against the applicable rule.",
+        gap="legal_rule_unverified",
+        evidence=[EvidenceRef(page=2, quote="July, 2025")],
+    )
+    decided = apply_catalogue_gap_policy(response)
+    assert decided.gap == "ambiguous"
+    assert decided.observed == "The verification says July 2025."
+    assert decided.review_reason == "Check the verification against the applicable rule."
+    reasoning = compose_reasoning(
+        _scrutiny_row(check_id="D-64"),
+        decided,
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": 2,
+                "document_part": "Affidavit",
+                "text": "July, 2025",
+            }
+        ],
+    )
+    assert "July 2025" in reasoning
+    assert "not published as a dispositive result" not in reasoning

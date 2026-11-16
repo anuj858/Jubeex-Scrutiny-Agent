@@ -250,8 +250,13 @@ def _format_evidence(
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
             part = format_document_parts(chunk.get("document_part"))
-            loc = f"Page {page}"
-            place = f"{loc} — {part}" if part else loc
+            shown = _document_page(chunk, layout)
+            if part and shown is not None:
+                place = f"{part}, page {shown}"
+            elif shown is not None:
+                place = f"Page {shown}"
+            else:
+                place = f"Page {page}"
             provenance: list[str] = []
             original_page = chunk.get("original_page")
             if original_page not in (None, "", page, str(page)):
@@ -297,6 +302,14 @@ def _format_evidence(
     return "\n\n".join(blocks)
 
 
+def _document_page_label(document_type: str, page: object) -> str:
+    """Same label the vision prompt uses: document type and its own page."""
+    name = document_type.strip() or "unknown"
+    if page in (None, ""):
+        return name
+    return f"{name}, page {page}"
+
+
 def _visual_part_matches(document_type: str, targets: list[str]) -> bool:
     found = family_split_name(document_type)
     for target in targets:
@@ -326,7 +339,8 @@ def _format_visual_observations(
         readable = "readable" if item.get("readable") else "unreadable"
         page = item.get("local_page") or item.get("page")
         lines.append(
-            f"- {document_type}, page {page}: inspected {field}; {state}; {readable}"
+            f"- {_document_page_label(document_type, page)}: inspected {field}; "
+            f"{state}; {readable}"
         )
     for mark in visual_index.get("marks") or []:
         if not isinstance(mark, dict):
@@ -348,7 +362,9 @@ def _format_visual_observations(
         visible = str(mark.get("visible_text") or "").strip()
         if visible:
             details.append(f"visible text: {visible}")
-        lines.append(f"- {document_type}, page {page}: " + "; ".join(details))
+        lines.append(
+            f"- {_document_page_label(document_type, page)}: " + "; ".join(details)
+        )
         if len(lines) >= 20:
             break
     if not lines:
@@ -1394,10 +1410,14 @@ def compose_reasoning(
         )
 
     if gap == "legal_rule_unverified":
-        return _finish(
+        body = observed or (
             "This catalogue check is awaiting verification against a current "
-            "authoritative legal source and applicability locator; the filing "
-            "evidence was not published as a dispositive result"
+            "authoritative legal source"
+        )
+        return _finish(
+            f"{body}. This catalogue check is awaiting verification against a "
+            "current authoritative legal source and applicability locator; the "
+            "filing evidence was not published as a dispositive result"
         )
 
     if status == "defect_found":

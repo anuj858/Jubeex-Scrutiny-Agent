@@ -584,6 +584,7 @@ async def analyze_page_image(
         page_number=target.page,
         document_types=target.document_types,
         nearby_text=target.markdown,
+        local_page=target.local_page,
     )
     max_tokens = _int_env("VISION_MAX_OUTPUT_TOKENS", DEFAULT_VISION_MAX_TOKENS)
 
@@ -765,6 +766,7 @@ async def analyze_page_images(
     pages = [
         {
             "page": target.page,
+            "local_page": target.local_page,
             "document_types": list(target.document_types),
             "nearby_text": target.markdown,
         }
