@@ -1003,9 +1003,7 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The system is only 40% sure about what the document shows. Please check "
-        "the relevant document manually because at least 60% certainty is required "
-        "for Defect or Compliant."
+        "The document reading is only 40% certain, below the 60% needed to decide."
     )
 
 
@@ -1022,12 +1020,10 @@ def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "at least 60% sure" not in reason
-    assert "does not mean the defect is 90% certain" in reason
+    assert reason == "The result is too uncertain to mark Defect or Compliant."
 
 
-def test_review_reason_explains_the_problem_and_next_step_in_plain_language() -> None:
+def test_review_reason_states_only_the_core_problem() -> None:
     response = DefectResponse(
         check_id="D068",
         status="needs_review",
@@ -1040,10 +1036,7 @@ def test_review_reason_explains_the_problem_and_next_step_in_plain_language() ->
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "extracted text" in reason
-    assert "pages available to the system" in reason
-    assert "Please check the original page" in reason
+    assert reason == "Extracted text for the signature field is unclear."
 
 
 def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> None:
@@ -1065,10 +1058,13 @@ def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> Non
 
     reason = review_reason_for_response(response)
 
-    assert reason == response.review_reason
+    assert reason == (
+        "A dark stamp covers the executant signature area in the Vakalatnama, "
+        "so it is unclear whether a signature is present underneath it."
+    )
 
 
-def test_verbose_model_review_reason_is_compacted_to_two_short_sentences() -> None:
+def test_verbose_model_review_reason_keeps_only_the_core_sentence() -> None:
     response = DefectResponse(
         check_id="D068",
         status="needs_review",
@@ -1087,10 +1083,31 @@ def test_verbose_model_review_reason_is_compacted_to_two_short_sentences() -> No
     reason = review_reason_for_response(response)
 
     assert reason == (
-        "A dark stamp covers the signature area in the Vakalatnama. "
-        "Please inspect the original signature area."
+        "The extracted text does not resolve whether a signature is underneath."
     )
-    assert len(reason.split()) <= 45
+    assert len(reason.split()) <= 25
+
+
+def test_review_reason_drops_inventory_and_keeps_the_missing_source() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.91,
+        summary="Affidavit compliance cannot be determined.",
+        gap="ambiguous",
+        review_reason=(
+            "The Affidavit contains verification, a notary seal, an identifier, "
+            "and references to dates, annexures, and applications, but the "
+            "governing current Rule or Registry direction is not available. "
+            "Check the current source for this proceeding and filing mode to "
+            "determine which details are mandatory and whether."
+        ),
+        evidence=[],
+    )
+
+    assert review_reason_for_response(response) == (
+        "The governing current Rule or Registry direction is not available."
+    )
 
 
 def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:
@@ -1143,9 +1160,7 @@ def test_generic_model_review_reason_uses_the_safe_specific_fallback() -> None:
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "signature" in reason
-    assert "Please check the original page" in reason
+    assert reason == "The executant signature is faint."
 
 
 def test_confident_defect_stays_defect_found() -> None:

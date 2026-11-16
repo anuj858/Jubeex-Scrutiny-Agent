@@ -242,13 +242,12 @@ class DefectResponse(BaseModel):
         default="",
         max_length=800,
         description=(
-            "Only for needs_review. In no more than 45 words and two short "
-            "plain-language sentences, state "
-            "the exact document, wording, date, signature, seal, or field that is "
-            "uncertain; explain why that uncertainty prevents a Defect or Compliant "
-            "decision; and tell the user exactly what to check. Do not mention OCR, "
-            "chunks, excerpts, retrieval, prompts, confidence gates, or internal "
-            "system behaviour. Empty for every other status."
+            "Only for needs_review. One short sentence of no more than 20 words "
+            "stating only the core reason a Defect or Compliant decision cannot "
+            "be made. Do not restate what the document contains, explain the "
+            "rule, or say what to check. Do not mention OCR, chunks, excerpts, "
+            "retrieval, prompts, confidence gates, or internal system behaviour. "
+            "Empty for every other status."
         ),
     )
     conclusion: str = Field(
@@ -493,8 +492,8 @@ class DefectFinding(BaseModel):
     review_reason: str | None = Field(
         default=None,
         description=(
-            "Plain-language explanation of why a needs_review finding was not "
-            "published as a confirmed defect or compliance result."
+            "One short sentence stating only the core reason a needs_review "
+            "finding was not published as Defect or Compliant."
         ),
     )
     reasoning: str
@@ -542,51 +541,64 @@ def review_confidence_threshold() -> float:
     return min(1.0, max(0.0, value))
 
 
-def _compact_review_reason(reason: str) -> str:
-    """Keep the user-facing reason to two short, useful sentences."""
-    value = " ".join(reason.split()).strip()
-    sentences = [
-        item.strip()
-        for item in re.split(r"(?<=[.!?])\s+", value)
-        if item.strip()
-    ]
-    if len(sentences) > 2:
-        action = next(
-            (
-                item
-                for item in reversed(sentences[1:])
-                if re.search(
-                    r"\b(check|review|confirm|compare|verify|inspect)\b",
-                    item,
-                    flags=re.I,
-                )
-            ),
-            sentences[-1],
-        )
-        value = f"{sentences[0]} {action}"
+_REVIEW_INSTRUCTION = re.compile(
+    r"^(?:please\s+)?(?:check|review|confirm|compare|verify|inspect)\b",
+    re.IGNORECASE,
+)
+_REVIEW_BLOCKER = re.compile(
+    r"\b(not|no|cannot|can't|unable|unavailable|missing|unclear|illegible|"
+    r"unreadable|absent|without|fails|failed|conflict|mismatch|differs)\b",
+    re.IGNORECASE,
+)
 
-    words = value.split()
-    if len(words) > 45:
-        value = " ".join(words[:45]).rstrip(" ,;:") + "."
-    if len(value) > 360:
-        value = value[:357].rsplit(" ", 1)[0].rstrip(" ,;:") + "."
+
+def _plain_review_text(text: str) -> str:
+    value = " ".join((text or "").split()).strip()
+    value = re.sub(r"\bOCR excerpts?\b", "extracted text", value, flags=re.I)
+    value = re.sub(r"\bexcerpts?\b", "pages", value, flags=re.I)
+    value = re.sub(r"\bOCR\b", "extracted text", value, flags=re.I)
+    value = re.sub(r"\bchunks?\b", "page sections", value, flags=re.I)
     return value
+
+
+def _compact_review_reason(reason: str) -> str:
+    """Keep one short sentence: the core reason only."""
+    value = " ".join(reason.split()).strip()
+    clauses = [
+        item.strip(" ;")
+        for item in re.split(r"(?<=[.!?;])\s+", value)
+        if item.strip(" ;")
+    ]
+    substantive = [item for item in clauses if not _REVIEW_INSTRUCTION.match(item)]
+    candidates = substantive or clauses
+    chosen = next(
+        (item for item in candidates if _REVIEW_BLOCKER.search(item)),
+        candidates[0] if candidates else value,
+    )
+    contrast = re.split(r"\s+\bbut\b\s+", chosen, flags=re.I)
+    if len(contrast) > 1 and len(contrast[-1].split()) >= 4:
+        chosen = contrast[-1]
+    chosen = chosen.strip().rstrip(".!?")
+    words = chosen.split()
+    if len(words) > 25:
+        chosen = " ".join(words[:25]).rstrip(" ,;:")
+    if chosen and chosen[0].islower():
+        chosen = chosen[0].upper() + chosen[1:]
+    if chosen and not chosen.endswith((".", "!", "?")):
+        chosen += "."
+    return chosen
 
 
 def review_reason_for_response(
     response: DefectResponse,
     coverage: Coverage | None = None,
 ) -> str | None:
-    """Explain a review outcome in plain language and give the user a next step."""
+    """State only the core reason a review outcome could not be decided."""
+    del coverage
     if response.status not in {"needs_review", "rule_verification_pending"}:
         return None
 
-    model_reason = " ".join((response.review_reason or "").split()).strip()
-    model_reason = re.sub(
-        r"\bexcerpts?\b", "pages available to the system", model_reason, flags=re.I
-    )
-    model_reason = re.sub(r"\bOCR\b", "extracted text", model_reason, flags=re.I)
-    model_reason = re.sub(r"\bchunks?\b", "page sections", model_reason, flags=re.I)
+    model_reason = _plain_review_text(response.review_reason or "")
     generic_reason = re.fullmatch(
         r"(?:manual verification (?:is )?required|needs? review|"
         r"the available evidence is (?:insufficient|inconclusive)|"
@@ -594,93 +606,37 @@ def review_reason_for_response(
         model_reason,
         flags=re.I,
     )
-    if model_reason and len(model_reason.split()) >= 10 and generic_reason is None:
-        if not re.search(
-            r"\b(check|review|confirm|compare|verify|inspect)\b",
-            model_reason,
-            flags=re.I,
-        ):
-            model_reason += " Please check the named document or field manually."
-        if coverage and coverage.visual_required and not coverage.visual_complete:
-            model_reason += (
-                " A page-image check was also required, but the image was not "
-                "available or could not be inspected. Please check the original page."
-            )
+    if model_reason and len(model_reason.split()) >= 4 and generic_reason is None:
         return _compact_review_reason(model_reason)
 
-    detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
-    detail = re.sub(r"\bexcerpts?\b", "pages available to the system", detail, flags=re.I)
-    detail = re.sub(r"\bOCR\b", "extracted text", detail, flags=re.I)
-    detail = re.sub(r"\bchunks?\b", "page sections", detail, flags=re.I)
+    detail = _plain_review_text(response.gap_detail or "").rstrip(".")
+    if detail and response.gap != "low_confidence" and len(detail.split()) >= 4:
+        return _compact_review_reason(detail)
+
     if response.gap == "low_confidence":
         score = round(response.confidence * 100)
         threshold = round(review_confidence_threshold() * 100)
         if response.confidence < review_confidence_threshold():
             reason = (
-                f"The system is only {score}% sure about what the document shows. "
-                f"Please check the relevant document manually because at least "
-                f"{threshold}% certainty is required for Defect or Compliant."
+                f"The document reading is only {score}% certain, below the "
+                f"{threshold}% needed to decide."
             )
         else:
-            reason = (
-                "The system could not safely decide whether this is Defect or "
-                f"Compliant. The {score}% score means it is confident that a person "
-                "should check this; it does not mean the defect is "
-                f"{score}% certain."
-            )
+            reason = "The result is too uncertain to mark Defect or Compliant."
     elif response.gap == "part_not_in_excerpts":
-        reason = (
-            "The document needed for this check was not available to the system. "
-            "Please confirm that the document was uploaded and check it manually."
-        )
+        reason = "The document needed for this check was not available."
     elif response.gap == "element_page_not_in_excerpts":
-        reason = (
-            "The document was available, but the page or field needed for this check "
-            "was not available. Please check that page or field manually."
-        )
+        reason = "The page or field needed for this check was not available."
     elif response.gap == "unreadable":
-        reason = (
-            "The relevant text, date, signature, seal, or other field is too unclear "
-            "for the system to read safely. Please check the original page."
-        )
+        reason = "The relevant text, date, signature, seal, or field cannot be read."
     elif response.gap == "ambiguous":
-        reason = (
-            "The document can be understood in more than one way, so the system "
-            "cannot safely mark it as Defect or Compliant. Please review the wording "
-            "manually."
-        )
+        reason = "The document can be read in more than one way."
     elif response.gap == "conflict":
-        reason = (
-            "Two pieces of information do not match. For example, the extracted text "
-            "may differ from what is visible on the page. Please check the original "
-            "page and confirm which is correct."
-        )
+        reason = "The extracted text and the visible page do not match."
     elif response.gap == "legal_rule_unverified":
-        reason = (
-            "The document can be reviewed, but the legal rule behind this catalogue "
-            "check has not yet been verified. Please verify the rule before relying "
-            "on this result."
-        )
+        reason = "The legal rule for this check has not been verified."
     else:
-        reason = (
-            "The system could not safely decide whether this is Defect or Compliant. "
-            "Please check the relevant document manually."
-        )
-
-    if detail and response.gap != "low_confidence":
-        first_sentence = re.split(r"(?<=[.!?])\s+", reason, maxsplit=1)[0]
-        if response.gap == "unreadable":
-            reason = (
-                f"{first_sentence} Please check the original page, specifically: "
-                f"{detail}."
-            )
-        else:
-            reason = f"{first_sentence} Please check manually: {detail}."
-    if coverage and coverage.visual_required and not coverage.visual_complete:
-        reason += (
-            " A page-image check was also required, but the image was not available "
-            "or could not be inspected. Please check the original page."
-        )
+        reason = "Defect or Compliant cannot be decided from the available material."
     return _compact_review_reason(reason)
 
 
@@ -1364,8 +1320,7 @@ def apply_unreviewed_handwriting_policy(
     response.gap_detail = _UNREAD_MARK_DATE
     response.summary = _UNREAD_MARK_DATE
     response.review_reason = (
-        "The date written beside the signature or seal was not read from the "
-        "page image. Please check the original page."
+        "The date beside the signature or seal was not read from the page image."
     )
     response.conclusion = (
         "The handwritten date on the signature or seal was not inspected."
