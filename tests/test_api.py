@@ -793,7 +793,75 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     assert getattr(event, "edited") is True
     assert getattr(event, "model_tier") == "low"
     assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
+    assert getattr(event, "special_categories") == ["Eviction Matters"]
     assert notified.get("kind") == "scrutiny"
+
+
+def test_index_and_reindex_take_the_special_category_array(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CRIMINAL", agent_data_id="agd-array")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+
+    async def fake_notify(**_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "extraction_review.api.notify_job_finished",
+        fake_notify,
+    )
+
+    async def existing_filing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        existing_filing,
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        lambda _workspace_id: None,
+    )
+    selected = ["Tax Matters", "PIL", "Eviction Matters"]
+    for path in (
+        "/v1/filings/agd-array/index",
+        "/v1/filings/agd-array/reindex",
+    ):
+        captured.clear()
+        response = client.post(
+            path,
+            json={
+                "filing_type": "SLP_CRIMINAL",
+                "model_tier": "low",
+                "workspace_id": "ws-array",
+                "special_categories": selected,
+                "special_category": selected,
+                "documents": [_doc("01_Petition.pdf")],
+            },
+        )
+        assert response.status_code == 202
+        assert getattr(captured["event"], "special_categories") == selected
+        assert getattr(captured["event"], "special_category") is None
+
+    captured.clear()
+    empty = client.post(
+        "/v1/filings/agd-array/index",
+        json={
+            "filing_type": "SLP_CRIMINAL",
+            "model_tier": "low",
+            "special_categories": [],
+            "special_category": [],
+            "documents": [_doc("01_Petition.pdf")],
+        },
+    )
+    assert empty.status_code == 202
+    assert getattr(captured["event"], "special_categories") == []
 
 
 def test_index_edited_false(

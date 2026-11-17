@@ -293,7 +293,7 @@ def write_human_summary_card(
 
         f.write(f"File Name           : {summary['filename']}\n")
         f.write(f"Original Pages      : {summary['total_pages']}\n")
-        f.write(f"Pages Parsed        : 1 to {summary['total_pages']}\n")
+        f.write(f"Pages Parsed        : all {summary['total_pages']}\n")
         f.write(f"File Size           : {summary['file_size_mb']:.2f} MB\n")
         f.write(f"Processing Time     : {summary['processing_time_seconds']}s\n")
         f.write(f"Job ID              : {summary['job_id']}\n")
@@ -439,7 +439,7 @@ def write_master_reports(all_summaries: list[dict[str, Any]], output_dir: Path) 
             kf = item.get("extracted_fields") or {}
             f.write(f"### {idx}. `{item['filename']}`\n\n")
             f.write(f"- **Status**: `{item['status']}`\n")
-            f.write(f"- **Original Pages**: {item['total_pages']}\n")
+            f.write(f"- **Original Pages**: {item['total_pages']} (parsed all pages)\n")
             f.write(f"- **Processing Time**: {item['processing_time_seconds']} seconds\n")
             f.write(f"- **Court**: `{kf.get('court') or 'N/A'}`\n")
             f.write(f"- **Petition Type**: `{kf.get('petition_type') or 'N/A'}`\n")
@@ -510,7 +510,7 @@ async def process_single_pdf(
 
     filing_type = filing_type_override or infer_filing_type(filename)
     print(f"  - Total Pages        : {total_pages}")
-    print(f"  - Pages Parsed       : 1 to {total_pages}")
+    print(f"  - Pages Parsed       : all {total_pages}")
     print(f"  - File Size          : {file_size_mb:.2f} MB")
     print(f"  - Selected Type      : {filing_type}")
     print(f"  - Court Code         : {court}")

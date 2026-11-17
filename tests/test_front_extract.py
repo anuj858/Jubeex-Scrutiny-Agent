@@ -17,7 +17,6 @@ from extraction_review.scrutiny.catalogue_db import special_category_names_from_
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
-    supplemental_front_party_pages,
 )
 from extraction_review.process_file import FileEvent
 from extraction_review.split_upload import (
@@ -87,7 +86,7 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     )
 
 
-def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
+def test_front_pack_keeps_every_parsed_page() -> None:
     pages = {page: f"page {page} text" for page in range(1, 36)}
     labels = {page: ["Main Petition"] for page in range(1, 31)}
     normal = build_extract_pack_markdown(pages, labels, {"Main Petition"})
@@ -101,9 +100,7 @@ def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
     assert "## [Cover Page]" not in front
     assert "## [Opening pages]" not in front
     assert "page 35 text" in front
-    wide = build_front_extract_pack_markdown(pages, opening_pages=75)
-    assert "## [Compiled filing] (p. 31)" in wide
-    assert "## [Closing pages]" not in wide
+    assert "## [Closing pages]" not in front
 
 
 def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> None:
@@ -1265,27 +1262,6 @@ def test_position_of_parties_on_later_pages_keeps_both_columns_current_court() -
     assert "Krishan Dev Singh" in respondents[5]["name"]
     names = [party["name"] for party in [*petitioners, *respondents]]
     assert not any("A/12/2023" in name or name == "and Ors" or "Not a Party" in name for name in names)
-
-
-def test_a_middle_party_schedule_is_labelled_opening_pages() -> None:
-    pages = supplemental_front_party_pages(
-        {
-            40: "POSITION OF PARTIES\n1. A\nVERSUS\n1. B",
-            41: "2. C",
-            42: "3. D",
-            43: "MOST RESPECTFULLY SHOWETH",
-            44: "later narrative",
-        },
-        set(range(1, 31)),
-    )
-    assert sorted(pages) == [40, 41, 42, 43]
-    packed = build_front_extract_pack_markdown(
-        {1: "opening", 32: "closing vakalatnama", 40: pages[40]},
-        opening_pages=30,
-    )
-    assert "[Compiled filing] (p. 40)" in packed
-    assert "[Compiled filing] (p. 32)" in packed
-    assert "[Compiled filing] (p. 1)" in packed
 
 
 def test_index_cuts_the_saved_book_by_source_span() -> None:
