@@ -1682,6 +1682,7 @@ def build_defect_prompt(
     prior_decision: dict[str, Any] | None = None,
     prior_call_id: str | None = None,
     prior_generation_id: str | None = None,
+    vision_note: str | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     search = "\n".join(
@@ -1713,6 +1714,18 @@ def build_defect_prompt(
             "confidence is below 0.6, return needs_review."
         ),
     ]
+    if vision_note:
+        sections.extend(
+            [
+                "",
+                "## Page image already read",
+                vision_note,
+                (
+                    "Treat that image reading as what is visible on the named pages. "
+                    "Decide any page that was not imaged from the text below."
+                ),
+            ]
+        )
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
         operational_note = _operational_ai_note(ai_note)

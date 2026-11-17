@@ -74,6 +74,13 @@ from .scrutiny.prompts import (
     build_defect_prompt,
     build_system_prompt,
 )
+from .visual.defect_call import (
+    finding_from_vision,
+    run_defect_vision,
+    vision_note_for_text,
+)
+from .visual.defect_scope import plan_defect_images, with_slot_files
+from .visual.detect import visual_detection_enabled
 from .scrutiny.rules import (
     Catalogue,
     Defect,
@@ -645,6 +652,7 @@ async def _run_defect(
     workspace_id: str | None = None,
     index_generation: str | None = None,
     use_pinecone: bool = False,
+    vision_note: str | None = None,
 ) -> DefectFinding:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
@@ -772,6 +780,7 @@ async def _run_defect(
         catalogue=catalogue,
         visual_index=check_visual_index,
         layout=layout,
+        vision_note=vision_note,
     )
     raw, usage = await call_structured(
         system_prompt=system_prompt,
@@ -902,6 +911,7 @@ async def _run_defect(
                     catalogue=catalogue,
                     visual_index=check_visual_index,
                     layout=layout,
+                    vision_note=vision_note,
                 )
                 retry_raw, batch_usage = await call_structured(
                     system_prompt=system_prompt,
@@ -2179,6 +2189,27 @@ class ScrutinyWorkflow(Workflow):
         )
 
         planned = len(defects)
+        image_plans = with_slot_files(
+            plan_defect_images(defects, layout),
+            metadata if isinstance(metadata, dict) else None,
+        )
+        plans_by_id = {plan.check_id: plan for plan in image_plans}
+        vision_answers: dict[str, Any] = {}
+        if visual_detection_enabled() and any(plan.pages for plan in image_plans):
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Reading signature and seal pages for {len(image_plans)} "
+                        "defect(s)"
+                    ),
+                )
+            )
+            vision_answers = await run_defect_vision(
+                image_plans,
+                defects_by_id={defect.check_id: defect for defect in defects},
+                model_tier=event.model_tier,
+            )
 
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
@@ -2241,6 +2272,29 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             try:
+                image_plan = plans_by_id.get(defect.check_id)
+                vision_answer = vision_answers.get(defect.check_id)
+                if (
+                    image_plan is not None
+                    and image_plan.complete
+                    and vision_answer is not None
+                ):
+                    try:
+                        return finding_from_vision(
+                            defect,
+                            vision_answer,
+                            layout=layout,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Could not publish the vision answer for %s",
+                            defect.check_id,
+                        )
+                vision_note = (
+                    vision_note_for_text(image_plan, vision_answer)
+                    if image_plan is not None
+                    else None
+                )
                 retrieval_started = time.perf_counter()
                 manifest_missing = (
                     missing_parts_in_layout(defect, layout)
@@ -2278,6 +2332,7 @@ class ScrutinyWorkflow(Workflow):
                     workspace_id=vector_workspace_id,
                     index_generation=index_generation,
                     use_pinecone=use_pinecone,
+                    vision_note=vision_note,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
