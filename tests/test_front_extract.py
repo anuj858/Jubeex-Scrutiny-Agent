@@ -1,4 +1,4 @@
-"""First-30-page extract: slice, schema, and a null special category."""
+"""Front extract: full compiled filing, schema, and a null special category."""
 
 from __future__ import annotations
 
@@ -17,15 +17,8 @@ from extraction_review.scrutiny.catalogue_db import special_category_names_from_
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
-    supplemental_front_party_pages,
 )
-from extraction_review.process_file import (
-    FRONT_EXTRACT_END_PAGE_LIMIT,
-    FRONT_EXTRACT_PAGE_LIMIT,
-    FileEvent,
-    first_pages_pdf,
-    front_extract_opening_pages,
-)
+from extraction_review.process_file import FileEvent
 from extraction_review.split_upload import (
     build_extract_pack_markdown,
     build_front_extract_pack_markdown,
@@ -53,75 +46,6 @@ def _pdf_bytes(page_count: int) -> bytes:
         return document.tobytes()
     finally:
         document.close()
-
-
-def _page_count(pdf_bytes: bytes) -> int:
-    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return document.page_count
-    finally:
-        document.close()
-
-
-def _marked_pdf(page_count: int) -> bytes:
-    document = pymupdf.open()
-    try:
-        for number in range(1, page_count + 1):
-            page = document.new_page()
-            page.insert_text((72, 72), f"PAGE-{number}")
-        return document.tobytes()
-    finally:
-        document.close()
-
-
-def _page_texts(pdf_bytes: bytes) -> list[str]:
-    document = pymupdf.open(stream=pdf_bytes, filetype="pdf")
-    try:
-        return [page.get_text() for page in document]
-    finally:
-        document.close()
-
-
-def test_front_slice_keeps_the_opening_and_the_last_five_pages() -> None:
-    sliced = first_pages_pdf(_marked_pdf(40))
-    texts = _page_texts(sliced)
-    assert len(texts) == FRONT_EXTRACT_PAGE_LIMIT + FRONT_EXTRACT_END_PAGE_LIMIT
-    joined = "\n".join(texts)
-    assert "PAGE-1" in joined
-    assert "PAGE-30" in joined
-    assert "PAGE-31" not in joined
-    assert "PAGE-36" in joined
-    assert "PAGE-40" in joined
-
-
-def test_front_slice_does_not_repeat_pages_already_in_the_opening() -> None:
-    sliced = first_pages_pdf(_marked_pdf(32))
-    assert _page_count(sliced) == 32
-
-
-def test_opening_is_30_pages_or_the_whole_shorter_file() -> None:
-    assert front_extract_opening_pages(12) == 12
-    assert front_extract_opening_pages(30) == 30
-    assert front_extract_opening_pages(62) == 30
-    assert front_extract_opening_pages(700) == 30
-    assert front_extract_opening_pages(5000) == FRONT_EXTRACT_PAGE_LIMIT
-
-
-def test_long_book_keeps_the_first_30_pages_and_the_closing_pages() -> None:
-    opening = front_extract_opening_pages(700)
-    sliced = first_pages_pdf(_marked_pdf(700), opening)
-    joined = "\n".join(_page_texts(sliced))
-    assert "PAGE-30" in joined
-    assert "PAGE-31" not in joined
-    assert "PAGE-696" in joined
-    assert "PAGE-700" in joined
-    assert _page_count(sliced) == opening + FRONT_EXTRACT_END_PAGE_LIMIT
-
-
-def test_first_pages_pdf_keeps_a_shorter_book() -> None:
-    raw = _pdf_bytes(12)
-    assert first_pages_pdf(raw) == raw
-    assert _page_count(first_pages_pdf(raw)) == 12
 
 
 def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -> None:
@@ -160,7 +84,7 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     )
 
 
-def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
+def test_front_pack_keeps_every_parsed_page() -> None:
     pages = {page: f"page {page} text" for page in range(1, 36)}
     labels = {page: ["Main Petition"] for page in range(1, 31)}
     normal = build_extract_pack_markdown(pages, labels, {"Main Petition"})
@@ -174,9 +98,7 @@ def test_front_pack_keeps_the_middle_of_the_30_page_slice() -> None:
     assert "## [Cover Page]" not in front
     assert "## [Opening pages]" not in front
     assert "page 35 text" in front
-    wide = build_front_extract_pack_markdown(pages, opening_pages=75)
-    assert "## [Compiled filing] (p. 31)" in wide
-    assert "## [Closing pages]" not in wide
+    assert "## [Closing pages]" not in front
 
 
 def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> None:
@@ -1338,27 +1260,6 @@ def test_position_of_parties_on_later_pages_keeps_both_columns_current_court() -
     assert "Krishan Dev Singh" in respondents[5]["name"]
     names = [party["name"] for party in [*petitioners, *respondents]]
     assert not any("A/12/2023" in name or name == "and Ors" or "Not a Party" in name for name in names)
-
-
-def test_a_middle_party_schedule_is_labelled_opening_pages() -> None:
-    pages = supplemental_front_party_pages(
-        {
-            40: "POSITION OF PARTIES\n1. A\nVERSUS\n1. B",
-            41: "2. C",
-            42: "3. D",
-            43: "MOST RESPECTFULLY SHOWETH",
-            44: "later narrative",
-        },
-        set(range(1, 31)),
-    )
-    assert sorted(pages) == [40, 41, 42, 43]
-    packed = build_front_extract_pack_markdown(
-        {1: "opening", 32: "closing vakalatnama", 40: pages[40]},
-        opening_pages=30,
-    )
-    assert "[Compiled filing] (p. 40)" in packed
-    assert "[Compiled filing] (p. 32)" in packed
-    assert "[Compiled filing] (p. 1)" in packed
 
 
 def test_index_cuts_the_saved_book_by_source_span() -> None:

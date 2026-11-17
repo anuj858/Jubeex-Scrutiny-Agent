@@ -1219,6 +1219,15 @@ def _hit_fields(hit: Any) -> tuple[str | None, float | None, dict[str, Any]]:
     )
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
     record_id, score, fields = _hit_fields(hit)
     text = (fields.get(text_field) or "").strip()
@@ -1267,6 +1276,7 @@ def _to_chunk(hit: Any, text_field: str) -> dict[str, Any] | None:
         "original_page": fields.get("original_page"),
         "content_hash": fields.get("content_hash"),
         "vector_schema_version": fields.get("vector_schema_version"),
+        "chunk_index": _optional_int(fields.get("chunk_index")),
     }
 
 
@@ -1350,6 +1360,7 @@ def search_filing_chunks(
         "original_page",
         "content_hash",
         "vector_schema_version",
+        "chunk_index",
     ]
 
     def _search(active_filter: dict[str, Any]) -> Any:
@@ -1633,6 +1644,29 @@ def _text_from_fields(fields: dict[str, Any], text_field: str) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def fetch_chunks_by_id(ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Read stored chunks by record id. Missing ids are omitted."""
+    wanted = [str(item).strip() for item in ids if str(item).strip()]
+    if not wanted:
+        return {}
+    text_field = pinecone_text_field
+    try:
+        text_field = resolve_text_field()
+    except ValueError as exc:
+        logger.debug("Using configured Pinecone text field: %s", exc)
+    records = _fetch_id_batch(wanted)
+    found: dict[str, dict[str, Any]] = {}
+    for record_id, record in records.items():
+        fields = _record_fields(record)
+        chunk = _to_chunk(
+            {"_id": record_id, "fields": fields, "_score": 0.0},
+            text_field,
+        )
+        if chunk:
+            found[str(record_id)] = chunk
+    return found
 
 
 def _fetch_id_batch(ids: list[str]) -> dict[str, Any]:

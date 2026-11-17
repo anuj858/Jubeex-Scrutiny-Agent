@@ -3292,37 +3292,16 @@ _SCHEDULE_END = re.compile(
 def _schedule_follow_pages(
     layer: Mapping[int, str],
     start: int,
-    *,
-    skip: set[int] | None = None,
 ) -> dict[int, str]:
     """The schedule page and the next pages, through the prayer."""
     pages: dict[int, str] = {}
-    blocked = skip or set()
     for follow in range(start, start + 4):
-        if follow in blocked:
-            break
         follow_text = layer.get(follow)
         if follow_text is None:
             break
         pages[follow] = follow_text
         if follow != start and _SCHEDULE_END.search(follow_text):
             break
-    return pages
-
-
-def supplemental_front_party_pages(
-    full_text: Mapping[int, str],
-    included_pages: set[int],
-) -> dict[int, str]:
-    """Party pages that sit past the opening slice and before the closing pages."""
-    pages: dict[int, str] = {}
-    layer = {int(page): text or "" for page, text in full_text.items()}
-    for number, text in sorted(layer.items()):
-        if number in included_pages or number in pages:
-            continue
-        if not _is_explicit_party_schedule(text):
-            continue
-        pages.update(_schedule_follow_pages(layer, number, skip=included_pages))
     return pages
 
 

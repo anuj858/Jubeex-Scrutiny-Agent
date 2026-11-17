@@ -729,6 +729,8 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.json"
 _SHARED_LLAMA_TIERS = frozenset({"agentic", "agentic_plus", "cost_effective"})
 _PARSE_TIERS = _SHARED_LLAMA_TIERS | {"fast"}
 _EXTRACT_TIERS = _SHARED_LLAMA_TIERS | {"turbo"}
+_AGENTIC_PARSE_TIERS = frozenset({"agentic", "agentic_plus"})
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 _API_EXCLUDE = {
     "configuration_id",
     "product_type",
@@ -797,6 +799,49 @@ def llama_extract_parse_tier(fallback: str | None = None) -> str | None:
         fallback=fallback,
         allowed=_PARSE_TIERS,
     )
+
+
+def llama_parse_cost_optimizer_enabled() -> bool:
+    """Whether ``LLAMA_PARSE_COST_OPTIMIZER`` is on.
+
+    Accepts ``true``, ``1``, ``yes``, and ``on``. Unset or any other value
+    leaves parsing unchanged.
+    """
+    raw = (os.getenv("LLAMA_PARSE_COST_OPTIMIZER") or "").strip().lower()
+    if not raw or raw in _TRUTHY_ENV or raw in {"0", "false", "no", "off"}:
+        return raw in _TRUTHY_ENV
+    logger.warning(
+        "LLAMA_PARSE_COST_OPTIMIZER=%s is not on or off; leaving the cost optimizer off",
+        raw,
+    )
+    return False
+
+
+def parse_cost_optimizer_requested(tier: str | None) -> bool:
+    """True when this parse tier should send ``processing_options.cost_optimizer``.
+
+    LlamaCloud only applies the optimizer on ``agentic`` and ``agentic_plus``.
+    """
+    return llama_parse_cost_optimizer_enabled() and (
+        (tier or "").strip().lower() in _AGENTIC_PARSE_TIERS
+    )
+
+
+def with_parse_cost_optimizer(
+    create_kwargs: dict[str, Any],
+    *,
+    tier: str | None,
+) -> dict[str, Any]:
+    """Attach ``cost_optimizer.enable`` without dropping other processing options."""
+    if not parse_cost_optimizer_requested(tier):
+        return create_kwargs
+    updated = dict(create_kwargs)
+    processing = dict(updated.get("processing_options") or {})
+    optimizer = dict(processing.get("cost_optimizer") or {})
+    optimizer["enable"] = True
+    processing["cost_optimizer"] = optimizer
+    updated["processing_options"] = processing
+    return updated
 
 
 def with_runtime_llama_tiers(config: BaseModel) -> BaseModel:
