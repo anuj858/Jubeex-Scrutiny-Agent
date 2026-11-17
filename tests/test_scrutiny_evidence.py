@@ -1293,6 +1293,28 @@ def test_review_reason_drops_inventory_and_keeps_the_missing_source() -> None:
     )
 
 
+def test_conflict_review_reason_states_the_fact_not_the_mark_label() -> None:
+    response = DefectResponse(
+        check_id="D-116",
+        status="needs_review",
+        confidence=0.59,
+        summary="Needs review because the available evidence does not safely prove this defect.",
+        observed=(
+            'The Memo of Appearance bears the Advocate’s signature, but the '
+            '"Dated" line is blank. It therefore does not state the date of '
+            "execution or signing."
+        ),
+        gap="conflict",
+        gap_detail="Vakalatnama: Petitioner(s); Vakalatnama: Yours faithfully",
+        review_reason="Vakalatnama: Petitioner(s); Vakalatnama: Yours faithfully.",
+        evidence=[],
+    )
+
+    assert review_reason_for_response(response) == (
+        'The "Dated" line is blank, but a visible mark conflicts with that reading.'
+    )
+
+
 def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:
     defect = _scrutiny_row(
         defect="The cause title does not correctly identify the challenged court",
@@ -2559,6 +2581,63 @@ def test_blank_date_is_not_conflicted_by_present_advocate_signature() -> None:
     conflict_checked = apply_visual_conflict_policy(defect, response, visual)
     assert conflict_checked.status == "defect_found"
     decided = apply_visual_field_policy(defect, conflict_checked, visual)
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+
+
+def test_blank_dated_line_is_a_defect_when_nearby_marks_are_not_dates() -> None:
+    defect = _scrutiny_row(
+        check_id="D-116",
+        defect="Memo of Appearance does not mention the date of execution/filing.",
+        requirement=(
+            "The Memo of Appearance must mention the date on which it is "
+            "executed/signed."
+        ),
+        inspect_parts=["Vakalatnama"],
+    )
+    response = DefectResponse(
+        check_id="D-116",
+        status="defect_found",
+        confidence=0.91,
+        summary="The Dated line is blank.",
+        observed=(
+            "The Memo of Appearance bears the Advocate's signature, but the "
+            '"Dated" line is blank.'
+        ),
+        conclusion="The required execution date is missing.",
+        evidence=[
+            EvidenceRef(
+                page=1,
+                quote="Dated:\nYours faithfully\nAdvocate for the Petitioner(s)",
+            )
+        ],
+    )
+    visual = {
+        "status": "ok",
+        "pages": [1],
+        "targets": [{"page": 1, "document_types": ["Vakalatnama"]}],
+        "failures": [],
+        "marks": [
+            {
+                "page": 1,
+                "document_type": "Vakalatnama",
+                "marking_type": "signature_like_mark",
+                "signature_role": "executant",
+                "associated_label": "Petitioner(s)",
+                "visible_text": "Petitioner(s)",
+            },
+            {
+                "page": 1,
+                "document_type": "Vakalatnama",
+                "marking_type": "advocate_on_record_signature",
+                "signature_role": "advocate",
+                "associated_label": "Yours faithfully",
+            },
+        ],
+    }
+
+    decided = apply_visual_conflict_policy(defect, response, visual)
+
     assert decided.status == "defect_found"
     assert decided.gap is None
 

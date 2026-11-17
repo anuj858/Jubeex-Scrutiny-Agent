@@ -643,7 +643,16 @@ _REVIEW_INSTRUCTION = re.compile(
 )
 _REVIEW_BLOCKER = re.compile(
     r"\b(not|no|cannot|can't|unable|unavailable|missing|unclear|illegible|"
-    r"unreadable|absent|without|fails|failed|conflict|mismatch|differs)\b",
+    r"unreadable|absent|without|fails|failed|conflicts?|mismatch(?:es)?|"
+    r"differs|blank)\b",
+    re.IGNORECASE,
+)
+_REVIEW_VERB = re.compile(
+    r"\b(is|are|was|were|has|have|had|does|do|did)\b",
+    re.IGNORECASE,
+)
+_CONFLICT_STATED = re.compile(
+    r"\b(conflicts?|visible mark|does not match|do not match|disagree|differs)\b",
     re.IGNORECASE,
 )
 
@@ -657,23 +666,36 @@ def _plain_review_text(text: str) -> str:
     return value
 
 
-def _compact_review_reason(reason: str) -> str:
-    """Keep one short sentence: the core reason only."""
-    value = " ".join(reason.split()).strip()
-    clauses = [
-        item.strip(" ;")
-        for item in re.split(r"(?<=[.!?;])\s+", value)
-        if item.strip(" ;")
-    ]
-    substantive = [item for item in clauses if not _REVIEW_INSTRUCTION.match(item)]
-    candidates = substantive or clauses
-    chosen = next(
-        (item for item in candidates if _REVIEW_BLOCKER.search(item)),
-        candidates[0] if candidates else value,
+def _is_mark_label_list(text: str) -> bool:
+    """True when the text is only captions such as 'Vakalatnama: Petitioner(s)'."""
+    body = " ".join(text.strip().strip(" .;").split())
+    if ":" not in body:
+        return False
+    parts = [part.strip(" .") for part in body.split(";") if part.strip(" .")]
+    if not parts:
+        return False
+    label = re.compile(r"^[A-Z][^:]{0,60}:\s*[^:]{1,80}$")
+    if not all(label.match(part) for part in parts):
+        return False
+    return (
+        _REVIEW_BLOCKER.search(body) is None and _REVIEW_VERB.search(body) is None
     )
-    contrast = re.split(r"\s+\bbut\b\s+", chosen, flags=re.I)
-    if len(contrast) > 1 and len(contrast[-1].split()) >= 4:
-        chosen = contrast[-1]
+
+
+def _strip_mark_labels(text: str) -> str:
+    if _is_mark_label_list(text):
+        return ""
+
+    def replace(match: re.Match[str]) -> str:
+        return "" if _is_mark_label_list(match.group(1)) else match.group(0)
+
+    cleaned = re.sub(r"\(([^()]*)\)", replace, text)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip(" ,;")
+
+
+def _finish_review_sentence(chosen: str) -> str:
     chosen = chosen.strip().rstrip(".!?")
     words = chosen.split()
     if len(words) > 25:
@@ -683,6 +705,60 @@ def _compact_review_reason(reason: str) -> str:
     if chosen and not chosen.endswith((".", "!", "?")):
         chosen += "."
     return chosen
+
+
+def _compact_review_reason(reason: str) -> str:
+    """Keep one short sentence: the core reason only."""
+    value = _strip_mark_labels(" ".join(reason.split()).strip())
+    if not value or _is_mark_label_list(value):
+        return ""
+    clauses = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", value)
+        if item.strip()
+    ]
+    substantive = [
+        item
+        for item in clauses
+        if not _REVIEW_INSTRUCTION.match(item) and not _is_mark_label_list(item)
+    ]
+    candidates = substantive or [
+        item for item in clauses if not _is_mark_label_list(item)
+    ]
+    if not candidates:
+        return ""
+    chosen = next(
+        (item for item in candidates if _REVIEW_BLOCKER.search(item)),
+        candidates[0],
+    )
+    contrast = re.split(r"\s+\bbut\b\s+", chosen, maxsplit=1, flags=re.I)
+    if len(contrast) == 2 and len(contrast[1].split()) >= 4:
+        head, tail = contrast
+        if _REVIEW_BLOCKER.search(tail) and not _REVIEW_BLOCKER.search(head):
+            chosen = tail
+    return _finish_review_sentence(chosen)
+
+
+def _publishable_review_reason(text: str) -> str:
+    cleaned = _strip_mark_labels(_plain_review_text(text))
+    if not cleaned or _is_mark_label_list(cleaned):
+        return ""
+    compacted = _compact_review_reason(cleaned)
+    if (
+        not compacted
+        or _is_mark_label_list(compacted)
+        or len(compacted.split()) < 4
+    ):
+        return ""
+    return compacted
+
+
+def _with_visible_conflict(fact: str) -> str:
+    fact = fact.strip().rstrip(".")
+    if _CONFLICT_STATED.search(fact):
+        return _finish_review_sentence(fact)
+    sentence = f"{fact}, but a visible mark conflicts with that reading"
+    return _finish_review_sentence(sentence)
 
 
 def review_reason_for_response(
@@ -702,12 +778,20 @@ def review_reason_for_response(
         model_reason,
         flags=re.I,
     )
-    if model_reason and len(model_reason.split()) >= 4 and generic_reason is None:
-        return _compact_review_reason(model_reason)
+    if generic_reason is None:
+        published = _publishable_review_reason(model_reason)
+        if published:
+            return published
 
-    detail = _plain_review_text(response.gap_detail or "").rstrip(".")
-    if detail and response.gap != "low_confidence" and len(detail.split()) >= 4:
-        return _compact_review_reason(detail)
+    if response.gap == "conflict":
+        fact = _publishable_review_reason(response.observed or "")
+        if fact:
+            return _with_visible_conflict(fact)
+        return "The extracted text and a visible mark do not agree."
+
+    detail = _publishable_review_reason(response.gap_detail or "")
+    if detail and response.gap != "low_confidence":
+        return detail
 
     if response.gap == "low_confidence":
         score = round(response.confidence * 100)
@@ -2104,18 +2188,32 @@ def apply_visual_conflict_policy(
         ]
     ).casefold()
     relevant_types: set[str] = set()
+    # "signature ... blank" must not match a present signature beside a blank date.
     signature_absence_claimed = bool(
         re.search(
-            r"(?:missing|absent|no|without|unsigned|not\s+(?:signed|executed))"
-            r"[^.;]{0,60}(?:signature|thumb impression)|"
-            r"(?:signature|thumb impression)[^.;]{0,60}"
-            r"(?:missing|absent|not shown|blank)",
+            r"\b(?:missing|absent|without|unsigned|no)\b(?:\s+\w+){0,6}\s+"
+            r"(?:signature|thumb impression)\b|"
+            r"\bnot\s+(?:signed|executed)\b|"
+            r"\b(?:signature|thumb impression)\b(?:\s+\w+){0,3}?\s+"
+            r"(?:is\s+|are\s+|was\s+|were\s+)?"
+            r"(?:not\s+shown|missing|absent|blank)\b",
             missing_claim,
             re.IGNORECASE,
         )
     )
-    if signature_absence_claimed and any(
-        term in wording for term in ("signature", "signed", "executed")
+    date_absence_claimed = bool(
+        re.search(
+            r"\b(?:date|dated)\b[^.;]{0,40}\b(?:blank|missing|absent|unfilled)\b|"
+            r"\b(?:blank|missing|no)\b[^.;]{0,40}\b(?:date|dated)\b|"
+            r"\bdoes not\s+(?:mention|state|show|give)\b[^.;]{0,40}\b(?:date|dated)\b",
+            missing_claim,
+            re.IGNORECASE,
+        )
+    )
+    if (
+        signature_absence_claimed
+        and not date_absence_claimed
+        and any(term in wording for term in ("signature", "signed", "executed"))
     ):
         relevant_types.update(
             {
@@ -2124,12 +2222,10 @@ def apply_visual_conflict_policy(
                 "executant_signature",
             }
         )
-    if any(term in wording for term in ("stamp", "seal", "notary", "sworn")) or (
-        "date" in wording and "blank" in wording
-    ):
-        relevant_types.update(
-            {"notary_seal", "stamp", "handwritten_field_value", "date_field_value"}
-        )
+    if any(term in wording for term in ("stamp", "seal", "notary", "sworn")):
+        relevant_types.update({"notary_seal", "stamp"})
+    if date_absence_claimed or ("date" in wording and "blank" in wording):
+        relevant_types.update({"handwritten_field_value", "date_field_value"})
     if not relevant_types:
         return response
     if not isinstance(visual_index, dict):
@@ -2195,6 +2291,16 @@ def apply_visual_conflict_policy(
             detected_signature_roles.add(normalized_role)
         visible = str(mark.get("visible_text") or "").strip()
         label = str(mark.get("associated_label") or "").strip()
+        if marking_type in {"handwritten_field_value", "date_field_value"}:
+            # A party side or a closing is not a date written on the Dated line.
+            if not re.search(
+                r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|"
+                r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\s+\d{2,4}\b|"
+                r"\b[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}\b",
+                visible,
+                re.IGNORECASE,
+            ):
+                continue
         detail = visible or label or marking_type.replace("_", " ")
         conflicts.append(f"{document_type or 'target document'}: {detail}")
     if expected_signature_roles and not expected_signature_roles.issubset(
