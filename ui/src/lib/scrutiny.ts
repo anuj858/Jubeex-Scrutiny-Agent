@@ -111,6 +111,10 @@ export interface Coverage {
   scope_complete?: boolean;
   prompt_truncated?: boolean;
   evidence_complete: boolean;
+  context_followup?: boolean;
+  context_followup_action?: string | null;
+  context_followup_pages?: number[];
+  context_followup_query?: string | null;
 }
 
 export interface VisualLocalization {

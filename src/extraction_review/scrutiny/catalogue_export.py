@@ -129,6 +129,7 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
         "code": defect.check_id,
         "title": defect.defect,
         "requirement": defect.requirement,
+        "requirement_ai": defect.requirement,
         "rule_number": defect.applicable_rule,
         "citation": defect.location_text or defect.location_source,
         "where_to_look": list(defect.where_to_look),
@@ -161,9 +162,6 @@ def _defect_row(defect: Defect, source_codes: list[str]) -> dict[str, Any]:
         "status": "reviewed_by_legal",
         "severity": "p2",
     }
-    ai_requirement = (defect.requirement_ai or "").strip()
-    if ai_requirement:
-        row["requirement_ai"] = ai_requirement
     return row
 
 
