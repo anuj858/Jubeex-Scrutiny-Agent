@@ -1036,6 +1036,83 @@ def _document_type_for_page(
     return part_for_page(chunks, global_page)
 
 
+def bind_inspected_page_evidence(
+    evidence: list[FindingEvidence],
+    global_pages: list[int],
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[FindingEvidence]:
+    """A quote from an inspected page keeps that page's document.
+
+    Vision reads the page image and returns the quote without an excerpt id.
+    The pages in that request already name the document, so the citation is
+    not published with an empty document.
+    """
+    if not evidence or not layout or not global_pages:
+        return evidence
+    inspected: list[tuple[int, dict[str, Any]]] = []
+    for number in global_pages:
+        meta = page_entry(layout, number)
+        if isinstance(meta, dict):
+            inspected.append((number, meta))
+    if not inspected:
+        return evidence
+    identities = {
+        (
+            _document_type_for_page(meta, None, number),
+            str(meta.get("slot_id") or "").strip(),
+        )
+        for number, meta in inspected
+    }
+    one_document = len(identities) == 1 and next(iter(identities))[0]
+    bound: list[FindingEvidence] = []
+    for item in evidence:
+        if item.document_part or item.slot_id:
+            bound.append(item)
+            continue
+        boxes, status, page = boxes_on_pages(
+            item.quote or "",
+            [number for number, _meta in inspected],
+            layout,
+        )
+        meta = page_entry(layout, page) if status == "matched" else None
+        if meta is None and one_document and len(inspected) == 1:
+            _number, meta = inspected[0]
+            status = "page_only"
+            boxes = []
+        elif meta is None and one_document:
+            part, slot = next(iter(identities))
+            bound.append(
+                item.model_copy(
+                    update={
+                        "document_part": part,
+                        "slot_id": slot or None,
+                    }
+                )
+            )
+            continue
+        if not isinstance(meta, dict):
+            bound.append(item)
+            continue
+        local_page = _safe_page_number(meta.get("local_page"))
+        published_page, published_boxes, boxes_status = _publish_local_evidence(
+            local_page=local_page,
+            boxes=_as_bounding_boxes(boxes),
+            boxes_status=status if status in ("matched", "page_only", "unavailable") else "unavailable",
+        )
+        bound.append(
+            item.model_copy(
+                update={
+                    "page": published_page,
+                    "bounding_boxes": published_boxes,
+                    "boxes_status": boxes_status,
+                    "document_part": _document_type_for_page(meta, None, page),
+                    "slot_id": str(meta.get("slot_id") or "").strip() or None,
+                }
+            )
+        )
+    return bound
+
+
 def _publish_local_evidence(
     *,
     local_page: int | None,
@@ -2747,8 +2824,10 @@ def build_finding(
     evidence = attach_evidence_boxes(
         refs, layout=layout, chunks=chunks, visual_index=visual_index
     )
-    evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
+    if not chunks and layout:
+        evidence = bind_inspected_page_evidence(evidence, reviewed_global, layout)
+    evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_local = _local_pages(layout, reviewed_global)
     pages = reviewed_local
     location = location_for_finding(

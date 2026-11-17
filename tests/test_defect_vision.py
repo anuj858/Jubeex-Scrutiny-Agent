@@ -7,12 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from extraction_review.process_split_files import _detect_visual_for_state
-from extraction_review.scrutiny.rules import Defect
+from extraction_review.scrutiny.rules import Catalogue, Defect
 from extraction_review.visual.defect_call import (
+    finding_from_vision,
     pack_vision_batches,
     parse_defect_vision_payload,
 )
 from extraction_review.visual.defect_scope import (
+    DefectImagePage,
     defect_needs_ink,
     plan_defect_images,
     selector_for_document,
@@ -209,6 +211,136 @@ def test_vision_payload_keeps_the_answer_and_the_mark() -> None:
     assert answer.response.status == "defect_found"
     assert answer.marks[0].page == 2
     assert answer.marks[0].bounding_boxes[0].x == 0.62
+
+
+def _catalogue_for(defect: Defect) -> Catalogue:
+    return Catalogue(
+        catalogue_id="sci_registry_defects",
+        schema_version="test",
+        catalogue_version="test",
+        jurisdiction="sci",
+        defects=[defect],
+    )
+
+
+def test_a_vision_quote_keeps_the_inspected_document(monkeypatch) -> None:
+    defect = _defect(
+        "D-116",
+        "Memo of Appearance does not mention the date of execution/filing.",
+        requirement=(
+            "The Memo of Appearance must mention the date on which it is "
+            "executed/signed."
+        ),
+        inspect_parts=["Vakalatnama"],
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.schema.get_catalogue",
+        lambda: _catalogue_for(defect),
+    )
+    layout = {
+        216: {
+            "document_part": "Vakalatnama",
+            "slot_id": "vakalatnama",
+            "local_page": 1,
+            "words": [
+                {"t": "MEMO", "x": 0.30, "y": 0.42, "w": 0.08, "h": 0.02, "line": 1},
+                {"t": "OF", "x": 0.39, "y": 0.42, "w": 0.04, "h": 0.02, "line": 1},
+                {
+                    "t": "APPEARANCE",
+                    "x": 0.44,
+                    "y": 0.42,
+                    "w": 0.16,
+                    "h": 0.02,
+                    "line": 1,
+                },
+            ],
+        }
+    }
+    page = DefectImagePage(
+        page=216,
+        local_page=1,
+        slot_id="vakalatnama",
+        document_type="Vakalatnama",
+    )
+    parsed = parse_defect_vision_payload(
+        """
+        {"answers":[{
+          "check_id":"D-116",
+          "status":"defect_found",
+          "confidence":0.98,
+          "summary":"The Memo of Appearance has a blank date field",
+          "observed":"The field labelled Dated is unfilled.",
+          "conclusion":"The memo does not mention its date.",
+          "evidence":[{"quote":"MEMO OF APPEARANCE"},{"quote":"Dated:"}]
+        }]}
+        """,
+        pages=[page],
+        check_ids=["D-116"],
+    )
+    finding = finding_from_vision(defect, parsed["D-116"], layout=layout)
+    by_quote = {item.quote: item for item in finding.evidence}
+    memo = by_quote["MEMO OF APPEARANCE"]
+    assert memo.document_part == "Vakalatnama"
+    assert memo.slot_id == "vakalatnama"
+    assert memo.page == 1
+    assert memo.boxes_status == "matched"
+    assert memo.bounding_boxes
+    dated = by_quote["Dated:"]
+    assert dated.document_part == "Vakalatnama"
+    assert dated.slot_id == "vakalatnama"
+    assert dated.page == 1
+    assert dated.boxes_status == "page_only"
+
+
+def test_a_vision_quote_is_not_assigned_across_two_documents(monkeypatch) -> None:
+    defect = _defect(
+        "D-116",
+        "Memo of Appearance does not mention the date of execution/filing.",
+        requirement="The memo must be signed.",
+        inspect_parts=["Vakalatnama"],
+    )
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.schema.get_catalogue",
+        lambda: _catalogue_for(defect),
+    )
+    layout = _layout(
+        [
+            (10, "Affidavit", "affidavit", 1, "solemnly affirm"),
+            (216, "Vakalatnama", "vakalatnama", 1, "advocate"),
+        ]
+    )
+    pages = [
+        DefectImagePage(
+            page=10,
+            local_page=1,
+            slot_id="affidavit",
+            document_type="Affidavit",
+        ),
+        DefectImagePage(
+            page=216,
+            local_page=1,
+            slot_id="vakalatnama",
+            document_type="Vakalatnama",
+        ),
+    ]
+    parsed = parse_defect_vision_payload(
+        """
+        {"answers":[{
+          "check_id":"D-116",
+          "status":"defect_found",
+          "confidence":0.9,
+          "summary":"The date is blank.",
+          "observed":"Dated is blank.",
+          "conclusion":"No date.",
+          "evidence":[{"quote":"MEMO OF APPEARANCE"}]
+        }]}
+        """,
+        pages=pages,
+        check_ids=["D-116"],
+    )
+    finding = finding_from_vision(defect, parsed["D-116"], layout=layout)
+    assert finding.evidence[0].document_part is None
+    assert finding.evidence[0].slot_id is None
 
 
 def test_short_affidavit_is_sent_whole() -> None:

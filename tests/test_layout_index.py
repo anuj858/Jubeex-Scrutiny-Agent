@@ -1287,6 +1287,48 @@ def test_list_of_dates_keeps_the_left_date_on_its_own_row() -> None:
     assert all(box["y"] > 0.10 for box in boxes)
 
 
+def test_a_long_quote_stays_on_its_paragraph_not_a_later_echo() -> None:
+    """Verification repeats "that the contents of" and "has been".
+
+    The box belongs on the paragraph that carries the rest of the quote,
+    even when stamps removed some words from the middle.
+    """
+    quote = (
+        "That the contents of SLP including Synopsis and List of Interlocutory "
+        "Applications from Page Bto H , Petition from Page 13-23 Payer on Page 21 "
+        "[_] and other Interlocutory Applications has been thoroughly read by me "
+        "and understood by me and I declare that this SLP is being filed on my "
+        "instructions."
+    )
+    paragraph = [
+        "That", "I", "further", "contents", "and", "List", "from", "Page", "B", "H",
+        "Petition", "from", "13-23", "Payer", "on", "21", "other", "has", "been",
+        "thoroughly", "read", "by", "me", "and", "understood", "by", "me", "and",
+        "I", "declare", "that", "this", "SLP", "being", "filed", "on", "my",
+        "instructions.",
+    ]
+    verification = [
+        "Verified", "at", "New", "Delhi", "that", "the", "contents", "of", "my",
+        "above", "affidavit", "are", "true", "and", "correct", "to", "my",
+        "knowledge", "and", "nothing", "material", "has", "been", "concealed",
+        "therein.",
+    ]
+    words = [
+        _placed(token, 0.12 + (index % 8) * 0.09, 0.50 + (index // 8) * 0.028)
+        for index, token in enumerate(paragraph)
+    ]
+    words.extend(
+        _placed(token, 0.14 + (index % 8) * 0.09, 0.80 + (index // 8) * 0.028)
+        for index, token in enumerate(verification)
+    )
+    boxes, status = boxes_for_quote(quote, 1, _bare_layout(words))
+    assert status == "matched"
+    assert boxes
+    assert all(box["y"] < 0.75 for box in boxes)
+    assert min(box["y"] for box in boxes) < 0.56
+    assert max(box["y"] for box in boxes) > 0.58
+
+
 def test_two_shared_words_do_not_box_a_longer_quote() -> None:
     layout = _bare_layout(
         [_placed("the", 0.10, 0.20, 0.04), _placed("court", 0.16, 0.20, 0.06)]
