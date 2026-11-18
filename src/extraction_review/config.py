@@ -787,6 +787,9 @@ FILING_SCHEMAS = {filing_type: CoreFilingRecord for filing_type in JUBEEX_FILING
 
 class ExtractConfig(ExtractV2Parameters):
     configuration_id: str | None = None
+    # Deterministic extraction settings are consumed by our worker and must not
+    # be sent to LlamaCloud when the legacy provider is selected.
+    local_extraction: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 class ClassifyConfig(ClassifyV2Parameters):
     rules: list[Rule] = []
@@ -968,7 +971,10 @@ def with_runtime_llama_tiers(config: BaseModel) -> BaseModel:
         payload["parse_tier"] = llama_split_parse_tier(config.parse_tier)
     else:
         return config
-    return type(config).model_validate(payload)
+    # ResourceConfig supplies an already validated model.  Copying preserves
+    # model_construct-based test/config callers while applying only the two
+    # runtime overrides; re-validating can reject legacy SDK literal aliases.
+    return config.model_copy(update=payload)
 
 
 def _block_versions(block: Any) -> dict[str, str]:

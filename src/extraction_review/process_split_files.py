@@ -68,6 +68,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .local_extraction import LocalParseExtractor, extraction_provider
 from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .process_file import (
     ExtractedEvent,
@@ -278,6 +279,12 @@ class SplitFilesState(BaseModel):
     fallback_file_id: str | None = None
     extract_pack_file_id: str | None = None
     extract_job_id: str | None = None
+    extraction_provider: str | None = None
+    local_extraction_data: dict[str, Any] = Field(default_factory=dict)
+    local_extraction_confidence: dict[str, float] = Field(default_factory=dict)
+    local_extraction_provenance: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
@@ -724,6 +731,38 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
+        provider = extraction_provider()
+        if provider == "local":
+            if not page_markdown:
+                raise RuntimeError(
+                    "Local extraction requires the saved full-file ParseArtifact"
+                )
+            local = LocalParseExtractor(extract_config.local_extraction).extract(
+                page_markdown=page_markdown,
+                page_parts=page_parts,
+                filing_type=state.filing_type,
+                front_extract=state.front_extract,
+            )
+            local_job_id = f"local:{uuid.uuid4()}"
+            async with ctx.store.edit_state() as mutable:
+                mutable.extraction_provider = provider
+                mutable.extract_pack_file_id = None
+                mutable.extract_job_id = local_job_id
+                mutable.extract_started_at = extract_started_at
+                mutable.local_extraction_data = local.data
+                mutable.local_extraction_confidence = local.confidence
+                mutable.local_extraction_provenance = local.provenance
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Extracted configured filing fields locally from the "
+                        f"saved full-file parse ({len(page_markdown)} physical pages)"
+                    ),
+                )
+            )
+            return ExtractJobStartedEvent()
+
         if state.front_extract:
             pack_text = build_front_extract_pack_markdown(
                 page_markdown,
@@ -797,6 +836,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 )
 
         async with ctx.store.edit_state() as state:
+            state.extraction_provider = provider
             state.extract_pack_file_id = pack_file_id
             state.extract_job_id = extract_job.id
             state.extract_started_at = extract_started_at
@@ -836,52 +876,97 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
-        await llama_cloud_client.extract.wait_for_completion(
-            state.extract_job_id,
-            project_id=project_id,
+        provider = state.extraction_provider or (
+            "local" if state.extract_job_id.startswith("local:") else "llamacloud"
         )
-        job = await llama_cloud_client.extract.get(
-            state.extract_job_id,
-            expand=["extract_metadata", "usage"],
-            project_id=project_id,
-        )
+        job: Any | None = None
+        if provider == "local":
+            usage_summary = summarize_llamacloud_usage(state.llamacloud_jobs or [])
+        else:
+            await llama_cloud_client.extract.wait_for_completion(
+                state.extract_job_id,
+                project_id=project_id,
+            )
+            job = await llama_cloud_client.extract.get(
+                state.extract_job_id,
+                expand=["extract_metadata", "usage"],
+                project_id=project_id,
+            )
+            extract_usage = await collect_extract_usage(
+                llama_cloud_client,
+                state.extract_job_id,
+                payload=job,
+            )
+            usage_summary = summarize_llamacloud_usage(
+                [*(state.llamacloud_jobs or []), extract_usage]
+            )
         logger.info(
-            "[ExtractionTiming] extract=%ss job_id=%s",
+            "[ExtractionTiming] provider=%s extract=%ss job_id=%s",
+            provider,
             elapsed_seconds(state.extract_started_at),
             state.extract_job_id,
-        )
-        extract_usage = await collect_extract_usage(
-            llama_cloud_client,
-            state.extract_job_id,
-            payload=job,
-        )
-        usage_summary = summarize_llamacloud_usage(
-            [*(state.llamacloud_jobs or []), extract_usage]
         )
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
         try:
-            job_payload = job.model_dump(mode="json")
-            logger.info(
-                "Extracted split-upload job id=%s status=%s top_level_fields=%s",
-                state.extract_job_id,
-                job_payload.get("status"),
-                sorted(job_payload),
-            )
-            data = ExtractedData.from_extract_job(
-                job=job,
-                schema=(
-                    FrontExtractRecord if state.front_extract else LegalExtractRecord
-                ),
-                file_name=state.filename,
-                file_id=record_file_id,
-                file_hash=state.file_hash,
-            )
+            if provider == "local":
+                schema = FrontExtractRecord if state.front_extract else LegalExtractRecord
+                record = schema.model_validate(state.local_extraction_data)
+                overall = (
+                    sum(state.local_extraction_confidence.values())
+                    / len(state.local_extraction_confidence)
+                    if state.local_extraction_confidence
+                    else None
+                )
+                field_confidence = dict(state.local_extraction_confidence)
+                data = ExtractedData(
+                    original_data=record,
+                    data=record,
+                    status="accepted",
+                    overall_confidence=overall,
+                    field_metadata={
+                        key: {"confidence": value}
+                        for key, value in field_confidence.items()
+                    },
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                logger.info(
+                    "Local parse extraction job id=%s fields=%s",
+                    state.extract_job_id,
+                    sorted(state.local_extraction_data),
+                )
+            else:
+                if job is None:
+                    raise RuntimeError("LlamaCloud extraction job was not loaded")
+                job_payload = job.model_dump(mode="json")
+                logger.info(
+                    "Extracted split-upload job id=%s status=%s top_level_fields=%s",
+                    state.extract_job_id,
+                    job_payload.get("status"),
+                    sorted(job_payload),
+                )
+                data = ExtractedData.from_extract_job(
+                    job=job,
+                    schema=(
+                        FrontExtractRecord if state.front_extract else LegalExtractRecord
+                    ),
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                overall = overall_confidence_from_job(job)
+                field_confidence = field_confidence_from_job(job)
             if data.metadata is None:
                 data.metadata = {}
-            overall = overall_confidence_from_job(job)
+            data.metadata["extraction_provider"] = provider
+            if provider == "local":
+                data.metadata["extraction_provenance"] = (
+                    state.local_extraction_provenance
+                )
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
             if state.source_parse_job_id:
@@ -902,7 +987,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             }
             data.metadata["extract_confidence"] = {
                 "overall": overall,
-                "fields": field_confidence_from_job(job),
+                "fields": field_confidence,
             }
             data.metadata["documents"] = [
                 {

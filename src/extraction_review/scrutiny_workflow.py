@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal
 
 import httpx
 from llama_cloud import AsyncLlamaCloud
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource
@@ -55,12 +55,20 @@ from .layout_index import (
 )
 from .llm import (
     LLMError,
+    OpenRouterBatchError,
+    StructuredBatchRequest,
+    StructuredBatchResult,
     call_structured,
+    call_structured_batch,
     create_openrouter_http_client,
+    delete_openrouter_batches,
     llm_enabled,
     llm_provider,
     llm_requests_per_minute,
     mask_llm_credential,
+    openrouter_batch_enabled,
+    openrouter_batch_max_requests,
+    openrouter_batch_sync_fallback_enabled,
     scrutiny_model,
 )
 from .logging_utils import safe_url_for_log
@@ -77,13 +85,6 @@ from .scrutiny.prompts import (
     build_defect_prompt,
     build_system_prompt,
 )
-from .visual.defect_call import (
-    finding_from_vision,
-    run_defect_vision,
-    vision_note_for_text,
-)
-from .visual.defect_scope import plan_defect_images, with_slot_files
-from .visual.detect import visual_detection_enabled
 from .scrutiny.rules import (
     Catalogue,
     Defect,
@@ -93,8 +94,8 @@ from .scrutiny.rules import (
     enabled_defect_ids,
     normalize_filing_type,
     normalize_special_category,
-    split_special_category_list,
     refresh_catalogue,
+    split_special_category_list,
 )
 from .scrutiny.schema import (
     Coverage,
@@ -102,9 +103,9 @@ from .scrutiny.schema import (
     DefectResponse,
     LlmUsage,
     ScrutinyReport,
+    apply_catalogue_gap_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
-    apply_catalogue_gap_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -113,8 +114,8 @@ from .scrutiny.schema import (
     apply_margin_layout_policy,
     apply_presence_only_policy,
     apply_retrieval_policy,
-    apply_reviewed_document_policy,
     apply_review_reason_consistency_policy,
+    apply_reviewed_document_policy,
     apply_scope_coverage_policy,
     apply_status_policy,
     apply_supported_evidence_policy,
@@ -139,6 +140,13 @@ from .vector_store import (
     scrutiny_max_chunks,
     scrutiny_top_k,
 )
+from .visual.defect_call import (
+    finding_from_vision,
+    run_defect_vision,
+    vision_note_for_text,
+)
+from .visual.defect_scope import plan_defect_images, with_slot_files
+from .visual.detect import visual_detection_enabled
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
     VISUAL_ARTIFACT_URL_KEY,
@@ -180,9 +188,7 @@ class EvidenceWorkspace:
     )
 
     @classmethod
-    def from_layout(
-        cls, layout: dict[int, dict[str, Any]] | None
-    ) -> EvidenceWorkspace:
+    def from_layout(cls, layout: dict[int, dict[str, Any]] | None) -> EvidenceWorkspace:
         normalized = layout or {}
         pages_by_part: dict[str, list[int]] = {}
         for page_number, page in sorted(normalized.items()):
@@ -282,10 +288,15 @@ class ScrutinyMicrobatcher:
             *required_parts_for_defect(defect),
             *(getattr(defect, "context_parts", None) or []),
         ]
-        visual = "visual" if any(
-            term in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
-            for term in _VISUAL_TERMS
-        ) else "text"
+        visual = (
+            "visual"
+            if any(
+                term
+                in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
+                for term in _VISUAL_TERMS
+            )
+            else "text"
+        )
         return (model, visual, *sorted(set(parts), key=str.casefold))
 
     async def evaluate(
@@ -364,7 +375,10 @@ class ScrutinyMicrobatcher:
     async def _flush(self, pending: list[_PendingEvaluation]) -> None:
         if not pending:
             return
-        if len(pending) == 1 or sum(len(item.user_prompt) for item in pending) > self.max_chars:
+        if (
+            len(pending) == 1
+            or sum(len(item.user_prompt) for item in pending) > self.max_chars
+        ):
             await asyncio.gather(*(self._single(item) for item in pending))
             return
         system_prompt = pending[0].system_prompt + (
@@ -395,7 +409,9 @@ class ScrutinyMicrobatcher:
                 if not item.future.done():
                     item.future.set_result((by_id[item.defect.check_id], share))
         except Exception:
-            logger.warning("Micro-batch failed; retrying checks individually", exc_info=True)
+            logger.warning(
+                "Micro-batch failed; retrying checks individually", exc_info=True
+            )
             await asyncio.gather(*(self._single(item) for item in pending))
 
     async def _single(self, item: _PendingEvaluation) -> None:
@@ -482,6 +498,7 @@ class ScrutinyState(BaseModel):
     agent_data_id: str | None = None
     file_hash: str | None = None
     file_url: str | None = None
+    openrouter_batch_ids: list[str] = Field(default_factory=list)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -659,7 +676,9 @@ def _complete_evidence_batches(
     Summary chunks are repeated as context. Oversized single pages are split
     into page-preserving slices so every character reaches an evaluator.
     """
-    summaries = [dict(chunk) for chunk in chunks if chunk.get("chunk_kind") == "summary"]
+    summaries = [
+        dict(chunk) for chunk in chunks if chunk.get("chunk_kind") == "summary"
+    ]
     evidence: list[dict[str, Any]] = []
     slice_limit = max(4_000, MAX_EVIDENCE_CHARS - 1_000)
     for chunk in chunks:
@@ -845,18 +864,14 @@ def _complete_layout_chunks_for_defect(
     if not evidence_parts:
         return chunks
 
-    summary = [
-        chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"
-    ][:1]
+    summary = [chunk for chunk in chunks if chunk.get("chunk_kind") == "summary"][:1]
     complete: list[dict[str, Any]] = []
     for page_number, page in sorted(layout.items()):
         if not isinstance(page, dict):
             continue
         names = _layout_document_parts(page.get("document_part"))
         if not names or not any(
-            chunks_cover_part(
-                [{"document_part": names, "chunk_kind": "page"}], part
-            )
+            chunks_cover_part([{"document_part": names, "chunk_kind": "page"}], part)
             for part in evidence_parts
         ):
             continue
@@ -902,7 +917,29 @@ def _complete_layout_chunks_for_defect(
     return summary + complete if complete else chunks
 
 
-async def _run_defect(
+@dataclass
+class _PreparedDefectEvaluation:
+    defect: Defect
+    catalogue: Catalogue
+    record: dict[str, Any] | None
+    chunks: list[dict[str, Any]]
+    layout: dict[int, dict[str, Any]] | None
+    check_visual_index: dict[str, Any] | None
+    model: str
+    coverage: Coverage
+    system_prompt: str
+    user_prompt: str
+    vision_note: str | None = None
+    llm_client: httpx.AsyncClient | None = None
+    evidence_workspace: EvidenceWorkspace | None = None
+    file_hash: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
+    index_generation: str | None = None
+    use_pinecone: bool = False
+
+
+def _prepare_defect_evaluation(
     defect: Defect,
     *,
     catalogue: Catalogue,
@@ -915,14 +952,13 @@ async def _run_defect(
     model: str,
     llm_client: httpx.AsyncClient | None = None,
     evidence_workspace: EvidenceWorkspace | None = None,
-    evaluator: ScrutinyMicrobatcher | None = None,
     file_hash: str | None = None,
     organization_id: str | None = None,
     workspace_id: str | None = None,
     index_generation: str | None = None,
     use_pinecone: bool = False,
     vision_note: str | None = None,
-) -> DefectFinding:
+) -> DefectFinding | _PreparedDefectEvaluation:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
     # requirement, applicability, manifest and filing evidence determine the
@@ -1028,7 +1064,9 @@ async def _run_defect(
     )
     document_found = bool(chunks) and not missing_required_parts(defect, chunks)
     prompt_truncated = _prompt_evidence_truncated(chunks)
-    scope_complete = _retrieval_evidence_complete(defect, chunks, layout) and not prompt_truncated
+    scope_complete = (
+        _retrieval_evidence_complete(defect, chunks, layout) and not prompt_truncated
+    )
     coverage = Coverage(
         chunks_reviewed=len(chunks),
         pages_reviewed=pages,
@@ -1053,32 +1091,63 @@ async def _run_defect(
         layout=layout,
         vision_note=vision_note,
     )
-    if evaluator is not None:
-        raw, usage = await evaluator.evaluate(
-            defect=defect,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-        )
-    else:
-        raw, usage = await call_structured(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            response_model=DefectResponse,
-            model=model,
-            client=llm_client,
-            request_label=f"scrutiny:{defect.check_id}",
-        )
-        model_status = raw.status
-        prior_decision = {
-            "status": raw.status,
-            "confidence": raw.confidence,
-            "gap": raw.gap,
-            "gap_detail": raw.gap_detail,
-            "summary": raw.summary,
-            "observed": raw.observed,
-            "conclusion": raw.conclusion,
-        }
+    return _PreparedDefectEvaluation(
+        defect=defect,
+        catalogue=catalogue,
+        record=record,
+        chunks=chunks,
+        layout=layout,
+        check_visual_index=check_visual_index,
+        model=model,
+        coverage=coverage,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        vision_note=vision_note,
+        llm_client=llm_client,
+        evidence_workspace=evidence_workspace,
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=index_generation,
+        use_pinecone=use_pinecone,
+    )
+
+
+async def _finalize_defect_evaluation(
+    prepared: _PreparedDefectEvaluation,
+    raw: DefectResponse,
+    usage: LlmUsage,
+) -> DefectFinding:
+    """Apply post-processing and any evidence follow-up to a model result."""
+    defect = prepared.defect
+    catalogue = prepared.catalogue
+    record = prepared.record
+    chunks = prepared.chunks
+    layout = prepared.layout
+    check_visual_index = prepared.check_visual_index
+    model = prepared.model
+    coverage = prepared.coverage
+    system_prompt = prepared.system_prompt
+    vision_note = prepared.vision_note
+    llm_client = prepared.llm_client
+    evidence_workspace = prepared.evidence_workspace
+    scope_complete = coverage.scope_complete
+    prompt_truncated = coverage.prompt_truncated
+    file_hash = prepared.file_hash
+    organization_id = prepared.organization_id
+    workspace_id = prepared.workspace_id
+    index_generation = prepared.index_generation
+    use_pinecone = prepared.use_pinecone
+    model_status = raw.status
+    prior_decision = {
+        "status": raw.status,
+        "confidence": raw.confidence,
+        "gap": raw.gap,
+        "gap_detail": raw.gap_detail,
+        "summary": raw.summary,
+        "observed": raw.observed,
+        "conclusion": raw.conclusion,
+    }
     response = _sanitize_response(defect, raw, chunks, check_visual_index, layout)
     response = apply_scope_coverage_policy(
         response,
@@ -1129,11 +1198,7 @@ async def _run_defect(
         )
         pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
         added_pages = sorted(
-            {
-                int(chunk["page"])
-                for chunk in added
-                if chunk.get("page") is not None
-            }
+            {int(chunk["page"]) for chunk in added if chunk.get("page") is not None}
         )
         coverage = coverage.model_copy(
             update={
@@ -1296,6 +1361,68 @@ async def _run_defect(
         visual_index=check_visual_index,
         record=record if isinstance(record, dict) else None,
     )
+
+
+async def _run_defect(
+    defect: Defect,
+    *,
+    catalogue: Catalogue,
+    record: dict[str, Any] | None,
+    chunks: list[dict[str, Any]],
+    filing_type: str | None,
+    layout: dict[int, dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
+    absence_defect_parts: list[str] | None = None,
+    model: str,
+    llm_client: httpx.AsyncClient | None = None,
+    evidence_workspace: EvidenceWorkspace | None = None,
+    evaluator: ScrutinyMicrobatcher | None = None,
+    file_hash: str | None = None,
+    organization_id: str | None = None,
+    workspace_id: str | None = None,
+    index_generation: str | None = None,
+    use_pinecone: bool = False,
+    vision_note: str | None = None,
+) -> DefectFinding:
+    """Synchronous-call compatibility wrapper used outside batch scrutiny."""
+    prepared = _prepare_defect_evaluation(
+        defect,
+        catalogue=catalogue,
+        record=record,
+        chunks=chunks,
+        filing_type=filing_type,
+        layout=layout,
+        visual_index=visual_index,
+        absence_defect_parts=absence_defect_parts,
+        model=model,
+        llm_client=llm_client,
+        evidence_workspace=evidence_workspace,
+        file_hash=file_hash,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        index_generation=index_generation,
+        use_pinecone=use_pinecone,
+        vision_note=vision_note,
+    )
+    if isinstance(prepared, DefectFinding):
+        return prepared
+    if evaluator is not None:
+        raw, usage = await evaluator.evaluate(
+            defect=defect,
+            system_prompt=prepared.system_prompt,
+            user_prompt=prepared.user_prompt,
+            model=model,
+        )
+    else:
+        raw, usage = await call_structured(
+            system_prompt=prepared.system_prompt,
+            user_prompt=prepared.user_prompt,
+            response_model=DefectResponse,
+            model=model,
+            client=llm_client,
+            request_label=f"scrutiny:{defect.check_id}",
+        )
+    return await _finalize_defect_evaluation(prepared, raw, usage)
 
 
 async def _chunks_for_defect(
@@ -1619,8 +1746,7 @@ def _aor_certificate_text_pages(
         int(number)
         for number, page in layout.items()
         if isinstance(page, dict)
-        and "Main Petition"
-        in _layout_document_parts(page.get("document_part"))
+        and "Main Petition" in _layout_document_parts(page.get("document_part"))
     ]
     last_main = max(main_pages) if main_pages else None
     found: list[dict[str, Any]] = []
@@ -2552,6 +2678,7 @@ class ScrutinyWorkflow(Workflow):
 
         persist_lock = asyncio.Lock()
         persist_tasks: set[asyncio.Task[None]] = set()
+        terminal_openrouter_batch_ids: set[str] = set()
 
         async def persist_report(report: ScrutinyReport) -> None:
             async with persist_lock:
@@ -2581,6 +2708,11 @@ class ScrutinyWorkflow(Workflow):
             done = stopped_early or len(current) >= planned
             if not done and len(current) % persist_every == 0:
                 schedule_persist(report)
+
+        llm_http_client = (
+            create_openrouter_http_client() if llm_provider() == "openrouter" else None
+        )
+        microbatcher = ScrutinyMicrobatcher(llm_http_client)
 
         async def run_one(defect: Defect) -> DefectFinding:
             ctx.write_event_to_stream(
@@ -2705,18 +2837,318 @@ class ScrutinyWorkflow(Workflow):
             )
             return finding
 
-        llm_http_client = (
-            create_openrouter_http_client() if llm_provider() == "openrouter" else None
-        )
-        microbatcher = ScrutinyMicrobatcher(llm_http_client)
-        try:
-            findings, stopped_early = await collect_defect_findings(
-                defects,
-                run_one,
-                concurrency=concurrency,
-                stop_on_error=False,
-                on_update=publish,
+        async def run_batch_checks() -> tuple[list[DefectFinding], bool]:
+            """Retrieve first, then submit model-ready checks in bulk.
+
+            Retrieval remains bounded by ``SCRUTINY_CONCURRENCY``. It is not
+            placed inside the OpenRouter request batch because Pinecone/layout
+            evidence must be complete before a model request can be built.
+            """
+            retrieval_semaphore = asyncio.Semaphore(max(1, concurrency))
+
+            async def prepare_one(
+                defect: Defect,
+            ) -> DefectFinding | _PreparedDefectEvaluation:
+                ctx.write_event_to_stream(
+                    Status(level="info", message=f"Preparing {defect.check_id}")
+                )
+                try:
+                    started = time.perf_counter()
+                    image_plan = plans_by_id.get(defect.check_id)
+                    vision_answer = vision_answers.get(defect.check_id)
+                    if (
+                        image_plan is not None
+                        and image_plan.complete
+                        and vision_answer is not None
+                    ):
+                        try:
+                            return finding_from_vision(
+                                defect,
+                                vision_answer,
+                                layout=layout,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Could not publish the vision answer for %s",
+                                defect.check_id,
+                            )
+                    vision_note = (
+                        vision_note_for_text(image_plan, vision_answer)
+                        if image_plan is not None
+                        else None
+                    )
+                    manifest_missing = (
+                        missing_parts_in_layout(defect, layout)
+                        if defect.manifest_absence_proves_defect
+                        else missing_dependency_parts_in_layout(defect, layout)
+                    )
+                    async with retrieval_semaphore:
+                        chunks = (
+                            []
+                            if manifest_missing
+                            else await _chunks_for_defect(
+                                defect,
+                                file_hash=file_hash,
+                                max_chunks=max_chunks,
+                                use_pinecone=use_pinecone,
+                                organization_id=vector_organization_id,
+                                workspace_id=vector_workspace_id,
+                                index_generation=index_generation,
+                                layout=layout,
+                                evidence_workspace=evidence_workspace,
+                            )
+                        )
+                    prepared = _prepare_defect_evaluation(
+                        defect,
+                        catalogue=catalogue,
+                        record=record,
+                        chunks=chunks,
+                        filing_type=filing_type,
+                        layout=layout,
+                        visual_index=visual_index,
+                        absence_defect_parts=absence_owners.get(defect.check_id),
+                        model=defect_model,
+                        llm_client=llm_http_client,
+                        evidence_workspace=evidence_workspace,
+                        file_hash=file_hash,
+                        organization_id=vector_organization_id,
+                        workspace_id=vector_workspace_id,
+                        index_generation=index_generation,
+                        use_pinecone=use_pinecone,
+                        vision_note=vision_note,
+                    )
+                    logger.info(
+                        "[ScrutinyTiming] check=%s batch_prepare=%.2fs",
+                        defect.check_id,
+                        time.perf_counter() - started,
+                    )
+                    return prepared
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception(
+                        "[Scrutiny] %s preparation failed", defect.check_id
+                    )
+                    return failed_finding(
+                        defect,
+                        str(exc),
+                        usage=exc.usage if isinstance(exc, LLMError) else None,
+                        visual_index=visual_index,
+                        record=record if isinstance(record, dict) else None,
+                    )
+
+            prepared_items = await asyncio.gather(
+                *(prepare_one(defect) for defect in defects)
             )
+            completed: list[DefectFinding] = [
+                item for item in prepared_items if isinstance(item, DefectFinding)
+            ]
+            pending: list[_PreparedDefectEvaluation] = [
+                item
+                for item in prepared_items
+                if isinstance(item, _PreparedDefectEvaluation)
+            ]
+            if completed:
+                await publish(completed, False)
+            if not pending:
+                return completed, False
+
+            max_batch = openrouter_batch_max_requests()
+            groups = [
+                pending[index : index + max_batch]
+                for index in range(0, len(pending), max_batch)
+            ]
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Submitting {len(pending)} checks in {len(groups)} "
+                        "discounted OpenRouter batch(es)"
+                    ),
+                )
+            )
+
+            async def submit_group(
+                group: list[_PreparedDefectEvaluation],
+            ) -> tuple[list[_PreparedDefectEvaluation], Any]:
+                async def remember_batch(batch_id: str) -> None:
+                    async with ctx.store.edit_state() as state:
+                        if batch_id not in state.openrouter_batch_ids:
+                            state.openrouter_batch_ids.append(batch_id)
+                    ctx.write_event_to_stream(
+                        Status(
+                            level="info",
+                            message=f"OpenRouter batch accepted: {batch_id}",
+                        )
+                    )
+
+                try:
+                    result = await call_structured_batch(
+                        requests=[
+                            StructuredBatchRequest(
+                                custom_id=item.defect.check_id,
+                                system_prompt=item.system_prompt,
+                                user_prompt=item.user_prompt,
+                                request_label=f"scrutiny:{item.defect.check_id}",
+                            )
+                            for item in group
+                        ],
+                        response_model=DefectResponse,
+                        model=defect_model,
+                        client=llm_http_client,
+                        on_batch_accepted=remember_batch,
+                    )
+                    return group, result
+                except Exception as exc:
+                    return group, exc
+
+            grouped_results = await asyncio.gather(
+                *(submit_group(group) for group in groups)
+            )
+            finalization_semaphore = asyncio.Semaphore(max(1, concurrency))
+
+            async def finalize_item(
+                item: _PreparedDefectEvaluation,
+                batch_result: StructuredBatchResult,
+            ) -> DefectFinding:
+                if batch_result.error is not None or batch_result.value is None:
+                    error = batch_result.error or LLMError("Batch result was empty")
+                    return failed_finding(
+                        item.defect,
+                        str(error),
+                        usage=batch_result.usage,
+                        visual_index=visual_index,
+                        record=record if isinstance(record, dict) else None,
+                    )
+                async with finalization_semaphore:
+                    try:
+                        return await _finalize_defect_evaluation(
+                            item,
+                            DefectResponse.model_validate(
+                                batch_result.value.model_dump()
+                            ),
+                            batch_result.usage,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.exception(
+                            "[Scrutiny] %s batch finalization failed",
+                            item.defect.check_id,
+                        )
+                        return failed_finding(
+                            item.defect,
+                            str(exc),
+                            usage=(
+                                exc.usage
+                                if isinstance(exc, LLMError)
+                                else batch_result.usage
+                            ),
+                            visual_index=visual_index,
+                            record=record if isinstance(record, dict) else None,
+                        )
+
+            async def synchronous_fallback(
+                group: list[_PreparedDefectEvaluation],
+            ) -> list[DefectFinding]:
+                fallback_semaphore = asyncio.Semaphore(max(1, concurrency))
+
+                async def evaluate(item: _PreparedDefectEvaluation) -> DefectFinding:
+                    async with fallback_semaphore:
+                        try:
+                            raw, usage = await call_structured(
+                                system_prompt=item.system_prompt,
+                                user_prompt=item.user_prompt,
+                                response_model=DefectResponse,
+                                model=item.model,
+                                client=llm_http_client,
+                                request_label=(
+                                    f"scrutiny:{item.defect.check_id}:batch-fallback"
+                                ),
+                            )
+                            return await _finalize_defect_evaluation(item, raw, usage)
+                        except Exception as exc:
+                            return failed_finding(
+                                item.defect,
+                                str(exc),
+                                usage=exc.usage if isinstance(exc, LLMError) else None,
+                                visual_index=visual_index,
+                                record=record if isinstance(record, dict) else None,
+                            )
+
+                return await asyncio.gather(*(evaluate(item) for item in group))
+
+            for group, result in grouped_results:
+                if isinstance(result, Exception):
+                    if getattr(result, "batch_id", None) and getattr(
+                        result, "terminal", False
+                    ):
+                        terminal_openrouter_batch_ids.add(str(result.batch_id))
+                    safe_fallback = (
+                        isinstance(result, OpenRouterBatchError)
+                        and not result.accepted
+                        and openrouter_batch_sync_fallback_enabled()
+                    )
+                    if safe_fallback:
+                        logger.warning(
+                            "[Scrutiny] Batch rejected before acceptance; "
+                            "using synchronous fallback: %s",
+                            result,
+                        )
+                        completed.extend(await synchronous_fallback(group))
+                    else:
+                        # Never re-submit accepted remote work: that can double
+                        # charge the same filing. The batch id is kept in the
+                        # finding error/log for operational recovery.
+                        batch_id = getattr(result, "batch_id", None)
+                        detail = f"{result}"
+                        if batch_id:
+                            detail = f"{detail} (OpenRouter batch {batch_id})"
+                        for item in group:
+                            completed.append(
+                                failed_finding(
+                                    item.defect,
+                                    detail,
+                                    usage=(
+                                        result.usage
+                                        if isinstance(result, LLMError)
+                                        else None
+                                    ),
+                                    visual_index=visual_index,
+                                    record=(
+                                        record if isinstance(record, dict) else None
+                                    ),
+                                )
+                            )
+                    await publish(completed, False)
+                    continue
+
+                finalized = await asyncio.gather(
+                    *(
+                        finalize_item(item, result[item.defect.check_id])
+                        for item in group
+                    )
+                )
+                terminal_openrouter_batch_ids.update(
+                    batch_result.batch_id
+                    for batch_result in result.values()
+                    if batch_result.batch_id
+                )
+                completed.extend(finalized)
+                await publish(completed, False)
+            return completed, False
+
+        try:
+            if openrouter_batch_enabled() and llm_provider() == "openrouter":
+                findings, stopped_early = await run_batch_checks()
+            else:
+                findings, stopped_early = await collect_defect_findings(
+                    defects,
+                    run_one,
+                    concurrency=concurrency,
+                    stop_on_error=False,
+                    on_update=publish,
+                )
         finally:
             await microbatcher.close()
             if llm_http_client is not None:
@@ -2745,6 +3177,17 @@ class ScrutinyWorkflow(Workflow):
             organization_id=event.organization_id,
             workspace_id=event.workspace_id,
         )
+        # OpenRouter retains batch inputs/results for up to 30 days. Cleanup is
+        # intentionally after both report stores have succeeded, never merely
+        # after the HTTP result was read into worker memory.
+        await delete_openrouter_batches(sorted(terminal_openrouter_batch_ids))
+        if terminal_openrouter_batch_ids:
+            async with ctx.store.edit_state() as state:
+                state.openrouter_batch_ids = [
+                    batch_id
+                    for batch_id in state.openrouter_batch_ids
+                    if batch_id not in terminal_openrouter_batch_ids
+                ]
         require_successful_checks(findings, planned)
 
         cost_note = ""
