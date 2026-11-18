@@ -417,20 +417,14 @@ def _date_after_prayer_label(scope: str) -> str | None:
 
 def petition_date_from_opening(
     page_markdown: Mapping[int, str] | None,
-    opening_pages: int = 30,
 ) -> str | None:
-    """Petition date printed after Main Prayer inside the opening window."""
+    """Petition date printed after Main Prayer, from any page of the filing."""
     if not page_markdown:
         return None
     pages = sorted(page_markdown)
     if not pages:
         return None
-    limit = pages[-1] if pages[-1] <= opening_pages else opening_pages
-    text = "\n".join(
-        page_markdown.get(page) or ""
-        for page in pages
-        if page <= limit or page > pages[-1] - 5
-    )
+    text = "\n".join(page_markdown.get(page) or "" for page in pages)
     mains = list(
         re.finditer(r"(?:^|\n)\s*main\s+prayer\s*:?\s*(?:\n|$)", text, re.IGNORECASE)
     )
@@ -2478,7 +2472,7 @@ def _party_record(
     age: str | None = None,
     acting_through: str | None = None,
     address: str | None = None,
-    source_part: str = "Opening pages",
+    source_part: str = "Compiled filing",
 ) -> dict[str, Any]:
     cleaned = _clean_front_party_name(name)
     kind = (

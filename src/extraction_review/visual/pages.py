@@ -36,7 +36,9 @@ FORMALITY_PAGE_POLICY: dict[str, str] = {
     "Vakalatnama": "all",
     "Memo of Appearance": "all",
     "Annexures": "first_cues",
-    "Affidavit": "all",
+    # A short affidavit is imaged whole. A longer one sends its last page plus
+    # pages that mention execution, and never sends zero pages.
+    "Affidavit": "affidavit_execution",
 }
 
 SHORT_DOCUMENT_PAGE_LIMIT = 3
@@ -44,6 +46,11 @@ MAX_CUE_PAGES_PER_DOCUMENT = 2
 DEFAULT_MAX_VISUAL_PAGE_FRACTION = 0.30
 FULL_SCAN_PAGE_LIMIT = 20
 
+AFFIDAVIT_EXECUTION_CUE_RE = re.compile(
+    r"\[(?:signature|seal)\s*:|"
+    r"\b(?:notary|seal|stamp|deponent|verification|identifier)\b",
+    re.IGNORECASE,
+)
 VISUAL_CUE_RE = re.compile(
     r"\b(?:signature|signed|signatory|advocate(?:-on-record)?|aor|counsel|"
     r"deponent|notary|notarial|oath\s+commissioner|attest(?:ed|ation)?|"
@@ -210,6 +217,15 @@ def _selected_for_document(
     if selector == "all":
         for source in ordered:
             add(source, 100)
+    elif selector == "affidavit_execution":
+        if len(ordered) <= SHORT_DOCUMENT_PAGE_LIMIT:
+            for source in ordered:
+                add(source, 100)
+        else:
+            add(last, 100)
+            for source in ordered:
+                if AFFIDAVIT_EXECUTION_CUE_RE.search(markdown.get(source.page, "")):
+                    add(source, 98)
     elif selector == "all_short" and len(ordered) <= SHORT_DOCUMENT_PAGE_LIMIT:
         for source in ordered:
             add(source, 90)
@@ -312,7 +328,7 @@ def select_formality_pages(
     for key, selected in candidates_by_part.items():
         if not selected:
             continue
-        if selector_by_part[key] == "all":
+        if selector_by_part[key] in {"all", "affidavit_execution"}:
             essential_pages.update(source.page for source, _priority in selected)
             continue
         source, _priority = max(selected, key=lambda item: (item[1], -item[0].page))

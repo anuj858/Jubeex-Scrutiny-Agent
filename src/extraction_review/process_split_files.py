@@ -1659,48 +1659,27 @@ async def _detect_visual_for_state(
     state: SplitFilesState,
     ctx: Context[SplitFilesState],
 ) -> dict[str, Any]:
-    async def on_log(message: str) -> None:
-        ctx.write_event_to_stream(Status(level="info", message=message))
+    """Leave the formality-page scan in place and do not run it during ingest.
 
-    ctx.write_event_to_stream(
-        Status(
-            level="info",
-            message="Detecting signatures, seals, and stamps on formality pages",
-        )
+    ``detect_visual_marks`` and ``FORMALITY_PAGE_POLICY`` still select Index,
+    Checklist, Listing Proforma, and the other every-page documents. Scrutiny
+    calls those selectors only for documents a defect names in ``inspect_parts``.
+    """
+    del state
+    logger.info(
+        "Ingest skips %s; scrutiny selects signature and seal pages per defect",
+        detect_visual_marks.__name__,
     )
-    try:
-        index = await detect_visual_marks(
-            parts=state.parts,
-            pages_by_slot=state.pages_by_slot,
-            page_parts=coerce_page_parts(state.page_parts),
-            page_markdown=coerce_page_markdown(state.page_markdown),
-            omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
-            on_log=on_log,
-            model_tier=state.model_tier,
-        )
-    except Exception:
-        logger.exception("Visual ink detection failed for %s", state.filename)
-        ctx.write_event_to_stream(
-            Status(
-                level="warning",
-                message="Visual ink detection failed; scrutiny will have no mark boxes",
-            )
-        )
-        return empty_visual_index(status="error", error="visual_detection_failed")
-    mark_count = len((index or {}).get("marks") or [])
-    page_count = len((index or {}).get("pages") or [])
-    failed_count = len((index or {}).get("failures") or [])
     ctx.write_event_to_stream(
         Status(
             level="info",
             message=(
-                f"Stored {mark_count} visual mark(s) from {page_count} "
-                f"formality page(s)"
-                + (f", {failed_count} failed" if failed_count else "")
+                "Signature and seal pages are read during scrutiny, "
+                "only for defects that need them"
             ),
         )
     )
-    return index
+    return empty_visual_index(status="skipped", error="deferred_to_scrutiny")
 
 
 def _source_book_payload(

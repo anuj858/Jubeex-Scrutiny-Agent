@@ -243,6 +243,82 @@ def test_dump_layout_index_uses_string_page_keys() -> None:
     assert "12" in payload["pages"]
 
 
+def test_excerpts_use_the_document_page_not_the_stitched_page() -> None:
+    text = _format_evidence(
+        [
+            {
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "Verified at Chhattisgarh on this day of July, 2025.",
+            }
+        ],
+        layout={34: {"document_part": "Affidavit", "local_page": 2}},
+    )
+    assert "[c1 | Affidavit, page 2]" in text
+    assert "Page 34" not in text
+
+
+def test_signature_tag_uses_the_vision_mark_box() -> None:
+    attached = attach_evidence_boxes(
+        [EvidenceRef(chunk_id="c1", page=34, quote="[signature:3-11-25]")],
+        layout={
+            34: {
+                "document_part": "Affidavit",
+                "local_page": 2,
+                "slot_id": "affidavit",
+            }
+        },
+        chunks=[
+            {
+                "excerpt_id": "c1",
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "[signature:3-11-25]",
+            }
+        ],
+        visual_index={
+            "status": "ok",
+            "pages": [34],
+            "marks": [
+                {
+                    "page": 34,
+                    "local_page": 2,
+                    "document_type": "Affidavit",
+                    "marking_type": "signature_like_mark",
+                    "bbox": {"x": 0.62, "y": 0.81, "w": 0.2, "h": 0.05},
+                }
+            ],
+        },
+    )
+    assert attached[0].page == 2
+    assert attached[0].document_part == "Affidavit"
+    assert attached[0].boxes_status == "matched"
+    assert attached[0].bounding_boxes[0].page == 2
+    assert attached[0].bounding_boxes[0].x == 0.62
+
+
+def test_signature_tag_without_a_mark_stays_page_only() -> None:
+    attached = attach_evidence_boxes(
+        [EvidenceRef(chunk_id="c1", page=34, quote="[signature:3-11-22]")],
+        layout={34: {"document_part": "Affidavit", "local_page": 2}},
+        chunks=[
+            {
+                "excerpt_id": "c1",
+                "chunk_kind": "page",
+                "page": 34,
+                "document_part": "Affidavit",
+                "text": "[signature:3-11-22]",
+            }
+        ],
+        visual_index={"status": "ok", "pages": [], "marks": []},
+    )
+    assert attached[0].page == 2
+    assert attached[0].boxes_status == "page_only"
+    assert attached[0].bounding_boxes == []
+
+
 def test_excerpts_are_labeled_with_short_chunk_ids() -> None:
     chunks = [
         {
@@ -1209,6 +1285,48 @@ def test_list_of_dates_keeps_the_left_date_on_its_own_row() -> None:
     assert left[0]["x"] + left[0]["w"] < 0.30
     assert any(box["x"] >= 0.30 and box["y"] == 0.20 for box in boxes)
     assert all(box["y"] > 0.10 for box in boxes)
+
+
+def test_a_long_quote_stays_on_its_paragraph_not_a_later_echo() -> None:
+    """Verification repeats "that the contents of" and "has been".
+
+    The box belongs on the paragraph that carries the rest of the quote,
+    even when stamps removed some words from the middle.
+    """
+    quote = (
+        "That the contents of SLP including Synopsis and List of Interlocutory "
+        "Applications from Page Bto H , Petition from Page 13-23 Payer on Page 21 "
+        "[_] and other Interlocutory Applications has been thoroughly read by me "
+        "and understood by me and I declare that this SLP is being filed on my "
+        "instructions."
+    )
+    paragraph = [
+        "That", "I", "further", "contents", "and", "List", "from", "Page", "B", "H",
+        "Petition", "from", "13-23", "Payer", "on", "21", "other", "has", "been",
+        "thoroughly", "read", "by", "me", "and", "understood", "by", "me", "and",
+        "I", "declare", "that", "this", "SLP", "being", "filed", "on", "my",
+        "instructions.",
+    ]
+    verification = [
+        "Verified", "at", "New", "Delhi", "that", "the", "contents", "of", "my",
+        "above", "affidavit", "are", "true", "and", "correct", "to", "my",
+        "knowledge", "and", "nothing", "material", "has", "been", "concealed",
+        "therein.",
+    ]
+    words = [
+        _placed(token, 0.12 + (index % 8) * 0.09, 0.50 + (index // 8) * 0.028)
+        for index, token in enumerate(paragraph)
+    ]
+    words.extend(
+        _placed(token, 0.14 + (index % 8) * 0.09, 0.80 + (index // 8) * 0.028)
+        for index, token in enumerate(verification)
+    )
+    boxes, status = boxes_for_quote(quote, 1, _bare_layout(words))
+    assert status == "matched"
+    assert boxes
+    assert all(box["y"] < 0.75 for box in boxes)
+    assert min(box["y"] for box in boxes) < 0.56
+    assert max(box["y"] for box in boxes) > 0.58
 
 
 def test_two_shared_words_do_not_box_a_longer_quote() -> None:

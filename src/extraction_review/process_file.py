@@ -2567,7 +2567,7 @@ def _split_parse_create_kwargs(
     processing = dict(configuration.get("processing_options") or {})
     processing["aggressive_table_extraction"] = True
     ocr = dict(processing.get("ocr_parameters") or {})
-    ocr.setdefault("languages", ["en"])
+    ocr.setdefault("languages", ["en", "hi"])
     processing["ocr_parameters"] = ocr
     configuration["processing_options"] = processing
 

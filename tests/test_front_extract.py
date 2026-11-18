@@ -1,4 +1,4 @@
-"""Front extract: full compiled filing, schema, and a null special category."""
+"""Front extract: the whole compiled filing, schema, and a null special category."""
 
 from __future__ import annotations
 
@@ -73,6 +73,8 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "stay null" not in prompt
     description = front["data_schema"]["properties"]["special_category"]["description"]
     assert description.startswith("Identify applicable special categories")
+    assert "MACT matter" in description
+    assert "listing proforma" in description
     assert "Bail Applications/Bail Matters" in description
     assert "configuration_id" not in front
     legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
