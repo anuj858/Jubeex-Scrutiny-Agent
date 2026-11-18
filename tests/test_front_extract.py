@@ -130,6 +130,29 @@ def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> Non
     assert done["advocates_on_record"] == [{"name": "Ravi"}]
 
 
+@pytest.mark.timeout(2)
+def test_front_extract_finishes_with_non_party_ocr_dot_leaders() -> None:
+    dot_leader = "." * 256
+    page = (
+        "MEMO OF PARTIES\n"
+        "Manoj Saini\n"
+        "VERSUS\n"
+        f"पुलिस थाना {dot_leader} पुलिस थाना गांधीनगर"
+    )
+
+    done = finalize_front_extract(
+        {
+            "petition_type": "Special Leave Petition (Civil)",
+            "special_category": None,
+            "petitioners": [],
+            "respondents": [],
+        },
+        page_markdown={148: page},
+    )
+
+    assert done["petition_type"] == "Special Leave Petition (Civil)"
+
+
 def test_chamber_line_phone_is_stored_on_the_advocate() -> None:
     """Ph. after the chamber PIN is the advocate's phone, not part of the place."""
     chamber = (

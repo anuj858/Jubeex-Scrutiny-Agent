@@ -72,7 +72,7 @@ _QUOTED_TEXT = re.compile(r'"([^"]+)"')
 _QUOTED_TEXT_SINGLE = re.compile(r"'([^']+)'")
 _VS_SPLIT = re.compile(r"\bvs\.?\b", re.IGNORECASE)
 _ROLE_TAIL = re.compile(
-    r"(?:[\s.·…]+|\s+)*(?:petitioners?|respondents?)(?:\s*\(\s*s\s*\))?\s*$",
+    r"(?:petitioners?|respondents?)(?:\s*\(\s*s\s*\))?\s*$",
     re.IGNORECASE,
 )
 _ANR_ORS_TAIL = re.compile(
@@ -1174,10 +1174,14 @@ def strip_party_role_label(text: str | None) -> str:
     """Drop trailing Petitioner/Respondent caption marks, with or without dots."""
     cleaned = re.sub(r"\s+", " ", (text or "").replace("…", "...")).strip()
     while True:
-        updated = _ROLE_TAIL.sub("", cleaned).rstrip(" .")
-        if updated == cleaned:
+        match = _ROLE_TAIL.search(cleaned)
+        if match is None:
             break
-        cleaned = updated
+        # Strip dot leaders separately from the role match. Combining an
+        # unbounded separator prefix with the optional role suffix makes the
+        # stdlib regex engine backtrack catastrophically on OCR lines that
+        # contain long runs of dots but no Petitioner/Respondent label.
+        cleaned = cleaned[: match.start()].rstrip(" .·…")
     return cleaned
 
 

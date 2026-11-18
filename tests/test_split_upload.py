@@ -1562,6 +1562,7 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     assert strip_party_role_label("Smt. Shalija Shah And Anr Petitioner") == (
         "Smt. Shalija Shah And Anr"
     )
+    assert strip_party_role_label("A .... Petitioner Respondent(s)") == "A"
     assert is_party_role_label_mismatch(dotted)
     assert is_party_role_label_mismatch(plain)
     assert not is_party_role_label_mismatch(
@@ -1608,6 +1609,17 @@ def test_cover_page_petitioner_respondent_labels_are_not_inconsistencies() -> No
     )
     assert "AOR" not in items[0]["raw_text"]
     assert "And Anr" not in items[0]["raw_text"]
+
+
+@pytest.mark.timeout(2)
+def test_role_label_cleanup_is_linear_for_ocr_dot_leaders() -> None:
+    dot_leader = "." * 256
+    unrelated = f"पुलिस थाना {dot_leader} पुलिस थाना गांधीनगर"
+
+    assert strip_party_role_label(unrelated) == unrelated
+    assert strip_party_role_label(f"Manoj Saini {dot_leader} Respondent(s)") == (
+        "Manoj Saini"
+    )
 
 
 def test_duplicate_respondent_spelling_inconsistencies_are_merged() -> None:
