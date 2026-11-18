@@ -325,13 +325,12 @@ class DefectResponse(BaseModel):
         default="",
         max_length=800,
         description=(
-            "Only for needs_review. In no more than 45 words and two short "
-            "plain-language sentences, state "
-            "the exact document, wording, date, signature, seal, or field that is "
-            "uncertain; explain why that uncertainty prevents a Defect or Compliant "
-            "decision; and tell the user exactly what to check. Do not mention OCR, "
-            "chunks, excerpts, retrieval, prompts, confidence gates, or internal "
-            "system behaviour. Empty for every other status."
+            "Only for needs_review. One short sentence of no more than 20 words "
+            "stating only the core reason a Defect or Compliant decision cannot "
+            "be made. Do not restate what the document contains, explain the "
+            "rule, or say what to check. Do not mention OCR, chunks, excerpts, "
+            "retrieval, prompts, confidence gates, or internal system behaviour. "
+            "Empty for every other status."
         ),
     )
     conclusion: str = Field(
@@ -589,8 +588,8 @@ class DefectFinding(BaseModel):
     review_reason: str | None = Field(
         default=None,
         description=(
-            "Plain-language explanation of why a needs_review finding was not "
-            "published as a confirmed defect or compliance result."
+            "One short sentence stating only the core reason a needs_review "
+            "finding was not published as Defect or Compliant."
         ),
     )
     reasoning: str
@@ -638,51 +637,140 @@ def review_confidence_threshold() -> float:
     return min(1.0, max(0.0, value))
 
 
+_REVIEW_INSTRUCTION = re.compile(
+    r"^(?:please\s+)?(?:check|review|confirm|compare|verify|inspect)\b",
+    re.IGNORECASE,
+)
+_REVIEW_BLOCKER = re.compile(
+    r"\b(not|no|cannot|can't|unable|unavailable|missing|unclear|illegible|"
+    r"unreadable|absent|without|fails|failed|conflicts?|mismatch(?:es)?|"
+    r"differs|blank)\b",
+    re.IGNORECASE,
+)
+_REVIEW_VERB = re.compile(
+    r"\b(is|are|was|were|has|have|had|does|do|did)\b",
+    re.IGNORECASE,
+)
+_CONFLICT_STATED = re.compile(
+    r"\b(conflicts?|visible mark|does not match|do not match|disagree|differs)\b",
+    re.IGNORECASE,
+)
+
+
+def _plain_review_text(text: str) -> str:
+    value = " ".join((text or "").split()).strip()
+    value = re.sub(r"\bOCR excerpts?\b", "extracted text", value, flags=re.I)
+    value = re.sub(r"\bexcerpts?\b", "pages", value, flags=re.I)
+    value = re.sub(r"\bOCR\b", "extracted text", value, flags=re.I)
+    value = re.sub(r"\bchunks?\b", "page sections", value, flags=re.I)
+    return value
+
+
+def _is_mark_label_list(text: str) -> bool:
+    """True when the text is only captions such as 'Vakalatnama: Petitioner(s)'."""
+    body = " ".join(text.strip().strip(" .;").split())
+    if ":" not in body:
+        return False
+    parts = [part.strip(" .") for part in body.split(";") if part.strip(" .")]
+    if not parts:
+        return False
+    label = re.compile(r"^[A-Z][^:]{0,60}:\s*[^:]{1,80}$")
+    if not all(label.match(part) for part in parts):
+        return False
+    return (
+        _REVIEW_BLOCKER.search(body) is None and _REVIEW_VERB.search(body) is None
+    )
+
+
+def _strip_mark_labels(text: str) -> str:
+    if _is_mark_label_list(text):
+        return ""
+
+    def replace(match: re.Match[str]) -> str:
+        return "" if _is_mark_label_list(match.group(1)) else match.group(0)
+
+    cleaned = re.sub(r"\(([^()]*)\)", replace, text)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip(" ,;")
+
+
+def _finish_review_sentence(chosen: str) -> str:
+    chosen = chosen.strip().rstrip(".!?")
+    words = chosen.split()
+    if len(words) > 25:
+        chosen = " ".join(words[:25]).rstrip(" ,;:")
+    if chosen and chosen[0].islower():
+        chosen = chosen[0].upper() + chosen[1:]
+    if chosen and not chosen.endswith((".", "!", "?")):
+        chosen += "."
+    return chosen
+
+
 def _compact_review_reason(reason: str) -> str:
-    """Keep the user-facing reason to two short, useful sentences."""
-    value = " ".join(reason.split()).strip()
-    sentences = [
+    """Keep one short sentence: the core reason only."""
+    value = _strip_mark_labels(" ".join(reason.split()).strip())
+    if not value or _is_mark_label_list(value):
+        return ""
+    clauses = [
         item.strip()
         for item in re.split(r"(?<=[.!?])\s+", value)
         if item.strip()
     ]
-    if len(sentences) > 2:
-        action = next(
-            (
-                item
-                for item in reversed(sentences[1:])
-                if re.search(
-                    r"\b(check|review|confirm|compare|verify|inspect)\b",
-                    item,
-                    flags=re.I,
-                )
-            ),
-            sentences[-1],
-        )
-        value = f"{sentences[0]} {action}"
+    substantive = [
+        item
+        for item in clauses
+        if not _REVIEW_INSTRUCTION.match(item) and not _is_mark_label_list(item)
+    ]
+    candidates = substantive or [
+        item for item in clauses if not _is_mark_label_list(item)
+    ]
+    if not candidates:
+        return ""
+    chosen = next(
+        (item for item in candidates if _REVIEW_BLOCKER.search(item)),
+        candidates[0],
+    )
+    contrast = re.split(r"\s+\bbut\b\s+", chosen, maxsplit=1, flags=re.I)
+    if len(contrast) == 2 and len(contrast[1].split()) >= 4:
+        head, tail = contrast
+        if _REVIEW_BLOCKER.search(tail) and not _REVIEW_BLOCKER.search(head):
+            chosen = tail
+    return _finish_review_sentence(chosen)
 
-    words = value.split()
-    if len(words) > 45:
-        value = " ".join(words[:45]).rstrip(" ,;:") + "."
-    if len(value) > 360:
-        value = value[:357].rsplit(" ", 1)[0].rstrip(" ,;:") + "."
-    return value
+
+def _publishable_review_reason(text: str) -> str:
+    cleaned = _strip_mark_labels(_plain_review_text(text))
+    if not cleaned or _is_mark_label_list(cleaned):
+        return ""
+    compacted = _compact_review_reason(cleaned)
+    if (
+        not compacted
+        or _is_mark_label_list(compacted)
+        or len(compacted.split()) < 4
+    ):
+        return ""
+    return compacted
+
+
+def _with_visible_conflict(fact: str) -> str:
+    fact = fact.strip().rstrip(".")
+    if _CONFLICT_STATED.search(fact):
+        return _finish_review_sentence(fact)
+    sentence = f"{fact}, but a visible mark conflicts with that reading"
+    return _finish_review_sentence(sentence)
 
 
 def review_reason_for_response(
     response: DefectResponse,
     coverage: Coverage | None = None,
 ) -> str | None:
-    """Explain a review outcome in plain language and give the user a next step."""
+    """State only the core reason a review outcome could not be decided."""
+    del coverage
     if response.status not in {"needs_review", "rule_verification_pending"}:
         return None
 
-    model_reason = " ".join((response.review_reason or "").split()).strip()
-    model_reason = re.sub(
-        r"\bexcerpts?\b", "pages available to the system", model_reason, flags=re.I
-    )
-    model_reason = re.sub(r"\bOCR\b", "extracted text", model_reason, flags=re.I)
-    model_reason = re.sub(r"\bchunks?\b", "page sections", model_reason, flags=re.I)
+    model_reason = _plain_review_text(response.review_reason or "")
     generic_reason = re.fullmatch(
         r"(?:manual verification (?:is )?required|needs? review|"
         r"the available evidence is (?:insufficient|inconclusive)|"
@@ -690,93 +778,45 @@ def review_reason_for_response(
         model_reason,
         flags=re.I,
     )
-    if model_reason and len(model_reason.split()) >= 10 and generic_reason is None:
-        if not re.search(
-            r"\b(check|review|confirm|compare|verify|inspect)\b",
-            model_reason,
-            flags=re.I,
-        ):
-            model_reason += " Please check the named document or field manually."
-        if coverage and coverage.visual_required and not coverage.visual_complete:
-            model_reason += (
-                " A page-image check was also required, but the image was not "
-                "available or could not be inspected. Please check the original page."
-            )
-        return _compact_review_reason(model_reason)
+    if generic_reason is None:
+        published = _publishable_review_reason(model_reason)
+        if published:
+            return published
 
-    detail = " ".join((response.gap_detail or "").split()).strip().rstrip(".")
-    detail = re.sub(r"\bexcerpts?\b", "pages available to the system", detail, flags=re.I)
-    detail = re.sub(r"\bOCR\b", "extracted text", detail, flags=re.I)
-    detail = re.sub(r"\bchunks?\b", "page sections", detail, flags=re.I)
+    if response.gap == "conflict":
+        fact = _publishable_review_reason(response.observed or "")
+        if fact:
+            return _with_visible_conflict(fact)
+        return "The extracted text and a visible mark do not agree."
+
+    detail = _publishable_review_reason(response.gap_detail or "")
+    if detail and response.gap != "low_confidence":
+        return detail
+
     if response.gap == "low_confidence":
         score = round(response.confidence * 100)
         threshold = round(review_confidence_threshold() * 100)
         if response.confidence < review_confidence_threshold():
             reason = (
-                f"The system is only {score}% sure about what the document shows. "
-                f"Please check the relevant document manually because at least "
-                f"{threshold}% certainty is required for Defect or Compliant."
+                f"The document reading is only {score}% certain, below the "
+                f"{threshold}% needed to decide."
             )
         else:
-            reason = (
-                "The system could not safely decide whether this is Defect or "
-                f"Compliant. The {score}% score means it is confident that a person "
-                "should check this; it does not mean the defect is "
-                f"{score}% certain."
-            )
+            reason = "The result is too uncertain to mark Defect or Compliant."
     elif response.gap == "part_not_in_excerpts":
-        reason = (
-            "The document needed for this check was not available to the system. "
-            "Please confirm that the document was uploaded and check it manually."
-        )
+        reason = "The document needed for this check was not available."
     elif response.gap == "element_page_not_in_excerpts":
-        reason = (
-            "The document was available, but the page or field needed for this check "
-            "was not available. Please check that page or field manually."
-        )
+        reason = "The page or field needed for this check was not available."
     elif response.gap == "unreadable":
-        reason = (
-            "The relevant text, date, signature, seal, or other field is too unclear "
-            "for the system to read safely. Please check the original page."
-        )
+        reason = "The relevant text, date, signature, seal, or field cannot be read."
     elif response.gap == "ambiguous":
-        reason = (
-            "The document can be understood in more than one way, so the system "
-            "cannot safely mark it as Defect or Compliant. Please review the wording "
-            "manually."
-        )
+        reason = "The document can be read in more than one way."
     elif response.gap == "conflict":
-        reason = (
-            "Two pieces of information do not match. For example, the extracted text "
-            "may differ from what is visible on the page. Please check the original "
-            "page and confirm which is correct."
-        )
+        reason = "The extracted text and the visible page do not match."
     elif response.gap == "legal_rule_unverified":
-        reason = (
-            "The document can be reviewed, but the legal rule behind this catalogue "
-            "check has not yet been verified. Please verify the rule before relying "
-            "on this result."
-        )
+        reason = "The legal rule for this check has not been verified."
     else:
-        reason = (
-            "The system could not safely decide whether this is Defect or Compliant. "
-            "Please check the relevant document manually."
-        )
-
-    if detail and response.gap != "low_confidence":
-        first_sentence = re.split(r"(?<=[.!?])\s+", reason, maxsplit=1)[0]
-        if response.gap == "unreadable":
-            reason = (
-                f"{first_sentence} Please check the original page, specifically: "
-                f"{detail}."
-            )
-        else:
-            reason = f"{first_sentence} Please check manually: {detail}."
-    if coverage and coverage.visual_required and not coverage.visual_complete:
-        reason += (
-            " A page-image check was also required, but the image was not available "
-            "or could not be inspected. Please check the original page."
-        )
+        reason = "Defect or Compliant cannot be decided from the available material."
     return _compact_review_reason(reason)
 
 
@@ -996,6 +1036,83 @@ def _document_type_for_page(
     return part_for_page(chunks, global_page)
 
 
+def bind_inspected_page_evidence(
+    evidence: list[FindingEvidence],
+    global_pages: list[int],
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[FindingEvidence]:
+    """A quote from an inspected page keeps that page's document.
+
+    Vision reads the page image and returns the quote without an excerpt id.
+    The pages in that request already name the document, so the citation is
+    not published with an empty document.
+    """
+    if not evidence or not layout or not global_pages:
+        return evidence
+    inspected: list[tuple[int, dict[str, Any]]] = []
+    for number in global_pages:
+        meta = page_entry(layout, number)
+        if isinstance(meta, dict):
+            inspected.append((number, meta))
+    if not inspected:
+        return evidence
+    identities = {
+        (
+            _document_type_for_page(meta, None, number),
+            str(meta.get("slot_id") or "").strip(),
+        )
+        for number, meta in inspected
+    }
+    one_document = len(identities) == 1 and next(iter(identities))[0]
+    bound: list[FindingEvidence] = []
+    for item in evidence:
+        if item.document_part or item.slot_id:
+            bound.append(item)
+            continue
+        boxes, status, page = boxes_on_pages(
+            item.quote or "",
+            [number for number, _meta in inspected],
+            layout,
+        )
+        meta = page_entry(layout, page) if status == "matched" else None
+        if meta is None and one_document and len(inspected) == 1:
+            _number, meta = inspected[0]
+            status = "page_only"
+            boxes = []
+        elif meta is None and one_document:
+            part, slot = next(iter(identities))
+            bound.append(
+                item.model_copy(
+                    update={
+                        "document_part": part,
+                        "slot_id": slot or None,
+                    }
+                )
+            )
+            continue
+        if not isinstance(meta, dict):
+            bound.append(item)
+            continue
+        local_page = _safe_page_number(meta.get("local_page"))
+        published_page, published_boxes, boxes_status = _publish_local_evidence(
+            local_page=local_page,
+            boxes=_as_bounding_boxes(boxes),
+            boxes_status=status if status in ("matched", "page_only", "unavailable") else "unavailable",
+        )
+        bound.append(
+            item.model_copy(
+                update={
+                    "page": published_page,
+                    "bounding_boxes": published_boxes,
+                    "boxes_status": boxes_status,
+                    "document_part": _document_type_for_page(meta, None, page),
+                    "slot_id": str(meta.get("slot_id") or "").strip() or None,
+                }
+            )
+        )
+    return bound
+
+
 def _publish_local_evidence(
     *,
     local_page: int | None,
@@ -1069,11 +1186,109 @@ def _choose_evidence_chunk(
     return None
 
 
+_PARSER_MARK_TAG = re.compile(
+    r"\[(?P<kind>signature|seal)\s*:[^\]]*\]",
+    re.IGNORECASE,
+)
+_TAG_DATE = re.compile(
+    r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"
+)
+_SIGNATURE_MARK_TYPES = frozenset({"signature_like_mark"})
+_SEAL_MARK_TYPES = frozenset(
+    {
+        "notary_seal",
+        "ordinary_seal_or_stamp",
+        "government_stamp",
+        "revenue_stamp",
+    }
+)
+_UNREAD_MARK_DATE = "The signature or seal date was not read from the page image."
+
+
+def _quote_is_parser_tags_only(quote: str) -> bool:
+    """True when the citation is only ``[signature:…]`` or ``[seal:…]`` tags."""
+    if not _PARSER_MARK_TAG.search(quote or ""):
+        return False
+    remainder = _PARSER_MARK_TAG.sub(" ", quote or "")
+    remainder = re.sub(r"[^A-Za-z0-9]+", " ", remainder).strip()
+    return not remainder
+
+
+def _dates_inside_mark_tags(quote: str) -> list[str]:
+    found: list[str] = []
+    for match in _PARSER_MARK_TAG.finditer(quote or ""):
+        for date in _TAG_DATE.findall(match.group(0)):
+            if date not in found:
+                found.append(date)
+    return found
+
+
+def _boxes_from_visual_marks(
+    quote: str,
+    visual_index: dict[str, Any] | None,
+    *,
+    document_part: str | None,
+    local_page: int | None,
+    global_page: int | None,
+) -> list[BoundingBox]:
+    """Copy stored vision boxes for a signature or seal tag. Never invent one."""
+    if not isinstance(visual_index, dict):
+        return []
+    kinds = {match.group("kind").casefold() for match in _PARSER_MARK_TAG.finditer(quote or "")}
+    if not kinds:
+        return []
+    wanted_types: set[str] = set()
+    if "signature" in kinds:
+        wanted_types.update(_SIGNATURE_MARK_TYPES)
+    if "seal" in kinds:
+        wanted_types.update(_SEAL_MARK_TYPES)
+    names = {name.casefold() for name in parts_on_page(document_part)}
+    boxes: list[BoundingBox] = []
+    for raw in visual_index.get("marks") or []:
+        if not isinstance(raw, dict):
+            continue
+        marking_type = str(raw.get("marking_type") or "").strip()
+        if marking_type not in wanted_types:
+            continue
+        document_type = str(raw.get("document_type") or "").strip()
+        if names and document_type.casefold() not in names:
+            continue
+        mark_local = _safe_page_number(raw.get("local_page"))
+        mark_page = _safe_page_number(raw.get("page"))
+        if local_page is not None and mark_local is not None:
+            if mark_local != local_page:
+                continue
+        elif global_page is not None and mark_page is not None:
+            if mark_page != global_page:
+                continue
+        else:
+            continue
+        bbox = raw.get("bbox") if isinstance(raw.get("bbox"), dict) else {}
+        published = local_page if local_page is not None else mark_local or mark_page
+        if published is None:
+            continue
+        try:
+            box = BoundingBox(
+                page=int(published),
+                x=float(bbox.get("x") or 0),
+                y=float(bbox.get("y") or 0),
+                w=float(bbox.get("w") or bbox.get("width") or 0),
+                h=float(bbox.get("h") or bbox.get("height") or 0),
+            )
+        except (TypeError, ValueError):
+            continue
+        if box.w <= 0 or box.h <= 0:
+            continue
+        boxes.append(box)
+    return boxes
+
+
 def attach_evidence_boxes(
     refs: list[EvidenceRef],
     *,
     layout: dict[int, dict[str, Any]] | None = None,
     chunks: list[dict[str, Any]] | None = None,
+    visual_index: dict[str, Any] | None = None,
 ) -> list[FindingEvidence]:
     """Open the cited chunk's pages only. Never scan the rest of the filing."""
     attached: list[FindingEvidence] = []
@@ -1093,11 +1308,18 @@ def attach_evidence_boxes(
                     )
                 )
                 continue
-            boxes, status, page = boxes_on_pages(
-                ref.quote or "",
-                _chunk_span(chunk),
-                layout,
-            )
+            span = _chunk_span(chunk)
+            tag_only = _quote_is_parser_tags_only(ref.quote or "")
+            if tag_only:
+                page = span[0] if span else None
+                boxes = []
+                status = "page_only" if page is not None else "unavailable"
+            else:
+                boxes, status, page = boxes_on_pages(
+                    ref.quote or "",
+                    span,
+                    layout,
+                )
             boxes_status: BoxesStatus = (
                 status
                 if status in ("matched", "page_only", "unavailable")
@@ -1117,6 +1339,20 @@ def attach_evidence_boxes(
                 boxes=_as_bounding_boxes(boxes),
                 boxes_status=boxes_status,
             )
+            if tag_only:
+                mark_boxes = _boxes_from_visual_marks(
+                    ref.quote or "",
+                    visual_index,
+                    document_part=document_part,
+                    local_page=local_page,
+                    global_page=page,
+                )
+                if mark_boxes:
+                    published_boxes = mark_boxes
+                    boxes_status = "matched"
+                else:
+                    published_boxes = []
+                    boxes_status = "page_only" if published_page is not None else "unavailable"
             attached.append(
                 FindingEvidence(
                     page=published_page,
@@ -1254,6 +1490,103 @@ def apply_review_reason_consistency_policy(
             "The evidence is inconclusive even though the model reported a "
             "high confidence in routing the check for review."
         )
+    return response
+
+
+def apply_catalogue_gap_policy(response: DefectResponse) -> DefectResponse:
+    """Keep a filing observation when the model picks an unverified legal source.
+
+    ``legal_rule_unverified`` is catalogue governance. It must not replace what
+    the filing shows. The published gap becomes ``ambiguous`` and the model's
+    observed text and review reason stay in place.
+    """
+    if response.gap != "legal_rule_unverified":
+        return response
+    response.gap = "ambiguous"
+    if not (response.gap_detail or "").strip():
+        response.gap_detail = (
+            "The legal source for this catalogue check is not verified."
+        )
+    return response
+
+
+def _scrub_tag_dates(text: str, dates: list[str]) -> str:
+    cleaned = text or ""
+    for date in dates:
+        cleaned = re.sub(re.escape(date), "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    return cleaned.strip(" ,;.")
+
+
+def _reviewed_visual_pages(visual_index: dict[str, Any] | None) -> set[int]:
+    if not isinstance(visual_index, dict):
+        return set()
+    if str(visual_index.get("status") or "").casefold() != "ok":
+        return set()
+    pages: set[int] = set()
+    for raw in visual_index.get("pages") or []:
+        number = _safe_page_number(raw)
+        if number is not None:
+            pages.add(number)
+    return pages
+
+
+def apply_unreviewed_handwriting_policy(
+    response: DefectResponse,
+    visual_index: dict[str, Any] | None,
+) -> DefectResponse:
+    """Do not publish a handwritten date that was only read from a parser tag.
+
+    A typed sentence such as "July 2025" may remain. A date inside
+    ``[signature:…]`` or ``[seal:…]`` is withheld when those pages were not
+    in the visual index.
+    """
+    if response.status not in {"needs_review", "defect_found"}:
+        return response
+    tag_dates: list[str] = []
+    tagged_pages: set[int] = set()
+    for ref in response.evidence:
+        dates = _dates_inside_mark_tags(ref.quote or "")
+        if not dates:
+            continue
+        for date in dates:
+            if date not in tag_dates:
+                tag_dates.append(date)
+        page = _safe_page_number(ref.page)
+        if page is not None:
+            tagged_pages.add(page)
+    if not tag_dates:
+        return response
+    reviewed = _reviewed_visual_pages(visual_index)
+    if tagged_pages and tagged_pages.issubset(reviewed):
+        return response
+    narrative = " ".join(
+        (
+            response.summary,
+            response.observed,
+            response.review_reason,
+            response.conclusion,
+            response.gap_detail,
+        )
+    )
+    if not any(date in narrative for date in tag_dates):
+        return response
+    response.status = "needs_review"
+    response.gap = "unreadable"
+    response.gap_detail = _UNREAD_MARK_DATE
+    response.summary = _UNREAD_MARK_DATE
+    response.review_reason = (
+        "The date beside the signature or seal was not read from the page image."
+    )
+    response.conclusion = (
+        "The handwritten date on the signature or seal was not inspected."
+    )
+    observed = _scrub_tag_dates(response.observed, tag_dates)
+    if observed and not any(date in observed for date in tag_dates):
+        response.observed = observed
+    else:
+        response.observed = _UNREAD_MARK_DATE
     return response
 
 
@@ -1932,18 +2265,32 @@ def apply_visual_conflict_policy(
         ]
     ).casefold()
     relevant_types: set[str] = set()
+    # "signature ... blank" must not match a present signature beside a blank date.
     signature_absence_claimed = bool(
         re.search(
-            r"(?:missing|absent|no|without|unsigned|not\s+(?:signed|executed))"
-            r"[^.;]{0,60}(?:signature|thumb impression)|"
-            r"(?:signature|thumb impression)[^.;]{0,60}"
-            r"(?:missing|absent|not shown|blank)",
+            r"\b(?:missing|absent|without|unsigned|no)\b(?:\s+\w+){0,6}\s+"
+            r"(?:signature|thumb impression)\b|"
+            r"\bnot\s+(?:signed|executed)\b|"
+            r"\b(?:signature|thumb impression)\b(?:\s+\w+){0,3}?\s+"
+            r"(?:is\s+|are\s+|was\s+|were\s+)?"
+            r"(?:not\s+shown|missing|absent|blank)\b",
             missing_claim,
             re.IGNORECASE,
         )
     )
-    if signature_absence_claimed and any(
-        term in wording for term in ("signature", "signed", "executed")
+    date_absence_claimed = bool(
+        re.search(
+            r"\b(?:date|dated)\b[^.;]{0,40}\b(?:blank|missing|absent|unfilled)\b|"
+            r"\b(?:blank|missing|no)\b[^.;]{0,40}\b(?:date|dated)\b|"
+            r"\bdoes not\s+(?:mention|state|show|give)\b[^.;]{0,40}\b(?:date|dated)\b",
+            missing_claim,
+            re.IGNORECASE,
+        )
+    )
+    if (
+        signature_absence_claimed
+        and not date_absence_claimed
+        and any(term in wording for term in ("signature", "signed", "executed"))
     ):
         relevant_types.update(
             {
@@ -1952,12 +2299,10 @@ def apply_visual_conflict_policy(
                 "executant_signature",
             }
         )
-    if any(term in wording for term in ("stamp", "seal", "notary", "sworn")) or (
-        "date" in wording and "blank" in wording
-    ):
-        relevant_types.update(
-            {"notary_seal", "stamp", "handwritten_field_value", "date_field_value"}
-        )
+    if any(term in wording for term in ("stamp", "seal", "notary", "sworn")):
+        relevant_types.update({"notary_seal", "stamp"})
+    if date_absence_claimed or ("date" in wording and "blank" in wording):
+        relevant_types.update({"handwritten_field_value", "date_field_value"})
     if not relevant_types:
         return response
     if not isinstance(visual_index, dict):
@@ -2023,6 +2368,16 @@ def apply_visual_conflict_policy(
             detected_signature_roles.add(normalized_role)
         visible = str(mark.get("visible_text") or "").strip()
         label = str(mark.get("associated_label") or "").strip()
+        if marking_type in {"handwritten_field_value", "date_field_value"}:
+            # A party side or a closing is not a date written on the Dated line.
+            if not re.search(
+                r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|"
+                r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\s+\d{2,4}\b|"
+                r"\b[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}\b",
+                visible,
+                re.IGNORECASE,
+            ):
+                continue
         detail = visible or label or marking_type.replace("_", " ")
         conflicts.append(f"{document_type or 'target document'}: {detail}")
     if expected_signature_roles and not expected_signature_roles.issubset(
@@ -2466,9 +2821,13 @@ def build_finding(
     refs = list(response.evidence)
     if not refs and chunks:
         refs = _evidence_from_chunks(chunks, defect)
-    evidence = attach_evidence_boxes(refs, layout=layout, chunks=chunks)
-    evidence_pages = [ref.page for ref in evidence if ref.page is not None]
+    evidence = attach_evidence_boxes(
+        refs, layout=layout, chunks=chunks, visual_index=visual_index
+    )
     reviewed_global = list(coverage.pages_reviewed) or _pages_from_chunks(chunks)
+    if not chunks and layout:
+        evidence = bind_inspected_page_evidence(evidence, reviewed_global, layout)
+    evidence_pages = [ref.page for ref in evidence if ref.page is not None]
     reviewed_local = _local_pages(layout, reviewed_global)
     pages = reviewed_local
     location = location_for_finding(

@@ -974,7 +974,8 @@
       "aggressive_table_extraction": true,
       "ocr_parameters": {
         "languages": [
-          "en"
+          "en",
+          "hi"
         ]
       }
     },

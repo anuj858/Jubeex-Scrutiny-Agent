@@ -85,7 +85,7 @@ def test_split_parse_request_enforces_ocr_layout_and_table_quality(
         "merge_continued_tables": False,
     }
     assert configuration["processing_options"]["aggressive_table_extraction"] is True
-    assert configuration["processing_options"]["ocr_parameters"]["languages"] == ["en"]
+    assert configuration["processing_options"]["ocr_parameters"]["languages"] == ["en", "hi"]
     assert configuration["processing_control"]["job_failure_conditions"] == {
         "allowed_page_failure_ratio": 0.0001,
         "fail_on_image_ocr_error": True,

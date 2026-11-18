@@ -77,6 +77,13 @@ from .scrutiny.prompts import (
     build_defect_prompt,
     build_system_prompt,
 )
+from .visual.defect_call import (
+    finding_from_vision,
+    run_defect_vision,
+    vision_note_for_text,
+)
+from .visual.defect_scope import plan_defect_images, with_slot_files
+from .visual.detect import visual_detection_enabled
 from .scrutiny.rules import (
     Catalogue,
     Defect,
@@ -97,6 +104,7 @@ from .scrutiny.schema import (
     ScrutinyReport,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
+    apply_catalogue_gap_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -111,6 +119,7 @@ from .scrutiny.schema import (
     apply_status_policy,
     apply_supported_evidence_policy,
     apply_undetermined_policy,
+    apply_unreviewed_handwriting_policy,
     apply_visual_conflict_policy,
     apply_visual_field_policy,
     build_finding,
@@ -562,6 +571,7 @@ def _sanitize_response(
             defect.check_id,
         )
     response.check_id = defect.check_id
+    response = apply_catalogue_gap_policy(response)
     response = apply_evidence_pages(response, chunks, defect)
     response = apply_presence_only_policy(defect, response, chunks, layout)
     response = apply_status_policy(response)
@@ -577,6 +587,7 @@ def _sanitize_response(
     response = apply_visual_conflict_policy(defect, response, visual_index)
     response = apply_visual_field_policy(defect, response, visual_index)
     response = apply_evidence_capability_policy(defect, response, visual_index)
+    response = apply_unreviewed_handwriting_policy(response, visual_index)
     return response
 
 
@@ -910,6 +921,7 @@ async def _run_defect(
     workspace_id: str | None = None,
     index_generation: str | None = None,
     use_pinecone: bool = False,
+    vision_note: str | None = None,
 ) -> DefectFinding:
     # Legal-source fields are catalogue-governance metadata.  They must not
     # short-circuit retrieval or replace the filing outcome.  The operational
@@ -1039,6 +1051,7 @@ async def _run_defect(
         catalogue=catalogue,
         visual_index=check_visual_index,
         layout=layout,
+        vision_note=vision_note,
     )
     if evaluator is not None:
         raw, usage = await evaluator.evaluate(
@@ -1187,6 +1200,7 @@ async def _run_defect(
                     catalogue=catalogue,
                     visual_index=check_visual_index,
                     layout=layout,
+                    vision_note=vision_note,
                 )
                 async with retry_semaphore:
                     retry_raw, batch_usage = await call_structured(
@@ -2493,6 +2507,27 @@ class ScrutinyWorkflow(Workflow):
         )
 
         planned = len(defects)
+        image_plans = with_slot_files(
+            plan_defect_images(defects, layout),
+            metadata if isinstance(metadata, dict) else None,
+        )
+        plans_by_id = {plan.check_id: plan for plan in image_plans}
+        vision_answers: dict[str, Any] = {}
+        if visual_detection_enabled() and any(plan.pages for plan in image_plans):
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        f"Reading signature and seal pages for {len(image_plans)} "
+                        "defect(s)"
+                    ),
+                )
+            )
+            vision_answers = await run_defect_vision(
+                image_plans,
+                defects_by_id={defect.check_id: defect for defect in defects},
+                model_tier=event.model_tier,
+            )
 
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
@@ -2555,6 +2590,29 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             try:
+                image_plan = plans_by_id.get(defect.check_id)
+                vision_answer = vision_answers.get(defect.check_id)
+                if (
+                    image_plan is not None
+                    and image_plan.complete
+                    and vision_answer is not None
+                ):
+                    try:
+                        return finding_from_vision(
+                            defect,
+                            vision_answer,
+                            layout=layout,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Could not publish the vision answer for %s",
+                            defect.check_id,
+                        )
+                vision_note = (
+                    vision_note_for_text(image_plan, vision_answer)
+                    if image_plan is not None
+                    else None
+                )
                 retrieval_started = time.perf_counter()
                 manifest_missing = (
                     missing_parts_in_layout(defect, layout)
@@ -2596,6 +2654,7 @@ class ScrutinyWorkflow(Workflow):
                     workspace_id=vector_workspace_id,
                     index_generation=index_generation,
                     use_pinecone=use_pinecone,
+                    vision_note=vision_note,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",

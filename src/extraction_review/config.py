@@ -607,7 +607,7 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     ),
     "jail petition": (
         "the incarcerated petitioner submits the petition from jail or through the prison authorities. "
-        "Printed in the petition opening. Also petition from prison, prisoner petition. "
+        "Also petition from prison, prisoner petition. "
         "A regular petition that only says the petitioner is in custody does not count. "
         "May stand with Bail Applications/Bail Matters when both are the subject."
     ),
@@ -619,7 +619,7 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     ),
     "civil appeal with high court certificate": (
         "a civil appeal is brought on a certificate granted by a High Court. "
-        "Printed in the petition opening. Also certificate appeal, Article 133 certificate. "
+        "Also certificate appeal, Article 133 certificate. "
         "A civil appeal or special leave petition without that certificate does not count. "
         "May stand with Tax Matters when both are the subject."
     ),
@@ -642,14 +642,14 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     ),
     "pil": (
         "the proceeding is brought in public interest for relief affecting the public or a class, "
-        "rather than the petitioner's private grievance. Printed in the petition opening. "
+        "rather than the petitioner's private grievance. "
         "Also public interest litigation, public interest petition. "
         "A private dispute described as having public importance does not count. "
         "May stand with Demolition Matters when both are the subject."
     ),
     "criminal appeal with high court certificate": (
         "a criminal appeal is brought on a certificate granted by a High Court. "
-        "Printed in the petition opening. Also criminal certificate appeal, certificate of fitness, "
+        "Also criminal certificate appeal, certificate of fitness, "
         "Article 134 certificate. "
         "A criminal appeal or special leave petition without that certificate does not count."
     ),
@@ -660,7 +660,7 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     ),
     "transfer petition": (
         "the relief sought is transfer of a pending case from one court or forum to another. "
-        "Printed in the petition opening. Also transfer of proceedings, transfer under Section 25. "
+        "Also transfer of proceedings, transfer under Section 25. "
         "An earlier transfer mentioned only as history does not count. "
         "May stand with Matters involving/pertaining to minors when both are the subject."
     ),
@@ -683,10 +683,8 @@ def front_special_category_description(names: Sequence[str]) -> str:
         raise ValueError("special category description needs the database names")
     listed = " ".join(lines)
     return (
-        "Identify applicable special categories from the petition opening "
-        "(Most respectfully showeth, The humble petition, Petition under Article, "
-        "In the matter of, Arising out of the impugned) and the impugned order "
-        "(its case number, the Act, and what that order decides). "
+        "Identify applicable special categories from the whole compiled filing, "
+        "including the impugned order (its case number, the Act, and what that order decides). "
         "Ignore the index, the listing proforma, a Yes/No checklist, and a passing word in the facts. "
         f"Use only these stored names. {listed} "
         "Return only these exact names, comma-separated, up to 3, "
