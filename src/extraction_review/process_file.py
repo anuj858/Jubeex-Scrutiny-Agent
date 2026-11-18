@@ -3553,24 +3553,36 @@ async def _run_split_from_file_event(
         item_file_id = (item.file_id or "").strip() or None
         prior_id = prior_file_ids.get(slot) or None
         edited = bool(event.edited)
-        current_hash = (item.file_hash or "").strip()
-        prior_hash = prior_file_hashes.get(slot, "")
-        unchanged = bool(current_hash and prior_hash and current_hash == prior_hash)
-        legacy_reusable = bool(
-            not edited
-            and slot in parsed_slots
-            and not current_hash
-            and not prior_hash
-        )
-        if (unchanged or legacy_reusable) and prior_id:
-            reusable_slots.add(slot)
-        # Invalidate only documents whose content changed. A matching checksum
-        # proves that the prior file id and parse artifact are still current.
-        file_id = (
-            (item_file_id or prior_id)
-            if unchanged or legacy_reusable
-            else item_file_id
-        )
+        if job in INDEX_JOB_TYPES:
+            current_hash = (item.file_hash or "").strip()
+            prior_hash = prior_file_hashes.get(slot, "")
+            hash_matches = bool(
+                current_hash and prior_hash and current_hash == prior_hash
+            )
+            # edited false reuses every saved document. edited true reparses
+            # only a document whose file hash differs from the stored hash.
+            if not edited or hash_matches:
+                reusable_slots.add(slot)
+            file_id = (
+                (item_file_id or prior_id) if slot in reusable_slots else item_file_id
+            )
+        else:
+            current_hash = (item.file_hash or "").strip()
+            prior_hash = prior_file_hashes.get(slot, "")
+            unchanged = bool(current_hash and prior_hash and current_hash == prior_hash)
+            legacy_reusable = bool(
+                not edited
+                and slot in parsed_slots
+                and not current_hash
+                and not prior_hash
+            )
+            if (unchanged or legacy_reusable) and prior_id:
+                reusable_slots.add(slot)
+            file_id = (
+                (item_file_id or prior_id)
+                if unchanged or legacy_reusable
+                else item_file_id
+            )
         filename = (item.filename or "").strip() or None
         file_hash = item.file_hash
         if not file_id:
@@ -3651,6 +3663,7 @@ async def _run_split_from_file_event(
     )
     extraction_current = bool(
         index_only
+        and not edited
         and prior_core_extraction_complete
         and prior_core_extraction_hash == extraction_input_hash
     )
@@ -3676,10 +3689,10 @@ async def _run_split_from_file_event(
     parse_scope = "all"
     if extract_only:
         parse_scope = "extract_sources"
-    elif index_only and extraction_current:
-        parse_scope = "unparsed"
+    elif index_only and edited:
+        parse_scope = "all"
     elif index_only:
-        parse_scope = "extract_sources"
+        parse_scope = "reuse_only"
     reusable_source_parts = [
         (part.slot_id, part.page_span)
         for part in split_parts

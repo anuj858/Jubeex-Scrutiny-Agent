@@ -280,7 +280,13 @@ class IndexFilingRequest(FilingDocumentsRequest):
     SCRUTINY_* webhook when it finishes.
     """
 
-    edited: bool = False
+    edited: bool = Field(
+        default=False,
+        description=(
+            "Same on index and reindex. false reuses the saved parse and does "
+            "not parse. true parses only documents whose file hash differs."
+        ),
+    )
     model_tier: str = Field(
         examples=["low"],
         description=(

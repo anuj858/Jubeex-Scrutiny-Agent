@@ -1288,7 +1288,7 @@ async def _parse_one_file(
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Skipping parse for {label} (not an extract source)",
+                    message=f"Skipping parse for {label}",
                 )
             )
             return part.slot_id, {}, {}, None, {}, None
@@ -1405,7 +1405,7 @@ async def _parse_labeled_files(
                 reuse_slots=reuse_slots,
             )
         if action == "reuse" and not (reuse_pages or {}).get(part.slot_id):
-            action = "parse"
+            action = "skip" if (parse_scope or "").strip().lower() == "reuse_only" else "parse"
         tasks.append(
             _parse_one_file(
                 client,

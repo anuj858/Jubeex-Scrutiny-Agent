@@ -1308,7 +1308,7 @@ def test_index_cuts_the_saved_book_by_source_span() -> None:
     assert jobs["petition"] == "pjb-saved"
 
 
-def test_unchanged_edited_slot_still_uses_the_saved_book() -> None:
+def test_edited_matching_slot_reuses_the_saved_book() -> None:
     book = {
         "pages": {1: "one", 2: "two"},
         "layout": {},
@@ -1317,7 +1317,7 @@ def test_unchanged_edited_slot_still_uses_the_saved_book() -> None:
     }
     pages, _layouts, _structured, jobs, slots = compiled_index_reuse(
         book,
-        [("petition", [{"start": 1, "end": 2}])],
+        [("petition", [{"start": 1, "end": 2}]), ("index", [{"start": 1, "end": 1}])],
         edited=True,
         reusable_slots={"petition"},
     )

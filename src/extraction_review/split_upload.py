@@ -720,6 +720,8 @@ def parse_action_for_slot(
         if slot in reused:
             return "reuse"
         return "parse"
+    if scope == "reuse_only":
+        return "reuse" if slot in reused else "skip"
     return "reuse" if slot in reused else "parse"
 
 
@@ -971,7 +973,11 @@ def compiled_parse_reuse(
     dict[str, str],
     list[str],
 ]:
-    """Cut a saved compiled-book parse into reusable per-slot page artifacts."""
+    """Cut a saved compiled-book parse into reusable per-slot page artifacts.
+
+    ``edited`` reuses only slots the caller already proved unchanged.
+    ``reusable_slots`` is that set. When ``edited`` is false every span is cut.
+    """
     book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
     book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
     book_structured = (
@@ -985,9 +991,7 @@ def compiled_parse_reuse(
     slots: list[str] = []
     for slot_id, span in parts:
         slot = (slot_id or "").strip()
-        if not slot:
-            continue
-        if edited and slot not in reusable_slots:
+        if not slot or (edited and slot not in reusable_slots):
             continue
         sliced = pages_for_source_span(book_pages, span)
         if not sliced:
