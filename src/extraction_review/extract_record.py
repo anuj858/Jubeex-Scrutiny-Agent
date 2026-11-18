@@ -72,7 +72,7 @@ _QUOTED_TEXT = re.compile(r'"([^"]+)"')
 _QUOTED_TEXT_SINGLE = re.compile(r"'([^']+)'")
 _VS_SPLIT = re.compile(r"\bvs\.?\b", re.IGNORECASE)
 _ROLE_TAIL = re.compile(
-    r"(?:[\s.·…]+|\s+)*(?:petitioners?|respondents?)(?:\s*\(\s*s\s*\))?\s*$",
+    r"(?:petitioners?|respondents?)(?:\s*\(\s*s\s*\))?\s*$",
     re.IGNORECASE,
 )
 _ANR_ORS_TAIL = re.compile(
@@ -417,20 +417,14 @@ def _date_after_prayer_label(scope: str) -> str | None:
 
 def petition_date_from_opening(
     page_markdown: Mapping[int, str] | None,
-    opening_pages: int = 30,
 ) -> str | None:
-    """Petition date printed after Main Prayer inside the opening window."""
+    """Petition date printed after Main Prayer, from any page of the filing."""
     if not page_markdown:
         return None
     pages = sorted(page_markdown)
     if not pages:
         return None
-    limit = pages[-1] if pages[-1] <= opening_pages else opening_pages
-    text = "\n".join(
-        page_markdown.get(page) or ""
-        for page in pages
-        if page <= limit or page > pages[-1] - 5
-    )
+    text = "\n".join(page_markdown.get(page) or "" for page in pages)
     mains = list(
         re.finditer(r"(?:^|\n)\s*main\s+prayer\s*:?\s*(?:\n|$)", text, re.IGNORECASE)
     )
@@ -1180,10 +1174,14 @@ def strip_party_role_label(text: str | None) -> str:
     """Drop trailing Petitioner/Respondent caption marks, with or without dots."""
     cleaned = re.sub(r"\s+", " ", (text or "").replace("…", "...")).strip()
     while True:
-        updated = _ROLE_TAIL.sub("", cleaned).rstrip(" .")
-        if updated == cleaned:
+        match = _ROLE_TAIL.search(cleaned)
+        if match is None:
             break
-        cleaned = updated
+        # Strip dot leaders separately from the role match. Combining an
+        # unbounded separator prefix with the optional role suffix makes the
+        # stdlib regex engine backtrack catastrophically on OCR lines that
+        # contain long runs of dots but no Petitioner/Respondent label.
+        cleaned = cleaned[: match.start()].rstrip(" .·…")
     return cleaned
 
 
@@ -2478,7 +2476,7 @@ def _party_record(
     age: str | None = None,
     acting_through: str | None = None,
     address: str | None = None,
-    source_part: str = "Opening pages",
+    source_part: str = "Compiled filing",
 ) -> dict[str, Any]:
     cleaned = _clean_front_party_name(name)
     kind = (
@@ -3292,37 +3290,16 @@ _SCHEDULE_END = re.compile(
 def _schedule_follow_pages(
     layer: Mapping[int, str],
     start: int,
-    *,
-    skip: set[int] | None = None,
 ) -> dict[int, str]:
     """The schedule page and the next pages, through the prayer."""
     pages: dict[int, str] = {}
-    blocked = skip or set()
     for follow in range(start, start + 4):
-        if follow in blocked:
-            break
         follow_text = layer.get(follow)
         if follow_text is None:
             break
         pages[follow] = follow_text
         if follow != start and _SCHEDULE_END.search(follow_text):
             break
-    return pages
-
-
-def supplemental_front_party_pages(
-    full_text: Mapping[int, str],
-    included_pages: set[int],
-) -> dict[int, str]:
-    """Party pages that sit past the opening slice and before the closing pages."""
-    pages: dict[int, str] = {}
-    layer = {int(page): text or "" for page, text in full_text.items()}
-    for number, text in sorted(layer.items()):
-        if number in included_pages or number in pages:
-            continue
-        if not _is_explicit_party_schedule(text):
-            continue
-        pages.update(_schedule_follow_pages(layer, number, skip=included_pages))
     return pages
 
 

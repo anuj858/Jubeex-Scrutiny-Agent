@@ -1282,6 +1282,17 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
         )
         missing = "If a value is not printed in this filing, write N/A."
         field_pages = "any page"
+        party_where = "in this filing"
+        aor_rules = (
+            "Copy the printed advocate-on-record footer only. Leave a field null if it "
+            "is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. "
+            "Do not copy a petitioner or respondent address into the chamber. "
+            "The footer may be on any page. Use the block that prints Advocate-on-Record, "
+            "Vakalatnama, Memo of Appearance, or Drawn By / Filed on / DRAWN & FILED BY, "
+            "with the chamber lines under that name. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line, including after the PIN, "
+            "goes in mobile. Record source_pages for the page that printed it."
+        )
     else:
         where = (
             f"Search every page labelled Opening pages. That is the first "
@@ -1290,6 +1301,8 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
         )
         missing = "If a value is not printed in that window, write N/A."
         field_pages = "any opening page"
+        party_where = "from the petition opening in these pages"
+        aor_rules = AOR_EXTRACT_RULES
     return "\n".join(
         [
             "# Extraction rules",
@@ -1302,8 +1315,8 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
             "",
             "- court, petition_type, cause_title, petitioners, respondents, "
             f"impugned_orders, relief_sort, and petition_date may be on {field_pages}.",
-            "- petitioners and respondents: read every numbered party from the "
-            "petition opening in these pages. Copy the relation, guardian, age, "
+            "- petitioners and respondents: read every numbered party "
+            f"{party_where}. Copy the relation, guardian, age, "
             "occupation, and address printed under that name. When the same "
             "schedule has a lower-court column and a current-court column "
             "(Before High Court and Before Supreme Court, or In this Court), use "
@@ -1314,7 +1327,7 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
             "drafted and filed dates are printed. Skip a page number sitting between "
             "the label and the date.",
             "- relief_sort: the prayer body only, without the Main Prayer heading.",
-            f"- advocates_on_record: {AOR_EXTRACT_RULES}",
+            f"- advocates_on_record: {aor_rules}",
             "- impugned_orders.bench: judge names under CORAM, joined with '; '.",
         ]
     )
@@ -1815,12 +1828,10 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
 def build_front_extract_pack_markdown(
     page_markdown: Mapping[int, str],
     page_layout: Mapping[int, Mapping[str, Any]] | None = None,
-    opening_pages: int = 30,
 ) -> str:
     """Every parsed page of the compiled filing, with its own page number."""
     from .config import front_special_category_description
 
-    del opening_pages
     category = front_special_category_description(_front_special_category_names())
     page_markdown = _recover_page_markdown(page_markdown, page_layout)
     sections: list[str] = []
