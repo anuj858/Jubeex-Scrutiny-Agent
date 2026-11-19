@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Jubeex production scrutiny ECS services and worker autoscaling
+
+Parameters:
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  EcsSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  ApiTaskDefinition:
+    Type: String
+  IngestionTaskDefinition:
+    Type: String
+  ScrutinyTaskDefinition:
+    Type: String
+  AgentTaskDefinition:
+    Type: String
+  ApiDesiredCount:
+    Type: Number
+    Default: 0
+    AllowedValues: [0, 1]
+  AgentDesiredCount:
+    Type: Number
+    Default: 0
+    AllowedValues: [0, 1]
+  WorkerDesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 4
+  WorkerMinCapacity:
+    Type: Number
+    Default: 0
+    AllowedValues: [0, 1]
+
+Resources:
+  ProdScrutinyApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: jubeex-prod-scrutiny-api
+      Cluster: !ImportValue jubeex-production-ecs-cluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: !Ref ApiDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+          Subnets: !Ref PublicSubnetIds
+      ServiceRegistries:
+        - RegistryArn: !ImportValue jubeex-production-scrutiny-discovery-service
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: Jubeex
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdIngestionWorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: jubeex-prod-ingestion-worker
+      Cluster: !ImportValue jubeex-production-ecs-cluster
+      TaskDefinition: !Ref IngestionTaskDefinition
+      DesiredCount: !Ref WorkerDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+          Subnets: !Ref PublicSubnetIds
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: Jubeex
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyWorkerService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: jubeex-prod-scrutiny-worker
+      Cluster: !ImportValue jubeex-production-ecs-cluster
+      TaskDefinition: !Ref ScrutinyTaskDefinition
+      DesiredCount: !Ref WorkerDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+          Subnets: !Ref PublicSubnetIds
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: Jubeex
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyAgentService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: jubeex-prod-scrutiny-agent
+      Cluster: !ImportValue jubeex-production-ecs-cluster
+      TaskDefinition: !Ref AgentTaskDefinition
+      DesiredCount: !Ref AgentDesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+          Subnets: !Ref PublicSubnetIds
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: Jubeex
+        - Key: ManagedBy
+          Value: cloudformation
+
+  IngestionWorkerScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ProdIngestionWorkerService
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub
+        - service/${Cluster}/${Service}
+        - Cluster: !ImportValue jubeex-production-ecs-cluster
+          Service: !GetAtt ProdIngestionWorkerService.Name
+      MinCapacity: !Ref WorkerMinCapacity
+      MaxCapacity: 4
+
+  IngestionWorkerCpuPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: jubeex-prod-ingestion-worker-cpu
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref IngestionWorkerScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+  ScrutinyWorkerScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ProdScrutinyWorkerService
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub
+        - service/${Cluster}/${Service}
+        - Cluster: !ImportValue jubeex-production-ecs-cluster
+          Service: !GetAtt ProdScrutinyWorkerService.Name
+      MinCapacity: !Ref WorkerMinCapacity
+      MaxCapacity: 4
+
+  ScrutinyWorkerCpuPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: jubeex-prod-scrutiny-worker-cpu
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScrutinyWorkerScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+Outputs:
+  ApiServiceName:
+    Value: !GetAtt ProdScrutinyApiService.Name
+  IngestionServiceName:
+    Value: !GetAtt ProdIngestionWorkerService.Name
+  ScrutinyServiceName:
+    Value: !GetAtt ProdScrutinyWorkerService.Name
+  AgentServiceName:
+    Value: !GetAtt ProdScrutinyAgentService.Name

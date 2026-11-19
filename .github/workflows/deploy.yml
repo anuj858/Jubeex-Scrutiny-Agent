@@ -1,0 +1,351 @@
+name: Jubeex scrutiny CI/CD
+
+on:
+  push:
+    branches: [main, jubeex-dev]
+  # Manual reruns are allowed, but the selected branch still determines the
+  # environment: main=production and jubeex-dev=dev-staging.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT_ID: "893338224943"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - run: >-
+          uv run ruff format --check
+          scripts/render_ecs_task_for_environment.py
+          tests/test_render_ecs_task_for_environment.py
+      - run: >-
+          uv run ruff check
+          scripts/render_ecs_task_for_environment.py
+          tests/test_render_ecs_task_for_environment.py
+      - run: uv run pytest -q tests/test_render_ecs_task_for_environment.py
+      - run: uv run python -m compileall -q src
+
+  select-environment:
+    needs: quality
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.select.outputs.name }}
+      role: ${{ steps.select.outputs.role }}
+      cluster: ${{ steps.select.outputs.cluster }}
+      repository: ${{ steps.select.outputs.repository }}
+      bucket: ${{ steps.select.outputs.bucket }}
+      ingestion_queue: ${{ steps.select.outputs.ingestion_queue }}
+      scrutiny_queue: ${{ steps.select.outputs.scrutiny_queue }}
+      callback: ${{ steps.select.outputs.callback }}
+      log_group: ${{ steps.select.outputs.log_group }}
+      execution_role: ${{ steps.select.outputs.execution_role }}
+      task_role: ${{ steps.select.outputs.task_role }}
+      agent_secret: ${{ steps.select.outputs.agent_secret }}
+      llama_secret: ${{ steps.select.outputs.llama_secret }}
+      api_secret: ${{ steps.select.outputs.api_secret }}
+      prefix: ${{ steps.select.outputs.prefix }}
+      agent_service: ${{ steps.select.outputs.agent_service }}
+    steps:
+      - id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            environment_name="production"
+          elif [[ "${GITHUB_REF_NAME}" == "jubeex-dev" ]]; then
+            environment_name="dev-staging"
+          else
+            echo "unsupported deployment branch: ${GITHUB_REF_NAME}" >&2
+            exit 2
+          fi
+          if [[ "${environment_name}" == "production" ]]; then
+            echo "role=arn:aws:iam::893338224943:role/jubeex-github-scrutiny-production" >> "$GITHUB_OUTPUT"
+            echo "cluster=jubeex-prod-ai-cluster" >> "$GITHUB_OUTPUT"
+            echo "repository=jubeex-prod-scrutiny-agent" >> "$GITHUB_OUTPUT"
+            echo "bucket=jubeex-893338224943-ap-south-1-prod" >> "$GITHUB_OUTPUT"
+            echo "ingestion_queue=https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-prod-ingestion-jobs" >> "$GITHUB_OUTPUT"
+            echo "scrutiny_queue=https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-prod-scrutiny-jobs" >> "$GITHUB_OUTPUT"
+            echo "callback=production-private-ip" >> "$GITHUB_OUTPUT"
+            echo "log_group=/ecs/jubeex-prod-scrutiny" >> "$GITHUB_OUTPUT"
+            echo "execution_role=arn:aws:iam::893338224943:role/jubeex-prod-ecs-execution" >> "$GITHUB_OUTPUT"
+            echo "task_role=arn:aws:iam::893338224943:role/jubeex-prod-scrutiny-task" >> "$GITHUB_OUTPUT"
+            echo "agent_secret=jubeex/prod/scrutiny-agent" >> "$GITHUB_OUTPUT"
+            echo "llama_secret=jubeex/prod/llamaindex/api-key" >> "$GITHUB_OUTPUT"
+            echo "api_secret=jubeex/prod/scrutiny-api-key" >> "$GITHUB_OUTPUT"
+            echo "prefix=jubeex-prod" >> "$GITHUB_OUTPUT"
+            echo "agent_service=jubeex-prod-scrutiny-agent" >> "$GITHUB_OUTPUT"
+          else
+            echo "role=arn:aws:iam::893338224943:role/jubeex-github-scrutiny-dev-staging" >> "$GITHUB_OUTPUT"
+            echo "cluster=jubeex-ai-cluster" >> "$GITHUB_OUTPUT"
+            echo "repository=jubeex-scrutiny-agent" >> "$GITHUB_OUTPUT"
+            echo "bucket=jubeex-893338224943-ap-south-1-an" >> "$GITHUB_OUTPUT"
+            echo "ingestion_queue=https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-ingestion-jobs" >> "$GITHUB_OUTPUT"
+            echo "scrutiny_queue=https://sqs.ap-south-1.amazonaws.com/893338224943/jubeex-scrutiny-jobs" >> "$GITHUB_OUTPUT"
+            echo "callback=http://3.111.86.61/api/v1/webhooks/ai-agent" >> "$GITHUB_OUTPUT"
+            echo "log_group=/ecs/jubeex-scrutiny-agent" >> "$GITHUB_OUTPUT"
+            echo "execution_role=arn:aws:iam::893338224943:role/ecsTaskExecutionRole" >> "$GITHUB_OUTPUT"
+            echo "task_role=arn:aws:iam::893338224943:role/jubeexScrutinyTaskRole" >> "$GITHUB_OUTPUT"
+            echo "agent_secret=jubeex/scrutiny-agent" >> "$GITHUB_OUTPUT"
+            echo "llama_secret=jubeex/llamaindex/api-key" >> "$GITHUB_OUTPUT"
+            echo "api_secret=jubeex/scrutiny-api-key" >> "$GITHUB_OUTPUT"
+            echo "prefix=jubeex" >> "$GITHUB_OUTPUT"
+            echo "agent_service=jubeex-scrutiny-agent-service" >> "$GITHUB_OUTPUT"
+          fi
+          echo "name=${environment_name}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: select-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.select-environment.outputs.name }}
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: scrutiny-${{ needs.select-environment.outputs.name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ needs.select-environment.outputs.role }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure production dependencies are running
+        if: needs.select-environment.outputs.name == 'production'
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_state="$(aws rds describe-db-instances \
+            --db-instance-identifier jubeex-prod-db \
+            --query 'DBInstances[0].DBInstanceStatus' --output text)"
+          if [[ "${db_state}" == "stopping" ]]; then
+            for attempt in $(seq 1 60); do
+              db_state="$(aws rds describe-db-instances \
+                --db-instance-identifier jubeex-prod-db \
+                --query 'DBInstances[0].DBInstanceStatus' --output text)"
+              [[ "${db_state}" == "stopped" ]] && break
+              sleep 15
+            done
+          fi
+          if [[ "${db_state}" == "stopping" ]]; then
+            echo "production RDS did not finish stopping in time" >&2
+            exit 1
+          fi
+          if [[ "${db_state}" == "stopped" ]]; then
+            aws rds start-db-instance \
+              --db-instance-identifier jubeex-prod-db >/dev/null
+          fi
+          aws rds wait db-instance-available \
+            --db-instance-identifier jubeex-prod-db
+
+          instance_id="$(aws ec2 describe-instances \
+            --filters \
+              Name=tag:Environment,Values=production \
+              Name=instance-state-name,Values=stopped,running \
+            --query 'Reservations[].Instances[0].InstanceId' \
+            --output text | head -n1)"
+          if [[ -z "${instance_id}" || "${instance_id}" == "None" ]]; then
+            echo "production EC2 instance was not found" >&2
+            exit 1
+          fi
+          instance_state="$(aws ec2 describe-instances \
+            --instance-ids "${instance_id}" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text)"
+          if [[ "${instance_state}" == "stopped" ]]; then
+            aws ec2 start-instances --instance-ids "${instance_id}" >/dev/null
+          fi
+          aws ec2 wait instance-running --instance-ids "${instance_id}"
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve production callback
+        id: callback
+        shell: bash
+        env:
+          CONFIGURED_CALLBACK: ${{ needs.select-environment.outputs.callback }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIGURED_CALLBACK}" == "production-private-ip" ]]; then
+            private_ip="$(aws cloudformation list-exports \
+              --query "Exports[?Name=='jubeex-production-private-ip'].Value | [0]" \
+              --output text)"
+            echo "url=http://${private_ip}/api/v1/webhooks/ai-agent" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=${CONFIGURED_CALLBACK}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push immutable images
+        id: images
+        shell: bash
+        env:
+          REPOSITORY: ${{ needs.select-environment.outputs.repository }}
+        run: |
+          set -euo pipefail
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          repository_uri="${registry}/${REPOSITORY}"
+          docker build -f Dockerfile.api -t "${repository_uri}:api-${GITHUB_SHA}" .
+          docker push "${repository_uri}:api-${GITHUB_SHA}"
+          docker build -f Dockerfile.worker -t "${repository_uri}:worker-${GITHUB_SHA}" .
+          docker push "${repository_uri}:worker-${GITHUB_SHA}"
+          docker build -f Dockerfile -t "${repository_uri}:agent-${GITHUB_SHA}" .
+          docker push "${repository_uri}:agent-${GITHUB_SHA}"
+          api_digest="$(aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids imageTag="api-${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text)"
+          worker_digest="$(aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids imageTag="worker-${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text)"
+          agent_digest="$(aws ecr describe-images --repository-name "${REPOSITORY}" --image-ids imageTag="agent-${GITHUB_SHA}" --query 'imageDetails[0].imageDigest' --output text)"
+          echo "api=${repository_uri}@${api_digest}" >> "$GITHUB_OUTPUT"
+          echo "worker=${repository_uri}@${worker_digest}" >> "$GITHUB_OUTPUT"
+          echo "agent=${repository_uri}@${agent_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Render and register task definitions
+        id: tasks
+        shell: bash
+        env:
+          ENVIRONMENT_NAME: ${{ needs.select-environment.outputs.name }}
+          CLUSTER: ${{ needs.select-environment.outputs.cluster }}
+          PREFIX: ${{ needs.select-environment.outputs.prefix }}
+          BUCKET: ${{ needs.select-environment.outputs.bucket }}
+          INGESTION_QUEUE: ${{ needs.select-environment.outputs.ingestion_queue }}
+          SCRUTINY_QUEUE: ${{ needs.select-environment.outputs.scrutiny_queue }}
+          CALLBACK_URL: ${{ steps.callback.outputs.url }}
+          LOG_GROUP: ${{ needs.select-environment.outputs.log_group }}
+          EXECUTION_ROLE: ${{ needs.select-environment.outputs.execution_role }}
+          TASK_ROLE: ${{ needs.select-environment.outputs.task_role }}
+          AGENT_SECRET_NAME: ${{ needs.select-environment.outputs.agent_secret }}
+          LLAMA_SECRET_NAME: ${{ needs.select-environment.outputs.llama_secret }}
+          API_SECRET_NAME: ${{ needs.select-environment.outputs.api_secret }}
+          API_IMAGE: ${{ steps.images.outputs.api }}
+          WORKER_IMAGE: ${{ steps.images.outputs.worker }}
+          AGENT_IMAGE: ${{ steps.images.outputs.agent }}
+        run: |
+          set -euo pipefail
+          agent_secret="$(aws secretsmanager describe-secret --secret-id "${AGENT_SECRET_NAME}" --query ARN --output text)"
+          llama_secret="$(aws secretsmanager describe-secret --secret-id "${LLAMA_SECRET_NAME}" --query ARN --output text)"
+          api_secret="$(aws secretsmanager describe-secret --secret-id "${API_SECRET_NAME}" --query ARN --output text)"
+          declare -A source_services=(
+            [api]=jubeex-scrutiny-api
+            [ingestion]=jubeex-ingestion-worker
+            [scrutiny]=jubeex-scrutiny-worker
+            [agent]=jubeex-scrutiny-agent-service
+          )
+          declare -A target_services=(
+            [api]="${PREFIX}-scrutiny-api"
+            [ingestion]="${PREFIX}-ingestion-worker"
+            [scrutiny]="${PREFIX}-scrutiny-worker"
+            [agent]="${{ needs.select-environment.outputs.agent_service }}"
+          )
+          declare -A images=(
+            [api]="${API_IMAGE}"
+            [ingestion]="${WORKER_IMAGE}"
+            [scrutiny]="${WORKER_IMAGE}"
+            [agent]="${AGENT_IMAGE}"
+          )
+          for role in api ingestion scrutiny agent; do
+            source_task="$(aws ecs describe-services \
+              --cluster "${CLUSTER}" \
+              --services "${target_services[$role]}" \
+              --query 'services[?status==`ACTIVE`].taskDefinition | [0]' \
+              --output text)"
+            if [[ -z "${source_task}" || "${source_task}" == "None" ]]; then
+              source_task="$(aws ecs describe-services \
+                --cluster jubeex-ai-cluster \
+                --services "${source_services[$role]}" \
+                --query 'services[0].taskDefinition' --output text)"
+            fi
+            aws ecs describe-task-definition --task-definition "${source_task}" > "/tmp/${role}-source.json"
+            uv run python scripts/render_ecs_task_for_environment.py \
+              --source "/tmp/${role}-source.json" \
+              --output "/tmp/${role}-task.json" \
+              --family "${PREFIX}-${role}" \
+              --image "${images[$role]}" \
+              --execution-role-arn "${EXECUTION_ROLE}" \
+              --task-role-arn "${TASK_ROLE}" \
+              --log-group "${LOG_GROUP}" \
+              --bucket "${BUCKET}" \
+              --ingestion-queue-url "${INGESTION_QUEUE}" \
+              --scrutiny-queue-url "${SCRUTINY_QUEUE}" \
+              --callback-url "${CALLBACK_URL}" \
+              --pinecone-namespace "${ENVIRONMENT_NAME}-jubeex-filings" \
+              --agent-secret-arn "${agent_secret}" \
+              --llama-secret-arn "${llama_secret}" \
+              --api-secret-arn "${api_secret}"
+            task_arn="$(aws ecs register-task-definition \
+              --cli-input-json "file:///tmp/${role}-task.json" \
+              --query 'taskDefinition.taskDefinitionArn' --output text)"
+            echo "${role}=${task_arn}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Deploy with ECS circuit breaker
+        shell: bash
+        env:
+          CLUSTER: ${{ needs.select-environment.outputs.cluster }}
+          PREFIX: ${{ needs.select-environment.outputs.prefix }}
+          API_TASK: ${{ steps.tasks.outputs.api }}
+          INGESTION_TASK: ${{ steps.tasks.outputs.ingestion }}
+          SCRUTINY_TASK: ${{ steps.tasks.outputs.scrutiny }}
+          AGENT_TASK: ${{ steps.tasks.outputs.agent }}
+          AGENT_SERVICE: ${{ needs.select-environment.outputs.agent_service }}
+          ENVIRONMENT_NAME: ${{ needs.select-environment.outputs.name }}
+        run: |
+          set -euo pipefail
+          for specification in \
+            "${PREFIX}-scrutiny-api=${API_TASK}" \
+            "${PREFIX}-ingestion-worker=${INGESTION_TASK}" \
+            "${PREFIX}-scrutiny-worker=${SCRUTINY_TASK}" \
+            "${AGENT_SERVICE}=${AGENT_TASK}"; do
+            service="${specification%%=*}"
+            task="${specification#*=}"
+            desired_count=1
+            if [[ "${ENVIRONMENT_NAME}" == "dev-staging" ]] && \
+               [[ "${service}" == *-ingestion-worker || "${service}" == *-scrutiny-worker ]]; then
+              desired_count=2
+            fi
+            aws ecs update-service \
+              --cluster "${CLUSTER}" \
+              --service "${service}" \
+              --task-definition "${task}" \
+              --desired-count "${desired_count}" \
+              --force-new-deployment \
+              --deployment-configuration 'deploymentCircuitBreaker={enable=true,rollback=true},maximumPercent=200,minimumHealthyPercent=100' \
+              >/dev/null
+          done
+          aws ecs wait services-stable \
+            --cluster "${CLUSTER}" \
+            --services \
+              "${PREFIX}-scrutiny-api" \
+              "${PREFIX}-ingestion-worker" \
+              "${PREFIX}-scrutiny-worker" \
+              "${AGENT_SERVICE}"
+          unhealthy="$(aws ecs describe-services \
+            --cluster "${CLUSTER}" \
+            --services \
+              "${PREFIX}-scrutiny-api" \
+              "${PREFIX}-ingestion-worker" \
+              "${PREFIX}-scrutiny-worker" \
+              "${AGENT_SERVICE}" \
+            --output json | jq -r '
+              .services[]
+              | select(
+                  .runningCount != .desiredCount
+                  or ([.deployments[] | select(.rolloutState != "COMPLETED")] | length) > 0
+                )
+              | .serviceName
+            ')"
+          if [[ -n "${unhealthy}" ]]; then
+            echo "ECS rollout verification failed for: ${unhealthy}" >&2
+            exit 1
+          fi

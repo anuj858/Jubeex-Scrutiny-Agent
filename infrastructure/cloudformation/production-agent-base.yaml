@@ -1,0 +1,352 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Additive Jubeex production scrutiny base infrastructure. Task definitions and
+  services are released independently by the environment-aware deployment flow.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  ProdScrutinyRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: jubeex-prod-scrutiny-agent
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Keep sixty production images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: jubeex-prod-ai-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: DataResidency
+          Value: ap-south-1
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /ecs/jubeex-prod-scrutiny
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: DataResidency
+          Value: ap-south-1
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdIngestionDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: jubeex-prod-ingestion-jobs-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdIngestionQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: jubeex-prod-ingestion-jobs
+      VisibilityTimeout: 5400
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProdIngestionDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: jubeex-prod-scrutiny-jobs-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      QueueName: jubeex-prod-scrutiny-jobs
+      VisibilityTimeout: 5400
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProdScrutinyDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: prod.jubeex.internal
+      Vpc: !Ref VpcId
+      Description: Jubeex production private service discovery
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdScrutinyApiDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: scrutiny-api
+      NamespaceId: !Ref ProdNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 10
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jubeex-prod-ecs-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: production-secret-injection
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:jubeex/prod/*
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jubeex-prod-scrutiny-task
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: production-scrutiny-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ProductionArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource:
+                  - !Sub
+                    - arn:${AWS::Partition}:s3:::${Bucket}
+                    - Bucket: !ImportValue jubeex-production-artifact-bucket
+                  - !Sub
+                    - arn:${AWS::Partition}:s3:::${Bucket}/*
+                    - Bucket: !ImportValue jubeex-production-artifact-bucket
+              - Sid: ProductionQueues
+                Effect: Allow
+                Action:
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                Resource:
+                  - !GetAtt ProdIngestionQueue.Arn
+                  - !GetAtt ProdScrutinyQueue.Arn
+                  - !GetAtt ProdIngestionDeadLetterQueue.Arn
+                  - !GetAtt ProdScrutinyDeadLetterQueue.Arn
+              - Sid: GoogleWifCredentials
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:jubeex/google-wif-credentials-*
+      Tags:
+        - Key: Environment
+          Value: production
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ProdIngestionBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: jubeex-prod-ingestion-backlog
+      AlarmDescription: Production ingestion queue has waiting jobs
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProdIngestionQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProdScrutinyBacklogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: jubeex-prod-scrutiny-backlog
+      AlarmDescription: Production scrutiny queue has waiting jobs
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProdScrutinyQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 2
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProdIngestionDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: jubeex-prod-ingestion-dlq
+      AlarmDescription: Production ingestion dead-letter queue is not empty
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProdIngestionDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProdScrutinyDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: jubeex-prod-scrutiny-dlq
+      AlarmDescription: Production scrutiny dead-letter queue is not empty
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ProdScrutinyDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  RepositoryUri:
+    Value: !GetAtt ProdScrutinyRepository.RepositoryUri
+    Export:
+      Name: jubeex-production-scrutiny-repository
+  ClusterName:
+    Value: !Ref ProdCluster
+    Export:
+      Name: jubeex-production-ecs-cluster
+  LogGroupName:
+    Value: !Ref ProdScrutinyLogGroup
+    Export:
+      Name: jubeex-production-scrutiny-log-group
+  IngestionQueueUrl:
+    Value: !Ref ProdIngestionQueue
+    Export:
+      Name: jubeex-production-ingestion-queue-url
+  IngestionQueueArn:
+    Value: !GetAtt ProdIngestionQueue.Arn
+  ScrutinyQueueUrl:
+    Value: !Ref ProdScrutinyQueue
+    Export:
+      Name: jubeex-production-scrutiny-queue-url
+  ScrutinyQueueArn:
+    Value: !GetAtt ProdScrutinyQueue.Arn
+  NamespaceId:
+    Value: !Ref ProdNamespace
+  DiscoveryServiceArn:
+    Value: !GetAtt ProdScrutinyApiDiscoveryService.Arn
+    Export:
+      Name: jubeex-production-scrutiny-discovery-service
+  TaskExecutionRoleArn:
+    Value: !GetAtt ProdTaskExecutionRole.Arn
+    Export:
+      Name: jubeex-production-ecs-execution-role
+  TaskRoleArn:
+    Value: !GetAtt ProdTaskRole.Arn
+    Export:
+      Name: jubeex-production-ecs-task-role
