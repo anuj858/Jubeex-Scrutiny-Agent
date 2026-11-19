@@ -707,7 +707,12 @@ async def _run_workflow(
     require_durable_status: bool = False,
     max_runtime_seconds: int | None = None,
 ) -> bool:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        preserve_version=True,
+    )
     job.bump_progress(5, stage="starting", message="Workflow started", force=True)
     cancelled = False
     try:
@@ -799,7 +804,12 @@ async def _run_workflow(
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        artifact_version=event.version,
+    )
     handler = process_file_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 
@@ -858,7 +868,12 @@ def _accept_process_file(
 
 
 async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        artifact_version=event.version,
+    )
     handler = scrutiny_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 

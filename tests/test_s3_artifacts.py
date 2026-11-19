@@ -344,3 +344,34 @@ def test_upload_step_json_writes_versioned_defects_once(monkeypatch) -> None:
     assert record["key"].endswith("-v001-agent-defects-job-1.json")
     assert "/defectfiles/v1/" not in record["key"]
     assert recorded_artifacts("job-1")[STEP_DEFECTS]["key"] == record["key"]
+
+
+def test_explicit_version_folders_defects_without_context(monkeypatch) -> None:
+    """The scrutiny step runs in its own task and does not see the parse step's context."""
+    puts: list[dict[str, object]] = []
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            puts.append(kwargs)
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return f"https://s3.example/{Params['Key']}"
+
+    monkeypatch.setenv("AWS_S3_BUCKET", "bucket")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    set_job_context("job-1", "org-1", "ws-1")
+    record = upload_step_json(
+        STEP_DEFECTS,
+        {"organization_id": "org-1"},
+        organization_id="org-1",
+        workspace_id="ws-1",
+        job_id="job-1",
+        version=1,
+    )
+    assert record is not None
+    assert "/defectfiles/v1/" in record["key"]
+    assert record["key"].endswith("-v001-agent-defects-job-1.json")
+    assert puts[0]["Key"] == record["key"]

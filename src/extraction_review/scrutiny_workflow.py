@@ -191,6 +191,7 @@ class ScrutinyEvent(StartEvent):
     filing_type: str | None = None
     court: str | None = None
     model_tier: str | None = None
+    version: int | None = None
 
 
 class Status(Event):
@@ -2354,6 +2355,7 @@ class ScrutinyWorkflow(Workflow):
             defects_payload,
             organization_id=event.organization_id,
             workspace_id=event.workspace_id,
+            version=event.version,
         )
         require_successful_checks(findings, planned)
 

@@ -255,7 +255,12 @@ async def _process_claimed_message(message: dict[str, Any], lease: JobLease) -> 
     except ValueError as exc:
         _mark_job_failed(job, exc)
         raise
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        artifact_version=event.get("version"),
+    )
     if job.kind == "scrutiny":
         handler = scrutiny_workflow.run(start_event=ScrutinyEvent(**event))
     elif job.kind == "annexure_index":
