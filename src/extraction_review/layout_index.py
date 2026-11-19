@@ -93,6 +93,11 @@ LayoutIndex = dict[int, PageLayout]
 _ORDINAL = re.compile(r"^(\d{1,2})(st|nd|rd|th)$")
 _SLASH_DATE = re.compile(r"^\d{1,4}([./-]\d{1,4}){1,2}$")
 _MIN_TOKEN_RUN = 5
+# A stamp or a neighbouring column may hide a few words. A later echo of
+# the quote ("that the contents of" … "has been") is a whole sentence away
+# and must not pull the box off the paragraph that actually carries it.
+_HAY_GAP = 8
+_NEEDLE_GAP = 8
 
 
 def _norm_text(text: str) -> str:
@@ -804,55 +809,189 @@ def _token_step(
     return _punct_glue(needle_canon, hay_tokens, needle_at, hay_at)
 
 
+def _run_forward(
+    needle_canon: Sequence[str],
+    hay_tokens: Sequence[str],
+    hay_canon: Sequence[str],
+    needle_at: int,
+    hay_at: int,
+) -> tuple[int, int]:
+    """Hay tokens and needle tokens consumed by one contiguous run."""
+    hay_index = hay_at
+    needle_index = needle_at
+    hay_run = 0
+    needle_run = 0
+    nlen = len(needle_canon)
+    hlen = len(hay_tokens)
+    while needle_index < nlen and hay_index < hlen:
+        step = _token_step(
+            needle_canon, hay_tokens, hay_canon, needle_index, hay_index
+        )
+        if step == 0:
+            break
+        hay_index += step
+        hay_run += step
+        needle_index += 1
+        needle_run += 1
+    return hay_run, needle_run
+
+
+def _run_ending_at(
+    needle_canon: Sequence[str],
+    hay_tokens: Sequence[str],
+    hay_canon: Sequence[str],
+    needle_end: int,
+    hay_end: int,
+) -> tuple[int, int, int, int] | None:
+    """A contiguous run that stops on these exclusive ends.
+
+    Returns hay start, needle start, hay length, needle length.
+    """
+    needle_at = needle_end
+    hay_at = hay_end
+    while needle_at > 0 and hay_at > 0:
+        matched = 0
+        for back in (1, 2, 3):
+            if hay_at < back:
+                continue
+            step = _token_step(
+                needle_canon,
+                hay_tokens,
+                hay_canon,
+                needle_at - 1,
+                hay_at - back,
+            )
+            if step == back:
+                matched = back
+                break
+        if matched == 0:
+            break
+        needle_at -= 1
+        hay_at -= matched
+    needle_run = needle_end - needle_at
+    if needle_run < 1:
+        return None
+    return hay_at, needle_at, hay_end - hay_at, needle_run
+
+
 def _cover_token_runs(
     needle_tokens: Sequence[str],
     hay_tokens: Sequence[str],
     *,
     min_run: int,
+    local: bool = False,
 ) -> list[tuple[int, int, int]]:
     """In-order haystack runs that cover the quote.
 
     Each run is (hay index, hay length, needle tokens covered). One mismatched
     word does not drop the rest of the quote. A short quote still has to
     match in full.
+
+    Local matching seeds on the longest run, then steps only a few words
+    either side. The first short echo of the quote cannot drag the rest of
+    the search onto a later paragraph.
     """
     if min_run < 1 or not needle_tokens or not hay_tokens:
         return []
     needle_canon = [_canon_token(token) for token in needle_tokens]
     hay_canon = [_canon_token(token) for token in hay_tokens]
-    covered: list[tuple[int, int, int]] = []
-    needle_at = 0
-    hay_cursor = 0
     nlen = len(needle_canon)
     hlen = len(hay_tokens)
-    while needle_at < nlen:
-        found: tuple[int, int, int] | None = None
-        for hay_at in range(hay_cursor, hlen):
-            hay_index = hay_at
-            needle_index = needle_at
-            hay_run = 0
-            needle_run = 0
-            while needle_index < nlen and hay_index < hlen:
-                step = _token_step(
-                    needle_canon, hay_tokens, hay_canon, needle_index, hay_index
+    if not local:
+        covered: list[tuple[int, int, int]] = []
+        needle_at = 0
+        hay_cursor = 0
+        while needle_at < nlen:
+            found: tuple[int, int, int] | None = None
+            for hay_at in range(hay_cursor, hlen):
+                hay_run, needle_run = _run_forward(
+                    needle_canon, hay_tokens, hay_canon, needle_at, hay_at
                 )
-                if step == 0:
+                if needle_run >= min_run:
+                    found = (hay_at, hay_run, needle_run)
                     break
-                hay_index += step
-                hay_run += step
-                needle_index += 1
-                needle_run += 1
-            if needle_run >= min_run:
-                found = (hay_at, hay_run, needle_run)
+            if found is None:
+                needle_at += 1
+                continue
+            hay_at, hay_run, needle_run = found
+            covered.append((hay_at, hay_run, needle_run))
+            needle_at += needle_run
+            hay_cursor = hay_at + hay_run
+        return covered
+
+    seed: tuple[int, int, int, int] | None = None
+    seed_key: tuple[int, int, int] | None = None
+    for needle_at in range(nlen):
+        for hay_at in range(hlen):
+            hay_run, needle_run = _run_forward(
+                needle_canon, hay_tokens, hay_canon, needle_at, hay_at
+            )
+            if needle_run < min_run:
+                continue
+            key = (needle_run, -hay_at, -needle_at)
+            if seed_key is None or key > seed_key:
+                seed_key = key
+                seed = (hay_at, hay_run, needle_at, needle_run)
+    if seed is None:
+        return []
+    runs: list[tuple[int, int, int, int]] = [seed]
+    seed_hay, seed_hay_run, seed_needle, seed_needle_run = seed
+
+    needle_at = seed_needle + seed_needle_run
+    hay_cursor = seed_hay + seed_hay_run
+    while needle_at < nlen:
+        found: tuple[int, int, int, int] | None = None
+        for skip_n in range(_NEEDLE_GAP + 1):
+            next_needle = needle_at + skip_n
+            if next_needle >= nlen:
+                break
+            for gap in range(_HAY_GAP + 1):
+                next_hay = hay_cursor + gap
+                if next_hay >= hlen:
+                    break
+                hay_run, needle_run = _run_forward(
+                    needle_canon, hay_tokens, hay_canon, next_needle, next_hay
+                )
+                if needle_run >= min_run:
+                    found = (next_hay, hay_run, next_needle, needle_run)
+                    break
+            if found is not None:
                 break
         if found is None:
-            needle_at += 1
-            continue
-        hay_at, hay_run, needle_run = found
-        covered.append((hay_at, hay_run, needle_run))
-        needle_at += needle_run
-        hay_cursor = hay_at + hay_run
-    return covered
+            break
+        runs.append(found)
+        next_hay, hay_run, next_needle, needle_run = found
+        needle_at = next_needle + needle_run
+        hay_cursor = next_hay + hay_run
+
+    needle_at = seed_needle
+    hay_cursor = seed_hay
+    while needle_at > 0 and hay_cursor > 0:
+        found = None
+        for gap in range(_HAY_GAP + 1):
+            hay_end = hay_cursor - gap
+            if hay_end <= 0:
+                break
+            for skip_n in range(_NEEDLE_GAP + 1):
+                needle_end = needle_at - skip_n
+                if needle_end <= 0:
+                    break
+                ended = _run_ending_at(
+                    needle_canon, hay_tokens, hay_canon, needle_end, hay_end
+                )
+                if ended is not None and ended[3] >= min_run:
+                    found = ended
+                    break
+            if found is not None:
+                break
+        if found is None:
+            break
+        hay_at, prev_needle, hay_run, needle_run = found
+        runs.append((hay_at, hay_run, prev_needle, needle_run))
+        needle_at = prev_needle
+        hay_cursor = hay_at
+    runs.sort(key=lambda item: item[0])
+    return [(hay_at, hay_run, needle_run) for hay_at, hay_run, _needle, needle_run in runs]
 
 
 def _fragment_limits(nlen: int) -> tuple[int, int]:
@@ -882,7 +1021,9 @@ def _token_run_spans(
     else:
         min_run = _required_run(nlen)
         need = min_run
-    runs = _cover_token_runs(needle_tokens, hay_tokens, min_run=min_run)
+    runs = _cover_token_runs(
+        needle_tokens, hay_tokens, min_run=min_run, local=fragmented
+    )
     if sum(needle_run for _hay_at, _hay_run, needle_run in runs) < need:
         return []
     starts = _token_starts(hay_tokens)
@@ -1161,10 +1302,44 @@ def _matched_words(
     found = _match_spans(_norm_text(quote), haystack, fragmented=True)
     if not found:
         return []
-    return [
+    matched = [
         words[index]
         for index, span_start, span_end in spans
         if any(span_end > start and span_start < end for start, end in found)
+    ]
+    return _without_y_jumps(matched)
+
+
+def _without_y_jumps(
+    words: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Drop a short run that jumps off the paragraph and comes back.
+
+    A stamp can store "of SLP" in the token stream of paragraph 2 while its
+    box sits on the next paragraph. The words on either side stay on the
+    paragraph, so the jump is not part of the highlight.
+    """
+    if len(words) < 3:
+        return list(words)
+    groups: list[list[Mapping[str, Any]]] = [[words[0]]]
+    for word in words[1:]:
+        if abs(_num(word.get("y")) - _num(groups[-1][-1].get("y"))) <= 0.08:
+            groups[-1].append(word)
+        else:
+            groups.append([word])
+    if len(groups) < 3:
+        return list(words)
+    drop: set[int] = set()
+    for index in range(1, len(groups) - 1):
+        before = _num(groups[index - 1][-1].get("y"))
+        after = _num(groups[index + 1][0].get("y"))
+        if abs(before - after) <= 0.05 and len(groups[index]) <= 4:
+            drop.add(index)
+    return [
+        word
+        for index, group in enumerate(groups)
+        if index not in drop
+        for word in group
     ]
 
 

@@ -152,7 +152,7 @@ def test_gemini_evidence_label_includes_parser_provenance() -> None:
             }
         ]
     )
-    assert "Page 105 — Index" in evidence
+    assert "Index, page 105" in evidence
     assert "original compiled page 2" in evidence
     assert "printed page A-1" in evidence
     assert "heading: I N D E X" in evidence

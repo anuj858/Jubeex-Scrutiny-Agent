@@ -39,6 +39,7 @@ from extraction_review.visual.pages import (
     global_page_sources,
     select_formality_pages,
 )
+from extraction_review.visual.prompt import batch_user_prompt, user_prompt
 from extraction_review.visual.references import ReferenceCatalog
 from extraction_review.visual.render import render_page_jpeg
 from extraction_review.visual.schema import (
@@ -1519,3 +1520,47 @@ async def test_detect_groups_four_pages_per_synchronous_request(
     assert len(index["quality_assessments"]) == 8
     assert index["usage"]["calls"] == 2
     assert index["usage"]["cost_usd"] == pytest.approx(0.02)
+
+
+def test_vision_prompt_names_the_document_page_and_keeps_the_image_id() -> None:
+    single = user_prompt(
+        page_number=34,
+        document_types=["Affidavit"],
+        nearby_text="DEPONENT",
+        local_page=2,
+    )
+    batch = batch_user_prompt(
+        [
+            {
+                "page": 34,
+                "local_page": 2,
+                "document_types": ["Affidavit"],
+                "nearby_text": "DEPONENT",
+            }
+        ]
+    )
+    assert "Affidavit, page 2" in single
+    assert "Return page=34" in single
+    assert "Affidavit, page 2" in batch
+    assert "physical page=34" in batch
+
+
+def test_long_affidavit_sends_the_last_page_and_execution_cues() -> None:
+    parts = [_part("affidavit", ["Affidavit"])]
+    pages_by_slot = {
+        "affidavit": {page: f"paragraph {page}" for page in range(1, 6)}
+    }
+    sources = global_page_sources(parts, pages_by_slot)
+    no_cues = select_formality_pages(sources)
+    assert [target.local_page for target in no_cues] == [5]
+
+    markdown = {2: "NOTARY S.K. Tiwari", 5: "ordinary closing"}
+    with_cue = select_formality_pages(sources, page_markdown=markdown)
+    assert [target.local_page for target in with_cue] == [2, 5]
+
+
+def test_short_affidavit_is_still_imaged_whole() -> None:
+    parts = [_part("affidavit", ["Affidavit"])]
+    pages_by_slot = {"affidavit": {1: "opening", 2: "verification"}}
+    targets = select_formality_pages(global_page_sources(parts, pages_by_slot))
+    assert [target.local_page for target in targets] == [1, 2]

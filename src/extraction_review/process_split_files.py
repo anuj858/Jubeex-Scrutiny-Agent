@@ -68,6 +68,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .local_extraction import LocalParseExtractor, extraction_provider
 from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .process_file import (
     ExtractedEvent,
@@ -245,6 +246,7 @@ class SplitFilesEvent(StartEvent):
     source_file_hash: str | None = None
     source_book: dict[str, Any] | None = None
     supplied_parse_usage: dict[str, Any] | None = None
+    extraction_input_hash: str | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -278,6 +280,12 @@ class SplitFilesState(BaseModel):
     fallback_file_id: str | None = None
     extract_pack_file_id: str | None = None
     extract_job_id: str | None = None
+    extraction_provider: str | None = None
+    local_extraction_data: dict[str, Any] = Field(default_factory=dict)
+    local_extraction_confidence: dict[str, float] = Field(default_factory=dict)
+    local_extraction_provenance: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
@@ -309,6 +317,7 @@ class SplitFilesState(BaseModel):
     source_parse_job_id: str | None = None
     source_file_id: str | None = None
     source_file_hash: str | None = None
+    extraction_input_hash: str | None = None
 
 
 async def _workspace_agent_data_item(
@@ -622,6 +631,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.source_parse_job_id = event.source_parse_job_id
             state.source_file_id = event.source_file_id
             state.source_file_hash = event.source_file_hash
+            state.extraction_input_hash = event.extraction_input_hash
 
         set_job_context(
             file_hash or filename,
@@ -723,6 +733,38 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
+        provider = extraction_provider()
+        if provider == "local":
+            if not page_markdown:
+                raise RuntimeError(
+                    "Local extraction requires the saved full-file ParseArtifact"
+                )
+            local = LocalParseExtractor(extract_config.local_extraction).extract(
+                page_markdown=page_markdown,
+                page_parts=page_parts,
+                filing_type=state.filing_type,
+                front_extract=state.front_extract,
+            )
+            local_job_id = f"local:{uuid.uuid4()}"
+            async with ctx.store.edit_state() as mutable:
+                mutable.extraction_provider = provider
+                mutable.extract_pack_file_id = None
+                mutable.extract_job_id = local_job_id
+                mutable.extract_started_at = extract_started_at
+                mutable.local_extraction_data = local.data
+                mutable.local_extraction_confidence = local.confidence
+                mutable.local_extraction_provenance = local.provenance
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Extracted configured filing fields locally from the "
+                        f"saved full-file parse ({len(page_markdown)} physical pages)"
+                    ),
+                )
+            )
+            return ExtractJobStartedEvent()
+
         if state.front_extract:
             pack_text = build_front_extract_pack_markdown(
                 page_markdown,
@@ -796,6 +838,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 )
 
         async with ctx.store.edit_state() as state:
+            state.extraction_provider = provider
             state.extract_pack_file_id = pack_file_id
             state.extract_job_id = extract_job.id
             state.extract_started_at = extract_started_at
@@ -835,52 +878,97 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
-        await llama_cloud_client.extract.wait_for_completion(
-            state.extract_job_id,
-            project_id=project_id,
+        provider = state.extraction_provider or (
+            "local" if state.extract_job_id.startswith("local:") else "llamacloud"
         )
-        job = await llama_cloud_client.extract.get(
-            state.extract_job_id,
-            expand=["extract_metadata", "usage"],
-            project_id=project_id,
-        )
+        job: Any | None = None
+        if provider == "local":
+            usage_summary = summarize_llamacloud_usage(state.llamacloud_jobs or [])
+        else:
+            await llama_cloud_client.extract.wait_for_completion(
+                state.extract_job_id,
+                project_id=project_id,
+            )
+            job = await llama_cloud_client.extract.get(
+                state.extract_job_id,
+                expand=["extract_metadata", "usage"],
+                project_id=project_id,
+            )
+            extract_usage = await collect_extract_usage(
+                llama_cloud_client,
+                state.extract_job_id,
+                payload=job,
+            )
+            usage_summary = summarize_llamacloud_usage(
+                [*(state.llamacloud_jobs or []), extract_usage]
+            )
         logger.info(
-            "[ExtractionTiming] extract=%ss job_id=%s",
+            "[ExtractionTiming] provider=%s extract=%ss job_id=%s",
+            provider,
             elapsed_seconds(state.extract_started_at),
             state.extract_job_id,
-        )
-        extract_usage = await collect_extract_usage(
-            llama_cloud_client,
-            state.extract_job_id,
-            payload=job,
-        )
-        usage_summary = summarize_llamacloud_usage(
-            [*(state.llamacloud_jobs or []), extract_usage]
         )
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
         try:
-            job_payload = job.model_dump(mode="json")
-            logger.info(
-                "Extracted split-upload job id=%s status=%s top_level_fields=%s",
-                state.extract_job_id,
-                job_payload.get("status"),
-                sorted(job_payload),
-            )
-            data = ExtractedData.from_extract_job(
-                job=job,
-                schema=(
-                    FrontExtractRecord if state.front_extract else LegalExtractRecord
-                ),
-                file_name=state.filename,
-                file_id=record_file_id,
-                file_hash=state.file_hash,
-            )
+            if provider == "local":
+                schema = FrontExtractRecord if state.front_extract else LegalExtractRecord
+                record = schema.model_validate(state.local_extraction_data)
+                overall = (
+                    sum(state.local_extraction_confidence.values())
+                    / len(state.local_extraction_confidence)
+                    if state.local_extraction_confidence
+                    else None
+                )
+                field_confidence = dict(state.local_extraction_confidence)
+                data = ExtractedData(
+                    original_data=record,
+                    data=record,
+                    status="accepted",
+                    overall_confidence=overall,
+                    field_metadata={
+                        key: {"confidence": value}
+                        for key, value in field_confidence.items()
+                    },
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                logger.info(
+                    "Local parse extraction job id=%s fields=%s",
+                    state.extract_job_id,
+                    sorted(state.local_extraction_data),
+                )
+            else:
+                if job is None:
+                    raise RuntimeError("LlamaCloud extraction job was not loaded")
+                job_payload = job.model_dump(mode="json")
+                logger.info(
+                    "Extracted split-upload job id=%s status=%s top_level_fields=%s",
+                    state.extract_job_id,
+                    job_payload.get("status"),
+                    sorted(job_payload),
+                )
+                data = ExtractedData.from_extract_job(
+                    job=job,
+                    schema=(
+                        FrontExtractRecord if state.front_extract else LegalExtractRecord
+                    ),
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                overall = overall_confidence_from_job(job)
+                field_confidence = field_confidence_from_job(job)
             if data.metadata is None:
                 data.metadata = {}
-            overall = overall_confidence_from_job(job)
+            data.metadata["extraction_provider"] = provider
+            if provider == "local":
+                data.metadata["extraction_provenance"] = (
+                    state.local_extraction_provenance
+                )
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
             if state.source_parse_job_id:
@@ -901,7 +989,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             }
             data.metadata["extract_confidence"] = {
                 "overall": overall,
-                "fields": field_confidence_from_job(job),
+                "fields": field_confidence,
             }
             data.metadata["documents"] = [
                 {
@@ -914,6 +1002,11 @@ class ProcessSplitFilesWorkflow(Workflow):
                 }
                 for item in state.parts
             ]
+            if state.extraction_input_hash and not state.front_extract:
+                data.metadata["core_extraction_input_hash"] = (
+                    state.extraction_input_hash
+                )
+                data.metadata["core_extraction_complete"] = True
             if state.job_type:
                 data.metadata["job_type"] = state.job_type
             if state.organization_id or state.org_id:
@@ -1111,6 +1204,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                 bool(os.getenv("PINECONE_API_KEY")),
             )
 
+        if state.job_type == "index_parsed":
+            report = await _run_nested_scrutiny(ctx, agent_data_id=str(item.id))
+            return StopEvent(result={"agent_data_id": str(item.id), "report": report})
         return StopEvent(result=item.id)
 
 
@@ -1194,7 +1290,7 @@ async def _parse_one_file(
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Skipping parse for {label} (not an extract source)",
+                    message=f"Skipping parse for {label}",
                 )
             )
             return part.slot_id, {}, {}, None, {}, None
@@ -1311,7 +1407,7 @@ async def _parse_labeled_files(
                 reuse_slots=reuse_slots,
             )
         if action == "reuse" and not (reuse_pages or {}).get(part.slot_id):
-            action = "parse"
+            action = "skip" if (parse_scope or "").strip().lower() == "reuse_only" else "parse"
         tasks.append(
             _parse_one_file(
                 client,
@@ -1661,48 +1757,27 @@ async def _detect_visual_for_state(
     state: SplitFilesState,
     ctx: Context[SplitFilesState],
 ) -> dict[str, Any]:
-    async def on_log(message: str) -> None:
-        ctx.write_event_to_stream(Status(level="info", message=message))
+    """Leave the formality-page scan in place and do not run it during ingest.
 
-    ctx.write_event_to_stream(
-        Status(
-            level="info",
-            message="Detecting signatures, seals, and stamps on formality pages",
-        )
+    ``detect_visual_marks`` and ``FORMALITY_PAGE_POLICY`` still select Index,
+    Checklist, Listing Proforma, and the other every-page documents. Scrutiny
+    calls those selectors only for documents a defect names in ``inspect_parts``.
+    """
+    del state
+    logger.info(
+        "Ingest skips %s; scrutiny selects signature and seal pages per defect",
+        detect_visual_marks.__name__,
     )
-    try:
-        index = await detect_visual_marks(
-            parts=state.parts,
-            pages_by_slot=state.pages_by_slot,
-            page_parts=coerce_page_parts(state.page_parts),
-            page_markdown=coerce_page_markdown(state.page_markdown),
-            omit_empty=(state.parse_scope or "").strip().lower() == "extract_sources",
-            on_log=on_log,
-            model_tier=state.model_tier,
-        )
-    except Exception:
-        logger.exception("Visual ink detection failed for %s", state.filename)
-        ctx.write_event_to_stream(
-            Status(
-                level="warning",
-                message="Visual ink detection failed; scrutiny will have no mark boxes",
-            )
-        )
-        return empty_visual_index(status="error", error="visual_detection_failed")
-    mark_count = len((index or {}).get("marks") or [])
-    page_count = len((index or {}).get("pages") or [])
-    failed_count = len((index or {}).get("failures") or [])
     ctx.write_event_to_stream(
         Status(
             level="info",
             message=(
-                f"Stored {mark_count} visual mark(s) from {page_count} "
-                f"formality page(s)"
-                + (f", {failed_count} failed" if failed_count else "")
+                "Signature and seal pages are read during scrutiny, "
+                "only for defects that need them"
             ),
         )
     )
-    return index
+    return empty_visual_index(status="skipped", error="deferred_to_scrutiny")
 
 
 def _source_book_payload(

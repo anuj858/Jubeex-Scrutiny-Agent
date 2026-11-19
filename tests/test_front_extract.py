@@ -1,4 +1,4 @@
-"""Front extract: full compiled filing, schema, and a null special category."""
+"""Front extract: the whole compiled filing, schema, and a null special category."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ from extraction_review.config import (
     FrontExtractRecord,
     LegalExtractRecord,
 )
-from extraction_review.scrutiny.catalogue_db import special_category_names_from_rows
 from extraction_review.extract_record import (
     finalize_front_extract,
     merge_dropped_party_schedule,
 )
+from extraction_review.scrutiny.catalogue_db import special_category_names_from_rows
 from extraction_review.process_file import FileEvent
 from extraction_review.split_upload import (
     build_extract_pack_markdown,
@@ -52,7 +52,7 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     legal = list(LegalExtractRecord.model_json_schema()["properties"])
     assert "special_category" not in legal
     front = front_extract_configuration(
-        ExtractConfig.model_construct(data_schema={}, product_type="extract")
+        ExtractConfig.model_construct(data_schema={}, product_type="extract_v2")
     )
     props = list(front["data_schema"]["properties"])
     assert props.index("special_category") == props.index("petition_type") + 1
@@ -73,6 +73,8 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     assert "stay null" not in prompt
     description = front["data_schema"]["properties"]["special_category"]["description"]
     assert description.startswith("Identify applicable special categories")
+    assert "MACT matter" in description
+    assert "listing proforma" in description
     assert "Bail Applications/Bail Matters" in description
     assert "configuration_id" not in front
     legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
@@ -126,6 +128,29 @@ def test_missing_special_category_stays_null_and_later_pages_stay_empty() -> Non
     assert done["documents"] == []
     assert done["document_counts"] == {"processed": 0, "failed": 0}
     assert done["advocates_on_record"] == [{"name": "Ravi"}]
+
+
+@pytest.mark.timeout(2)
+def test_front_extract_finishes_with_non_party_ocr_dot_leaders() -> None:
+    dot_leader = "." * 256
+    page = (
+        "MEMO OF PARTIES\n"
+        "Manoj Saini\n"
+        "VERSUS\n"
+        f"पुलिस थाना {dot_leader} पुलिस थाना गांधीनगर"
+    )
+
+    done = finalize_front_extract(
+        {
+            "petition_type": "Special Leave Petition (Civil)",
+            "special_category": None,
+            "petitioners": [],
+            "respondents": [],
+        },
+        page_markdown={148: page},
+    )
+
+    assert done["petition_type"] == "Special Leave Petition (Civil)"
 
 
 def test_chamber_line_phone_is_stored_on_the_advocate() -> None:
@@ -1283,7 +1308,7 @@ def test_index_cuts_the_saved_book_by_source_span() -> None:
     assert jobs["petition"] == "pjb-saved"
 
 
-def test_unchanged_edited_slot_still_uses_the_saved_book() -> None:
+def test_edited_matching_slot_reuses_the_saved_book() -> None:
     book = {
         "pages": {1: "one", 2: "two"},
         "layout": {},
@@ -1292,7 +1317,7 @@ def test_unchanged_edited_slot_still_uses_the_saved_book() -> None:
     }
     pages, _layouts, _structured, jobs, slots = compiled_index_reuse(
         book,
-        [("petition", [{"start": 1, "end": 2}])],
+        [("petition", [{"start": 1, "end": 2}]), ("index", [{"start": 1, "end": 1}])],
         edited=True,
         reusable_slots={"petition"},
     )

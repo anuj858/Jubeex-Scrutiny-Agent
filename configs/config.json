@@ -101,6 +101,21 @@
   "extract-jubeex": {
     "product_type": "extract_v2",
     "configuration_id": null,
+    "local_extraction": {
+      "enabled_fields": [
+        "court",
+        "petition_type",
+        "cause_title",
+        "petitioners",
+        "respondents",
+        "advocates_on_record",
+        "impugned_orders",
+        "relief_sort",
+        "petition_date",
+        "special_category"
+      ],
+      "max_field_chars": 6000
+    },
     "data_schema": {
       "$defs": {
         "AdvocateOnRecord": {
@@ -974,7 +989,8 @@
       "aggressive_table_extraction": true,
       "ocr_parameters": {
         "languages": [
-          "en"
+          "en",
+          "hi"
         ]
       }
     },

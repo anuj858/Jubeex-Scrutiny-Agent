@@ -709,6 +709,8 @@ def parse_action_for_slot(
     if scope == "extract_sources":
         if not slot_is_extract_source(part, catalog):
             return "skip"
+        if slot in reused:
+            return "reuse"
         return "parse"
     if scope == "supplied":
         if slot in reused:
@@ -718,7 +720,9 @@ def parse_action_for_slot(
         if slot in reused:
             return "reuse"
         return "parse"
-    return "parse"
+    if scope == "reuse_only":
+        return "reuse" if slot in reused else "skip"
+    return "reuse" if slot in reused else "parse"
 
 
 PARSE_ARTIFACT_URL_KEY = "parse_artifact_url"
@@ -956,7 +960,7 @@ def pages_for_source_span(
     return out
 
 
-def compiled_index_reuse(
+def compiled_parse_reuse(
     book: Mapping[str, Any],
     parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
     *,
@@ -969,7 +973,11 @@ def compiled_index_reuse(
     dict[str, str],
     list[str],
 ]:
-    """Cut the saved book parse into slot pages. Skip a slot that was edited."""
+    """Cut a saved compiled-book parse into reusable per-slot page artifacts.
+
+    ``edited`` reuses only slots the caller already proved unchanged.
+    ``reusable_slots`` is that set. When ``edited`` is false every span is cut.
+    """
     book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
     book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
     book_structured = (
@@ -983,9 +991,7 @@ def compiled_index_reuse(
     slots: list[str] = []
     for slot_id, span in parts:
         slot = (slot_id or "").strip()
-        if not slot:
-            continue
-        if edited and slot not in reusable_slots:
+        if not slot or (edited and slot not in reusable_slots):
             continue
         sliced = pages_for_source_span(book_pages, span)
         if not sliced:
@@ -1011,6 +1017,28 @@ def compiled_index_reuse(
             jobs[slot] = job_id
         slots.append(slot)
     return pages_by_slot, layouts, structured, jobs, slots
+
+
+def compiled_index_reuse(
+    book: Mapping[str, Any],
+    parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
+    *,
+    edited: bool,
+    reusable_slots: set[str],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+    list[str],
+]:
+    """Backward-compatible name for compiled parse reuse during indexing."""
+    return compiled_parse_reuse(
+        book,
+        parts,
+        edited=edited,
+        reusable_slots=reusable_slots,
+    )
 
 
 def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:
@@ -1282,6 +1310,17 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
         )
         missing = "If a value is not printed in this filing, write N/A."
         field_pages = "any page"
+        party_where = "in this filing"
+        aor_rules = (
+            "Copy the printed advocate-on-record footer only. Leave a field null if it "
+            "is not printed; do not invent name, code, email, mobile, firm, chamber, or PIN. "
+            "Do not copy a petitioner or respondent address into the chamber. "
+            "The footer may be on any page. Use the block that prints Advocate-on-Record, "
+            "Vakalatnama, Memo of Appearance, or Drawn By / Filed on / DRAWN & FILED BY, "
+            "with the chamber lines under that name. "
+            "A Ph., Phone, Tel., or Mobile number on the chamber line, including after the PIN, "
+            "goes in mobile. Record source_pages for the page that printed it."
+        )
     else:
         where = (
             f"Search every page labelled Opening pages. That is the first "
@@ -1290,6 +1329,8 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
         )
         missing = "If a value is not printed in that window, write N/A."
         field_pages = "any opening page"
+        party_where = "from the petition opening in these pages"
+        aor_rules = AOR_EXTRACT_RULES
     return "\n".join(
         [
             "# Extraction rules",
@@ -1302,8 +1343,8 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
             "",
             "- court, petition_type, cause_title, petitioners, respondents, "
             f"impugned_orders, relief_sort, and petition_date may be on {field_pages}.",
-            "- petitioners and respondents: read every numbered party from the "
-            "petition opening in these pages. Copy the relation, guardian, age, "
+            "- petitioners and respondents: read every numbered party "
+            f"{party_where}. Copy the relation, guardian, age, "
             "occupation, and address printed under that name. When the same "
             "schedule has a lower-court column and a current-court column "
             "(Before High Court and Before Supreme Court, or In this Court), use "
@@ -1314,7 +1355,7 @@ def _window_extract_preamble(*, whole_filing: bool = False) -> str:
             "drafted and filed dates are printed. Skip a page number sitting between "
             "the label and the date.",
             "- relief_sort: the prayer body only, without the Main Prayer heading.",
-            f"- advocates_on_record: {AOR_EXTRACT_RULES}",
+            f"- advocates_on_record: {aor_rules}",
             "- impugned_orders.bench: judge names under CORAM, joined with '; '.",
         ]
     )

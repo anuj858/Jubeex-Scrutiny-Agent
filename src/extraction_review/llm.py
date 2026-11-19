@@ -16,6 +16,8 @@ import logging
 import os
 import random
 import time
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,6 +52,10 @@ MAX_VERTEX_RETRY_DELAY_S = 60.0
 MAX_SHARED_RATE_LIMIT_QUEUE_S = 600.0
 DEFAULT_VERTEX_SHARED_COOLDOWN_BASE_S = 30.0
 DEFAULT_VERTEX_SHARED_COOLDOWN_MAX_S = 300.0
+DEFAULT_OPENROUTER_RESPONSE_CACHE_TTL_S = 3600
+DEFAULT_OPENROUTER_BATCH_POLL_S = 60.0
+DEFAULT_OPENROUTER_BATCH_TIMEOUT_S = 3600.0
+DEFAULT_OPENROUTER_BATCH_MAX_REQUESTS = 100
 
 _genai_client: Any = None
 _genai_client_key: tuple[str, ...] | None = None
@@ -67,6 +73,49 @@ class LLMError(RuntimeError):
 
 class LLMFatalError(LLMError):
     """Auth / billing / permission failures that must not be retried."""
+
+
+class OpenRouterBatchError(LLMError):
+    """Batch failed after submission, or its accepted work is still pending.
+
+    ``batch_id`` is intentionally exposed so an operator can recover an
+    accepted batch without resubmitting and paying for the same work twice.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        batch_id: str | None = None,
+        accepted: bool = False,
+        terminal: bool = False,
+        usage: LlmUsage | None = None,
+    ) -> None:
+        super().__init__(message, usage=usage)
+        self.batch_id = batch_id
+        self.accepted = accepted
+        self.terminal = terminal
+
+
+@dataclass(frozen=True)
+class StructuredBatchRequest:
+    """One structured-output request inside an OpenRouter batch."""
+
+    custom_id: str
+    system_prompt: str
+    user_prompt: str
+    request_label: str | None = None
+
+
+@dataclass(frozen=True)
+class StructuredBatchResult:
+    """Validated value or isolated per-request failure from a completed batch."""
+
+    value: BaseModel | None
+    usage: LlmUsage
+    error: LLMError | None = None
+    generation_id: str | None = None
+    batch_id: str | None = None
 
 
 def llm_provider() -> str:
@@ -100,6 +149,76 @@ def openrouter_max_attempts() -> int:
 
 def openrouter_api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY")
+
+
+def _env_enabled(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def openrouter_prompt_cache_enabled() -> bool:
+    """Whether supported providers may cache the stable prompt prefix."""
+    return _env_enabled("OPENROUTER_PROMPT_CACHE", default=True)
+
+
+def openrouter_response_cache_enabled() -> bool:
+    """Whether identical OpenRouter calls may reuse a zero-token response."""
+    return _env_enabled("OPENROUTER_RESPONSE_CACHE", default=False)
+
+
+def openrouter_response_cache_ttl_seconds() -> int:
+    """Response-cache lifetime, bounded to OpenRouter's documented 24 hours."""
+    raw = (os.getenv("OPENROUTER_RESPONSE_CACHE_TTL_S") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_OPENROUTER_RESPONSE_CACHE_TTL_S
+    except ValueError:
+        value = DEFAULT_OPENROUTER_RESPONSE_CACHE_TTL_S
+    return min(86_400, max(1, value))
+
+
+def openrouter_batch_enabled() -> bool:
+    """Use asynchronous OpenRouter batches for scrutiny model calls."""
+    return _env_enabled("OPENROUTER_BATCH_ENABLED", default=False)
+
+
+def openrouter_batch_poll_seconds() -> float:
+    raw = (os.getenv("OPENROUTER_BATCH_POLL_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_OPENROUTER_BATCH_POLL_S
+    except ValueError:
+        value = DEFAULT_OPENROUTER_BATCH_POLL_S
+    return min(300.0, max(1.0, value))
+
+
+def openrouter_batch_timeout_seconds() -> float:
+    raw = (os.getenv("OPENROUTER_BATCH_TIMEOUT_S") or "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_OPENROUTER_BATCH_TIMEOUT_S
+    except ValueError:
+        value = DEFAULT_OPENROUTER_BATCH_TIMEOUT_S
+    return min(86_400.0, max(60.0, value))
+
+
+def openrouter_batch_max_requests() -> int:
+    """Conservative local chunk size; OpenRouter enforces its model limit too."""
+    raw = (os.getenv("OPENROUTER_BATCH_MAX_REQUESTS") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_OPENROUTER_BATCH_MAX_REQUESTS
+    except ValueError:
+        value = DEFAULT_OPENROUTER_BATCH_MAX_REQUESTS
+    return min(10_000, max(1, value))
+
+
+def openrouter_batch_delete_after_read() -> bool:
+    """Delete terminal batch inputs/results after local persistence by default."""
+    return _env_enabled("OPENROUTER_BATCH_DELETE_AFTER_READ", default=True)
+
+
+def openrouter_batch_sync_fallback_enabled() -> bool:
+    """Fallback only when submission was rejected before a batch id existed."""
+    return _env_enabled("OPENROUTER_BATCH_SYNC_FALLBACK", default=True)
 
 
 def gemini_api_key() -> str | None:
@@ -242,6 +361,21 @@ def openrouter_requests_per_minute() -> int:
         return DEFAULT_REQUESTS_PER_MINUTE
 
 
+def create_openrouter_http_client() -> httpx.AsyncClient:
+    """One connection pool for an entire workflow, instead of one per check."""
+    timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    max_connections = max(
+        1, int((os.getenv("OPENROUTER_MAX_CONNECTIONS") or "24").strip())
+    )
+    return httpx.AsyncClient(
+        timeout=timeout,
+        limits=httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_connections,
+        ),
+    )
+
+
 def llm_requests_per_minute() -> int:
     """Rate limit for the active provider.
 
@@ -330,11 +464,13 @@ def genai_request_timeout_seconds() -> int:
 
 
 class _OpenRouterRateLimiter:
-    """Process-local, evenly paced fallback limiter."""
+    """Process-local token bucket with a bounded initial/concurrency burst."""
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._next_allowed_at = 0.0
+        self._tokens = 0.0
+        self._last_refill_at = time.monotonic()
+        self._configured_rpm: int | None = None
 
     async def acquire(
         self,
@@ -345,16 +481,38 @@ class _OpenRouterRateLimiter:
         rpm = llm_requests_per_minute() if rpm is None else max(0, rpm)
         if rpm <= 0:
             return
-        interval_s = 60.0 / rpm
-        async with self._lock:
-            now = time.monotonic()
-            wait_s = max(0.0, self._next_allowed_at - now)
-            self._next_allowed_at = max(now, self._next_allowed_at) + interval_s
-        if wait_s > 0:
+        burst = max(
+            1,
+            min(
+                rpm,
+                int(
+                    (os.getenv("OPENROUTER_BURST") or "").strip()
+                    or (os.getenv("SCRUTINY_CONCURRENCY") or "8").strip()
+                ),
+            ),
+        )
+        refill_per_second = rpm / 60.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                if self._configured_rpm != rpm:
+                    self._configured_rpm = rpm
+                    self._tokens = float(burst)
+                    self._last_refill_at = now
+                elapsed = max(0.0, now - self._last_refill_at)
+                self._tokens = min(
+                    float(burst), self._tokens + elapsed * refill_per_second
+                )
+                self._last_refill_at = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_s = (1.0 - self._tokens) / refill_per_second
             logger.info(
-                "[LLM]%s local pacing at %s req/min; waiting %.1fs",
+                "[LLM]%s token bucket at %s req/min burst=%s; waiting %.1fs",
                 f"[{request_label}]" if request_label else "",
                 rpm,
+                burst,
                 wait_s,
             )
             await asyncio.sleep(max(wait_s, 0.05))
@@ -817,7 +975,16 @@ def _headers() -> dict[str, str]:
     referer = os.getenv("OPENROUTER_SITE_URL")
     if referer:
         headers["HTTP-Referer"] = referer
+    if openrouter_response_cache_enabled():
+        headers["X-OpenRouter-Cache"] = "true"
+        headers["X-OpenRouter-Cache-TTL"] = str(openrouter_response_cache_ttl_seconds())
     return headers
+
+
+def _openrouter_cache_session_id(model_name: str, system_prompt: str) -> str:
+    """Stable, non-sensitive routing key for one model/prompt family."""
+    digest = hashlib.sha256(f"{model_name}\n{system_prompt}".encode()).hexdigest()[:32]
+    return f"jubeex-scrutiny-{digest}"
 
 
 def strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -961,9 +1128,12 @@ def _close_truncated_json(text: str) -> str | None:
 def _complete_structured_fields(data: dict[str, Any]) -> dict[str, Any]:
     completed = dict(data)
     legacy = completed.get("reasoning")
-    if not str(completed.get("observed") or "").strip():
-        if isinstance(legacy, str) and legacy.strip():
-            completed["observed"] = legacy.strip()
+    if (
+        not str(completed.get("observed") or "").strip()
+        and isinstance(legacy, str)
+        and legacy.strip()
+    ):
+        completed["observed"] = legacy.strip()
     if not completed.get("summary"):
         source = completed.get("observed") or ""
         if isinstance(source, str) and source.strip():
@@ -1317,6 +1487,426 @@ async def generate_vision_json(
     return content, usage
 
 
+def _batch_headers() -> dict[str, str]:
+    """OpenRouter headers without synchronous response-cache directives."""
+    return {
+        key: value
+        for key, value in _headers().items()
+        if key.casefold() not in {"x-openrouter-cache", "x-openrouter-cache-ttl"}
+    }
+
+
+def _structured_batch_body(
+    request: StructuredBatchRequest,
+    *,
+    response_model: type[BaseModel],
+    temperature: float,
+    token_limit: int,
+) -> dict[str, Any]:
+    system_prompt = _with_output_budget(request.system_prompt)
+    body: dict[str, Any] = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.user_prompt},
+        ],
+        "temperature": temperature,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_model.__name__,
+                "strict": True,
+                "schema": strict_json_schema(response_model),
+            },
+        },
+    }
+    if token_limit:
+        body["max_tokens"] = token_limit
+    return body
+
+
+def _batch_error_message(payload: Any, fallback: str) -> str:
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str) and error:
+            return error
+        if payload.get("message"):
+            return str(payload["message"])
+    return fallback
+
+
+async def _delete_openrouter_batch(
+    http: httpx.AsyncClient,
+    *,
+    base_url: str,
+    batch_id: str,
+) -> None:
+    if not openrouter_batch_delete_after_read():
+        return
+    try:
+        response = await http.delete(
+            f"{base_url}/batches/{batch_id}", headers=_batch_headers()
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "[LLM][batch=%s] cleanup failed status=%s body=%s",
+                batch_id,
+                response.status_code,
+                response.text[:300],
+            )
+    except Exception:
+        logger.warning(
+            "[LLM][batch=%s] cleanup failed; retained by OpenRouter",
+            batch_id,
+            exc_info=True,
+        )
+
+
+async def delete_openrouter_batches(
+    batch_ids: Sequence[str], *, client: httpx.AsyncClient | None = None
+) -> None:
+    """Best-effort privacy cleanup after the caller persisted all results."""
+    if not openrouter_batch_delete_after_read():
+        return
+    unique_ids = list(dict.fromkeys(value for value in batch_ids if value))
+    if not unique_ids:
+        return
+    base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    request_timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=request_timeout)
+    try:
+        for batch_id in unique_ids:
+            await _delete_openrouter_batch(http, base_url=base_url, batch_id=batch_id)
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
+async def call_structured_batch[T: BaseModel](
+    *,
+    requests: Sequence[StructuredBatchRequest],
+    response_model: type[T],
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int | None = None,
+    client: httpx.AsyncClient | None = None,
+    on_batch_accepted: Callable[[str], Awaitable[None] | None] | None = None,
+) -> dict[str, StructuredBatchResult]:
+    """Submit, poll, validate, and clean up one OpenRouter Batch API job.
+
+    A submission failure has ``accepted=False`` and may safely use the sync
+    fallback. Once OpenRouter returns a batch id, this function never silently
+    resubmits: a timeout/failure exposes the id so the accepted work can be
+    recovered without duplicate spend.
+    """
+    if llm_provider() != "openrouter":
+        raise OpenRouterBatchError(
+            "OpenRouter Batch API requires LLM_PROVIDER=openrouter",
+            accepted=False,
+        )
+    if not requests:
+        return {}
+    custom_ids = [request.custom_id for request in requests]
+    if any(not custom_id.strip() for custom_id in custom_ids):
+        raise ValueError("Batch custom_id cannot be blank")
+    if len(set(custom_ids)) != len(custom_ids):
+        raise ValueError("Batch custom_id must be unique")
+
+    model_name = model.removesuffix(":batch")
+    token_limit = _hard_token_limit(max_tokens)
+    base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    request_timeout = float(os.getenv("OPENROUTER_TIMEOUT_S", DEFAULT_TIMEOUT_S))
+    payload = {
+        # OpenRouter stream-parses this object; requests must remain last.
+        "endpoint": "/v1/chat/completions",
+        "model": model_name,
+        "completion_window": "24h",
+        "requests": [
+            {
+                "custom_id": request.custom_id,
+                "body": _structured_batch_body(
+                    request,
+                    response_model=response_model,
+                    temperature=temperature,
+                    token_limit=token_limit,
+                ),
+            }
+            for request in requests
+        ],
+    }
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=request_timeout)
+    batch_id: str | None = None
+    terminal_payload: dict[str, Any] | None = None
+    try:
+        try:
+            submitted = await http.post(
+                f"{base_url}/batches", headers=_batch_headers(), json=payload
+            )
+        except httpx.HTTPError as exc:
+            raise OpenRouterBatchError(
+                "OpenRouter batch submission outcome is unknown after a transport "
+                f"error; synchronous fallback is unsafe: {exc}",
+                # The server may have accepted the body before the connection
+                # failed. Treat this as accepted/unknown to prevent duplicate
+                # inference charges. There is no provider idempotency contract
+                # documented for batch submission.
+                accepted=True,
+            ) from exc
+        try:
+            submitted_payload = submitted.json()
+        except ValueError:
+            submitted_payload = {}
+        if submitted.status_code != 202:
+            message = _batch_error_message(
+                submitted_payload,
+                f"OpenRouter batch submission returned {submitted.status_code}",
+            )
+            error_type = (
+                LLMFatalError
+                if submitted.status_code in {401, 402, 403}
+                else OpenRouterBatchError
+            )
+            if error_type is LLMFatalError:
+                raise LLMFatalError(message)
+            explicit_rejection = submitted.status_code in {
+                400,
+                404,
+                409,
+                413,
+                422,
+                429,
+            }
+            raise OpenRouterBatchError(message, accepted=not explicit_rejection)
+
+        batch_id = str(submitted_payload.get("id") or "").strip() or None
+        if not batch_id:
+            raise OpenRouterBatchError(
+                "OpenRouter accepted a batch but returned no batch id",
+                accepted=True,
+            )
+        logger.info(
+            "[LLM][batch=%s] accepted model=%s requests=%s",
+            batch_id,
+            model_name,
+            len(requests),
+        )
+        if on_batch_accepted is not None:
+            try:
+                accepted_result = on_batch_accepted(batch_id)
+                if isinstance(accepted_result, Awaitable):
+                    await accepted_result
+            except Exception:
+                # Never abandon already accepted paid work because local
+                # observability persistence failed. The id remains in logs.
+                logger.warning(
+                    "[LLM][batch=%s] could not persist accepted batch id",
+                    batch_id,
+                    exc_info=True,
+                )
+
+        deadline = time.monotonic() + openrouter_batch_timeout_seconds()
+        while time.monotonic() < deadline:
+            try:
+                polled = await http.get(
+                    f"{base_url}/batches/{batch_id}", headers=_batch_headers()
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("[LLM][batch=%s] poll failed: %s", batch_id, exc)
+                await asyncio.sleep(openrouter_batch_poll_seconds())
+                continue
+            if polled.status_code == 429:
+                await asyncio.sleep(max(120.0, openrouter_batch_poll_seconds()))
+                continue
+            if polled.status_code >= 500:
+                await asyncio.sleep(openrouter_batch_poll_seconds())
+                continue
+            try:
+                current = polled.json()
+            except ValueError:
+                current = {}
+            if polled.status_code >= 400:
+                raise OpenRouterBatchError(
+                    _batch_error_message(
+                        current,
+                        f"OpenRouter batch poll returned {polled.status_code}",
+                    ),
+                    batch_id=batch_id,
+                    accepted=True,
+                )
+            status = str(current.get("status") or "").casefold()
+            counts = current.get("request_counts") or {}
+            logger.info(
+                "[LLM][batch=%s] status=%s completed=%s failed=%s total=%s",
+                batch_id,
+                status or "unknown",
+                counts.get("completed"),
+                counts.get("failed"),
+                counts.get("total"),
+            )
+            if status == "completed" and current.get("results") is not None:
+                terminal_payload = current
+                break
+            if status in {"failed", "expired", "cancelled"}:
+                terminal_payload = current
+                break
+            await asyncio.sleep(openrouter_batch_poll_seconds())
+
+        if terminal_payload is None:
+            raise OpenRouterBatchError(
+                f"OpenRouter batch did not finish within {openrouter_batch_timeout_seconds():.0f}s",
+                batch_id=batch_id,
+                accepted=True,
+            )
+        status = str(terminal_payload.get("status") or "").casefold()
+        if status != "completed":
+            raise OpenRouterBatchError(
+                _batch_error_message(
+                    terminal_payload, f"OpenRouter batch ended as {status or 'unknown'}"
+                ),
+                batch_id=batch_id,
+                accepted=True,
+                terminal=True,
+                usage=parse_openrouter_usage(terminal_payload, model=model_name),
+            )
+
+        results: dict[str, StructuredBatchResult] = {}
+        for item in terminal_payload.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            custom_id = str(item.get("custom_id") or "")
+            if custom_id not in set(custom_ids):
+                logger.warning(
+                    "[LLM][batch=%s] ignored unknown custom_id=%s",
+                    batch_id,
+                    custom_id,
+                )
+                continue
+            error = item.get("error")
+            if error:
+                results[custom_id] = StructuredBatchResult(
+                    value=None,
+                    usage=LlmUsage(model=model_name),
+                    error=LLMError(
+                        _batch_error_message(error, f"Batch request {custom_id} failed")
+                    ),
+                    batch_id=batch_id,
+                )
+                continue
+            response = item.get("response") or {}
+            body = response.get("body") if isinstance(response, dict) else None
+            if not isinstance(body, dict):
+                results[custom_id] = StructuredBatchResult(
+                    value=None,
+                    usage=LlmUsage(model=model_name),
+                    error=LLMError(
+                        f"Batch request {custom_id} returned no response body"
+                    ),
+                    batch_id=batch_id,
+                )
+                continue
+            usage = parse_openrouter_usage(body, model=model_name)
+            if usage.calls == 0:
+                usage = usage.model_copy(update={"calls": 1})
+            generation_id = body.get("id") if isinstance(body.get("id"), str) else None
+            try:
+                content = _extract_content(body)
+                finish = ""
+                choices = body.get("choices") or []
+                if choices and isinstance(choices[0], dict):
+                    finish = str(choices[0].get("finish_reason") or "")
+                if _answer_was_cut(content, finish_reason=finish):
+                    raise LLMError("The batched model reply was cut off")
+                parsed = _loads_complete_json(content)
+                if parsed is None:
+                    raise LLMError("Batched response was not a JSON object")
+                value = response_model.model_validate(
+                    _complete_structured_fields(parsed)
+                )
+                results[custom_id] = StructuredBatchResult(
+                    value=value,
+                    usage=usage,
+                    generation_id=generation_id,
+                    batch_id=batch_id,
+                )
+            except (LLMError, ValidationError) as exc:
+                results[custom_id] = StructuredBatchResult(
+                    value=None,
+                    usage=usage,
+                    error=LLMError(str(exc), usage=usage),
+                    generation_id=generation_id,
+                    batch_id=batch_id,
+                )
+
+        for custom_id in custom_ids:
+            results.setdefault(
+                custom_id,
+                StructuredBatchResult(
+                    value=None,
+                    usage=LlmUsage(model=model_name),
+                    error=LLMError(f"Completed batch omitted result {custom_id}"),
+                    batch_id=batch_id,
+                ),
+            )
+
+        # Some batch providers report usage only on the outer batch object.
+        # Preserve exact job totals by distributing only the unreported
+        # remainder across successful requests. This keeps cost accounting
+        # correct without double-counting providers that include per-result
+        # usage in each response body.
+        batch_usage = parse_openrouter_usage(terminal_payload, model=model_name)
+        successful_ids = [
+            custom_id
+            for custom_id, result in results.items()
+            if result.value is not None and result.error is None
+        ]
+        observed = LlmUsage(model=model_name)
+        for result in results.values():
+            observed = observed.plus(result.usage)
+        if successful_ids:
+            token_fields = (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "cached_tokens",
+                "reasoning_tokens",
+            )
+            token_remainders = {
+                field: max(0, getattr(batch_usage, field) - getattr(observed, field))
+                for field in token_fields
+            }
+            cost_remainder: float | None = None
+            if batch_usage.cost_usd is not None:
+                cost_remainder = max(
+                    0.0, batch_usage.cost_usd - (observed.cost_usd or 0.0)
+                )
+            count = len(successful_ids)
+            for index, custom_id in enumerate(successful_ids):
+                current = results[custom_id]
+                additions: dict[str, Any] = {}
+                for field, remainder in token_remainders.items():
+                    additions[field] = remainder // count + (
+                        1 if index < remainder % count else 0
+                    )
+                additions["calls"] = 0
+                if cost_remainder is not None:
+                    additions["cost_usd"] = cost_remainder / count
+                supplement = LlmUsage(model=model_name, **additions)
+                results[custom_id] = StructuredBatchResult(
+                    value=current.value,
+                    usage=current.usage.plus(supplement),
+                    error=current.error,
+                    generation_id=current.generation_id,
+                    batch_id=current.batch_id,
+                )
+        return results
+    finally:
+        if owns_client:
+            await http.aclose()
+
+
 async def call_structured[T: BaseModel](
     *,
     system_prompt: str,
@@ -1356,8 +1946,22 @@ async def call_structured[T: BaseModel](
         token_limit = int(raw_limit) if raw_limit else DEFAULT_MAX_TOKENS
     token_limit = _hard_token_limit(token_limit)
 
+    system_content: Any = system_prompt
+    if openrouter_prompt_cache_enabled() and model_name.casefold().startswith(
+        "anthropic/"
+    ):
+        # Anthropic requires an explicit cache breakpoint. Keep it on the
+        # stable system block; putting it after changing filing evidence would
+        # create a paid cache write for every defect instead of reusable reads.
+        system_content = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -1367,6 +1971,12 @@ async def call_structured[T: BaseModel](
             "messages": messages,
             "temperature": temperature,
         }
+        if openrouter_prompt_cache_enabled():
+            # Sticky routing keeps subsequent checks on the provider endpoint
+            # holding the warm prompt prefix. The id contains no filing data.
+            payload["session_id"] = _openrouter_cache_session_id(
+                model_name, system_prompt
+            )
         if token_limit:
             payload["max_tokens"] = token_limit
         if use_json_schema:

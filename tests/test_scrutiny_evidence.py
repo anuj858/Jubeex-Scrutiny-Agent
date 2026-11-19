@@ -32,6 +32,7 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
+    apply_catalogue_gap_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
     apply_evidence_capability_policy,
@@ -48,6 +49,7 @@ from extraction_review.scrutiny.schema import (
     apply_scope_coverage_policy,
     apply_status_policy,
     apply_supported_evidence_policy,
+    apply_unreviewed_handwriting_policy,
     apply_visual_conflict_policy,
     apply_visual_field_policy,
     manifest_absence_proven,
@@ -1184,9 +1186,7 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert gated.status == "needs_review"
     assert gated.gap == "low_confidence"
     assert review_reason_for_response(gated) == (
-        "The system is only 40% sure about what the document shows. It must be at "
-        "least 60% sure before marking this as Defect or Compliant. Please check "
-        "the relevant document manually."
+        "The document reading is only 40% certain, below the 60% needed to decide."
     )
 
 
@@ -1203,12 +1203,10 @@ def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "at least 60% sure" not in reason
-    assert "does not mean the defect is 90% certain" in reason
+    assert reason == "The result is too uncertain to mark Defect or Compliant."
 
 
-def test_review_reason_explains_the_problem_and_next_step_in_plain_language() -> None:
+def test_review_reason_states_only_the_core_problem() -> None:
     response = DefectResponse(
         check_id="D068",
         status="needs_review",
@@ -1221,10 +1219,7 @@ def test_review_reason_explains_the_problem_and_next_step_in_plain_language() ->
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "extracted text" in reason
-    assert "pages available to the system" in reason
-    assert "Please check the original page" in reason
+    assert reason == "Extracted text for the signature field is unclear."
 
 
 def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> None:
@@ -1246,7 +1241,78 @@ def test_specific_model_review_reason_is_used_without_a_second_llm_call() -> Non
 
     reason = review_reason_for_response(response)
 
-    assert reason == response.review_reason
+    assert reason == (
+        "A dark stamp covers the executant signature area in the Vakalatnama, "
+        "so it is unclear whether a signature is present underneath it."
+    )
+
+
+def test_verbose_model_review_reason_keeps_only_the_core_sentence() -> None:
+    response = DefectResponse(
+        check_id="D068",
+        status="needs_review",
+        confidence=0.82,
+        summary="The signature area is obscured.",
+        gap="unreadable",
+        review_reason=(
+            "A dark stamp covers the signature area in the Vakalatnama. "
+            "The extracted text does not resolve whether a signature is underneath. "
+            "This uncertainty prevents a reliable decision. "
+            "Please inspect the original signature area."
+        ),
+        evidence=[],
+    )
+
+    reason = review_reason_for_response(response)
+
+    assert reason == (
+        "The extracted text does not resolve whether a signature is underneath."
+    )
+    assert len(reason.split()) <= 25
+
+
+def test_review_reason_drops_inventory_and_keeps_the_missing_source() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.91,
+        summary="Affidavit compliance cannot be determined.",
+        gap="ambiguous",
+        review_reason=(
+            "The Affidavit contains verification, a notary seal, an identifier, "
+            "and references to dates, annexures, and applications, but the "
+            "governing current Rule or Registry direction is not available. "
+            "Check the current source for this proceeding and filing mode to "
+            "determine which details are mandatory and whether."
+        ),
+        evidence=[],
+    )
+
+    assert review_reason_for_response(response) == (
+        "The governing current Rule or Registry direction is not available."
+    )
+
+
+def test_conflict_review_reason_states_the_fact_not_the_mark_label() -> None:
+    response = DefectResponse(
+        check_id="D-116",
+        status="needs_review",
+        confidence=0.59,
+        summary="Needs review because the available evidence does not safely prove this defect.",
+        observed=(
+            'The Memo of Appearance bears the Advocate’s signature, but the '
+            '"Dated" line is blank. It therefore does not state the date of '
+            "execution or signing."
+        ),
+        gap="conflict",
+        gap_detail="Vakalatnama: Petitioner(s); Vakalatnama: Yours faithfully",
+        review_reason="Vakalatnama: Petitioner(s); Vakalatnama: Yours faithfully.",
+        evidence=[],
+    )
+
+    assert review_reason_for_response(response) == (
+        'The "Dated" line is blank, but a visible mark conflicts with that reading.'
+    )
 
 
 def test_clear_court_name_mismatch_is_defect_not_need_review() -> None:
@@ -1299,9 +1365,7 @@ def test_generic_model_review_reason_uses_the_safe_specific_fallback() -> None:
 
     reason = review_reason_for_response(response)
 
-    assert reason is not None
-    assert "signature" in reason
-    assert "Please check the original page" in reason
+    assert reason == "The executant signature is faint."
 
 
 def test_confident_defect_stays_defect_found() -> None:
@@ -2521,6 +2585,63 @@ def test_blank_date_is_not_conflicted_by_present_advocate_signature() -> None:
     assert decided.gap is None
 
 
+def test_blank_dated_line_is_a_defect_when_nearby_marks_are_not_dates() -> None:
+    defect = _scrutiny_row(
+        check_id="D-116",
+        defect="Memo of Appearance does not mention the date of execution/filing.",
+        requirement=(
+            "The Memo of Appearance must mention the date on which it is "
+            "executed/signed."
+        ),
+        inspect_parts=["Vakalatnama"],
+    )
+    response = DefectResponse(
+        check_id="D-116",
+        status="defect_found",
+        confidence=0.91,
+        summary="The Dated line is blank.",
+        observed=(
+            "The Memo of Appearance bears the Advocate's signature, but the "
+            '"Dated" line is blank.'
+        ),
+        conclusion="The required execution date is missing.",
+        evidence=[
+            EvidenceRef(
+                page=1,
+                quote="Dated:\nYours faithfully\nAdvocate for the Petitioner(s)",
+            )
+        ],
+    )
+    visual = {
+        "status": "ok",
+        "pages": [1],
+        "targets": [{"page": 1, "document_types": ["Vakalatnama"]}],
+        "failures": [],
+        "marks": [
+            {
+                "page": 1,
+                "document_type": "Vakalatnama",
+                "marking_type": "signature_like_mark",
+                "signature_role": "executant",
+                "associated_label": "Petitioner(s)",
+                "visible_text": "Petitioner(s)",
+            },
+            {
+                "page": 1,
+                "document_type": "Vakalatnama",
+                "marking_type": "advocate_on_record_signature",
+                "signature_role": "advocate",
+                "associated_label": "Yours faithfully",
+            },
+        ],
+    }
+
+    decided = apply_visual_conflict_policy(defect, response, visual)
+
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+
+
 def test_complete_d75_endorsement_scope_becomes_defect_not_conflict() -> None:
     defect = _scrutiny_row(
         check_id="D-75",
@@ -2625,6 +2746,68 @@ def test_internal_party_side_contradiction_is_defect() -> None:
     decided = apply_internal_contradiction_policy(defect, response)
     assert decided.status == "defect_found"
     assert decided.gap is None
+
+
+def test_unreviewed_signature_date_is_not_published() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.78,
+        summary="The July 2025 verification conflicts with the signature date 3-11-22.",
+        observed="Verified in July 2025 but the signature reads 3-11-22.",
+        review_reason="The signature date 3-11-22 does not match July 2025.",
+        conclusion="The affidavit date 3-11-22 is inconsistent.",
+        gap="conflict",
+        evidence=[EvidenceRef(page=34, quote="[signature:3-11-22]")],
+    )
+    decided = apply_unreviewed_handwriting_policy(
+        response,
+        {"status": "ok", "pages": [], "marks": []},
+    )
+    published = " ".join(
+        (
+            decided.summary,
+            decided.observed,
+            decided.review_reason,
+            decided.conclusion,
+            decided.gap_detail,
+        )
+    )
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
+    assert "3-11-22" not in published
+    assert "July 2025" in decided.observed
+
+
+def test_legal_rule_gap_keeps_the_filing_observation() -> None:
+    response = DefectResponse(
+        check_id="D-64",
+        status="needs_review",
+        confidence=0.7,
+        summary="The verification date needs a source check.",
+        observed="The verification says July 2025.",
+        review_reason="Check the verification against the applicable rule.",
+        gap="legal_rule_unverified",
+        evidence=[EvidenceRef(page=2, quote="July, 2025")],
+    )
+    decided = apply_catalogue_gap_policy(response)
+    assert decided.gap == "ambiguous"
+    assert decided.observed == "The verification says July 2025."
+    assert decided.review_reason == "Check the verification against the applicable rule."
+    reasoning = compose_reasoning(
+        _scrutiny_row(check_id="D-64"),
+        decided,
+        chunks=[
+            {
+                "chunk_kind": "page",
+                "page": 2,
+                "document_part": "Affidavit",
+                "text": "July, 2025",
+            }
+        ],
+    )
+    assert "July 2025" in reasoning
+    assert "not published as a dispositive result" not in reasoning
 
 
 def _followup_response(**overrides: object) -> DefectResponse:

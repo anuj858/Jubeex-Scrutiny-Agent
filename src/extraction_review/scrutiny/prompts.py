@@ -261,8 +261,13 @@ def _format_evidence(
             header = "[Filing summary — derived from the extracted record]"
         elif page is not None:
             part = format_document_parts(chunk.get("document_part"))
-            loc = f"Page {page}"
-            place = f"{loc} — {part}" if part else loc
+            shown = _document_page(chunk, layout)
+            if part and shown is not None:
+                place = f"{part}, page {shown}"
+            elif shown is not None:
+                place = f"Page {shown}"
+            else:
+                place = f"Page {page}"
             provenance: list[str] = []
             original_page = chunk.get("original_page")
             if original_page not in (None, "", page, str(page)):
@@ -311,6 +316,14 @@ def _format_evidence(
     return "\n\n".join(blocks)
 
 
+def _document_page_label(document_type: str, page: object) -> str:
+    """Same label the vision prompt uses: document type and its own page."""
+    name = document_type.strip() or "unknown"
+    if page in (None, ""):
+        return name
+    return f"{name}, page {page}"
+
+
 def _visual_part_matches(document_type: str, targets: list[str]) -> bool:
     found = family_split_name(document_type)
     for target in targets:
@@ -340,7 +353,8 @@ def _format_visual_observations(
         readable = "readable" if item.get("readable") else "unreadable"
         page = item.get("local_page") or item.get("page")
         lines.append(
-            f"- {document_type}, page {page}: inspected {field}; {state}; {readable}"
+            f"- {_document_page_label(document_type, page)}: inspected {field}; "
+            f"{state}; {readable}"
         )
     for mark in visual_index.get("marks") or []:
         if not isinstance(mark, dict):
@@ -362,7 +376,9 @@ def _format_visual_observations(
         visible = str(mark.get("visible_text") or "").strip()
         if visible:
             details.append(f"visible text: {visible}")
-        lines.append(f"- {document_type}, page {page}: " + "; ".join(details))
+        lines.append(
+            f"- {_document_page_label(document_type, page)}: " + "; ".join(details)
+        )
         if len(lines) >= 20:
             break
     if not lines:
@@ -1408,10 +1424,14 @@ def compose_reasoning(
         )
 
     if gap == "legal_rule_unverified":
-        return _finish(
+        body = observed or (
             "This catalogue check is awaiting verification against a current "
-            "authoritative legal source and applicability locator; the filing "
-            "evidence was not published as a dispositive result"
+            "authoritative legal source"
+        )
+        return _finish(
+            f"{body}. This catalogue check is awaiting verification against a "
+            "current authoritative legal source and applicability locator; the "
+            "filing evidence was not published as a dispositive result"
         )
 
     if status == "defect_found":
@@ -1662,6 +1682,7 @@ def build_defect_prompt(
     prior_decision: dict[str, Any] | None = None,
     prior_call_id: str | None = None,
     prior_generation_id: str | None = None,
+    vision_note: str | None = None,
 ) -> str:
     """Rewrite one catalogue row into the user message for the model."""
     search = "\n".join(
@@ -1693,6 +1714,18 @@ def build_defect_prompt(
             "confidence is below 0.6, return needs_review."
         ),
     ]
+    if vision_note:
+        sections.extend(
+            [
+                "",
+                "## Page image already read",
+                vision_note,
+                (
+                    "Treat that image reading as what is visible on the named pages. "
+                    "Decide any page that was not imaged from the text below."
+                ),
+            ]
+        )
     ai_note = getattr(defect, "ai_note", None)
     if ai_note:
         operational_note = _operational_ai_note(ai_note)
@@ -1800,12 +1833,17 @@ def build_defect_prompt(
                 "obscures the value, or the available material genuinely cannot show "
                 "which reading is correct. "
                 "review_reason is empty unless status is needs_review. For needs_review, "
-                "write two short plain-language sentences: name the exact document, "
-                "wording, date, signature, seal, or field that is uncertain; explain "
-                "why that uncertainty prevents a Defect or Compliant decision; and tell "
-                "the user exactly what to check. Do not use generic wording such as "
-                "'insufficient evidence' or mention OCR, chunks, excerpts, retrieval, "
-                "prompts, confidence gates, or other internal system terms. "
+                "write one short sentence of no more than 20 words stating only the "
+                "core reason a Defect or Compliant decision cannot be made. Name the "
+                "uncertain fact itself, such as a blank date or a missing rule. Do "
+                "not return only a document name, party role, or mark label. Do not "
+                "restate what the document contains, do not explain the decision "
+                "rule, and do not say what to check; reasoning already carries that "
+                "detail. Example: 'The current applicable Rule or Registry direction "
+                "is not provided to establish which details are required.' Do not use "
+                "generic wording such as 'insufficient evidence' or mention OCR, "
+                "chunks, excerpts, retrieval, prompts, confidence gates, or other "
+                "internal system terms. "
                 "conclusion is one sentence and may cite a rule only when the "
                 "Requirement writes that citation. Do not mention excerpt ids, "
                 "page numbers, location_source, SCI_CHECKLIST, handbook PDF pages, "
