@@ -1,9 +1,10 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from extraction_review.worker import (
+    _require_index_artifact_version,
     _visibility_heartbeat,
     max_job_runtime_seconds,
     process_message,
@@ -26,6 +27,43 @@ def test_worker_deadline_is_bounded_and_configurable(monkeypatch) -> None:
 async def test_worker_rejects_malformed_sqs_job() -> None:
     with pytest.raises(ValueError, match="requires job_id and event"):
         await process_message({"kind": "scrutiny"})
+
+
+def test_index_sqs_requires_integer_version() -> None:
+    _require_index_artifact_version(
+        "process_file", {"job_type": "index_parsed", "version": 10}
+    )
+    _require_index_artifact_version("scrutiny", {})
+    _require_index_artifact_version("process_file", {"job_type": "upload_separate"})
+    with pytest.raises(ValueError, match="integer version"):
+        _require_index_artifact_version("process_file", {"job_type": "index_parsed"})
+    with pytest.raises(ValueError, match="integer version"):
+        _require_index_artifact_version(
+            "process_file", {"job_type": "index_parsed", "version": "2"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_index_sqs_without_version_fails_before_workflow() -> None:
+    message = {
+        "job_id": "job-index-no-version",
+        "kind": "process_file",
+        "event": {"job_type": "index_parsed", "filing_type": "SLP_CIVIL"},
+    }
+    job = MagicMock()
+    job.kind = "process_file"
+    with (
+        patch("extraction_review.worker.load_job_status", return_value=None),
+        patch("extraction_review.worker.JobLease") as lease_type,
+        patch("extraction_review.worker._job_from_message", return_value=job),
+        patch("extraction_review.worker.process_file_workflow.run") as run,
+    ):
+        lease_type.return_value.acquire.return_value = True
+        with pytest.raises(ValueError, match="integer version"):
+            await process_message(message)
+    run.assert_not_called()
+    assert job.status == "failed"
+    job.persist.assert_called_once_with(force=True)
 
 
 def test_worker_kinds_can_isolate_ingestion(monkeypatch) -> None:

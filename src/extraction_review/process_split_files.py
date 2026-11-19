@@ -233,6 +233,7 @@ class SplitFilesEvent(StartEvent):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
     reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
     reuse_structured_pages_by_slot: dict[str, dict[str, Any]] = Field(
@@ -627,6 +628,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             event.organization_id or event.org_id,
             event.workspace_id,
             reset=False,
+            artifact_version=event.version,
         )
         parse_record = _upload_parse_artifact(
             parsed_slots=parsed_slots,

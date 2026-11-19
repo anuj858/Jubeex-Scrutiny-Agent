@@ -51,14 +51,29 @@ _organization_id: ContextVar[str | None] = ContextVar(
 _workspace_id: ContextVar[str | None] = ContextVar(
     "artifact_workspace_id", default=None
 )
+_artifact_version: ContextVar[int | None] = ContextVar("artifact_version", default=None)
 _ARTIFACTS_BY_JOB: dict[str, dict[str, dict[str, str]]] = {}
+_UNSET: Any = object()
 FALLBACK_ORGANIZATION_ID = "llamacloud"
 FALLBACK_WORKSPACE_ID = "default"
+_VERSIONED_ARTIFACT_STEPS = frozenset({STEP_PARSE, STEP_DEFECTS, STEP_VISUAL})
 
 
 def _clean_id(value: str | None) -> str | None:
     cleaned = (value or "").strip()
     return cleaned or None
+
+
+def _store_artifact_version(value: Any, *, overwrite: bool) -> None:
+    """Keep the filing app's integer. ``overwrite`` clears it when omitted."""
+    if value is _UNSET:
+        if overwrite:
+            _artifact_version.set(None)
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        _artifact_version.set(None)
+        return
+    _artifact_version.set(value)
 
 
 def set_job_context(
@@ -67,6 +82,7 @@ def set_job_context(
     workspace_id: str | None = None,
     *,
     reset: bool = True,
+    artifact_version: Any = _UNSET,
 ) -> None:
     incoming = _clean_id(job_id)
     if not reset:
@@ -79,12 +95,14 @@ def set_job_context(
             _organization_id.set(org)
         if workspace:
             _workspace_id.set(workspace)
+        _store_artifact_version(artifact_version, overwrite=False)
         if job is not None and job not in _ARTIFACTS_BY_JOB:
             _ARTIFACTS_BY_JOB[job] = {}
         return
     _job_id.set(incoming)
     _organization_id.set(_clean_id(organization_id))
     _workspace_id.set(_clean_id(workspace_id))
+    _store_artifact_version(artifact_version, overwrite=True)
     if incoming is not None:
         _ARTIFACTS_BY_JOB[incoming] = {}
 
@@ -142,9 +160,13 @@ def artifact_key(
 ) -> str:
     org = _safe_segment(organization_id or _organization_id.get() or "", "org")
     workspace = _safe_segment(workspace_id or _workspace_id.get() or "", "workspace")
+    folder = artifact_folder(step)
+    version = _artifact_version.get()
+    if step in _VERSIONED_ARTIFACT_STEPS and version is not None:
+        folder = f"{folder}/v{version}"
     return (
         f"org/{org}/filing-workspace/{workspace}/"
-        f"{artifact_folder(step)}/"
+        f"{folder}/"
         f"{artifact_filename(step, object_id=object_id, job_id=job_id)}"
     )
 

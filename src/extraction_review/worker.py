@@ -8,6 +8,7 @@ import os
 import signal
 import uuid
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any
 
 from dotenv import load_dotenv
@@ -218,6 +219,29 @@ async def process_message(message: dict[str, Any]) -> None:
         JOBS.pop(job_id, None)
 
 
+def _require_index_artifact_version(kind: str, event: dict[str, Any]) -> None:
+    """Index and reindex must carry the filing app's integer before any upload."""
+    if kind != "process_file":
+        return
+    if str(event.get("job_type") or "").strip().lower() != "index_parsed":
+        return
+    version = event.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError("index_parsed requires an integer version >= 1")
+
+
+def _mark_job_failed(job: JobState, exc: Exception) -> None:
+    message = str(exc).strip() or "Job failed"
+    job.status = "failed"
+    job.error = message
+    job.stage = "failed"
+    job.stage_message = message[:240]
+    now = datetime.now(UTC).isoformat()
+    job.updated_at = now
+    job.completed_at = now
+    job.persist(force=True)
+
+
 async def _process_claimed_message(message: dict[str, Any], lease: JobLease) -> None:
     job_id = str(message.get("job_id") or "")
     prior = load_job_status(job_id)
@@ -226,6 +250,11 @@ async def _process_claimed_message(message: dict[str, Any], lease: JobLease) -> 
         return
     job = _job_from_message(message)
     event = _event_from_message(message)
+    try:
+        _require_index_artifact_version(job.kind, event)
+    except ValueError as exc:
+        _mark_job_failed(job, exc)
+        raise
     set_job_context(job.job_id, job.organization_id, job.workspace_id)
     if job.kind == "scrutiny":
         handler = scrutiny_workflow.run(start_event=ScrutinyEvent(**event))

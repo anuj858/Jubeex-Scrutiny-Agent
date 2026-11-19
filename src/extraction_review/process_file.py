@@ -942,6 +942,7 @@ class FileEvent(StartEvent):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -3290,6 +3291,7 @@ async def _extract_sliced_parts(
     source_file_hash: str | None = None,
     source_book: dict[str, Any] | None = None,
     supplied_parse_usage: dict[str, Any] | None = None,
+    version: int | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -3330,6 +3332,7 @@ async def _extract_sliced_parts(
             source_file_hash=source_file_hash,
             source_book=source_book,
             supplied_parse_usage=supplied_parse_usage,
+            version=version,
         )
     )
     async for ev in handler.stream_events():
@@ -3629,6 +3632,7 @@ async def _run_split_from_file_event(
         source_file_id=source_file_id,
         source_file_hash=source_file_hash,
         source_book=source_book_raw if index_only else None,
+        version=event.version,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [

@@ -281,6 +281,15 @@ class IndexFilingRequest(FilingDocumentsRequest):
     """
 
     edited: bool = False
+    version: int = Field(
+        examples=[1],
+        description=(
+            "Scrutiny run number from the filing app. The first scrutiny is "
+            "1, the first re-run is 2, and the next is 3. The folder is v "
+            "plus this integer, with no zero-padding. edited does not choose "
+            "the folder."
+        ),
+    )
     model_tier: str = Field(
         examples=["low"],
         description=(
@@ -311,6 +320,13 @@ class IndexFilingRequest(FilingDocumentsRequest):
     @classmethod
     def _coerce_edited(cls, value: object) -> bool:
         return parse_edited_flag(value)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_version(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("version must be an integer >= 1")
+        return value
 
     @field_validator("model_tier", mode="before")
     @classmethod

@@ -246,3 +246,101 @@ def test_legal_extract_record_treats_null_lists_as_empty() -> None:
     assert record.petitioners == []
     assert record.respondents == []
     assert record.advocates_on_record == []
+
+
+def test_scrutiny_version_folder_keeps_filename_and_other_steps() -> None:
+    org = "org-1"
+    workspace = "ws-1"
+    object_id = "doc-1"
+    job_id = "job-1"
+    defects_name = f"{object_id}-v001-agent-defects-{job_id}.json"
+    set_job_context(job_id, org, workspace, artifact_version=2)
+    defects = artifact_key(
+        STEP_DEFECTS,
+        organization_id=org,
+        workspace_id=workspace,
+        object_id=object_id,
+        job_id=job_id,
+    )
+    assert defects == (
+        f"org/{org}/filing-workspace/{workspace}/defectfiles/v2/{defects_name}"
+    )
+    assert artifact_key(STEP_PARSE, object_id=object_id, job_id=job_id).endswith(
+        f"/parsefiles/v2/{object_id}-v001-agent-parse-{job_id}.json"
+    )
+    assert artifact_key(STEP_VISUAL, object_id=object_id, job_id=job_id).endswith(
+        f"/visualfiles/v2/{object_id}-v001-agent-visual-{job_id}.json"
+    )
+    for step, folder, label in (
+        (STEP_SPLIT, "splitfiles", "agent-split"),
+        (STEP_EXTRACT, "extractedfiles", "agent-extract"),
+        (STEP_LAYOUT, "layoutfiles", "agent-layout"),
+    ):
+        key = artifact_key(step, object_id=object_id, job_id=job_id)
+        assert f"/{folder}/v" not in key
+        assert f"/{folder}/{object_id}-v001-{label}-{job_id}.json" in key
+
+    set_job_context(job_id, org, workspace, artifact_version=10)
+    version_ten = artifact_key(STEP_DEFECTS, object_id=object_id, job_id=job_id)
+    assert version_ten.endswith(f"/defectfiles/v10/{defects_name}")
+    assert "/defectfiles/v1/" not in version_ten
+    set_job_context(job_id, org, workspace, artifact_version=1)
+    version_one = artifact_key(STEP_DEFECTS, object_id=object_id, job_id=job_id)
+    assert version_one != version_ten
+    assert version_one.endswith(f"/defectfiles/v1/{defects_name}")
+
+    set_job_context(job_id, org, workspace)
+    for step, folder in (
+        (STEP_PARSE, "parsefiles"),
+        (STEP_DEFECTS, "defectfiles"),
+        (STEP_VISUAL, "visualfiles"),
+    ):
+        key = artifact_key(step, object_id=object_id, job_id=job_id)
+        assert f"/{folder}/v" not in key
+        assert f"/{folder}/{object_id}-v001-" in key
+
+    set_job_context(job_id, org, workspace, artifact_version=2)
+    set_job_context("nested-job", org, workspace, reset=False)
+    assert "/defectfiles/v2/" in artifact_key(
+        STEP_DEFECTS, object_id=object_id, job_id=job_id
+    )
+    set_job_context(
+        "nested-job",
+        org,
+        workspace,
+        reset=False,
+        artifact_version=None,
+    )
+    assert "/defectfiles/v" not in artifact_key(
+        STEP_DEFECTS, object_id=object_id, job_id=job_id
+    )
+
+
+def test_upload_step_json_writes_versioned_defects_once(monkeypatch) -> None:
+    puts: list[dict[str, object]] = []
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            puts.append(kwargs)
+
+        def generate_presigned_url(self, method, Params, ExpiresIn):
+            return f"https://s3.example/{Params['Key']}"
+
+    monkeypatch.setenv("AWS_S3_BUCKET", "jubeex-893338224943-ap-south-1-an")
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts._s3_client",
+        lambda: FakeS3(),
+    )
+    set_job_context("job-1", "org-1", "ws-1", artifact_version=2)
+    record = upload_step_json(
+        STEP_DEFECTS,
+        {"organization_id": "org-1", "workspace_id": "ws-1"},
+        job_id="job-1",
+    )
+    assert record is not None
+    assert len(puts) == 1
+    assert puts[0]["Key"] == record["key"]
+    assert record["key"].split("/defectfiles/", 1)[1].startswith("v2/")
+    assert record["key"].endswith("-v001-agent-defects-job-1.json")
+    assert "/defectfiles/v1/" not in record["key"]
+    assert recorded_artifacts("job-1")[STEP_DEFECTS]["key"] == record["key"]
