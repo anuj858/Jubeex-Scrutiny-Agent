@@ -330,22 +330,30 @@ jobs:
               "${PREFIX}-ingestion-worker" \
               "${PREFIX}-scrutiny-worker" \
               "${AGENT_SERVICE}"
-          unhealthy="$(aws ecs describe-services \
-            --cluster "${CLUSTER}" \
-            --services \
-              "${PREFIX}-scrutiny-api" \
-              "${PREFIX}-ingestion-worker" \
-              "${PREFIX}-scrutiny-worker" \
-              "${AGENT_SERVICE}" \
-            --output json | jq -r '
+          unhealthy=""
+          for attempt in $(seq 1 60); do
+            service_state="$(aws ecs describe-services \
+              --cluster "${CLUSTER}" \
+              --services \
+                "${PREFIX}-scrutiny-api" \
+                "${PREFIX}-ingestion-worker" \
+                "${PREFIX}-scrutiny-worker" \
+                "${AGENT_SERVICE}" \
+              --output json)"
+            unhealthy="$(jq -r '
               .services[]
               | select(
                   .runningCount != .desiredCount
-                  or ([.deployments[] | select(.rolloutState != "COMPLETED")] | length) > 0
+                  or ([.deployments[] | select(.status == "PRIMARY" and .rolloutState == "COMPLETED")] | length) != 1
                 )
               | .serviceName
-            ')"
+            ' <<<"${service_state}")"
+            [[ -z "${unhealthy}" ]] && break
+            sleep 10
+          done
           if [[ -n "${unhealthy}" ]]; then
             echo "ECS rollout verification failed for: ${unhealthy}" >&2
+            jq '{services: [.services[] | {serviceName, desiredCount, runningCount, deployments, events: .events[:5]}]}' \
+              <<<"${service_state}" >&2
             exit 1
           fi
