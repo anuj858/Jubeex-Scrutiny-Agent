@@ -499,6 +499,113 @@ def test_unknown_filing_type_fails() -> None:
         validate_parts("NOT_A_FILING_TYPE", [])
 
 
+def test_repeated_index_and_cover_page_each_keep_their_own_text() -> None:
+    from extraction_review.split_upload import (
+        parse_action_for_slot,
+        separate_repeated_slots,
+        stitch_parsed_parts_in_order,
+    )
+
+    parts = [
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="cover-1",
+            filename="Cover_Page_vol_1.pdf",
+            document_parts=("Cover Page",),
+        ),
+        SplitPartInput(
+            slot_id="index",
+            file_id="index-master",
+            filename="index_master.pdf",
+            document_parts=("Index",),
+        ),
+        SplitPartInput(
+            slot_id="index",
+            file_id="index-vol-1",
+            filename="Index_vol_1.pdf",
+            document_parts=("Index",),
+        ),
+        SplitPartInput(
+            slot_id="petition",
+            file_id="petition",
+            filename="Petition.pdf",
+            document_parts=("Main Petition",),
+        ),
+        SplitPartInput(
+            slot_id="cover_page",
+            file_id="cover-2",
+            filename="Cover Page vol 2.pdf",
+            document_parts=("Cover Page",),
+        ),
+        SplitPartInput(
+            slot_id="index",
+            file_id="index-vol-2",
+            filename="Index vol 2.pdf",
+            document_parts=("Index",),
+        ),
+    ]
+    separated, forced = separate_repeated_slots(parts)
+    assert [item.slot_id for item in separated] == [
+        "cover_page",
+        "index",
+        "index_2",
+        "petition",
+        "cover_page_2",
+        "index_3",
+    ]
+    assert forced == {
+        "cover_page",
+        "cover_page_2",
+        "index",
+        "index_2",
+        "index_3",
+    }
+    assert all(
+        item.document_parts == ("Index",)
+        for item in separated
+        if item.slot_id.startswith("index")
+    )
+    assert "petition" not in forced
+
+    pages = {
+        "cover_page": {1: "COVER I"},
+        "index": {1: "MASTER INDEX", 2: "all volumes"},
+        "index_2": {1: "VOLUME I INDEX"},
+        "petition": {1: "PRAYER"},
+        "cover_page_2": {1: "COVER II"},
+        "index_3": {1: "INDEX\nVOLUME-II"},
+    }
+    markdown, page_parts = stitch_parsed_parts_in_order(separated, pages)
+    assert list(markdown.values()) == [
+        "COVER I",
+        "MASTER INDEX",
+        "all volumes",
+        "VOLUME I INDEX",
+        "PRAYER",
+        "COVER II",
+        "INDEX\nVOLUME-II",
+    ]
+    assert page_parts[2] == ["Index"]
+    assert page_parts[4] == ["Index"]
+    assert page_parts[7] == ["Index"]
+    assert page_parts[1] == ["Cover Page"]
+    assert page_parts[6] == ["Cover Page"]
+
+    catalog = type_catalog("SLP_CIVIL")
+    reused = {"cover_page", "index", "petition"}
+    for item in separated:
+        action = parse_action_for_slot(
+            item,
+            catalog=catalog,
+            parse_scope="reuse_only",
+            reuse_slots=reused - forced,
+        )
+        if item.slot_id in forced:
+            assert action == "parse"
+        else:
+            assert action == "reuse"
+
+
 def test_duplicate_slot_keeps_both_files_in_catalog_order() -> None:
     parts = _required_parts("SLP_CRIMINAL")
     parts.append({"slot_id": "petition", "file_id": "file-petition-2"})

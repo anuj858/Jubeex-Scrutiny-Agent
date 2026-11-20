@@ -112,6 +112,7 @@ from .split_upload import (
     front_extract_configuration,
     pages_have_reusable_text,
     parse_action_for_slot,
+    separate_repeated_slots,
     slot_needs_precise_parse,
     stitch_parsed_parts,
     stitch_parsed_parts_in_order,
@@ -472,6 +473,12 @@ class ProcessSplitFilesWorkflow(Workflow):
             ctx.write_event_to_stream(Status(level="error", message=str(exc)))
             raise
 
+        parts, repeated_slots = separate_repeated_slots(parts)
+        if repeated_slots:
+            logger.info(
+                "[Parse] Parsing each copy of a repeated slot: %s",
+                ", ".join(sorted(repeated_slots)),
+            )
         filename = uploaded_filename(event.filename) or display_filename(
             catalog.filing_type, parts, original=event.filename
         )
@@ -483,6 +490,12 @@ class ProcessSplitFilesWorkflow(Workflow):
         reuse_pages, reuse_layouts, reuse_structured, reuse_jobs = _reuse_parse_maps(
             event, parts=parts
         )
+        for slot in repeated_slots:
+            reuse_pages.pop(slot, None)
+            reuse_layouts.pop(slot, None)
+            reuse_structured.pop(slot, None)
+            reuse_jobs.pop(slot, None)
+        reuse_slots = set(event.parsed_slots) - repeated_slots
         extract_tier = llama_parse_tier(parse_config.tier) or "cost_effective"
         secondary_tier = fast_parse_tier()
         optimizer = (
@@ -517,7 +530,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             source_parts=source_parts,
             catalog=catalog,
             parse_scope=event.parse_scope,
-            reuse_slots=set(event.parsed_slots),
+            reuse_slots=reuse_slots,
             reuse_pages=reuse_pages,
             reuse_layouts=reuse_layouts,
             reuse_structured_pages=reuse_structured,
@@ -582,7 +595,9 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.org_id = state.organization_id
             state.workspace_id = event.workspace_id
             state.user_id = event.user_id
-            ingested_by_slot = {item.slot_id: item for item in ingested}
+            ingested_by_file = {
+                item.file_id: item for item in ingested if item.file_id
+            }
             state.parts = [
                 SplitPartEvent(
                     slot_id=item.slot_id,
@@ -593,11 +608,11 @@ class ProcessSplitFilesWorkflow(Workflow):
                     document_id=(
                         item.document_id
                         or getattr(
-                            ingested_by_slot.get(item.slot_id), "document_id", None
+                            ingested_by_file.get(item.file_id), "document_id", None
                         )
                     ),
                     file_url=getattr(
-                        ingested_by_slot.get(item.slot_id), "file_url", None
+                        ingested_by_file.get(item.file_id), "file_url", None
                     ),
                     page_span=item.page_span,
                 )
@@ -1877,6 +1892,9 @@ async def _complete_index_only(
     if not isinstance(meta, dict):
         meta = {}
         data_dict["metadata"] = meta
+    usage_summary = summarize_llamacloud_usage(state.llamacloud_jobs or [])
+    meta["usage"] = {"llamacloud": usage_summary}
+    logger.info("[Usage] %s", usage_status_message(usage_summary))
     meta["parse_job_ids"] = parse_job_ids
     meta["parsed_slots"] = list(state.parsed_slots)
     meta["document_order"] = [item.slot_id for item in parts]
@@ -1972,7 +1990,11 @@ async def _complete_index_only(
         )
     )
     report = await _run_nested_scrutiny(ctx, agent_data_id=agent_data_id)
-    return {"agent_data_id": agent_data_id, "report": report}
+    return {
+        "agent_data_id": agent_data_id,
+        "report": report,
+        "usage": {"llamacloud": usage_summary},
+    }
 
 
 async def _run_nested_scrutiny(

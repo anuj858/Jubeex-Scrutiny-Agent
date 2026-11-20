@@ -463,6 +463,124 @@ async def test_index_parsed_reuses_slots_when_not_edited(
 
 
 @pytest.mark.asyncio
+async def test_repeated_index_and_cover_download_each_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    downloaded: list[str] = []
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    async def fake_ingest(
+        _client: object, url: str, **kwargs: object
+    ) -> tuple[str, str, str]:
+        downloaded.append(url)
+        digest = str(kwargs.get("external_file_id") or "")
+        return (f"file-{len(downloaded)}", digest, "copy.pdf")
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.ingest_remote_file",
+        fake_ingest,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["index", "cover_page"],
+            "slots": {
+                "index": {"pages": {"1": "VOLUME-II"}, "parse_job_id": "old-index"},
+                "cover_page": {"pages": {"1": "COVER II"}, "parse_job_id": "old-cover"},
+            },
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["index", "cover_page"],
+                        "split_files": {
+                            "index": "stored-index-vol-2",
+                            "cover_page": "stored-cover-vol-2",
+                        },
+                        "document_hashes": {
+                            "index": "a" * 64,
+                            "cover_page": "b" * 64,
+                        },
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        documents=[
+            {
+                "slot_id": "cover_page",
+                "name": "Cover Page vol 1",
+                "file_url": "https://files.example/cover-1.pdf",
+                "file_hash": "1" * 64,
+            },
+            {
+                "slot_id": "index",
+                "name": "index master",
+                "file_url": "https://files.example/index-master.pdf",
+                "file_hash": "2" * 64,
+            },
+            {
+                "slot_id": "index",
+                "name": "Index vol 1",
+                "file_url": "https://files.example/index-vol-1.pdf",
+                "file_hash": "3" * 64,
+            },
+            {
+                "slot_id": "cover_page",
+                "name": "Cover Page vol 2",
+                "file_url": "https://files.example/cover-2.pdf",
+                "file_hash": "4" * 64,
+            },
+            {
+                "slot_id": "index",
+                "name": "Index vol 2",
+                "file_url": "https://files.example/index-vol-2.pdf",
+                "file_hash": "5" * 64,
+            },
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+    parts = list(captured["parts"])
+    index_ids = [part.file_id for part in parts if part.slot_id == "index"]
+    cover_ids = [part.file_id for part in parts if part.slot_id == "cover_page"]
+    assert index_ids == ["file-2", "file-3", "file-5"]
+    assert cover_ids == ["file-1", "file-4"]
+    assert "stored-index-vol-2" not in index_ids
+    assert "stored-cover-vol-2" not in cover_ids
+    assert downloaded == [
+        "https://files.example/cover-1.pdf",
+        "https://files.example/index-master.pdf",
+        "https://files.example/index-vol-1.pdf",
+        "https://files.example/cover-2.pdf",
+        "https://files.example/index-vol-2.pdf",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_index_parsed_skips_completed_unchanged_core_extraction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

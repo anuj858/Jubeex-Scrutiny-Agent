@@ -595,6 +595,30 @@ def normalize_job_type(value: str | None) -> str | None:
     return None
 
 
+def file_id_for_uploaded_part(
+    *,
+    repeated: bool,
+    item_file_id: str | None,
+    prior_id: str | None,
+    has_url: bool,
+    reusable: bool,
+) -> str | None:
+    """Choose the LlamaCloud file id for one uploaded PDF.
+
+    A slot stored earlier has one file id. Copies of Index or Cover Page must
+    not all inherit that id, or every copy parses the last saved PDF. A copy
+    with its own URL is downloaded. A single unchanged document still reuses
+    the stored id.
+    """
+    if repeated:
+        if has_url and (not item_file_id or item_file_id == prior_id):
+            return None
+        return item_file_id
+    if reusable:
+        return item_file_id or prior_id
+    return item_file_id
+
+
 def parse_edited_flag(value: object) -> bool:
     """Accept true/false, yes/no, 1/0 for the index ``edited`` flag."""
     if value is None or value == "":
@@ -3294,9 +3318,11 @@ def _nested_split_payload(result: Any) -> dict[str, Any]:
         report = item.get("report")
         if hasattr(report, "model_dump"):
             report = report.model_dump(mode="json")
+        usage = item.get("usage")
         return {
             "agent_data_id": str(agent_data_id) if agent_data_id else None,
             "report": report if isinstance(report, dict) else None,
+            "usage": usage if isinstance(usage, dict) else None,
         }
     return {"agent_data_id": str(item) if item else None, "report": None}
 
@@ -3562,6 +3588,10 @@ async def _run_split_from_file_event(
     split_parts: list[SplitPartEvent] = []
     source_docs: list[SourceDocument] = []
     reusable_slots: set[str] = set()
+    slot_counts: dict[str, int] = {}
+    for item in event.documents:
+        slot_key = (item.slot_id or "").strip()
+        slot_counts[slot_key] = slot_counts.get(slot_key, 0) + 1
     for item in event.documents:
         slot = (item.slot_id or "").strip()
         if slot.lower() in FULL_PETITION_SLOTS:
@@ -3571,6 +3601,7 @@ async def _run_split_from_file_event(
         item_file_id = (item.file_id or "").strip() or None
         prior_id = prior_file_ids.get(slot) or None
         edited = bool(event.edited)
+        repeated = slot_counts.get(slot, 0) > 1
         if job in INDEX_JOB_TYPES:
             current_hash = (item.file_hash or "").strip()
             prior_hash = prior_file_hashes.get(slot, "")
@@ -3579,10 +3610,15 @@ async def _run_split_from_file_event(
             )
             # edited false reuses every saved document. edited true reparses
             # only a document whose file hash differs from the stored hash.
-            if not edited or hash_matches:
+            # A repeated slot is never that one saved document.
+            if not repeated and (not edited or hash_matches):
                 reusable_slots.add(slot)
-            file_id = (
-                (item_file_id or prior_id) if slot in reusable_slots else item_file_id
+            file_id = file_id_for_uploaded_part(
+                repeated=repeated,
+                item_file_id=item_file_id,
+                prior_id=prior_id,
+                has_url=bool((item.file_url or "").strip()),
+                reusable=slot in reusable_slots,
             )
         else:
             current_hash = (item.file_hash or "").strip()
@@ -3621,7 +3657,11 @@ async def _run_split_from_file_event(
                 file_hash=file_hash,
                 file_url=item.file_url,
                 document_id=item.document_id,
-                page_span=item.page_span or stored_page_spans.get(slot),
+                page_span=(
+                    item.page_span
+                    if item.page_span or repeated
+                    else stored_page_spans.get(slot)
+                ),
             )
         )
         source_docs.append(
@@ -3782,6 +3822,9 @@ async def _run_split_from_file_event(
         version=event.version,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
+    parse_usage = (
+        nested_payload.get("usage") if isinstance(nested_payload, dict) else None
+    )
     prepared = [
         PreparedPart(
             slot_id=part.slot_id,
@@ -3803,6 +3846,7 @@ async def _run_split_from_file_event(
         agent_data_id=agent_data_id,
         parsed_slots=parsed_slots,
         report=report,
+        usage=parse_usage if isinstance(parse_usage, dict) else None,
         **echo,
     )
 
