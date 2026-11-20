@@ -91,6 +91,10 @@ def test_split_parse_request_enforces_ocr_layout_and_table_quality(
         "fail_on_image_ocr_error": True,
         "fail_on_markdown_reconstruction_error": True,
     }
+    assert "tables_as_spreadsheet" not in configuration["output_options"]
+    assert "additional_outputs" not in configuration["output_options"]
+    assert "ignore" not in configuration["processing_options"]
+    assert "timeouts" not in configuration["processing_control"]
 
 
 @pytest.mark.asyncio

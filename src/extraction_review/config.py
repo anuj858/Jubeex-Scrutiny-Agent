@@ -965,20 +965,21 @@ def with_parse_cost_optimizer(
 
 def with_runtime_llama_tiers(config: BaseModel) -> BaseModel:
     """Apply environment overrides without mutating the resource config."""
-    payload = config.model_dump()
     if isinstance(config, ExtractConfig):
-        payload["tier"] = llama_extract_tier(config.tier)
-        payload["parse_tier"] = llama_extract_parse_tier(config.parse_tier)
+        updates: dict[str, Any] = {
+            "tier": llama_extract_tier(config.tier),
+            "parse_tier": llama_extract_parse_tier(config.parse_tier),
+        }
     elif isinstance(config, ParseConfig):
-        payload["tier"] = llama_parse_tier(config.tier)
+        updates = {"tier": llama_parse_tier(config.tier)}
     elif isinstance(config, SplitConfig):
-        payload["parse_tier"] = llama_split_parse_tier(config.parse_tier)
+        updates = {"parse_tier": llama_split_parse_tier(config.parse_tier)}
     else:
         return config
-    # ResourceConfig supplies an already validated model.  Copying preserves
-    # model_construct-based test/config callers while applying only the two
-    # runtime overrides; re-validating can reject legacy SDK literal aliases.
-    return config.model_copy(update=payload)
+    # model_copy does not re-validate, so a legacy tier alias stays intact.
+    # Replacing the model with a full model_dump() turns nested Llama options
+    # into dicts. exclude_none then leaves nulls, and LlamaCloud rejects them.
+    return config.model_copy(update=updates)
 
 
 def _block_versions(block: Any) -> dict[str, str]:
@@ -1022,6 +1023,19 @@ def config_identity(payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def _omit_nulls(value: Any) -> Any:
+    """Drop unset values at every level before they are sent to LlamaCloud."""
+    if isinstance(value, dict):
+        return {
+            key: _omit_nulls(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    if isinstance(value, list):
+        return [_omit_nulls(item) for item in value]
+    return value
+
+
 def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
     """JSON sent to LlamaCloud classify / extract / split.
 
@@ -1029,7 +1043,7 @@ def dump_api_configuration(config: BaseModel) -> dict[str, Any]:
     metadata and S3 artifacts.
     """
     config = with_runtime_llama_tiers(config)
-    dumped = config.model_dump(exclude_none=True)
+    dumped = _omit_nulls(config.model_dump(exclude_none=True))
     for key in _API_EXCLUDE:
         dumped.pop(key, None)
     parent = next(
