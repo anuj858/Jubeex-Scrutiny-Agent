@@ -1160,6 +1160,7 @@ async def _finalize_defect_evaluation(
     # A confident or decided first answer is final. The follow-up sees only
     # chunks those tools fetched, and it does not run with the full-part retry.
     followed_up = False
+    complete_document_retried = False
     followup = await serve_context_followup(
         defect=defect,
         catalogue=catalogue,
@@ -1226,7 +1227,13 @@ async def _finalize_defect_evaluation(
     if (
         not followed_up
         and response.status == "needs_review"
-        and response.gap in {"part_not_in_excerpts", "element_page_not_in_excerpts"}
+        and response.gap
+        in {
+            "part_not_in_excerpts",
+            "element_page_not_in_excerpts",
+            "unreadable",
+            "ambiguous",
+        }
         and layout
     ):
         complete_chunks = _complete_layout_chunks_for_defect(
@@ -1301,6 +1308,7 @@ async def _finalize_defect_evaluation(
             for retry_response, batch_usage in retry_results:
                 retry_responses.append(retry_response)
                 retry_usage = retry_usage.plus(batch_usage)
+            complete_document_retried = bool(retry_responses)
             response = _aggregate_complete_batch_responses(retry_responses)
             chunks = complete_chunks
             usage = usage.plus(retry_usage)
@@ -1344,12 +1352,14 @@ async def _finalize_defect_evaluation(
         scope_complete=coverage.scope_complete,
     )
     response = apply_conditional_manifest_policy(defect, response, layout)
-    # A context followup is one extra chunk, not the complete-document retry.
-    # The contract below turns a leftover retrieval gap into not_determined
-    # only after that retry has already run. Applying it here would hide a
-    # partial followup as a technical failure and would claim the retry ran.
-    if not followed_up:
-        response = apply_final_evidence_contract_policy(response)
+    # A context follow-up is one extra chunk, not the complete-document retry.
+    # The contract turns a leftover retrieval gap into not_determined only
+    # after that retry has called the model. Otherwise the answer stays in
+    # review, including when the first call already saw every saved page.
+    response = apply_final_evidence_contract_policy(
+        response,
+        complete_document_retried=complete_document_retried,
+    )
 
     return build_finding(
         defect,
@@ -1478,21 +1488,20 @@ async def _chunks_for_defect(
             )
         }
         page_budget = max(page_budget, len(exhaustive_pages))
-    direct_chunks = (
-        evidence_workspace.complete_chunks(defect)
-        if evidence_workspace is not None
-        else []
-    )
-    if direct_chunks and (
-        retrieval_plan.strategy == "exhaustive_part"
-        or len(direct_chunks) <= page_budget
-    ):
-        logger.info(
-            "[Scrutiny] Direct evidence hit check=%s pages=%s",
-            defect.check_id,
-            len(direct_chunks),
+        direct_chunks = (
+            evidence_workspace.complete_chunks(defect)
+            if evidence_workspace is not None
+            else []
         )
-        return direct_chunks
+        # Every labeled page already has stored text. A sample from Pinecone
+        # cannot add a page the manifest does not have.
+        if direct_chunks and len(direct_chunks) >= len(exhaustive_pages):
+            logger.info(
+                "[Scrutiny] Direct evidence hit check=%s pages=%s",
+                defect.check_id,
+                len(direct_chunks),
+            )
+            return direct_chunks
     if not use_pinecone or not file_hash:
         return _add_layout_fallback_chunks(
             defect, [], layout=layout, max_chunks=page_budget
@@ -1924,6 +1933,33 @@ def _add_layout_fallback_chunks(
     other_pages = [chunk for chunk in pages if chunk not in target_pages]
     chosen: list[dict[str, Any]] = []
     capacity = max(0, max_chunks - len(summary))
+    wording = " ".join(
+        [
+            str(getattr(defect, "defect", "") or ""),
+            check_requirement(defect),
+            *list(getattr(defect, "where_to_look", None) or []),
+        ]
+    ).casefold()
+    last_first = bool(
+        re.search(
+            r"last\s+page|end\s+of|below\s+the\s+prayer|date\s+of\s+drafting|"
+            r"execution\s+date|signature|true\s+cop|certif|"
+            r"verified\s+at|drawn\s+on|filed\s+on|deponent",
+            wording,
+        )
+    )
+    # The date and the signature sit on the closing page. Put that page in
+    # before any opening-page anchor can use up the excerpt budget.
+    if last_first:
+        for part in required:
+            options = candidates.get(part) or []
+            if not options:
+                continue
+            closing = options[-1]
+            if any(chunk.get("page") == closing.get("page") for chunk in chosen):
+                continue
+            chosen.append(closing)
+        capacity = max(capacity, len(chosen))
 
     # Paragraph-level Form 28 checks need the page containing the authored
     # heading, not merely the opening and closing pages of a long petition.
@@ -2037,20 +2073,6 @@ def _add_layout_fallback_chunks(
                     if len(chosen) >= capacity:
                         break
 
-    wording = " ".join(
-        [
-            str(getattr(defect, "defect", "") or ""),
-            check_requirement(defect),
-            *list(getattr(defect, "where_to_look", None) or []),
-        ]
-    ).casefold()
-    last_first = bool(
-        re.search(
-            r"last\s+page|end\s+of|below\s+the\s+prayer|date\s+of\s+drafting|"
-            r"execution\s+date|signature|true\s+cop|certif",
-            wording,
-        )
-    )
     boundaries = ("last", "first") if last_first else ("first", "last")
 
     if _requires_complete_part_coverage(defect):

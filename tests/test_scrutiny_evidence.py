@@ -2433,6 +2433,33 @@ def test_exhausted_retrieval_gap_is_not_published_as_manual_review(gap: str) -> 
     assert "Main Petition continuation page" in decided.observed
 
 
+def test_missing_page_stays_needs_review_when_retry_did_not_run() -> None:
+    response = DefectResponse(
+        check_id="D-55",
+        status="needs_review",
+        confidence=0.64,
+        summary="The decisive dates were not in the supplied pages.",
+        observed="The affidavit verification and the petition drawing date were not shown.",
+        conclusion="The date comparison cannot be completed from the pages supplied.",
+        gap="element_page_not_in_excerpts",
+        gap_detail=(
+            "The decisive date lines from the Affidavit and the Main Petition "
+            "are not shown."
+        ),
+        evidence=[EvidenceRef(page=1, quote="NOTARY")],
+    )
+
+    decided = apply_final_evidence_contract_policy(
+        response,
+        complete_document_retried=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "element_page_not_in_excerpts"
+    assert decided.confidence == 0.64
+    assert "are not shown" in decided.gap_detail
+
+
 def test_genuine_visual_uncertainty_remains_manual_review() -> None:
     response = DefectResponse(
         check_id="D-176",
