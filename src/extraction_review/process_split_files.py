@@ -110,6 +110,7 @@ from .split_upload import (
     extract_source_parts,
     find_part,
     front_extract_configuration,
+    pages_have_reusable_text,
     parse_action_for_slot,
     slot_needs_precise_parse,
     stitch_parsed_parts,
@@ -1410,8 +1411,12 @@ async def _parse_labeled_files(
                 parse_scope=parse_scope,
                 reuse_slots=reuse_slots,
             )
-        if action == "reuse" and not (reuse_pages or {}).get(part.slot_id):
-            action = "skip" if (parse_scope or "").strip().lower() == "reuse_only" else "parse"
+        if action == "reuse" and not pages_have_reusable_text(
+            (reuse_pages or {}).get(part.slot_id)
+        ):
+            # The slot was marked reusable, but nothing was saved for it.
+            # Parse the PDF. Leaving it empty stitches one blank page.
+            action = "parse"
         tasks.append(
             _parse_one_file(
                 client,
@@ -1720,7 +1725,7 @@ def _reuse_parse_maps(
 ]:
     del parts
     scope = (event.parse_scope or "all").strip().lower()
-    if scope not in {"unparsed", "supplied"}:
+    if scope not in {"unparsed", "supplied", "reuse_only"}:
         return {}, {}, {}, {}
     pages = {
         slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})

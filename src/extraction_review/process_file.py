@@ -3424,6 +3424,7 @@ async def _run_split_from_file_event(
     reuse_layouts: dict[str, dict[str, Any]] = {}
     reuse_structured: dict[str, dict[str, Any]] = {}
     reuse_jobs: dict[str, str] = {}
+    stored_page_spans: dict[str, list[dict[str, int]]] = {}
     source_book: dict[str, Any] | None = None
     source_book_raw: dict[str, Any] | None = None
     source_parse_job_id: str | None = None
@@ -3526,14 +3527,28 @@ async def _run_split_from_file_event(
         source_parse_job_id = str(meta.get("source_parse_job_id") or "").strip() or None
         source_file_id = str(meta.get("source_file_id") or "").strip() or None
         source_file_hash = str(meta.get("source_file_hash") or "").strip() or None
-        if job in INDEX_JOB_TYPES and (source_book or source_parse_job_id):
+        for document in meta.get("documents") or []:
+            if not isinstance(document, dict):
+                continue
+            slot = str(document.get("slot_id") or "").strip()
+            span = document.get("page_span")
+            if slot and isinstance(span, list) and span:
+                stored_page_spans[slot] = span
+        if job in INDEX_JOB_TYPES and source_book:
             # The compiled extract stores the whole book under one slot name.
             # Index cuts that book by each slot's source page span instead.
-            parsed_slots = []
-            reuse_pages = {}
-            reuse_layouts = {}
-            reuse_structured = {}
-            reuse_jobs = {}
+            # Without a span, or without the book, keep the pages already
+            # stored for that slot. Wiping them leaves one blank page.
+            request_has_spans = any(
+                bool(getattr(document, "page_span", None))
+                for document in (event.documents or [])
+            )
+            if request_has_spans or stored_page_spans:
+                parsed_slots = []
+                reuse_pages = {}
+                reuse_layouts = {}
+                reuse_structured = {}
+                reuse_jobs = {}
 
     ctx.write_event_to_stream(
         Status(
@@ -3606,7 +3621,7 @@ async def _run_split_from_file_event(
                 file_hash=file_hash,
                 file_url=item.file_url,
                 document_id=item.document_id,
-                page_span=item.page_span,
+                page_span=item.page_span or stored_page_spans.get(slot),
             )
         )
         source_docs.append(
@@ -3641,7 +3656,11 @@ async def _run_split_from_file_event(
                 "organization_id": echo["organization_id"],
                 "workspace_id": echo["workspace_id"],
                 "parts": [item.model_dump(mode="json") for item in split_parts],
-                "slot_pages": {},
+                "slot_pages": {
+                    part.slot_id: part.page_span
+                    for part in split_parts
+                    if part.page_span
+                },
             }
         ),
         organization_id=echo["organization_id"],

@@ -721,7 +721,9 @@ def parse_action_for_slot(
             return "reuse"
         return "parse"
     if scope == "reuse_only":
-        return "reuse" if slot in reused else "skip"
+        # A slot with saved pages is reused. A slot with none is parsed.
+        # Skipping it is what stitches one blank page per document.
+        return "reuse" if slot in reused else "parse"
     return "reuse" if slot in reused else "parse"
 
 
@@ -913,6 +915,17 @@ def load_source_book(payload: Mapping[str, Any] | None) -> dict[str, Any] | None
         "file_id": str(raw.get("file_id") or "").strip(),
         "file_hash": str(raw.get("file_hash") or "").strip(),
     }
+
+
+def pages_have_reusable_text(pages: Mapping[Any, Any] | None) -> bool:
+    """True when a saved slot has page text a later index can stitch."""
+    if not pages:
+        return False
+    for text in pages.values():
+        body = str(text or "").strip()
+        if body and not body.startswith(_PARSE_STUB_PREFIX):
+            return True
+    return False
 
 
 def pages_for_source_span(

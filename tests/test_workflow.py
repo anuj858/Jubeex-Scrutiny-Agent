@@ -891,3 +891,194 @@ async def test_edited_index_parses_only_documents_whose_hash_changed(
     assert captured["parse_scope"] == "all"
     assert captured["parsed_slots"] == ["petition"]
     assert set(captured["reuse_pages_by_slot"]) == {"petition"}  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_index_cuts_compiled_book_into_document_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.split_upload import dump_source_book
+
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    book = dump_source_book(
+        pages={
+            30: "PRAYER",
+            31: "Drawn on: 10.10.2025\nFiled on: 12.12.2025",
+            33: "AFFIDAVIT",
+            34: (
+                "Verified at Chhattisgarh on this day of July, 2025.\n"
+                "[seal: S.K. Tiwari Notary]"
+            ),
+        },
+        layout={
+            31: {"words": [{"t": "Drawn"}]},
+            34: {"words": [{"t": "Verified"}]},
+        },
+        parse_job_id="job-book",
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": [],
+            "slots": {
+                "petition": {"pages": {}},
+                "affidavit": {"pages": {}},
+            },
+            "source_book": book,
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition", "affidavit"],
+                        "split_files": {
+                            "petition": "dfl-petition",
+                            "affidavit": "dfl-affidavit",
+                        },
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                        "source_parse_job_id": "job-book",
+                        "documents": [
+                            {
+                                "slot_id": "petition",
+                                "page_span": [{"start": 30, "end": 31}],
+                            },
+                            {
+                                "slot_id": "affidavit",
+                                "page_span": [{"start": 33, "end": 34}],
+                            },
+                        ],
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        documents=[
+            {"slot_id": "petition", "file_id": "dfl-petition", "name": "Petition.pdf"},
+            {
+                "slot_id": "affidavit",
+                "file_id": "dfl-affidavit",
+                "name": "Affidavit.pdf",
+            },
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+
+    pages = captured["reuse_pages_by_slot"]
+    assert isinstance(pages, dict)
+    assert pages["petition"]["2"].startswith("Drawn on: 10.10.2025")
+    assert "Verified at Chhattisgarh" in pages["affidavit"]["2"]
+    assert "[seal: S.K. Tiwari Notary]" in pages["affidavit"]["2"]
+    layouts = captured["reuse_layouts_by_slot"]
+    assert isinstance(layouts, dict)
+    assert layouts["petition"]["2"]["words"][0]["t"] == "Drawn"
+    assert set(captured["parsed_slots"]) == {"petition", "affidavit"}  # type: ignore[arg-type]
+    assert captured["parse_scope"] == "reuse_only"
+
+
+@pytest.mark.asyncio
+async def test_index_keeps_saved_pages_when_the_book_has_no_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from extraction_review.split_upload import dump_source_book
+
+    captured: dict[str, object] = {}
+
+    async def fake_extract(_ctx: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "agd-index"
+
+    monkeypatch.setattr(
+        "extraction_review.process_file._extract_sliced_parts",
+        fake_extract,
+    )
+    monkeypatch.setattr(
+        "extraction_review.process_file.upload_step_json",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "extraction_review.s3_artifacts.download_json_object",
+        lambda _key: {
+            "parsed_slots": ["petition"],
+            "slots": {
+                "petition": {
+                    "pages": {
+                        "1": "PRAYER",
+                        "2": "Drawn on: 10.10.2025\nFiled on: 12.12.2025",
+                    },
+                    "parse_job_id": "job-petition",
+                    "layout": {"2": {"words": [{"t": "Drawn"}]}},
+                }
+            },
+            "source_book": dump_source_book(
+                pages={1: "whole book"},
+                parse_job_id="job-book",
+            ),
+        },
+    )
+
+    class FakeAgentData:
+        async def get(self, item_id: str):
+            return SimpleNamespace(
+                id=item_id,
+                data={
+                    "metadata": {
+                        "parsed_slots": ["petition"],
+                        "split_files": {"petition": "dfl-petition"},
+                        "parse_artifact_key": "org/x/parsefiles/a.json",
+                        "source_parse_job_id": "job-book",
+                        "documents": [
+                            {"slot_id": "petition", "page_span": None},
+                        ],
+                    }
+                },
+            )
+
+    class FakeClient:
+        beta = SimpleNamespace(agent_data=FakeAgentData())
+
+    from extraction_review.process_file import _run_split_from_file_event
+
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CIVIL",
+        agent_data_id="agd-index",
+        edited=False,
+        documents=[
+            {"slot_id": "petition", "file_id": "dfl-petition", "name": "Petition.pdf"},
+        ],
+    )
+    ctx = SimpleNamespace(write_event_to_stream=lambda _ev: None)
+    await _run_split_from_file_event(event, ctx, FakeClient())  # type: ignore[arg-type]
+
+    pages = captured["reuse_pages_by_slot"]
+    assert isinstance(pages, dict)
+    assert pages["petition"]["2"].startswith("Drawn on: 10.10.2025")
+    assert pages["petition"]["2"] != "whole book"
+    assert captured["parsed_slots"] == ["petition"]
