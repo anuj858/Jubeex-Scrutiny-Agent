@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -448,6 +448,57 @@ def validate_parts(
     return catalog, parsed
 
 
+def separate_repeated_slots(
+    parts: Sequence[SplitPartInput],
+) -> tuple[list[SplitPartInput], set[str]]:
+    """Give every copy of a repeated slot its own id.
+
+    Index and cover page are often uploaded more than once (a master index
+    plus one index per volume, a cover per volume). Page text, parse jobs,
+    and saved hashes are stored by slot id, so a repeated id keeps only the
+    last file. The first copy keeps the catalogue id. Later copies become
+    ``index_2``, ``cover_page_2``, and so on, and still carry the original
+    document parts. Every id in a repeated group is returned so the caller
+    parses that PDF instead of reusing the one saved blob.
+    """
+    totals: dict[str, int] = {}
+    for item in parts:
+        totals[item.slot_id] = totals.get(item.slot_id, 0) + 1
+    occupied = set(totals)
+    seen: dict[str, int] = {}
+    forced: set[str] = set()
+    rewritten: list[SplitPartInput] = []
+    for item in parts:
+        base = item.slot_id
+        if totals.get(base, 0) < 2:
+            rewritten.append(item)
+            continue
+        seen[base] = seen.get(base, 0) + 1
+        if seen[base] == 1:
+            slot_id = base
+        else:
+            number = seen[base]
+            slot_id = f"{base}_{number}"
+            while slot_id in occupied:
+                number += 1
+                slot_id = f"{base}_{number}"
+            seen[base] = number
+            occupied.add(slot_id)
+        forced.add(slot_id)
+        rewritten.append(replace(item, slot_id=slot_id))
+    return rewritten, forced
+
+
+def _numbered_copies(grouped: Mapping[str, list[SplitPartInput]], base: str) -> list[str]:
+    prefix = f"{base}_"
+    found = [
+        slot_id
+        for slot_id in grouped
+        if slot_id.startswith(prefix) and slot_id[len(prefix) :].isdigit()
+    ]
+    return sorted(found, key=lambda slot_id: int(slot_id[len(prefix) :]))
+
+
 def ordered_parts(
     catalog: UploadTypeCatalog, parts: Sequence[SplitPartInput]
 ) -> list[SplitPartInput]:
@@ -486,6 +537,9 @@ def ordered_parts(
             continue
         ordered.extend(grouped.get(slot.id, []))
         consumed.add(slot.id)
+        for extra_id in _numbered_copies(grouped, slot.id):
+            ordered.extend(grouped[extra_id])
+            consumed.add(extra_id)
     for slot_id, items in grouped.items():
         if slot_id not in consumed:
             ordered.extend(items)
