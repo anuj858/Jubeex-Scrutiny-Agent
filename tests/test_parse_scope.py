@@ -159,6 +159,46 @@ async def test_supplied_scope_does_not_create_parse_for_reused_slot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_full_scope_does_not_parse_a_verified_source_book_slice() -> None:
+    created: list[str] = []
+
+    class Parsing:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            created.append(str(kwargs.get("file_id")))
+            raise AssertionError("verified source-book slice must not be parsed again")
+
+    catalog = type_catalog("SLP_CIVIL")
+    pages, structured, jobs, layouts, usage = await _parse_labeled_files(
+        SimpleNamespace(parsing=Parsing()),
+        parse_config=SimpleNamespace(),
+        parts=[
+            SplitPartInput(
+                slot_id="petition",
+                file_id="dfl-sliced-petition",
+                document_parts=("Main Petition",),
+                page_span=[{"start": 18, "end": 19}],
+            )
+        ],
+        source_parts=extract_source_parts(catalog),
+        catalog=catalog,
+        parse_scope="all",
+        reuse_slots={"petition"},
+        reuse_pages={"petition": {1: "page 18", 2: "page 19"}},
+        reuse_structured_pages={"petition": {1: {"items": []}}},
+        reuse_layouts={"petition": {1: {"words": []}}},
+        reuse_job_ids={"petition": "full-book-parse"},
+        ctx=_Ctx(),  # type: ignore[arg-type]
+    )
+
+    assert created == []
+    assert pages["petition"] == {1: "page 18", 2: "page 19"}
+    assert structured["petition"] == {1: {"items": [], "page_number": 1}}
+    assert layouts["petition"] == {1: {"words": []}}
+    assert jobs["petition"] == "full-book-parse"
+    assert usage == []
+
+
+@pytest.mark.asyncio
 async def test_extract_sources_scope_skips_annexure_without_create() -> None:
     created: list[str] = []
 

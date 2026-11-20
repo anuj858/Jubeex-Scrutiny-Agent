@@ -767,6 +767,7 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
         json={
             "filing_type": "SLP_CIVIL",
             "edited": "yes",
+            "version": 2,
             "model_tier": "Low",
             "parsed_slots": ["cover_page", "petition"],
             "special_category": "Eviction Matters",
@@ -787,10 +788,12 @@ def test_index_runs_index_parsed_with_scrutiny_webhook_kind(
     assert polled is not None
     assert polled.json()["status"] == "completed"
     assert polled.json()["kind"] == "process_file"
+    assert "version" not in polled.json()
     event = captured["event"]
     assert getattr(event, "job_type") == "index_parsed"
     assert getattr(event, "agent_data_id") == "agd-index-1"
     assert getattr(event, "edited") is True
+    assert getattr(event, "version") == 2
     assert getattr(event, "model_tier") == "low"
     assert getattr(event, "parsed_slots") == ["cover_page", "petition"]
     assert getattr(event, "special_categories") == ["Eviction Matters"]
@@ -839,6 +842,7 @@ def test_index_and_reindex_take_the_special_category_array(
             json={
                 "filing_type": "SLP_CRIMINAL",
                 "model_tier": "low",
+                "version": 1,
                 "workspace_id": "ws-array",
                 "special_categories": selected,
                 "special_category": selected,
@@ -848,6 +852,7 @@ def test_index_and_reindex_take_the_special_category_array(
         assert response.status_code == 202
         assert getattr(captured["event"], "special_categories") == selected
         assert getattr(captured["event"], "special_category") is None
+        assert getattr(captured["event"], "version") == 1
 
     captured.clear()
     empty = client.post(
@@ -855,6 +860,7 @@ def test_index_and_reindex_take_the_special_category_array(
         json={
             "filing_type": "SLP_CRIMINAL",
             "model_tier": "low",
+            "version": 4,
             "special_categories": [],
             "special_category": [],
             "documents": [_doc("01_Petition.pdf")],
@@ -862,6 +868,7 @@ def test_index_and_reindex_take_the_special_category_array(
     )
     assert empty.status_code == 202
     assert getattr(captured["event"], "special_categories") == []
+    assert getattr(captured["event"], "version") == 4
 
 
 def test_index_edited_false(
@@ -880,6 +887,7 @@ def test_index_edited_false(
         json={
             "filing_type": "SLP_CIVIL",
             "edited": False,
+            "version": 10,
             "model_tier": "medium",
             "parsed_slots": ["petition"],
             "documents": [
@@ -890,6 +898,7 @@ def test_index_edited_false(
     )
     assert response.status_code == 202
     assert getattr(captured["event"], "edited") is False
+    assert getattr(captured["event"], "version") == 10
     assert getattr(captured["event"], "job_type") == "index_parsed"
     assert getattr(captured["event"], "documents")[0].file_hash == "a" * 64
 
@@ -900,6 +909,7 @@ def test_index_rejects_malformed_document_hash(client: TestClient) -> None:
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "high",
+            "version": 1,
             "workspace_id": "workspace-invalid-hash",
             "organization_id": "organization-invalid-hash",
             "documents": [
@@ -939,6 +949,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "low",
+            "version": 1,
             "documents": [_doc("01_Petition.pdf")],
         },
     )
@@ -957,6 +968,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "low",
+            "version": 1,
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -985,6 +997,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "low",
+            "version": 1,
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -998,6 +1011,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "high",
+            "version": 3,
             "workspace_id": "ws-reindex-1",
             "documents": [_doc("01_Petition.pdf")],
         },
@@ -1017,6 +1031,7 @@ def test_reindex_deletes_workspace_vectors_then_queues_index(
     assert getattr(event, "agent_data_id") == "agd-reindex-1"
     assert getattr(event, "workspace_id") == "ws-reindex-1"
     assert getattr(event, "model_tier") == "high"
+    assert getattr(event, "version") == 3
     assert notified.get("kind") == "scrutiny"
 
 
@@ -1026,6 +1041,7 @@ def test_index_rejects_missing_or_invalid_model_tier(
 ) -> None:
     payload = {
         "filing_type": "SLP_CIVIL",
+        "version": 1,
         "documents": [_doc("01_Petition.pdf")],
     }
     if model_tier is not None:
@@ -1049,12 +1065,43 @@ def test_reindex_rejects_unset_tier_model_before_delete(
         json={
             "filing_type": "SLP_CIVIL",
             "model_tier": "medium",
+            "version": 1,
             "workspace_id": "ws-reindex-tier",
             "documents": [_doc("01_Petition.pdf")],
         },
     )
     assert response.status_code == 422
     assert "SCRUTINY_MODEL_MEDIUM" in response.text
+    assert deleted == []
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["omit", None, 0, -1, True, False, 1.5, "2", "v2"],
+)
+def test_index_and_reindex_reject_invalid_version(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, version: object
+) -> None:
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        lambda workspace_id: deleted.append(workspace_id),
+    )
+    payload: dict[str, object] = {
+        "filing_type": "SLP_CIVIL",
+        "model_tier": "low",
+        "workspace_id": "ws-version",
+        "documents": [_doc("01_Petition.pdf")],
+    }
+    if version != "omit":
+        payload["version"] = version
+    for path in (
+        "/v1/filings/agd-version/index",
+        "/v1/filings/agd-version/reindex",
+    ):
+        response = client.post(path, json=payload)
+        assert response.status_code == 422
+        assert "version" in response.text
     assert deleted == []
 
 

@@ -414,7 +414,12 @@ def _system_prompt() -> str:
         '{quote}, and marks. Each mark has page (the physical page number), '
         "probable_type, bbox_normalized with x, y, width, and height from 0 to 1, "
         "visible_text, and confidence. One mark is one signature, seal, or stamp. "
-        "Leave marks empty when no such mark is visible."
+        "Leave marks empty when no such mark is visible. "
+        "When the check depends on a date and the day, month, or year on that "
+        "line is blank, the date is incomplete. Return defect_found and quote "
+        "the line as printed. Read a drafting, filing, or execution date from "
+        "the closing of that document. Do not decide the date from an earlier "
+        "page when a later page of the same document is also shown."
     )
 
 

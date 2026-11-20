@@ -280,7 +280,22 @@ class IndexFilingRequest(FilingDocumentsRequest):
     SCRUTINY_* webhook when it finishes.
     """
 
-    edited: bool = False
+    edited: bool = Field(
+        default=False,
+        description=(
+            "Same on index and reindex. false reuses the saved parse and does "
+            "not parse. true parses only documents whose file hash differs."
+        ),
+    )
+    version: int = Field(
+        examples=[1],
+        description=(
+            "Scrutiny run number from the filing app. The first scrutiny is "
+            "1, the first re-run is 2, and the next is 3. The folder is v "
+            "plus this integer, with no zero-padding. edited does not choose "
+            "the folder."
+        ),
+    )
     model_tier: str = Field(
         examples=["low"],
         description=(
@@ -311,6 +326,13 @@ class IndexFilingRequest(FilingDocumentsRequest):
     @classmethod
     def _coerce_edited(cls, value: object) -> bool:
         return parse_edited_flag(value)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _require_version(cls, value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("version must be an integer >= 1")
+        return value
 
     @field_validator("model_tier", mode="before")
     @classmethod
@@ -691,7 +713,12 @@ async def _run_workflow(
     require_durable_status: bool = False,
     max_runtime_seconds: int | None = None,
 ) -> bool:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        preserve_version=True,
+    )
     job.bump_progress(5, stage="starting", message="Workflow started", force=True)
     cancelled = False
     try:
@@ -783,7 +810,12 @@ async def _run_workflow(
 
 
 async def _start_process_file(job: JobState, event: FileEvent) -> None:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        artifact_version=event.version,
+    )
     handler = process_file_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 
@@ -842,7 +874,12 @@ def _accept_process_file(
 
 
 async def _start_scrutiny(job: JobState, event: ScrutinyEvent) -> None:
-    set_job_context(job.job_id, job.organization_id, job.workspace_id)
+    set_job_context(
+        job.job_id,
+        job.organization_id,
+        job.workspace_id,
+        artifact_version=event.version,
+    )
     handler = scrutiny_workflow.run(start_event=event)
     await _run_workflow(job, handler)
 

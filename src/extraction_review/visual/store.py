@@ -206,6 +206,7 @@ def upload_visual_index(
     organization_id: str | None = None,
     workspace_id: str | None = None,
     job_id: str | None = None,
+    version: int | None = None,
 ) -> dict[str, str] | None:
     dumped = dump_visual_index(payload)
     if organization_id:
@@ -218,6 +219,7 @@ def upload_visual_index(
         organization_id=organization_id,
         workspace_id=workspace_id,
         job_id=job_id,
+        version=version,
     )
 
 

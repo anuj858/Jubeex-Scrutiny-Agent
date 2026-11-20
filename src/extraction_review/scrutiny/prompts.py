@@ -1359,7 +1359,10 @@ def compose_reasoning(
     status = str(getattr(response, "status", "") or "")
     sent = _sent_local_by_part(chunks, layout)
     cited = _evidence_by_part(evidence)
-    part, pages = _primary_part(defect, cited or sent)
+    part, sent_pages = _primary_part(defect, sent)
+    if not sent_pages and cited:
+        part, sent_pages = _primary_part(defect, cited)
+    pages = sent_pages
     full = _fully_reviewed(layout, part, chunks)
 
     if gap == "part_not_in_excerpts":
@@ -1505,11 +1508,12 @@ def _check_specific_guidance(defect: Defect) -> str | None:
         )
     if check_id == "D81":
         return (
-            "This is a visual-quality check. OCR text, OCR errors, or retrieval "
-            "results cannot prove that a scan is dim, blurred, clipped, or illegible. "
-            "Return defect_found only when supplied visual-quality evidence identifies "
-            "the exact affected document/page and the filing also lacks the required "
-            "certified typed or written companion copy. Otherwise return needs_review."
+            "Judge print quality from the supplied page text and any visual note. "
+            "Do not say a page's contents are unavailable when that page's text is "
+            "in the excerpts. Return defect_found when the text is garbled or missing "
+            "and no certified typed or written copy is shown. Return needs_review "
+            "only when neither the text nor a visual note shows whether the page "
+            "can be read."
         )
     if check_id == "D86":
         return (

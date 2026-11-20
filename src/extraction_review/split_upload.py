@@ -709,6 +709,8 @@ def parse_action_for_slot(
     if scope == "extract_sources":
         if not slot_is_extract_source(part, catalog):
             return "skip"
+        if slot in reused:
+            return "reuse"
         return "parse"
     if scope == "supplied":
         if slot in reused:
@@ -718,7 +720,11 @@ def parse_action_for_slot(
         if slot in reused:
             return "reuse"
         return "parse"
-    return "parse"
+    if scope == "reuse_only":
+        # A slot with saved pages is reused. A slot with none is parsed.
+        # Skipping it is what stitches one blank page per document.
+        return "reuse" if slot in reused else "parse"
+    return "reuse" if slot in reused else "parse"
 
 
 PARSE_ARTIFACT_URL_KEY = "parse_artifact_url"
@@ -911,6 +917,17 @@ def load_source_book(payload: Mapping[str, Any] | None) -> dict[str, Any] | None
     }
 
 
+def pages_have_reusable_text(pages: Mapping[Any, Any] | None) -> bool:
+    """True when a saved slot has page text a later index can stitch."""
+    if not pages:
+        return False
+    for text in pages.values():
+        body = str(text or "").strip()
+        if body and not body.startswith(_PARSE_STUB_PREFIX):
+            return True
+    return False
+
+
 def pages_for_source_span(
     pages: Mapping[int, Any],
     page_span: Sequence[Mapping[str, Any]] | None,
@@ -956,7 +973,7 @@ def pages_for_source_span(
     return out
 
 
-def compiled_index_reuse(
+def compiled_parse_reuse(
     book: Mapping[str, Any],
     parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
     *,
@@ -969,7 +986,11 @@ def compiled_index_reuse(
     dict[str, str],
     list[str],
 ]:
-    """Cut the saved book parse into slot pages. Skip a slot that was edited."""
+    """Cut a saved compiled-book parse into reusable per-slot page artifacts.
+
+    ``edited`` reuses only slots the caller already proved unchanged.
+    ``reusable_slots`` is that set. When ``edited`` is false every span is cut.
+    """
     book_pages = book.get("pages") if isinstance(book.get("pages"), Mapping) else {}
     book_layout = book.get("layout") if isinstance(book.get("layout"), Mapping) else {}
     book_structured = (
@@ -983,9 +1004,7 @@ def compiled_index_reuse(
     slots: list[str] = []
     for slot_id, span in parts:
         slot = (slot_id or "").strip()
-        if not slot:
-            continue
-        if edited and slot not in reusable_slots:
+        if not slot or (edited and slot not in reusable_slots):
             continue
         sliced = pages_for_source_span(book_pages, span)
         if not sliced:
@@ -1011,6 +1030,28 @@ def compiled_index_reuse(
             jobs[slot] = job_id
         slots.append(slot)
     return pages_by_slot, layouts, structured, jobs, slots
+
+
+def compiled_index_reuse(
+    book: Mapping[str, Any],
+    parts: Sequence[tuple[str, Sequence[Mapping[str, Any]] | None]],
+    *,
+    edited: bool,
+    reusable_slots: set[str],
+) -> tuple[
+    dict[str, dict[int, str]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, dict[int, dict[str, Any]]],
+    dict[str, str],
+    list[str],
+]:
+    """Backward-compatible name for compiled parse reuse during indexing."""
+    return compiled_parse_reuse(
+        book,
+        parts,
+        edited=edited,
+        reusable_slots=reusable_slots,
+    )
 
 
 def slot_needs_precise_parse(part: SplitPartInput, source_parts: set[str]) -> bool:
@@ -1775,7 +1816,14 @@ def _front_special_category_names() -> list[str]:
 
 
 def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str:
-    """Prompt for the full compiled filing. Split labels are not known yet."""
+    """Prompt for the full compiled filing. Split labels are not known yet.
+
+    The special-category rules stay on the field description. LlamaExtract
+    rejects a system prompt longer than 10000 characters, so this prompt
+    only points at that description. ``names`` is accepted for callers that
+    already resolved the catalogue list.
+    """
+    del names
     from .config import (
         FRONT_ACTING_THROUGH_DESCRIPTION,
         FRONT_ADDRESS_DESCRIPTION,
@@ -1785,11 +1833,6 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
         FRONT_PETITIONERS_DESCRIPTION,
         FRONT_RELATION_DESCRIPTION,
         FRONT_RESPONDENTS_DESCRIPTION,
-        front_special_category_description,
-    )
-
-    category = front_special_category_description(
-        list(names) if names is not None else _front_special_category_names()
     )
 
     return "\n".join(
@@ -1818,7 +1861,10 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
             "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
             "- confidence: percentage strings such as 95% or 65%.",
-            f"- special_category: {category}",
+            "- special_category: follow the special_category field description. "
+            "Return only exact stored names, comma-separated, up to 3, "
+            "and only when a category is substantively applicable. "
+            "Stored names include Tax Matters and Matters involving/pertaining to minors.",
             "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
             "- documents stays empty.",
         ]

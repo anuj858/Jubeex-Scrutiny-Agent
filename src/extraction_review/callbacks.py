@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -36,10 +37,31 @@ def _is_loopback_url(url: str) -> bool:
     )
 
 
+def _is_local_url(url: str) -> bool:
+    """Loopback or a private LAN address. Production hosts are not local."""
+    if _is_loopback_url(url):
+        return True
+    host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
+    if host in {"localhost"}:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
 def resolve_callback_url(callback_url: str | None) -> str:
-    """Use the trusted worker endpoint unless request overrides are opted in."""
+    """Use JUBEEX_CALLBACK_URL. A local value is the only destination."""
     requested = (callback_url or "").strip()
     configured = (os.getenv("JUBEEX_CALLBACK_URL") or "").strip()
+    if configured and _is_local_url(configured):
+        if requested and requested != configured:
+            logger.warning(
+                "JUBEEX_CALLBACK_URL is local; posting only there and "
+                "ignoring the request callback URL"
+            )
+        return configured
     allow_request_override = (
         os.getenv("JUBEEX_CALLBACK_ALLOW_REQUEST_OVERRIDE") or ""
     ).strip().lower() in {
@@ -49,17 +71,40 @@ def resolve_callback_url(callback_url: str | None) -> str:
     }
     if (
         requested
-        and not _is_loopback_url(requested)
+        and not _is_local_url(requested)
         and (allow_request_override or not configured)
     ):
         return requested
-    if configured and not _is_loopback_url(configured):
+    if configured and not _is_local_url(configured):
         if requested and requested != configured:
             logger.warning(
                 "Ignoring request callback URL; using configured worker endpoint"
             )
         return configured
     return requested or configured
+
+
+def callback_delivery_targets(callback_url: str | None) -> list[str]:
+    """Webhook URLs to try, in order.
+
+    A local JUBEEX_CALLBACK_URL is the only target. The index request's
+    production host is not called from a local run. A public configured URL
+    stays the worker endpoint, with the request URL only when no configured
+    URL is set or request override is enabled.
+    """
+    configured = (os.getenv("JUBEEX_CALLBACK_URL") or "").strip()
+    if configured and _is_local_url(configured):
+        return callback_url_candidates(configured)
+    requested = (callback_url or "").strip()
+    primary = resolve_callback_url(callback_url)
+    targets: list[str] = []
+    for url in (primary, configured, requested):
+        if url and _is_local_url(url) and configured and not _is_local_url(configured):
+            continue
+        for candidate in callback_url_candidates(url):
+            if candidate not in targets:
+                targets.append(candidate)
+    return targets
 
 
 def callback_url_candidates(url: str) -> list[str]:
@@ -94,18 +139,10 @@ async def notify_job_finished(
     artifacts: dict[str, Any] | None = None,
     event_id: str,
 ) -> bool:
-    url = resolve_callback_url(callback_url)
-    if not url:
+    targets = callback_delivery_targets(callback_url)
+    if not targets:
         return True
-    if _is_loopback_url(url):
-        logger.error(
-            "Skipping callback for job %s — URL %s is not reachable from this "
-            "worker. Set JUBEEX_CALLBACK_URL / callback_url to a public backend "
-            "webhook (or rely on backend job polling).",
-            job_id,
-            url,
-        )
-        return False
+    url = targets[0]
     completed = status == "completed"
     if kind == "process_file":
         event = "INGESTION_COMPLETED" if completed else "INGESTION_FAILED"
@@ -140,7 +177,7 @@ async def notify_job_finished(
             body, secret=secret, timestamp=timestamp
         )
     last_error: Exception | None = None
-    for candidate in callback_url_candidates(url):
+    for candidate in targets:
         for attempt in range(1, 4):
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:

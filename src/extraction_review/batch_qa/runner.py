@@ -293,6 +293,7 @@ class BatchQaRunner:
                     "documents": documents,
                     "parsed_slots": extract_result.get("parsed_slots") or [],
                     "edited": False,
+                    "version": 1,
                 }
             )
             active_stage = "assemble_scrutiny"

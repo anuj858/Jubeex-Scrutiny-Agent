@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import inspect
+import io
+import json
 import logging
 import os
 import re
@@ -54,6 +55,7 @@ from .bundle_slicer import (
 from .clients import get_llama_cloud_client, project_id
 from .config import (
     ClassifyConfig,
+    LegalExtractRecord,
     ParseConfig,
     SplitConfig,
     dump_api_configuration,
@@ -116,6 +118,40 @@ DEFAULT_LLAMA_LARGE_UPLOAD_BYTES = 20 * 1024 * 1024
 _FILE_BYTES: dict[str, bytes] = {}
 _UPLOAD_LOCKS = tuple(asyncio.Lock() for _ in range(64))
 _LARGE_UPLOAD_SEMAPHORE = asyncio.Semaphore(1)
+
+
+def core_extraction_input_hash(
+    filing_type: str,
+    parts: Sequence[Any],
+) -> str:
+    """Version the exact post-split input used for legal extraction.
+
+    A boundary correction changes ``page_span`` even when the generated PDF
+    hash is unchanged. A schema/prompt rollout changes the explicit version or
+    schema below. Either case must invalidate the stored structured record.
+    """
+    documents = []
+    for part in parts:
+        documents.append(
+            {
+                "slot_id": str(getattr(part, "slot_id", "") or ""),
+                "content_identity": str(
+                    getattr(part, "file_hash", "")
+                    or getattr(part, "file_id", "")
+                    or ""
+                ),
+                "page_span": getattr(part, "page_span", None) or [],
+            }
+        )
+    payload = {
+        "version": (os.getenv("CORE_EXTRACTION_VERSION") or "2").strip(),
+        "filing_type": filing_type,
+        "schema": LegalExtractRecord.model_json_schema(),
+        "documents": documents,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def positive_int_env(name: str, default: int) -> int:
@@ -942,6 +978,7 @@ class FileEvent(StartEvent):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
 
     def __init__(self, **params: Any) -> None:
         # workflows.Event only forwards exact field names, not validation aliases.
@@ -2715,6 +2752,7 @@ async def _load_reused_split_parse(
 
     clean_id = (agent_data_id or "").strip()
     if not clean_id:
+        logger.info("[ParseReuse] miss reason=agent_data_id_missing")
         return None
     try:
         item = await client.beta.agent_data.get(clean_id)
@@ -2730,7 +2768,18 @@ async def _load_reused_split_parse(
     job_id = str(meta.get("source_parse_job_id") or "").strip()
     expected_hash = str(meta.get("source_file_hash") or "").strip().lower()
     actual_hash = hashlib.sha256(pdf_bytes).hexdigest()
-    if not job_id or not expected_hash or expected_hash != actual_hash:
+    if not job_id:
+        logger.info("[ParseReuse] miss reason=source_parse_job_id_missing")
+        return None
+    if not expected_hash:
+        logger.info("[ParseReuse] miss reason=source_file_hash_missing")
+        return None
+    if expected_hash != actual_hash:
+        logger.info(
+            "[ParseReuse] miss reason=source_hash_mismatch expected=%s actual=%s",
+            expected_hash,
+            actual_hash,
+        )
         return None
     page_count = pdf_page_count(pdf_bytes)
     try:
@@ -2761,6 +2810,12 @@ async def _load_reused_split_parse(
         return None
     usage = await collect_parse_usage(
         client, job_id, payload=parse_result, pages=page_count
+    )
+    logger.info(
+        "[ParseReuse] hit job_id=%s pages=%s source_hash=%s",
+        job_id,
+        page_count,
+        actual_hash,
     )
     return job_id, page_texts, parse_result, usage
 
@@ -3290,6 +3345,8 @@ async def _extract_sliced_parts(
     source_file_hash: str | None = None,
     source_book: dict[str, Any] | None = None,
     supplied_parse_usage: dict[str, Any] | None = None,
+    version: int | None = None,
+    extraction_input_hash: str | None = None,
 ) -> dict[str, Any]:
     """Run process-split-files (parse, extract, Agent Data, Pinecone)."""
     from .process_split_files import ProcessSplitFilesWorkflow, SplitFilesEvent
@@ -3330,6 +3387,8 @@ async def _extract_sliced_parts(
             source_file_hash=source_file_hash,
             source_book=source_book,
             supplied_parse_usage=supplied_parse_usage,
+            version=version,
+            extraction_input_hash=extraction_input_hash,
         )
     )
     async for ev in handler.stream_events():
@@ -3349,7 +3408,7 @@ async def _run_split_from_file_event(
     from .split_upload import (
         PARSE_ARTIFACT_KEY_KEY,
         SplitPartInput,
-        compiled_index_reuse,
+        compiled_parse_reuse,
         load_parse_artifact,
         load_source_book,
         resolve_upload_slot,
@@ -3365,11 +3424,14 @@ async def _run_split_from_file_event(
     reuse_layouts: dict[str, dict[str, Any]] = {}
     reuse_structured: dict[str, dict[str, Any]] = {}
     reuse_jobs: dict[str, str] = {}
+    stored_page_spans: dict[str, list[dict[str, int]]] = {}
     source_book: dict[str, Any] | None = None
     source_book_raw: dict[str, Any] | None = None
     source_parse_job_id: str | None = None
     source_file_id: str | None = None
     source_file_hash: str | None = None
+    prior_core_extraction_hash: str | None = None
+    prior_core_extraction_complete = False
     agent_data_id = (event.agent_data_id or "").strip() or None
     if agent_data_id:
         try:
@@ -3401,6 +3463,12 @@ async def _run_split_from_file_event(
         raw_meta = data.get("metadata")
         if isinstance(raw_meta, dict):
             meta = raw_meta
+        prior_core_extraction_hash = (
+            str(meta.get("core_extraction_input_hash") or "").strip() or None
+        )
+        prior_core_extraction_complete = bool(
+            meta.get("core_extraction_complete")
+        )
         split_files = meta.get("split_files")
         if isinstance(split_files, dict):
             prior_file_ids = {
@@ -3459,14 +3527,28 @@ async def _run_split_from_file_event(
         source_parse_job_id = str(meta.get("source_parse_job_id") or "").strip() or None
         source_file_id = str(meta.get("source_file_id") or "").strip() or None
         source_file_hash = str(meta.get("source_file_hash") or "").strip() or None
-        if job in INDEX_JOB_TYPES and (source_book or source_parse_job_id):
+        for document in meta.get("documents") or []:
+            if not isinstance(document, dict):
+                continue
+            slot = str(document.get("slot_id") or "").strip()
+            span = document.get("page_span")
+            if slot and isinstance(span, list) and span:
+                stored_page_spans[slot] = span
+        if job in INDEX_JOB_TYPES and source_book:
             # The compiled extract stores the whole book under one slot name.
             # Index cuts that book by each slot's source page span instead.
-            parsed_slots = []
-            reuse_pages = {}
-            reuse_layouts = {}
-            reuse_structured = {}
-            reuse_jobs = {}
+            # Without a span, or without the book, keep the pages already
+            # stored for that slot. Wiping them leaves one blank page.
+            request_has_spans = any(
+                bool(getattr(document, "page_span", None))
+                for document in (event.documents or [])
+            )
+            if request_has_spans or stored_page_spans:
+                parsed_slots = []
+                reuse_pages = {}
+                reuse_layouts = {}
+                reuse_structured = {}
+                reuse_jobs = {}
 
     ctx.write_event_to_stream(
         Status(
@@ -3479,7 +3561,7 @@ async def _run_split_from_file_event(
     )
     split_parts: list[SplitPartEvent] = []
     source_docs: list[SourceDocument] = []
-    reusable_slots: set[str] = set(parsed_slots) if not event.edited else set()
+    reusable_slots: set[str] = set()
     for item in event.documents:
         slot = (item.slot_id or "").strip()
         if slot.lower() in FULL_PETITION_SLOTS:
@@ -3489,18 +3571,36 @@ async def _run_split_from_file_event(
         item_file_id = (item.file_id or "").strip() or None
         prior_id = prior_file_ids.get(slot) or None
         edited = bool(event.edited)
-        current_hash = (item.file_hash or "").strip()
-        prior_hash = prior_file_hashes.get(slot, "")
-        unchanged = bool(
-            edited and current_hash and prior_hash and current_hash == prior_hash
-        )
-        if unchanged and prior_id:
-            reusable_slots.add(slot)
-        # Invalidate only documents whose content changed. A matching checksum
-        # proves that the prior file id and parse artifact are still current.
-        file_id = (
-            (item_file_id or prior_id) if (not edited or unchanged) else item_file_id
-        )
+        if job in INDEX_JOB_TYPES:
+            current_hash = (item.file_hash or "").strip()
+            prior_hash = prior_file_hashes.get(slot, "")
+            hash_matches = bool(
+                current_hash and prior_hash and current_hash == prior_hash
+            )
+            # edited false reuses every saved document. edited true reparses
+            # only a document whose file hash differs from the stored hash.
+            if not edited or hash_matches:
+                reusable_slots.add(slot)
+            file_id = (
+                (item_file_id or prior_id) if slot in reusable_slots else item_file_id
+            )
+        else:
+            current_hash = (item.file_hash or "").strip()
+            prior_hash = prior_file_hashes.get(slot, "")
+            unchanged = bool(current_hash and prior_hash and current_hash == prior_hash)
+            legacy_reusable = bool(
+                not edited
+                and slot in parsed_slots
+                and not current_hash
+                and not prior_hash
+            )
+            if (unchanged or legacy_reusable) and prior_id:
+                reusable_slots.add(slot)
+            file_id = (
+                (item_file_id or prior_id)
+                if unchanged or legacy_reusable
+                else item_file_id
+            )
         filename = (item.filename or "").strip() or None
         file_hash = item.file_hash
         if not file_id:
@@ -3521,7 +3621,7 @@ async def _run_split_from_file_event(
                 file_hash=file_hash,
                 file_url=item.file_url,
                 document_id=item.document_id,
-                page_span=item.page_span,
+                page_span=item.page_span or stored_page_spans.get(slot),
             )
         )
         source_docs.append(
@@ -3534,6 +3634,11 @@ async def _run_split_from_file_event(
     }
     reuse_layouts = {
         slot: layout for slot, layout in reuse_layouts.items() if slot in reusable_slots
+    }
+    reuse_structured = {
+        slot: pages
+        for slot, pages in reuse_structured.items()
+        if slot in reusable_slots
     }
     reuse_jobs = {
         slot: parse_job_id
@@ -3551,7 +3656,11 @@ async def _run_split_from_file_event(
                 "organization_id": echo["organization_id"],
                 "workspace_id": echo["workspace_id"],
                 "parts": [item.model_dump(mode="json") for item in split_parts],
-                "slot_pages": {},
+                "slot_pages": {
+                    part.slot_id: part.page_span
+                    for part in split_parts
+                    if part.page_span
+                },
             }
         ),
         organization_id=echo["organization_id"],
@@ -3561,6 +3670,32 @@ async def _run_split_from_file_event(
     extract_only = job in EXTRACT_ONLY_JOB_TYPES
     index_only = job in INDEX_JOB_TYPES
     edited = bool(event.edited)
+    extraction_parts: list[SplitPartEvent] = []
+    for part in split_parts:
+        slot = resolve_upload_slot(catalog, part.slot_id)
+        probe = SplitPartInput(
+            slot_id=part.slot_id,
+            file_id=part.file_id or "",
+            document_parts=slot.parts if slot else (),
+        )
+        if slot_is_extract_source(probe, catalog):
+            extraction_parts.append(part)
+    extraction_input_hash = core_extraction_input_hash(
+        filing_type, extraction_parts
+    )
+    extraction_current = bool(
+        index_only
+        and not edited
+        and prior_core_extraction_complete
+        and prior_core_extraction_hash == extraction_input_hash
+    )
+    if index_only:
+        logger.info(
+            "[ExtractionReuse] %s input_hash=%s prior=%s",
+            "hit" if extraction_current else "miss",
+            extraction_input_hash[:12],
+            (prior_core_extraction_hash or "")[:12],
+        )
     if extract_only:
         parsed_slots = []
         for part in split_parts:
@@ -3576,34 +3711,48 @@ async def _run_split_from_file_event(
     parse_scope = "all"
     if extract_only:
         parse_scope = "extract_sources"
+    elif index_only and edited:
+        parse_scope = "all"
     elif index_only:
-        parse_scope = "unparsed"
-    if source_book and index_only:
+        parse_scope = "reuse_only"
+    reusable_source_parts = [
+        (part.slot_id, part.page_span)
+        for part in split_parts
+        if part.page_span
+    ]
+    if source_book and reusable_source_parts:
         (
             sliced_pages,
             sliced_layouts,
             sliced_structured,
             sliced_jobs,
-            parsed_slots,
-        ) = compiled_index_reuse(
+            sliced_slots,
+        ) = compiled_parse_reuse(
             source_book,
-            [(part.slot_id, part.page_span) for part in split_parts],
+            reusable_source_parts,
             edited=edited,
             reusable_slots=reusable_slots,
         )
-        reuse_pages = {
+        reuse_pages.update({
             slot: {str(page): text for page, text in pages.items()}
             for slot, pages in sliced_pages.items()
-        }
-        reuse_layouts = {
+        })
+        reuse_layouts.update({
             slot: {str(page): payload for page, payload in layout.items()}
             for slot, layout in sliced_layouts.items()
-        }
-        reuse_structured = {
+        })
+        reuse_structured.update({
             slot: {str(page): payload for page, payload in pages.items()}
             for slot, pages in sliced_structured.items()
-        }
-        reuse_jobs = sliced_jobs
+        })
+        reuse_jobs.update(sliced_jobs)
+        parsed_slots = list(dict.fromkeys([*parsed_slots, *sliced_slots]))
+        logger.info(
+            "[ParseReuse] source_book slots=%s pages=%s job=%s",
+            len(sliced_slots),
+            sum(len(pages) for pages in sliced_pages.values()),
+            str(source_book.get("parse_job_id") or ""),
+        )
     nested_payload = await _extract_sliced_parts(
         ctx,
         filing_type=filing_type,
@@ -3612,7 +3761,7 @@ async def _run_split_from_file_event(
         require_all_slots=False,
         parse_scope=parse_scope,
         skip_index=extract_only,
-        skip_extract=index_only,
+        skip_extract=index_only and extraction_current,
         stitch_in_request_order=extract_only or index_only,
         edited=edited,
         parsed_slots=parsed_slots,
@@ -3621,14 +3770,16 @@ async def _run_split_from_file_event(
         special_categories=event.special_categories,
         model_tier=event.model_tier,
         court=event.court,
-        reuse_pages_by_slot=reuse_pages if index_only else {},
-        reuse_layouts_by_slot=reuse_layouts if index_only else {},
-        reuse_structured_pages_by_slot=reuse_structured if index_only else {},
-        reuse_parse_job_ids=reuse_jobs if index_only else {},
+        reuse_pages_by_slot=reuse_pages,
+        reuse_layouts_by_slot=reuse_layouts,
+        reuse_structured_pages_by_slot=reuse_structured,
+        reuse_parse_job_ids=reuse_jobs,
         source_parse_job_id=source_parse_job_id,
         source_file_id=source_file_id,
         source_file_hash=source_file_hash,
-        source_book=source_book_raw if index_only else None,
+        source_book=source_book_raw,
+        extraction_input_hash=extraction_input_hash,
+        version=event.version,
     )
     agent_data_id, report = _split_result_fields(nested_payload)
     prepared = [

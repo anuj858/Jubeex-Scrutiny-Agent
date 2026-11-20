@@ -74,7 +74,7 @@ def test_ink_comes_from_the_defect_wording_not_a_fixed_list() -> None:
     assert defect_needs_ink(sworn)
     assert defect_needs_ink(signed)
     assert not defect_needs_ink(plain)
-    assert not defect_needs_ink(landmark)
+    assert defect_needs_ink(landmark)
 
 
 def test_vakalatnama_of_two_or_three_pages_is_sent_whole() -> None:
@@ -107,6 +107,30 @@ def test_vakalatnama_of_two_or_three_pages_is_sent_whole() -> None:
     )[0]
     assert [page.local_page for page in three.pages] == [1, 2, 3]
     assert three.complete
+
+
+def test_date_check_keeps_the_closing_page_inside_the_cap() -> None:
+    defect = _defect(
+        "DATE-4",
+        "The enclosed document is not of the same or subsequent date",
+        requirement="The document must bear a date that is the same as, or later than, the date of drafting.",
+        inspect_parts=["Affidavit", "Main Petition"],
+    )
+    affidavit = [
+        (index, "Affidavit", "aff", index, "verification deponent")
+        for index in range(1, 4)
+    ]
+    petition = [
+        (10, "Main Petition", "pet", 1, "cause title"),
+        (11, "Main Petition", "pet", 2, "facts"),
+        (12, "Main Petition", "pet", 3, "Drawn on 10.10.2025 Filed on 12.12.2025"),
+    ]
+    plan = plan_defect_images([defect], _layout(affidavit + petition))[0]
+    petition_pages = [
+        page.local_page for page in plan.pages if page.document_type == "Main Petition"
+    ]
+    assert petition_pages == [3]
+    assert all(page.local_page != 1 or page.document_type != "Main Petition" for page in plan.pages)
 
 
 def test_four_image_cap_leaves_the_rest_for_the_text_call() -> None:
@@ -343,6 +367,50 @@ def test_a_vision_quote_is_not_assigned_across_two_documents(monkeypatch) -> Non
     assert finding.evidence[0].slot_id is None
 
 
+def test_a_date_on_any_document_is_imaged_from_its_own_parts() -> None:
+    affidavit = _defect(
+        "DATE-1",
+        "The enclosed document is not of the same or subsequent date",
+        requirement="The document must bear a date that is the same as, or later than, the other date.",
+        inspect_parts=["Affidavit"],
+    )
+    vakalatnama = _defect(
+        "DATE-2",
+        "The execution date is not stated",
+        requirement="The document must mention the date of execution.",
+        inspect_parts=["Vakalatnama"],
+    )
+    order_date = _defect(
+        "DATE-3",
+        "The appeal does not state the date of the impugned order",
+        requirement="State the date of the impugned judgment.",
+        inspect_parts=["Impugned Order"],
+    )
+    assert defect_needs_ink(affidavit)
+    assert defect_needs_ink(vakalatnama)
+    assert not defect_needs_ink(order_date)
+    plan = plan_defect_images(
+        [affidavit],
+        _layout(
+            [
+                (10, "Affidavit", "aff", 1, "solemnly affirm"),
+                (11, "Affidavit", "aff", 2, "Verified on this day of the stated month"),
+            ]
+        ),
+    )[0]
+    assert [page.local_page for page in plan.pages] == [1, 2]
+    vak_plan = plan_defect_images(
+        [vakalatnama],
+        _layout(
+            [
+                (3, "Vakalatnama", "vak", 1, "appoint"),
+                (4, "Vakalatnama", "vak", 2, "dated"),
+            ]
+        ),
+    )[0]
+    assert [page.local_page for page in vak_plan.pages] == [1, 2]
+
+
 def test_short_affidavit_is_sent_whole() -> None:
     defect = _defect(
         "AF-1",
@@ -359,6 +427,96 @@ def test_short_affidavit_is_sent_whole() -> None:
         ),
     )[0]
     assert [page.local_page for page in plan.pages] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_supplied_pages_use_the_notary_detector(monkeypatch: pytest.MonkeyPatch) -> None:
+    from extraction_review.visual.schema import VisualPageTarget
+
+    def refuse_policy(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("the standing page policy must not choose these pages")
+
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.visual_detection_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.vision_model",
+        lambda _tier=None: "test-model",
+    )
+    monkeypatch.setattr(
+        "extraction_review.visual.detect.select_formality_pages",
+        refuse_policy,
+    )
+    index = await detect_visual_marks(
+        parts=[],
+        pages_by_slot={},
+        page_parts={},
+        model_tier="low",
+        selected_targets=[
+            VisualPageTarget(
+                page=11,
+                slot_id="affidavit",
+                local_page=2,
+                document_types=["Affidavit"],
+            )
+        ],
+    )
+    assert index["targets"] == [{"page": 11, "document_types": ["Affidavit"]}]
+    assert index["status"] == "error"
+    assert index["failures"][0]["page"] == 11
+
+
+def test_signature_check_sends_the_last_page_and_its_text() -> None:
+    defect = _defect(
+        "SIGN-1",
+        "The annexure is not signed",
+        requirement="Each annexure must bear a signature on its closing page.",
+        inspect_parts=["Annexures"],
+    )
+    rows = [
+        (index, f"Annexure P-1", "ann", index, f"body {index}")
+        for index in range(1, 6)
+    ]
+    rows[-1] = (5, "Annexure P-1", "ann", 5, "Signed by the deponent")
+    plan = plan_defect_images([defect], _layout(rows))[0]
+    assert any(page.local_page == 5 and "Signed" in page.text for page in plan.pages)
+    from extraction_review.visual.defect_scope import visual_targets_for_plans
+
+    targets = visual_targets_for_plans([plan])
+    closing = next(item for item in targets if item.local_page == 5)
+    assert "Signed by the deponent" in closing.markdown
+
+
+def test_selected_pages_become_one_notary_target_each() -> None:
+    from extraction_review.visual.defect_scope import (
+        DefectImagePage,
+        DefectImagePlan,
+        visual_targets_for_plans,
+    )
+
+    plans = [
+        DefectImagePlan(
+            check_id="A",
+            pages=(
+                DefectImagePage(11, 2, "aff", "Affidavit", file_id="file-a"),
+            ),
+            leftover_pages=(),
+        ),
+        DefectImagePlan(
+            check_id="B",
+            pages=(
+                DefectImagePage(11, 2, "aff", "Affidavit", file_id="file-a"),
+                DefectImagePage(20, 9, "pet", "Main Petition", file_id="file-b"),
+            ),
+            leftover_pages=(),
+        ),
+    ]
+    targets = visual_targets_for_plans(plans)
+    assert [(item.page, item.local_page, item.file_id) for item in targets] == [
+        (11, 2, "file-a"),
+        (20, 9, "file-b"),
+    ]
 
 
 @pytest.mark.asyncio

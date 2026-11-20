@@ -81,12 +81,14 @@ from extraction_review.split_upload import (
     bundle_file_hash,
     coerce_page_markdown,
     coerce_page_parts,
+    compiled_parse_reuse,
     display_filename,
     dump_parse_artifact,
     extract_source_parts,
     inject_where_to_look,
     load_parse_artifact,
     ordered_parts,
+    pages_have_reusable_text,
     parse_action_for_slot,
     slot_is_extract_source,
     slot_needs_precise_parse,
@@ -3135,6 +3137,24 @@ def test_slot_is_extract_source_for_fill_slots_only() -> None:
         )
         == "parse"
     )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="all",
+            reuse_slots={"petition"},
+        )
+        == "reuse"
+    )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="extract_sources",
+            reuse_slots={"petition"},
+        )
+        == "reuse"
+    )
 
 
 def test_parse_artifact_round_trip_merges_new_slots() -> None:
@@ -3356,3 +3376,199 @@ def test_slice_bundle_pdf_numbered_annexures_no_duplicates() -> None:
     assert all(s.duplicate is False for s in slices)
     assert [s.start_page for s in slices] == [1, 3, 5]
     assert [s.end_page for s in slices] == [2, 4, 6]
+
+
+def test_compiled_book_spans_become_each_documents_pages() -> None:
+    from extraction_review.layout_index import stitch_slot_layouts
+
+    book = {
+        "pages": {
+            30: "PRAYER",
+            31: "Drawn on: 10.10.2025\nFiled on: 12.12.2025",
+            33: "AFFIDAVIT",
+            34: (
+                "Verified at Chhattisgarh on this day of July, 2025.\n"
+                "[seal: S.K. Tiwari Notary]"
+            ),
+        },
+        "layout": {
+            31: {"words": [{"t": "Drawn"}, {"t": "on:"}]},
+            34: {"words": [{"t": "Verified"}]},
+        },
+        "structured": {},
+        "parse_job_id": "job-book",
+    }
+    pages, layouts, _structured, _jobs, slots = compiled_parse_reuse(
+        book,
+        [
+            ("petition", [{"start": 30, "end": 31}]),
+            ("affidavit", [{"start": 33, "end": 34}]),
+            ("index", None),
+        ],
+        edited=False,
+        reusable_slots=set(),
+    )
+    parts = [
+        SplitPartInput(
+            slot_id="petition",
+            file_id="petition-file",
+            document_parts=("Main Petition",),
+        ),
+        SplitPartInput(
+            slot_id="affidavit",
+            file_id="affidavit-file",
+            document_parts=("Affidavit",),
+        ),
+    ]
+
+    markdown, _page_parts = stitch_parsed_parts_in_order(parts, pages)
+    layout = stitch_slot_layouts(
+        type_catalog("SLP_CIVIL"),
+        parts,
+        pages,
+        layouts,
+        part_order=parts,
+    )
+
+    assert slots == ["petition", "affidavit"]
+    assert list(markdown.values()) == [
+        "PRAYER",
+        "Drawn on: 10.10.2025\nFiled on: 12.12.2025",
+        "AFFIDAVIT",
+        "Verified at Chhattisgarh on this day of July, 2025.\n"
+        "[seal: S.K. Tiwari Notary]",
+    ]
+    assert layout[2]["words"][0]["t"] == "Drawn"
+    assert layout[2]["local_page"] == 2
+    assert layout[4]["words"][0]["t"] == "Verified"
+    assert layout[4]["document_part"] == "Affidavit"
+    assert all(page.get("words") is not None for page in layout.values())
+    assert len(layout) == 4
+
+
+def test_blank_or_stub_pages_are_not_reusable() -> None:
+    assert pages_have_reusable_text(None) is False
+    assert pages_have_reusable_text({1: "  "}) is False
+    assert pages_have_reusable_text({1: "(No parse text for petition.pdf)"}) is False
+    assert pages_have_reusable_text({1: "Drawn on: 10.10.2025"}) is True
+
+
+def test_index_without_saved_pages_parses_instead_of_skipping() -> None:
+    catalog = type_catalog("SLP_CIVIL")
+    petition = SplitPartInput(
+        slot_id="petition",
+        file_id="petition-file",
+        document_parts=("Main Petition",),
+    )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="reuse_only",
+            reuse_slots=set(),
+        )
+        == "parse"
+    )
+    assert (
+        parse_action_for_slot(
+            petition,
+            catalog=catalog,
+            parse_scope="reuse_only",
+            reuse_slots={"petition"},
+        )
+        == "reuse"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reuse_only_keeps_compiled_text_and_parses_a_blank_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from extraction_review.process_split_files import (
+        SplitFilesEvent,
+        SplitPartEvent,
+        _parse_labeled_files,
+        _reuse_parse_maps,
+    )
+
+    actions: list[str] = []
+
+    async def fake_parse(_client: object, **kwargs: object) -> tuple:
+        part = kwargs["part"]
+        action = str(kwargs["action"])
+        actions.append(action)
+        if action == "reuse":
+            return (
+                part.slot_id,
+                dict(kwargs["reuse_pages"]),
+                {},
+                "job-book",
+                dict(kwargs["reuse_layout"] or {}),
+                None,
+            )
+        return (
+            part.slot_id,
+            {1: "Drawn on: 10.10.2025", 2: "Filed on: 12.12.2025"},
+            {},
+            "job-parsed",
+            {2: {"words": [{"t": "Filed"}]}},
+            None,
+        )
+
+    event = SplitFilesEvent(
+        filing_type="SLP_CIVIL",
+        parse_scope="reuse_only",
+        parts=[SplitPartEvent(slot_id="petition"), SplitPartEvent(slot_id="affidavit")],
+        reuse_pages_by_slot={
+            "petition": {
+                "1": "PRAYER",
+                "2": "Drawn on: 10.10.2025\nFiled on: 12.12.2025",
+            },
+            "affidavit": {"1": "(No parse text for affidavit.pdf)"},
+        },
+        reuse_layouts_by_slot={"petition": {"2": {"words": [{"t": "Drawn"}]}}},
+        reuse_parse_job_ids={"petition": "job-book"},
+    )
+    pages, layouts, _structured, jobs = _reuse_parse_maps(event, parts=[])
+    assert pages["petition"][2].startswith("Drawn on: 10.10.2025")
+    assert layouts["petition"][2]["words"][0]["t"] == "Drawn"
+    assert jobs["petition"] == "job-book"
+
+    monkeypatch.setattr(
+        "extraction_review.process_split_files._parse_one_file",
+        fake_parse,
+    )
+    parsed, _structured_pages, parse_jobs, parsed_layouts, _usage = (
+        await _parse_labeled_files(
+            None,  # type: ignore[arg-type]
+            parse_config=None,  # type: ignore[arg-type]
+            parts=[
+                SplitPartInput(
+                    slot_id="petition",
+                    file_id="petition-file",
+                    document_parts=("Main Petition",),
+                ),
+                SplitPartInput(
+                    slot_id="affidavit",
+                    file_id="affidavit-file",
+                    document_parts=("Affidavit",),
+                ),
+            ],
+            source_parts=set(),
+            ctx=SimpleNamespace(write_event_to_stream=lambda _event: None),  # type: ignore[arg-type]
+            catalog=type_catalog("SLP_CIVIL"),
+            parse_scope="reuse_only",
+            reuse_slots={"petition", "affidavit"},
+            reuse_pages=pages,
+            reuse_layouts=layouts,
+            reuse_job_ids=jobs,
+        )
+    )
+
+    assert actions == ["reuse", "parse"]
+    assert "Drawn on: 10.10.2025" in parsed["petition"][2]
+    assert parsed["affidavit"][1] == "Drawn on: 10.10.2025"
+    assert parse_jobs["affidavit"] == "job-parsed"
+    assert parsed_layouts["petition"][2]["words"][0]["t"] == "Drawn"

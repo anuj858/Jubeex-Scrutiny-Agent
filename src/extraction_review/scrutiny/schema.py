@@ -1628,6 +1628,8 @@ def apply_scope_coverage_policy(
 
 def apply_final_evidence_contract_policy(
     response: DefectResponse,
+    *,
+    complete_document_retried: bool = True,
 ) -> DefectResponse:
     """Keep exhausted retrieval failures out of the manual-review queue.
 
@@ -1636,7 +1638,13 @@ def apply_final_evidence_contract_policy(
     before this policy runs.  If either signal survives that retry, the check
     did not complete technically; it is not genuine uncertainty in the filing
     evidence and must not be presented to an AOR as ``Needs Review``.
+
+    ``complete_document_retried`` is true only after that retry called the
+    model. A context follow-up is not that retry. Leaving the flag false keeps
+    a missing-page answer in review.
     """
+    if not complete_document_retried:
+        return response
     if response.status != "needs_review" or response.gap not in {
         "part_not_in_excerpts",
         "element_page_not_in_excerpts",
@@ -2399,6 +2407,10 @@ def apply_visual_conflict_policy(
             page for raw in pages if (page := _safe_page_number(raw)) is not None
         }
         failures = visual_index.get("failures") or []
+        if not target_pages and not reviewed_pages and not failures:
+            # No page image was stored. A quotation that already shows the
+            # missing or incomplete item remains the finding.
+            return response
         if (
             status != "ok"
             or not target_pages

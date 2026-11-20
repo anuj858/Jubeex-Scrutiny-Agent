@@ -2,6 +2,7 @@ import io
 import json
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from botocore.exceptions import ClientError
 from pydantic import BaseModel
@@ -19,8 +20,8 @@ from extraction_review.llm import (
     _vertex_retry_after_seconds,
     gemini_max_attempts,
     gemini_request_timeout_seconds,
-    get_genai_client,
     genai_shared_rate_limit_enabled,
+    get_genai_client,
     llm_requests_per_minute,
     openrouter_requests_per_minute,
     vertex_max_attempts,
@@ -491,6 +492,371 @@ def test_llm_provider_openrouter_keeps_prefixed_model(
     assert openrouter_model() == "google/gemini-3.8-flash"
 
 
+@pytest.mark.asyncio
+async def test_openrouter_cost_caches_are_attached_without_filing_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "generation-1",
+                "model": "anthropic/claude-haiku-4.5",
+                "choices": [
+                    {
+                        "message": {"content": '{"value":"ok"}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                    "cost": 0.001,
+                },
+            },
+        )
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_PROMPT_CACHE", "true")
+    monkeypatch.setenv("OPENROUTER_RESPONSE_CACHE", "true")
+    monkeypatch.setenv("OPENROUTER_RESPONSE_CACHE_TTL_S", "7200")
+    monkeypatch.setattr(llm_module, "acquire_openrouter_slot", AsyncMock())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result, usage = await llm_module.call_structured(
+            system_prompt="Stable policy.",
+            user_prompt="Sensitive filing evidence.",
+            response_model=Result,
+            model="anthropic/claude-haiku-4.5",
+            client=client,
+        )
+
+    assert result.value == "ok"
+    assert usage.cost_usd == 0.001
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["x-openrouter-cache"] == "true"
+    assert headers["x-openrouter-cache-ttl"] == "7200"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["session_id"].startswith("jubeex-scrutiny-")
+    assert "Sensitive" not in body["session_id"]
+    system = body["messages"][0]["content"]
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_openrouter_response_cache_ttl_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    monkeypatch.setenv("OPENROUTER_RESPONSE_CACHE_TTL_S", "999999")
+    assert llm_module.openrouter_response_cache_ttl_seconds() == 86_400
+    monkeypatch.setenv("OPENROUTER_RESPONSE_CACHE_TTL_S", "invalid")
+    assert llm_module.openrouter_response_cache_ttl_seconds() == 3600
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_submits_maps_usage_and_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    calls: list[tuple[str, str]] = []
+    accepted: list[str] = []
+    submitted_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            submitted_body.update(json.loads(request.content))
+            return httpx.Response(
+                202,
+                request=request,
+                json={"id": "batch_123", "status": "validating"},
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "batch_123",
+                    "status": "completed",
+                    "request_counts": {"total": 2, "completed": 2, "failed": 0},
+                    "usage": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 4,
+                        "total_tokens": 24,
+                        "cost": 0.002,
+                    },
+                    "results": [
+                        {
+                            "custom_id": "D-2",
+                            "response": {
+                                "status_code": 200,
+                                "body": {
+                                    "id": "gen-2",
+                                    "model": "openai/gpt-6-luna",
+                                    "choices": [
+                                        {
+                                            "message": {"content": '{"value":"two"}'},
+                                            "finish_reason": "stop",
+                                        }
+                                    ],
+                                },
+                            },
+                            "error": None,
+                        },
+                        {
+                            "custom_id": "D-1",
+                            "response": {
+                                "status_code": 200,
+                                "body": {
+                                    "id": "gen-1",
+                                    "model": "openai/gpt-6-luna",
+                                    "choices": [
+                                        {
+                                            "message": {"content": '{"value":"one"}'},
+                                            "finish_reason": "stop",
+                                        }
+                                    ],
+                                },
+                            },
+                            "error": None,
+                        },
+                    ],
+                },
+            )
+        return httpx.Response(200, request=request, json={"id": "batch_123"})
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_BATCH_DELETE_AFTER_READ", "true")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        results = await llm_module.call_structured_batch(
+            requests=[
+                llm_module.StructuredBatchRequest("D-1", "system", "first"),
+                llm_module.StructuredBatchRequest("D-2", "system", "second"),
+            ],
+            response_model=Result,
+            model="openai/gpt-6-luna:batch",
+            client=client,
+            on_batch_accepted=accepted.append,
+        )
+        # Cleanup happens only after the workflow has persisted the report.
+        await llm_module.delete_openrouter_batches(["batch_123"], client=client)
+
+    assert results["D-1"].value.value == "one"
+    assert accepted == ["batch_123"]
+    assert results["D-2"].value.value == "two"
+    assert sum(result.usage.total_tokens for result in results.values()) == 24
+    assert sum(result.usage.cost_usd or 0 for result in results.values()) == 0.002
+    assert submitted_body["endpoint"] == "/v1/chat/completions"
+    assert submitted_body["model"] == "openai/gpt-6-luna"
+    assert submitted_body["requests"][0]["body"]["model"] == "openai/gpt-6-luna"
+    assert [entry["custom_id"] for entry in submitted_body["requests"]] == [
+        "D-1",
+        "D-2",
+    ]
+    assert calls == [
+        ("POST", "/api/v1/batches"),
+        ("GET", "/api/v1/batches/batch_123"),
+        ("DELETE", "/api/v1/batches/batch_123"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_retries_not_found_until_the_job_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    gets = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, request=request, json={"id": "batch_123"})
+        gets["count"] += 1
+        if gets["count"] == 1:
+            return httpx.Response(
+                404,
+                request=request,
+                json={"error": {"message": "Batch job batch_123 not found."}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "batch_123",
+                "status": "completed",
+                "results": [
+                    {
+                        "custom_id": "D-1",
+                        "response": {
+                            "body": {
+                                "id": "gen-1",
+                                "choices": [
+                                    {
+                                        "message": {"content": '{"value":"one"}'},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(llm_module, "openrouter_batch_poll_seconds", lambda: 0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        results = await llm_module.call_structured_batch(
+            requests=[llm_module.StructuredBatchRequest("D-1", "system", "user")],
+            response_model=Result,
+            model="openai/gpt-6-luna",
+            client=client,
+        )
+
+    assert gets["count"] == 2
+    assert results["D-1"].value is not None
+    assert results["D-1"].value.value == "one"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_isolates_per_request_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, request=request, json={"id": "batch_bad"})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "batch_bad",
+                    "status": "completed",
+                    "results": [
+                        {
+                            "custom_id": "D-1",
+                            "response": None,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "unsupported max_tokens",
+                            },
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, request=request, json={})
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        results = await llm_module.call_structured_batch(
+            requests=[llm_module.StructuredBatchRequest("D-1", "system", "user")],
+            response_model=Result,
+            model="openai/gpt-6-luna",
+            client=client,
+        )
+
+    assert results["D-1"].value is None
+    assert results["D-1"].error is not None
+    assert "unsupported max_tokens" in str(results["D-1"].error)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_terminal_failure_keeps_batch_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, request=request, json={"id": "batch_failed"})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "batch_failed",
+                    "status": "failed",
+                    "error": {"message": "model has no batch provider"},
+                },
+            )
+        return httpx.Response(200, request=request, json={})
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(llm_module.OpenRouterBatchError) as caught:
+            await llm_module.call_structured_batch(
+                requests=[llm_module.StructuredBatchRequest("D-1", "system", "user")],
+                response_model=Result,
+                model="openai/gpt-6-luna",
+                client=client,
+            )
+
+    assert caught.value.accepted is True
+    assert caught.value.batch_id == "batch_failed"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_transport_error_disables_sync_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("connection lost after upload", request=request)
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(llm_module.OpenRouterBatchError) as caught:
+            await llm_module.call_structured_batch(
+                requests=[llm_module.StructuredBatchRequest("D-1", "system", "user")],
+                response_model=Result,
+                model="openai/gpt-6-luna",
+                client=client,
+            )
+
+    assert caught.value.accepted is True
+    assert caught.value.batch_id is None
+    assert "fallback is unsafe" in str(caught.value)
+
+
 def test_scrutiny_model_requires_a_tier_and_ignores_default_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,11 +900,12 @@ def test_scrutiny_model_normalizes_vertex_and_preserves_openrouter_prefix(
 
 
 @pytest.mark.asyncio
-async def test_openrouter_rate_limiter_paces_requests(
+async def test_openrouter_rate_limiter_allows_configured_burst(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_REQUESTS_PER_MINUTE", "2")
+    monkeypatch.setenv("OPENROUTER_BURST", "2")
     limiter = _OpenRouterRateLimiter()
     slept: list[float] = []
 
@@ -548,4 +915,4 @@ async def test_openrouter_rate_limiter_paces_requests(
     monkeypatch.setattr("extraction_review.llm.asyncio.sleep", fake_sleep)
     await limiter.acquire()
     await limiter.acquire()
-    assert slept == [pytest.approx(30.0, abs=0.1)]
+    assert slept == []

@@ -2433,6 +2433,33 @@ def test_exhausted_retrieval_gap_is_not_published_as_manual_review(gap: str) -> 
     assert "Main Petition continuation page" in decided.observed
 
 
+def test_missing_page_stays_needs_review_when_retry_did_not_run() -> None:
+    response = DefectResponse(
+        check_id="D-55",
+        status="needs_review",
+        confidence=0.64,
+        summary="The decisive dates were not in the supplied pages.",
+        observed="The affidavit verification and the petition drawing date were not shown.",
+        conclusion="The date comparison cannot be completed from the pages supplied.",
+        gap="element_page_not_in_excerpts",
+        gap_detail=(
+            "The decisive date lines from the Affidavit and the Main Petition "
+            "are not shown."
+        ),
+        evidence=[EvidenceRef(page=1, quote="NOTARY")],
+    )
+
+    decided = apply_final_evidence_contract_policy(
+        response,
+        complete_document_retried=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "element_page_not_in_excerpts"
+    assert decided.confidence == 0.64
+    assert "are not shown" in decided.gap_detail
+
+
 def test_genuine_visual_uncertainty_remains_manual_review() -> None:
     response = DefectResponse(
         check_id="D-176",
@@ -2539,6 +2566,40 @@ def test_d57_owns_blank_vakalatnama_execution_date() -> None:
     assert decided.status == "defect_found"
     assert decided.confidence >= 0.9
     assert decided.gap is None
+
+
+def test_blank_affidavit_day_stays_a_defect_when_no_page_image_was_stored() -> None:
+    defect = _scrutiny_row(
+        check_id="DATE-1",
+        defect="The document is not of the same or subsequent date",
+        requirement="The document must bear a date that is the same as, or later than, the other date.",
+        inspect_parts=["Affidavit"],
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="defect_found",
+        confidence=0.9,
+        summary="The date on the document is blank.",
+        observed="The date line is blank.",
+        conclusion="The required date is incomplete.",
+        evidence=[
+            EvidenceRef(page=2, quote="on this day of the stated month and year")
+        ],
+    )
+    gated = apply_visual_conflict_policy(
+        defect,
+        response,
+        {
+            "status": "skipped",
+            "error": "missing",
+            "pages": [],
+            "targets": [],
+            "marks": [],
+            "failures": [],
+        },
+    )
+    assert gated.status == "defect_found"
+    assert "incomplete page coverage" not in (gated.gap_detail or "")
 
 
 def test_blank_date_is_not_conflicted_by_present_advocate_signature() -> None:

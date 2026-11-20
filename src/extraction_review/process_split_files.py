@@ -68,6 +68,7 @@ from .llama_usage import (
     summarize_llamacloud_usage,
     usage_status_message,
 )
+from .local_extraction import LocalParseExtractor, extraction_provider
 from .parsed_document import coerce_structured_pages, extract_structured_pages
 from .process_file import (
     ExtractedEvent,
@@ -109,6 +110,7 @@ from .split_upload import (
     extract_source_parts,
     find_part,
     front_extract_configuration,
+    pages_have_reusable_text,
     parse_action_for_slot,
     slot_needs_precise_parse,
     stitch_parsed_parts,
@@ -233,6 +235,7 @@ class SplitFilesEvent(StartEvent):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
     reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
     reuse_structured_pages_by_slot: dict[str, dict[str, Any]] = Field(
@@ -244,6 +247,7 @@ class SplitFilesEvent(StartEvent):
     source_file_hash: str | None = None
     source_book: dict[str, Any] | None = None
     supplied_parse_usage: dict[str, Any] | None = None
+    extraction_input_hash: str | None = None
 
     @field_validator(
         "org_id", "organization_id", "workspace_id", "user_id", mode="before"
@@ -277,6 +281,12 @@ class SplitFilesState(BaseModel):
     fallback_file_id: str | None = None
     extract_pack_file_id: str | None = None
     extract_job_id: str | None = None
+    extraction_provider: str | None = None
+    local_extraction_data: dict[str, Any] = Field(default_factory=dict)
+    local_extraction_confidence: dict[str, float] = Field(default_factory=dict)
+    local_extraction_provenance: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     parse_job_ids: dict[str, str] = Field(default_factory=dict)
     page_markdown: dict[int, str] = Field(default_factory=dict)
     page_parts: dict[int, list[str]] = Field(default_factory=dict)
@@ -298,6 +308,7 @@ class SplitFilesState(BaseModel):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
     structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(
@@ -308,6 +319,7 @@ class SplitFilesState(BaseModel):
     source_parse_job_id: str | None = None
     source_file_id: str | None = None
     source_file_hash: str | None = None
+    extraction_input_hash: str | None = None
 
 
 async def _workspace_agent_data_item(
@@ -615,18 +627,21 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.special_categories = event.special_categories
             state.model_tier = event.model_tier
             state.court = event.court
+            state.version = event.version
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
             state.structured_pages_by_slot = structured_pages_by_slot
             state.source_parse_job_id = event.source_parse_job_id
             state.source_file_id = event.source_file_id
             state.source_file_hash = event.source_file_hash
+            state.extraction_input_hash = event.extraction_input_hash
 
         set_job_context(
             file_hash or filename,
             event.organization_id or event.org_id,
             event.workspace_id,
             reset=False,
+            artifact_version=event.version,
         )
         parse_record = _upload_parse_artifact(
             parsed_slots=parsed_slots,
@@ -638,6 +653,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             organization_id=event.organization_id or event.org_id,
             workspace_id=event.workspace_id,
             job_id=file_hash,
+            version=event.version,
             source_book=_source_book_payload(
                 event,
                 pages_by_slot=pages_by_slot,
@@ -721,6 +737,38 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
+        provider = extraction_provider()
+        if provider == "local":
+            if not page_markdown:
+                raise RuntimeError(
+                    "Local extraction requires the saved full-file ParseArtifact"
+                )
+            local = LocalParseExtractor(extract_config.local_extraction).extract(
+                page_markdown=page_markdown,
+                page_parts=page_parts,
+                filing_type=state.filing_type,
+                front_extract=state.front_extract,
+            )
+            local_job_id = f"local:{uuid.uuid4()}"
+            async with ctx.store.edit_state() as mutable:
+                mutable.extraction_provider = provider
+                mutable.extract_pack_file_id = None
+                mutable.extract_job_id = local_job_id
+                mutable.extract_started_at = extract_started_at
+                mutable.local_extraction_data = local.data
+                mutable.local_extraction_confidence = local.confidence
+                mutable.local_extraction_provenance = local.provenance
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=(
+                        "Extracted configured filing fields locally from the "
+                        f"saved full-file parse ({len(page_markdown)} physical pages)"
+                    ),
+                )
+            )
+            return ExtractJobStartedEvent()
+
         if state.front_extract:
             pack_text = build_front_extract_pack_markdown(
                 page_markdown,
@@ -794,6 +842,7 @@ class ProcessSplitFilesWorkflow(Workflow):
                 )
 
         async with ctx.store.edit_state() as state:
+            state.extraction_provider = provider
             state.extract_pack_file_id = pack_file_id
             state.extract_job_id = extract_job.id
             state.extract_started_at = extract_started_at
@@ -823,6 +872,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.organization_id or state.org_id,
             state.workspace_id,
             reset=False,
+            artifact_version=state.version,
         )
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
@@ -833,52 +883,97 @@ class ProcessSplitFilesWorkflow(Workflow):
         page_markdown = coerce_page_markdown(state.page_markdown)
         page_parts = coerce_page_parts(state.page_parts)
 
-        await llama_cloud_client.extract.wait_for_completion(
-            state.extract_job_id,
-            project_id=project_id,
+        provider = state.extraction_provider or (
+            "local" if state.extract_job_id.startswith("local:") else "llamacloud"
         )
-        job = await llama_cloud_client.extract.get(
-            state.extract_job_id,
-            expand=["extract_metadata", "usage"],
-            project_id=project_id,
-        )
+        job: Any | None = None
+        if provider == "local":
+            usage_summary = summarize_llamacloud_usage(state.llamacloud_jobs or [])
+        else:
+            await llama_cloud_client.extract.wait_for_completion(
+                state.extract_job_id,
+                project_id=project_id,
+            )
+            job = await llama_cloud_client.extract.get(
+                state.extract_job_id,
+                expand=["extract_metadata", "usage"],
+                project_id=project_id,
+            )
+            extract_usage = await collect_extract_usage(
+                llama_cloud_client,
+                state.extract_job_id,
+                payload=job,
+            )
+            usage_summary = summarize_llamacloud_usage(
+                [*(state.llamacloud_jobs or []), extract_usage]
+            )
         logger.info(
-            "[ExtractionTiming] extract=%ss job_id=%s",
+            "[ExtractionTiming] provider=%s extract=%ss job_id=%s",
+            provider,
             elapsed_seconds(state.extract_started_at),
             state.extract_job_id,
-        )
-        extract_usage = await collect_extract_usage(
-            llama_cloud_client,
-            state.extract_job_id,
-            payload=job,
-        )
-        usage_summary = summarize_llamacloud_usage(
-            [*(state.llamacloud_jobs or []), extract_usage]
         )
         logger.info("[Usage] %s", usage_status_message(usage_summary))
 
         record_file_id = state.petition_file_id or state.extract_pack_file_id
         extracted_event: ExtractedEvent | ExtractedInvalidEvent
         try:
-            job_payload = job.model_dump(mode="json")
-            logger.info(
-                "Extracted split-upload job id=%s status=%s top_level_fields=%s",
-                state.extract_job_id,
-                job_payload.get("status"),
-                sorted(job_payload),
-            )
-            data = ExtractedData.from_extract_job(
-                job=job,
-                schema=(
-                    FrontExtractRecord if state.front_extract else LegalExtractRecord
-                ),
-                file_name=state.filename,
-                file_id=record_file_id,
-                file_hash=state.file_hash,
-            )
+            if provider == "local":
+                schema = FrontExtractRecord if state.front_extract else LegalExtractRecord
+                record = schema.model_validate(state.local_extraction_data)
+                overall = (
+                    sum(state.local_extraction_confidence.values())
+                    / len(state.local_extraction_confidence)
+                    if state.local_extraction_confidence
+                    else None
+                )
+                field_confidence = dict(state.local_extraction_confidence)
+                data = ExtractedData(
+                    original_data=record,
+                    data=record,
+                    status="accepted",
+                    overall_confidence=overall,
+                    field_metadata={
+                        key: {"confidence": value}
+                        for key, value in field_confidence.items()
+                    },
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                logger.info(
+                    "Local parse extraction job id=%s fields=%s",
+                    state.extract_job_id,
+                    sorted(state.local_extraction_data),
+                )
+            else:
+                if job is None:
+                    raise RuntimeError("LlamaCloud extraction job was not loaded")
+                job_payload = job.model_dump(mode="json")
+                logger.info(
+                    "Extracted split-upload job id=%s status=%s top_level_fields=%s",
+                    state.extract_job_id,
+                    job_payload.get("status"),
+                    sorted(job_payload),
+                )
+                data = ExtractedData.from_extract_job(
+                    job=job,
+                    schema=(
+                        FrontExtractRecord if state.front_extract else LegalExtractRecord
+                    ),
+                    file_name=state.filename,
+                    file_id=record_file_id,
+                    file_hash=state.file_hash,
+                )
+                overall = overall_confidence_from_job(job)
+                field_confidence = field_confidence_from_job(job)
             if data.metadata is None:
                 data.metadata = {}
-            overall = overall_confidence_from_job(job)
+            data.metadata["extraction_provider"] = provider
+            if provider == "local":
+                data.metadata["extraction_provenance"] = (
+                    state.local_extraction_provenance
+                )
             data.metadata["classification"] = filing_type
             data.metadata["parse_job_ids"] = state.parse_job_ids
             if state.source_parse_job_id:
@@ -899,7 +994,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             }
             data.metadata["extract_confidence"] = {
                 "overall": overall,
-                "fields": field_confidence_from_job(job),
+                "fields": field_confidence,
             }
             data.metadata["documents"] = [
                 {
@@ -912,6 +1007,11 @@ class ProcessSplitFilesWorkflow(Workflow):
                 }
                 for item in state.parts
             ]
+            if state.extraction_input_hash and not state.front_extract:
+                data.metadata["core_extraction_input_hash"] = (
+                    state.extraction_input_hash
+                )
+                data.metadata["core_extraction_complete"] = True
             if state.job_type:
                 data.metadata["job_type"] = state.job_type
             if state.organization_id or state.org_id:
@@ -1109,6 +1209,9 @@ class ProcessSplitFilesWorkflow(Workflow):
                 bool(os.getenv("PINECONE_API_KEY")),
             )
 
+        if state.job_type == "index_parsed":
+            report = await _run_nested_scrutiny(ctx, agent_data_id=str(item.id))
+            return StopEvent(result={"agent_data_id": str(item.id), "report": report})
         return StopEvent(result=item.id)
 
 
@@ -1192,7 +1295,7 @@ async def _parse_one_file(
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Skipping parse for {label} (not an extract source)",
+                    message=f"Skipping parse for {label}",
                 )
             )
             return part.slot_id, {}, {}, None, {}, None
@@ -1308,7 +1411,11 @@ async def _parse_labeled_files(
                 parse_scope=parse_scope,
                 reuse_slots=reuse_slots,
             )
-        if action == "reuse" and not (reuse_pages or {}).get(part.slot_id):
+        if action == "reuse" and not pages_have_reusable_text(
+            (reuse_pages or {}).get(part.slot_id)
+        ):
+            # The slot was marked reusable, but nothing was saved for it.
+            # Parse the PDF. Leaving it empty stitches one blank page.
             action = "parse"
         tasks.append(
             _parse_one_file(
@@ -1618,7 +1725,7 @@ def _reuse_parse_maps(
 ]:
     del parts
     scope = (event.parse_scope or "all").strip().lower()
-    if scope not in {"unparsed", "supplied"}:
+    if scope not in {"unparsed", "supplied", "reuse_only"}:
         return {}, {}, {}, {}
     pages = {
         slot: coerce_page_markdown(raw if isinstance(raw, dict) else {})
@@ -1719,6 +1826,7 @@ def _upload_parse_artifact(
     workspace_id: str | None,
     job_id: str | None,
     source_book: dict[str, Any] | None = None,
+    version: int | None = None,
 ) -> dict[str, str] | None:
     payload = dump_parse_artifact(
         parsed_slots=parsed_slots,
@@ -1740,6 +1848,7 @@ def _upload_parse_artifact(
         organization_id=organization_id,
         workspace_id=workspace_id,
         job_id=job_id,
+        version=version,
     )
 
 
@@ -1809,6 +1918,7 @@ async def _complete_index_only(
         organization_id=state.organization_id or state.org_id,
         workspace_id=state.workspace_id,
         job_id=state.file_hash,
+        version=state.version,
     )
     _persist_visual_metadata(meta, visual_index, visual_record)
     if visual_record:
@@ -1895,6 +2005,7 @@ async def _run_nested_scrutiny(
             special_categories=state.special_categories,
             model_tier=state.model_tier,
             court=state.court,
+            version=state.version,
         )
     )
     try:

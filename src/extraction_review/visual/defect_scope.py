@@ -1,9 +1,10 @@
 """Choose vision pages from the defects in a run.
 
 No check id is special-cased. A defect is imaged when its title or requirement
-asks for a signature, seal, stamp, or sworn execution, and the pages come from
-that defect's ``inspect_parts`` using the selector already stored for the
-document. A later catalogue row is picked up the same way.
+asks for a signature, seal, stamp, sworn execution, or a date written on the
+document. The pages come from that defect's ``inspect_parts`` using the
+selector already stored for the document. A later catalogue row is picked up
+the same way.
 """
 
 from __future__ import annotations
@@ -27,6 +28,28 @@ _INK_RE = re.compile(
     r"handwritten|thumb\s+impression|duly\s+sworn|attested|attestation)\b",
     re.IGNORECASE,
 )
+_DATE_ROLE_WORDS = frozenset(
+    {
+        "same",
+        "subsequent",
+        "prior",
+        "later",
+        "earlier",
+        "blank",
+        "missing",
+        "mention",
+        "mentions",
+        "mentioned",
+        "bear",
+        "bears",
+        "execution",
+        "verification",
+        "attestation",
+        "drafting",
+        "signing",
+    }
+)
+_NOT_PAGE_DATE_RE = re.compile(r"\b(?:limitation|impugned)\b", re.IGNORECASE)
 # A signature or stamp named only as the place to read a date or a filing
 # time is not a request to inspect the ink.
 _LANDMARK_RE = re.compile(
@@ -47,6 +70,7 @@ class DefectImagePage:
     document_type: str
     file_id: str | None = None
     file_url: str | None = None
+    text: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,10 +87,31 @@ class DefectImagePlan:
         return bool(self.pages) and not self.leftover_pages
 
 
+def _needs_page_date(text: str) -> bool:
+    """True when a sentence asks for a date written on the document itself.
+
+    The date word and the role word must sit near each other. A date of an
+    impugned order or a limitation period is not a date filled on the filing.
+    """
+    for sentence in re.split(r"[\n.]+", text):
+        if _NOT_PAGE_DATE_RE.search(sentence):
+            continue
+        words = [word.lower() for word in re.findall(r"[A-Za-z']+", sentence)]
+        for index, word in enumerate(words):
+            if word not in {"date", "dates"}:
+                continue
+            window = words[max(0, index - 8) : index + 9]
+            if any(item in _DATE_ROLE_WORDS for item in window):
+                return True
+            if any(item in {"state", "states", "stated"} for item in words[max(0, index - 3) : index]):
+                return True
+    return False
+
+
 def defect_needs_ink(defect: Defect) -> bool:
-    """True when this defect's own title or requirement asks to see ink."""
-    text = f"{defect.defect or ''}\n{defect.requirement or ''}"
-    return bool(_INK_RE.search(_LANDMARK_RE.sub(" ", text)))
+    """True when this defect's own title or requirement asks to see the page."""
+    text = _LANDMARK_RE.sub(" ", f"{defect.defect or ''}\n{defect.requirement or ''}")
+    return bool(_INK_RE.search(text) or _needs_page_date(text))
 
 
 def selector_for_document(name: str) -> str:
@@ -137,6 +182,30 @@ def _with_file(
     )
 
 
+def visual_targets_for_plans(plans: Sequence[DefectImagePlan]) -> list[Any]:
+    """One notary-scan target per physical page the defects selected."""
+    from .schema import VisualPageTarget
+
+    by_page: dict[int, VisualPageTarget] = {}
+    for plan in plans:
+        for page in plan.pages:
+            current = by_page.get(page.page)
+            if current is None:
+                by_page[page.page] = VisualPageTarget(
+                    page=page.page,
+                    slot_id=page.slot_id or f"page-{page.page}",
+                    local_page=page.local_page,
+                    document_types=[page.document_type] if page.document_type else [],
+                    file_url=page.file_url,
+                    file_id=page.file_id,
+                    markdown=page.text,
+                )
+                continue
+            if page.document_type and page.document_type not in current.document_types:
+                current.document_types.append(page.document_type)
+    return [by_page[number] for number in sorted(by_page)]
+
+
 def plan_defect_images(
     defects: Sequence[Defect],
     layout: Mapping[int, Mapping[str, object]] | None,
@@ -157,7 +226,7 @@ def _plan_one(
     sources: Sequence[PageSource],
     markdown: Mapping[int, str],
 ) -> DefectImagePlan:
-    chosen: list[DefectImagePage] = []
+    chosen: list[tuple[int, DefectImagePage]] = []
     seen: set[int] = set()
     for name in defect.inspect_parts or []:
         label = str(name).strip()
@@ -168,25 +237,38 @@ def _plan_one(
             picked = _selected_for_document(
                 group, selector=selector, markdown=markdown
             )
-            ordered = sorted(
-                (source for source, _priority in picked),
-                key=lambda source: (source.page, source.local_page),
-            )
-            for source in ordered:
+            for source, priority in picked:
                 if source.page in seen:
                     continue
                 seen.add(source.page)
-                chosen.append(_image_page(source, label))
-    imaged = tuple(chosen[:MAX_DEFECT_IMAGES])
-    leftover = tuple(chosen[MAX_DEFECT_IMAGES:])
+                chosen.append(
+                    (priority, _image_page(source, label, markdown))
+                )
+            # A signature, seal, or execution date is on the closing page.
+            # Keep that page even when the selector prefers the first page.
+            closing = max(group, key=lambda source: (source.local_page, source.page))
+            if closing.page not in seen:
+                seen.add(closing.page)
+                chosen.append((120, _image_page(closing, label, markdown)))
+    # The closing page carries the drafting, filing, and execution date.
+    # When only four images fit, keep that page ahead of an earlier page.
+    chosen.sort(key=lambda item: (-item[0], -item[1].local_page, item[1].page))
+    kept = [page for _priority, page in chosen[:MAX_DEFECT_IMAGES]]
+    rest = [page for _priority, page in chosen[MAX_DEFECT_IMAGES:]]
+    kept.sort(key=lambda page: (page.page, page.local_page))
+    rest.sort(key=lambda page: (page.page, page.local_page))
     return DefectImagePlan(
         check_id=defect.check_id,
-        pages=imaged,
-        leftover_pages=leftover,
+        pages=tuple(kept),
+        leftover_pages=tuple(rest),
     )
 
 
-def _image_page(source: PageSource, catalogue_name: str) -> DefectImagePage:
+def _image_page(
+    source: PageSource,
+    catalogue_name: str,
+    markdown: Mapping[int, str] | None = None,
+) -> DefectImagePage:
     concrete = _concrete_label(catalogue_name, source.document_parts)
     return DefectImagePage(
         page=source.page,
@@ -195,6 +277,7 @@ def _image_page(source: PageSource, catalogue_name: str) -> DefectImagePage:
         document_type=concrete or catalogue_name,
         file_id=source.file_id,
         file_url=source.file_url,
+        text=str((markdown or {}).get(source.page) or "")[:2500],
     )
 
 
