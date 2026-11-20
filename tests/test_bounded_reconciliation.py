@@ -285,6 +285,50 @@ def test_exact_filing_index_overrides_protected_generic_index() -> None:
     assert any(item.status == "accepted" for item in operations)
 
 
+def test_short_markdown_filing_index_overrides_protected_generic_index() -> None:
+    text = (
+        "603\nIN THE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (C) NO. OF 2024\n"
+        "INDEX\n"
+        "| S.NO. | PARTICULARS | COPIES | COURT FEES |\n"
+        "| 1. | Synopsis and List of dates | 1 | |\n"
+        "| 2. | SLP with Affidavit | 1 | |\n"
+        "| 3. | Annexures P-1 to P-39 | 1 | |\n"
+        "| 6. | V/A | 1 | |\n"
+        "ALL COPIES ARE CORRECT\n"
+        "FILED ON: 02.11.2024\nFILED BY\n"
+        "ADVOCATE FOR THE PETITIONER"
+    )
+    unit = PageUnit(pdf_page=627, text=text, layout_fingerprint=("table",))
+    direct = classify_page(unit, llama_hint="Index")
+    operations = []
+
+    result, _ = reconcile_compiled_split(
+        {627: ["Index"]},
+        {627: ["Filing Memo"]},
+        [direct],
+        {627: text},
+        page_count=627,
+        operation_log=operations,
+        authoritative_boundary_pages=[627],
+        protected_segments=[
+            {
+                "category": "Index",
+                "start_page": 627,
+                "end_page": 627,
+                "protected": True,
+            }
+        ],
+        page_units=[unit],
+    )
+
+    assert direct.document_type == "Filing Memo"
+    assert "outer_anchor" in direct.signals
+    assert result[627] == ["Filing Memo"]
+    assert any(item.status == "accepted" for item in operations)
+
+
 def test_page_map_validator_routes_missing_pages_and_rejects_overlap_or_range_errors() -> None:
     missing = validate_reconciliation_page_map({1: ["Index"]}, page_count=2)
     assert missing["valid"] is True

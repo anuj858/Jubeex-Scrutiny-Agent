@@ -384,6 +384,48 @@ def test_numbered_judgment_paragraphs_are_not_index_continuation() -> None:
     assert not _looks_like_index_continuation(text)
 
 
+def test_repeated_wp_document_headers_keep_judgment_pages_out_of_index() -> None:
+    from extraction_review.split_repair import (
+        _looks_like_index_continuation,
+        _outer_anchor_label,
+    )
+
+    pages = (
+        (
+            "3\nWP1230 0F 2024-F.DOC\n"
+            "5. Petitioner filed Commercial Suit No. 2/2023 and an application.\n"
+            "6. Vide order dated 2.11.2023 the Court rejected the application.\n"
+            "7. Heard learned Counsel for the Petitioner and Respondent.\n"
+            "8. The petitioner would submit that the order is incorrect."
+        ),
+        (
+            "9\nWP1230 OF 2024-F.DOC\n"
+            "19. Mr Lotlikar submits that the petitioner filed an appeal.\n"
+            "20. The plaintiff cannot be considered an aggrieved party.\n"
+            "21. The respondent submits that allegations of fraud are absent.\n"
+            "22. The application under Section 17 was filed later."
+        ),
+        (
+            "24\nWP1230 OF 2024-F.DOC\n"
+            "54. Plaint paragraph 20 refers to the pending application.\n"
+            "55. Plaintiff filed an intervention application before the Court.\n"
+            "56. Defendant no.1 took a different stand before the Court.\n"
+            "57. Plaintiff approached the DRT by filing an application."
+        ),
+        (
+            "32\nWP1230 OF 2024-F.DOC\n"
+            "77. Submission of Mr Desai concerns an application for rejection.\n"
+            "78. Application for rejection of plaint is not on locus.\n"
+            "79. The Court exercises supervisory jurisdiction sparingly.\n"
+            "80. The petitioner therefore cannot seek a different conclusion."
+        ),
+    )
+
+    for text in pages:
+        assert not _looks_like_index_continuation(text)
+        assert _outer_anchor_label(text) != "Index"
+
+
 def test_explicit_outer_stamp_wins_over_local_annexure_number() -> None:
     from extraction_review.document_parts import annexure_label_from_text
 
@@ -3604,6 +3646,32 @@ def test_sci_court_fee_index_after_annexures_is_filing_memo() -> None:
     assert repaired[2] == ["Application 1"]
     assert repaired[3] == ["Filing Memo"]
     assert repaired[4] == ["Vakalatnama"]
+
+
+def test_markdown_plural_court_fee_filing_index_is_filing_memo() -> None:
+    from extraction_review.split_repair import (
+        _looks_like_filing_inventory_index,
+        _outer_anchor_label,
+    )
+
+    text = (
+        "603\nIN THE SUPREME COURT OF INDIA\n"
+        "CIVIL APPELLATE JURISDICTION\n"
+        "SPECIAL LEAVE PETITION (C) NO. OF 2024\n"
+        "IN THE MATTER OF:\nA ...Petitioner\nVersus\nB ...Respondents\n"
+        "INDEX\n"
+        "| S.NO. | PARTICULARS | COPIES | COURT FEES |\n"
+        "| 1. | Synopsis and List of dates | 1 | |\n"
+        "| 2. | SLP with Affidavit | 1 | |\n"
+        "| 3. | Annexures P-1 to P-39 | 1 | |\n"
+        "| 6. | V/A | 1 | |\n"
+        "ALL COPIES ARE CORRECT\nNEW DELHI\n"
+        "FILED ON: 02.11.2024\nFILED BY\n"
+        "ADVOCATE FOR THE PETITIONER"
+    )
+
+    assert _looks_like_filing_inventory_index(text)
+    assert _outer_anchor_label(text) == "Filing Memo"
 
 
 def test_bracketed_filing_inventory_ends_annexure_and_restores_party_memo() -> None:

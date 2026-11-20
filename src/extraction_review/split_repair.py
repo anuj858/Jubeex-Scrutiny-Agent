@@ -197,6 +197,23 @@ def _looks_like_filing_inventory_index(text: str) -> bool:
     )
     if has_page_number_column and len(printed_folio_ranges) >= 2:
         return False
+    # Short filing inventories can contain only SLP, Annexures and ``V/A``.
+    # Their filing columns and signed footer are more specific than a cue-count
+    # threshold and distinguish them from the master paper-book Index.
+    filing_columns = bool(
+        re.search(r"\bcop(?:y|ies)\b", folded[:1800])
+        and re.search(r"\bcourt\s+fees?\b", folded[:1800])
+    )
+    filing_footer = bool(
+        re.search(r"\bfiled\s+on\b", folded)
+        and re.search(r"\bfiled\s+by\b", folded)
+    )
+    if (
+        filing_columns
+        and filing_footer
+        and (_SCI_CAPTION_RE.search(text) or _SCI_CAPTION_OCR_RE.search(text))
+    ):
+        return True
     cues = sum(
         bool(re.search(pattern, folded))
         for pattern in (
@@ -205,7 +222,7 @@ def _looks_like_filing_inventory_index(text: str) -> bool:
             r"\bannexures?\b",
             r"\b(?:ia|application)\b",
             r"memo of parties",
-            r"vakalatnama",
+            r"vakalatnama|\bv\s*/\s*a\b",
         )
     )
     return cues >= 4
@@ -931,6 +948,11 @@ _RUNNING_COURT_CASE_RE = re.compile(
     r"r\.?\s*f\.?\s*a\.?|c\.?\s*r\.?\s*a\.?)\s*"
     r"(?:no\.?\s*)?\d+\s*(?:/|of\s+)\s*\d{2,4}\b"
 )
+_COURT_JUDGMENT_RUNNING_HEADER_RE = re.compile(
+    r"(?im)^\s*(?:w\.?\s*p\.?|wp|writ\s+petition|c\.?\s*r\.?\s*a\.?|"
+    r"cra|r\.?\s*f\.?\s*a\.?)\s*(?:no\.?\s*)?\d+\s*"
+    r"(?:/|(?:of|0f|o0)\s+)\d{2,4}(?:\s*[-–—]\s*[a-z])?(?:[-_.a-z0-9]*)?\s*$",
+)
 
 
 def _court_record_neutral_citation(text: str) -> str | None:
@@ -940,6 +962,25 @@ def _court_record_neutral_citation(text: str) -> str | None:
     if match and (_is_lower_court_caption(text) or _RUNNING_COURT_CASE_RE.search(head)):
         return re.sub(r"\s+", "", match.group(1))
     return None
+
+
+def _looks_like_judgment_continuation(text: str) -> bool:
+    """Recognize numbered judgment prose under a repeated court-file header."""
+    head = text[:2400]
+    if not _COURT_JUDGMENT_RUNNING_HEADER_RE.search(_heading_window(text, lines=12)):
+        return False
+    if any(_is_index_heading_line(line) for line in head.splitlines()[:16]):
+        return False
+    numbered_paragraphs = re.findall(r"(?m)^\s*\d{1,3}[.)]\s+\S", head)
+    if len(numbered_paragraphs) < 2:
+        return False
+    return bool(
+        re.search(
+            r"(?i)\b(?:court|petition(?:er)?|respondent|plaintiff|defendant|"
+            r"appeal|application|learned\s+counsel|submission|section)\b",
+            head,
+        )
+    )
 
 
 def _restore_front_impugned_judgment(
@@ -1195,6 +1236,11 @@ def _renest_lower_court_indexes(
 
 def _looks_like_index_continuation(text: str) -> bool:
     """Index pages after the heading often omit the word INDEX."""
+    # Court-exported judgments repeat a compact case/file header on every page.
+    # Their numbered legal paragraphs can otherwise satisfy the loose catalogue
+    # matcher below (for example ``WP1230 OF 2024-F.DOC`` pages 3, 9, 24 and 32).
+    if _looks_like_judgment_continuation(text):
+        return False
     if _looks_like_index_table(text):
         return True
     # Sworn numbered paragraphs are not table rows. OCR can put each
