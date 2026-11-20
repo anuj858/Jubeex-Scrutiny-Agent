@@ -307,6 +307,7 @@ class SplitFilesState(BaseModel):
     special_categories: list[str] | None = None
     model_tier: str | None = None
     court: str | None = None
+    version: int | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
     structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(
@@ -625,6 +626,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.special_categories = event.special_categories
             state.model_tier = event.model_tier
             state.court = event.court
+            state.version = event.version
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
             state.structured_pages_by_slot = structured_pages_by_slot
@@ -650,6 +652,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             organization_id=event.organization_id or event.org_id,
             workspace_id=event.workspace_id,
             job_id=file_hash,
+            version=event.version,
             source_book=_source_book_payload(
                 event,
                 pages_by_slot=pages_by_slot,
@@ -868,6 +871,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.organization_id or state.org_id,
             state.workspace_id,
             reset=False,
+            artifact_version=state.version,
         )
         if state.extract_job_id is None:
             raise ValueError("Job ID cannot be null when waiting for its completion")
@@ -1817,6 +1821,7 @@ def _upload_parse_artifact(
     workspace_id: str | None,
     job_id: str | None,
     source_book: dict[str, Any] | None = None,
+    version: int | None = None,
 ) -> dict[str, str] | None:
     payload = dump_parse_artifact(
         parsed_slots=parsed_slots,
@@ -1838,6 +1843,7 @@ def _upload_parse_artifact(
         organization_id=organization_id,
         workspace_id=workspace_id,
         job_id=job_id,
+        version=version,
     )
 
 
@@ -1907,6 +1913,7 @@ async def _complete_index_only(
         organization_id=state.organization_id or state.org_id,
         workspace_id=state.workspace_id,
         job_id=state.file_hash,
+        version=state.version,
     )
     _persist_visual_metadata(meta, visual_index, visual_record)
     if visual_record:
@@ -1993,6 +2000,7 @@ async def _run_nested_scrutiny(
             special_categories=state.special_categories,
             model_tier=state.model_tier,
             court=state.court,
+            version=state.version,
         )
     )
     try:
