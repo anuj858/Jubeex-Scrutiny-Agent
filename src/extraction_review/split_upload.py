@@ -1816,7 +1816,14 @@ def _front_special_category_names() -> list[str]:
 
 
 def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str:
-    """Prompt for the full compiled filing. Split labels are not known yet."""
+    """Prompt for the full compiled filing. Split labels are not known yet.
+
+    The special-category rules stay on the field description. LlamaExtract
+    rejects a system prompt longer than 10000 characters, so this prompt
+    only points at that description. ``names`` is accepted for callers that
+    already resolved the catalogue list.
+    """
+    del names
     from .config import (
         FRONT_ACTING_THROUGH_DESCRIPTION,
         FRONT_ADDRESS_DESCRIPTION,
@@ -1826,11 +1833,6 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
         FRONT_PETITIONERS_DESCRIPTION,
         FRONT_RELATION_DESCRIPTION,
         FRONT_RESPONDENTS_DESCRIPTION,
-        front_special_category_description,
-    )
-
-    category = front_special_category_description(
-        list(names) if names is not None else _front_special_category_names()
     )
 
     return "\n".join(
@@ -1859,7 +1861,10 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
             "- petition_date: after that prayer, the date next to Date, Dated, Date Drafted, or Date Filed on. Date Drafted wins when both are printed. A page number between the label and the date is not the date.",
             "- confidence: percentage strings such as 95% or 65%.",
-            f"- special_category: {category}",
+            "- special_category: follow the special_category field description. "
+            "Return only exact stored names, comma-separated, up to 3, "
+            "and only when a category is substantively applicable. "
+            "Stored names include Tax Matters and Matters involving/pertaining to minors.",
             "- Index rows, checklist Yes/No/NA answers, and court-fee receipts are not parties.",
             "- documents stays empty.",
         ]

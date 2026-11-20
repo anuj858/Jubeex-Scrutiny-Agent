@@ -570,35 +570,33 @@ FRONT_SPECIAL_CATEGORIES: tuple[str, ...] = (
 
 _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     "motor vehicle act": (
-        "the dispute arises under motor-vehicle law: an accident claim, compensation, "
+        "the dispute arises under the Motor Vehicle Act, including an accident claim, compensation, "
         "permit, registration, licence, or vehicle seizure. "
         "Also Motor Vehicles Act, MV Act, MACT matter. "
-        "A vehicle mentioned only as background does not count. "
-        "May stand with Matters involving/pertaining to minors when both are the subject."
+        "A vehicle mentioned only as background does not count, and neither does a dispute about a vehicle "
+        "that does not arise under the Act."
     ),
     "demolition matters": (
         "the challenged action directs, permits, stays, or concerns demolition of a building or structure. "
         "Also razing, removal of structure. "
-        "Sealing, possession, or construction without a demolition issue does not count. "
-        "May stand with PIL when both are the subject."
+        "Sealing, possession, or construction without a categorical demolition issue does not count."
     ),
     "tax matters": (
-        "the dispute concerns assessment, levy, demand, exemption, refund, penalty, or recovery "
-        "of a tax, duty, cess, or GST. Also taxation matter, fiscal matter, GST dispute. "
-        "A fee, fine, compensation, or contractual payment called a tax informally does not count. "
-        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+        "the dispute concerns assessment, levy, demand, exemption, refund, penalty, or recovery of an "
+        "indirect or direct tax, duty, cess, or GST, including an appeal from an ITAT or GSTAT order. "
+        "Also taxation matter, fiscal matter, GST dispute, Income Tax matter. "
+        "A fee, fine, compensation, or contractual payment called a tax informally does not count."
     ),
     "eviction matters": (
         "the challenged action requires or concerns eviction, ejectment, or removal of an occupant "
-        "or tenant. Also ejectment, dispossession of tenant. "
-        "Title or possession without an eviction issue does not count. "
-        "May stand with Demolition Matters when both are the subject."
+        "or tenant from premises. Also ejectment, dispossession of tenant. "
+        "Title or possession without an eviction or ejectment issue does not count."
     ),
     "matters involving/pertaining to minors": (
         "a minor child's custody, guardianship, welfare, rights, property, compensation, or legal status "
-        "is directly in issue. Also minor involved, child custody, juvenile concerned. "
-        "A passing mention of children does not count. "
-        "May stand with Transfer Petition when both are the subject."
+        "is directly in issue, or a party is a minor represented by a guardian or next friend. "
+        "Also minor involved, child custody, juvenile concerned. "
+        "A passing mention of children, or of having been a minor when an unrelated event occurred, does not count."
     ),
     "indigent person": (
         "a party seeks or was denied permission to sue or appeal as an indigent person "
@@ -606,22 +604,20 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
         "A statement that a party is poor, or a request for ordinary legal aid, does not count."
     ),
     "jail petition": (
-        "the incarcerated petitioner submits the petition from jail or through the prison authorities. "
+        "the incarcerated petitioner submits the petition from jail, through the prison authorities, "
+        "or through the Legal Services Committee (SCLSC). "
         "Also petition from prison, prisoner petition. "
-        "A regular petition that only says the petitioner is in custody does not count. "
-        "May stand with Bail Applications/Bail Matters when both are the subject."
+        "A regular petition that only says the petitioner is in custody does not count."
     ),
     "bail applications/bail matters": (
         "the relief or the challenged order concerns grant, refusal, cancellation, conditions, "
         "or continuation of bail or anticipatory bail. Also bail application, cancellation of bail. "
-        "Custody with no bail decision does not count. "
-        "May stand with Jail Petition when both are the subject."
+        "Custody with no bail decision or bail relief does not count."
     ),
     "civil appeal with high court certificate": (
-        "a civil appeal is brought on a certificate granted by a High Court. "
-        "Also certificate appeal, Article 133 certificate. "
-        "A civil appeal or special leave petition without that certificate does not count. "
-        "May stand with Tax Matters when both are the subject."
+        "a civil appeal is brought on a certificate granted by a High Court for appeal to the Supreme Court. "
+        "Also certificate appeal, civil certificate appeal, Article 133 certificate. "
+        "A civil appeal or special leave petition without that certificate does not count."
     ),
     "appeal (armed forces)": (
         "the appeal challenges an Armed Forces Tribunal decision or concerns armed-forces service law. "
@@ -631,38 +627,42 @@ _SPECIAL_CATEGORY_GUIDE: dict[str, str] = {
     "advocates act, 1961": (
         "the dispute arises under the Advocates Act, 1961: enrolment, professional misconduct, "
         "discipline, or a Bar Council decision. Also Bar Council matter, advocate disciplinary matter. "
-        "An advocate appearing as counsel, or as a party in an unrelated dispute, does not count. "
-        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+        "An advocate appearing as counsel, or as a party in an unrelated dispute, does not count."
     ),
     "consumer protection act, 2019": (
-        "the challenged proceeding arises under the Consumer Protection Act, 2019 or from a consumer commission. "
+        "the challenged proceeding arises under the Consumer Protection Act, 2019 or from the "
+        "National Consumer Disputes Redressal Commission (NCDRC). "
         "Also consumer dispute, consumer commission matter. "
-        "An ordinary contract dispute that mentions a customer does not count. "
-        "May stand with Civil Appeal with High Court Certificate when both are the subject."
+        "An ordinary contract dispute that mentions a customer does not count."
     ),
     "pil": (
         "the proceeding is brought in public interest for relief affecting the public or a class, "
         "rather than the petitioner's private grievance. "
-        "Also public interest litigation, public interest petition. "
-        "A private dispute described as having public importance does not count. "
-        "May stand with Demolition Matters when both are the subject."
+        "Also public interest litigation, public interest petition, writ in public interest. "
+        "A private dispute described as having public importance does not count."
     ),
     "criminal appeal with high court certificate": (
-        "a criminal appeal is brought on a certificate granted by a High Court. "
-        "Also criminal certificate appeal, certificate of fitness, "
-        "Article 134 certificate. "
+        "a criminal appeal is brought on a certificate granted by a High Court for appeal to the Supreme Court. "
+        "Also criminal certificate appeal, certificate of fitness, Article 134 certificate. "
         "A criminal appeal or special leave petition without that certificate does not count."
     ),
     "re-filing defect": (
-        "the challenged decision concerns delay, defects, rejection, or refusal connected with "
-        "re-filing a returned case. Also re-filing delay, defective re-filing, delay in re-presentation. "
-        "An ordinary filing defect or a limitation delay unrelated to re-filing does not count."
+        "the filing shows a delay in re-filing or refilling a returned petition, or an application "
+        "for condonation of that delay. Also re-filing delay, defective re-filing, delay in "
+        "re-presentation, and the spelling refilling. The office report on limitation counts. "
+        "It counts even when the impugned order is about bail or another subject. "
+        "A delay only in the first filing, or an ordinary defect list, does not count."
     ),
     "transfer petition": (
-        "the relief sought is transfer of a pending case from one court or forum to another. "
-        "Also transfer of proceedings, transfer under Section 25. "
-        "An earlier transfer mentioned only as history does not count. "
-        "May stand with Matters involving/pertaining to minors when both are the subject."
+        "the relief sought is transfer of a pending case from one court or forum to another court or forum "
+        "in a different state. Also transfer of proceedings, transfer under Section 25 CPC. "
+        "An earlier transfer mentioned only as history does not count."
+    ),
+    "interlocutory applications": (
+        "Applies when: the petition contains a separately filed application seeking interim, procedural, "
+        "or ancillary relief. "
+        "Also written as: IA; I.A.; interim application; application. "
+        "Does not count: an application mentioned only in the index, checklist, or case history."
     ),
 }
 
@@ -678,7 +678,11 @@ def front_special_category_description(names: Sequence[str]) -> str:
         if key == "motor vehical act":
             key = "motor vehicle act"
         guide = _SPECIAL_CATEGORY_GUIDE.get(key)
-        lines.append(f"{stored}: {guide}." if guide else f"{stored}.")
+        if guide:
+            text = guide if guide.endswith(".") else f"{guide}."
+            lines.append(f"{stored}: {text}")
+        else:
+            lines.append(f"{stored}.")
     if not lines:
         raise ValueError("special category description needs the database names")
     listed = " ".join(lines)

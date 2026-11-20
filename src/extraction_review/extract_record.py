@@ -2173,6 +2173,13 @@ _MAIN_PETITION_BODY = re.compile(
     r"in the matter of|arising (?:from|out of) the impugned",
     re.IGNORECASE,
 )
+_OFFICE_REPORT = re.compile(r"office report on limitation", re.IGNORECASE)
+_REFILING_DELAY = re.compile(
+    r"\b(?:delay|condonation)\b(?:(?!\n\n).){0,160}?\d+\s+days?\b"
+    r"(?:(?!\n\n).){0,80}?\bre-?\s*f(?:il|ill)ing\b"
+    r"|\bdelay\s+of\s+\d+\s+days?\s+in\s+re-?\s*f(?:il|ill)ing\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _IDENTITY_LINE = re.compile(
     r"^(?:aadhaar|aadhar|uid|pan|mobile|mob\.?|phone|email|e-mail)\b",
     re.IGNORECASE,
@@ -2252,8 +2259,10 @@ def _special_category_page_text(pages: Mapping[int, str] | None) -> str:
     for page in sorted(pages):
         text = pages.get(page) or ""
         lines = text.splitlines()
-        source = any(_category_heading_line(line) for line in lines) or bool(
-            _MAIN_PETITION_BODY.search(text)
+        source = (
+            any(_category_heading_line(line) for line in lines)
+            or bool(_MAIN_PETITION_BODY.search(text))
+            or bool(_OFFICE_REPORT.search(text))
         )
         if not source:
             continue
@@ -2320,6 +2329,17 @@ def _stored_special_categories(text: str, allowed: Sequence[str]) -> list[str]:
     return chosen
 
 
+def _refiling_defect_name(text: str, allowed: Sequence[str]) -> str | None:
+    """A printed delay in re-filing, including the spelling refilling."""
+    exact = next(
+        (name for name in allowed if name.casefold() == "re-filing defect"),
+        None,
+    )
+    if exact and _REFILING_DELAY.search(_without_listing_category_lines(text)):
+        return exact
+    return None
+
+
 def _printed_special_category(
     value: object,
     page_markdown: Mapping[int, str] | None = None,
@@ -2332,8 +2352,6 @@ def _printed_special_category(
     if model_text.casefold() in {"", "n/a", "na", "none", "null"}:
         model_text = ""
     chosen = _stored_special_categories(model_text, allowed) if model_text else []
-    if chosen:
-        return ", ".join(chosen)
     filed = "\n".join(
         part
         for part in (
@@ -2342,10 +2360,12 @@ def _printed_special_category(
         )
         if part and part.strip()
     )
-    if not filed.strip():
-        return None
-    filled = _stored_special_categories(filed, allowed)
-    return ", ".join(filled) if filled else None
+    if filed.strip() and not chosen:
+        chosen = _stored_special_categories(filed, allowed)
+    refiling = _refiling_defect_name(filed, allowed) if filed.strip() else None
+    if refiling and refiling not in chosen and len(chosen) < 3:
+        chosen.append(refiling)
+    return ", ".join(chosen) if chosen else None
 
 
 _NOT_A_PARTY_NAME = re.compile(

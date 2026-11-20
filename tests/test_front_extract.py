@@ -12,6 +12,7 @@ from extraction_review.config import (
     ExtractConfig,
     FrontExtractRecord,
     LegalExtractRecord,
+    front_special_category_description,
 )
 from extraction_review.extract_record import (
     finalize_front_extract,
@@ -74,8 +75,15 @@ def test_special_category_sits_beside_petition_type_on_the_front_schema_only() -
     description = front["data_schema"]["properties"]["special_category"]["description"]
     assert description.startswith("Identify applicable special categories")
     assert "MACT matter" in description
+    assert "does not arise under the Act" in description
     assert "listing proforma" in description
     assert "Bail Applications/Bail Matters" in description
+    guided = front_special_category_description(
+        [*FRONT_SPECIAL_CATEGORIES, "Interlocutory Applications", "Motor Vehical Act"]
+    )
+    assert "separately filed application" in guided
+    assert "index, checklist, or case history" in guided
+    assert guided.index("Motor Vehical Act:") > 0
     assert "configuration_id" not in front
     legal_party = LegalExtractRecord.model_json_schema()["$defs"]["Party"]["properties"]
     front_party = front["data_schema"]["$defs"]["FrontParty"]["properties"]
@@ -443,6 +451,42 @@ def test_petition_date_after_prayer_skips_the_page_number() -> None:
         page_markdown=pages,
     )
     assert done["petition_date"] == "02.03.2026"
+
+
+def test_refilling_delay_is_kept_with_the_other_categories() -> None:
+    done = finalize_front_extract(
+        {
+            "special_category": (
+                "Interlocutory Applications, Bail Applications/Bail Matters"
+            )
+        },
+        page_markdown={
+            4: (
+                "INDEX\n"
+                "I.A. No. of 2025 APPLICATION FOR CONDONATION OF DELAY IN RE-FILING\n"
+            ),
+            7: (
+                "IN THE MATTER OF:\n"
+                "OFFICE REPORT ON LIMITATION\n"
+                "2. There is a delay of 9 days in filing the same.\n"
+                "3. There is delay of 25 days in refilling the petition and application "
+                "for condonation of 25 days delay in refilling has been filed.\n"
+            ),
+        },
+    )
+    assert done["special_category"] == (
+        "Bail Applications/Bail Matters, Re-filing defect"
+    )
+    first_filing = finalize_front_extract(
+        {"special_category": "Bail Applications/Bail Matters"},
+        page_markdown={
+            7: (
+                "OFFICE REPORT ON LIMITATION\n"
+                "There is a delay of 9 days in filing the same.\n"
+            )
+        },
+    )
+    assert first_filing["special_category"] == "Bail Applications/Bail Matters"
 
 
 def test_printed_special_category_is_kept() -> None:
