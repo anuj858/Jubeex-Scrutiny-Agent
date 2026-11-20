@@ -2407,6 +2407,10 @@ def apply_visual_conflict_policy(
             page for raw in pages if (page := _safe_page_number(raw)) is not None
         }
         failures = visual_index.get("failures") or []
+        if not target_pages and not reviewed_pages and not failures:
+            # No page image was stored. A quotation that already shows the
+            # missing or incomplete item remains the finding.
+            return response
         if (
             status != "ok"
             or not target_pages

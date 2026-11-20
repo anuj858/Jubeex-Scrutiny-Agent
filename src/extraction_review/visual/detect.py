@@ -1150,8 +1150,13 @@ async def detect_visual_marks(
     on_log: Any = None,
     download_file_id: Any = None,
     model_tier: str | None = None,
+    selected_targets: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
-    """Render selected formality pages and return a visual_index_v1 payload."""
+    """Render selected formality pages and return a visual_index_v1 payload.
+
+    ``selected_targets`` keeps the notary and signature detector, and limits
+    it to pages a defect asked for. Omit it to use the standing page policy.
+    """
     del page_parts
     enabled = visual_detection_enabled()
     selected_model = (
@@ -1166,10 +1171,14 @@ async def detect_visual_marks(
     )
     if not enabled:
         return empty_visual_index(status="skipped", error="vision_disabled")
-    slot_pages = coerce_pages_by_slot(pages_by_slot)
-    sources = global_page_sources(parts, slot_pages, omit_empty=omit_empty)
-    targets = select_formality_pages(sources, page_markdown=page_markdown)
-    eligible_count = eligible_formality_page_count(sources)
+    if selected_targets is None:
+        slot_pages = coerce_pages_by_slot(pages_by_slot)
+        sources = global_page_sources(parts, slot_pages, omit_empty=omit_empty)
+        targets = select_formality_pages(sources, page_markdown=page_markdown)
+        eligible_count = eligible_formality_page_count(sources)
+    else:
+        targets = list(selected_targets)
+        eligible_count = len(targets)
     if not targets:
         await _emit_log(on_log, "Visual: no visual-relevant formality pages; skipping")
         return {

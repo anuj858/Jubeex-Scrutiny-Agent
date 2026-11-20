@@ -140,13 +140,12 @@ from .vector_store import (
     scrutiny_max_chunks,
     scrutiny_top_k,
 )
-from .visual.defect_call import (
-    finding_from_vision,
-    run_defect_vision,
-    vision_note_for_text,
+from .visual.defect_scope import (
+    plan_defect_images,
+    visual_targets_for_plans,
+    with_slot_files,
 )
-from .visual.defect_scope import plan_defect_images, with_slot_files
-from .visual.detect import visual_detection_enabled
+from .visual.detect import detect_visual_marks, visual_detection_enabled
 from .visual.store import (
     VISUAL_ARTIFACT_KEY_KEY,
     VISUAL_ARTIFACT_URL_KEY,
@@ -2660,23 +2659,27 @@ class ScrutinyWorkflow(Workflow):
             plan_defect_images(defects, layout),
             metadata if isinstance(metadata, dict) else None,
         )
-        plans_by_id = {plan.check_id: plan for plan in image_plans}
-        vision_answers: dict[str, Any] = {}
         if visual_detection_enabled() and any(plan.pages for plan in image_plans):
             ctx.write_event_to_stream(
                 Status(
                     level="info",
                     message=(
-                        f"Reading signature and seal pages for {len(image_plans)} "
-                        "defect(s)"
+                        "Detecting notary seals, signatures, and stamps "
+                        f"for {len(image_plans)} defect(s)"
                     ),
                 )
             )
-            vision_answers = await run_defect_vision(
-                image_plans,
-                defects_by_id={defect.check_id: defect for defect in defects},
+            detected = await detect_visual_marks(
+                parts=[],
+                pages_by_slot={},
+                page_parts={},
                 model_tier=event.model_tier,
+                selected_targets=visual_targets_for_plans(image_plans),
             )
+            # Boxes only. A failed or empty scan must not replace the filing
+            # text the defect model reads, and must not turn a defect into review.
+            if detected.get("status") == "ok" and detected.get("marks"):
+                visual_index = detected
 
         def build_report(
             current: list[DefectFinding], *, stopped_early: bool
@@ -2745,29 +2748,6 @@ class ScrutinyWorkflow(Workflow):
                 )
             )
             try:
-                image_plan = plans_by_id.get(defect.check_id)
-                vision_answer = vision_answers.get(defect.check_id)
-                if (
-                    image_plan is not None
-                    and image_plan.complete
-                    and vision_answer is not None
-                ):
-                    try:
-                        return finding_from_vision(
-                            defect,
-                            vision_answer,
-                            layout=layout,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Could not publish the vision answer for %s",
-                            defect.check_id,
-                        )
-                vision_note = (
-                    vision_note_for_text(image_plan, vision_answer)
-                    if image_plan is not None
-                    else None
-                )
                 retrieval_started = time.perf_counter()
                 manifest_missing = (
                     missing_parts_in_layout(defect, layout)
@@ -2809,7 +2789,6 @@ class ScrutinyWorkflow(Workflow):
                     workspace_id=vector_workspace_id,
                     index_generation=index_generation,
                     use_pinecone=use_pinecone,
-                    vision_note=vision_note,
                 )
                 logger.info(
                     "[ScrutinyTiming] check=%s retrieval=%.2fs evaluation=%.2fs",
@@ -2877,29 +2856,6 @@ class ScrutinyWorkflow(Workflow):
                 )
                 try:
                     started = time.perf_counter()
-                    image_plan = plans_by_id.get(defect.check_id)
-                    vision_answer = vision_answers.get(defect.check_id)
-                    if (
-                        image_plan is not None
-                        and image_plan.complete
-                        and vision_answer is not None
-                    ):
-                        try:
-                            return finding_from_vision(
-                                defect,
-                                vision_answer,
-                                layout=layout,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "Could not publish the vision answer for %s",
-                                defect.check_id,
-                            )
-                    vision_note = (
-                        vision_note_for_text(image_plan, vision_answer)
-                        if image_plan is not None
-                        else None
-                    )
                     manifest_missing = (
                         missing_parts_in_layout(defect, layout)
                         if defect.manifest_absence_proves_defect
@@ -2938,7 +2894,6 @@ class ScrutinyWorkflow(Workflow):
                         workspace_id=vector_workspace_id,
                         index_generation=index_generation,
                         use_pinecone=use_pinecone,
-                        vision_note=vision_note,
                     )
                     logger.info(
                         "[ScrutinyTiming] check=%s batch_prepare=%.2fs",

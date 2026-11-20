@@ -2568,6 +2568,40 @@ def test_d57_owns_blank_vakalatnama_execution_date() -> None:
     assert decided.gap is None
 
 
+def test_blank_affidavit_day_stays_a_defect_when_no_page_image_was_stored() -> None:
+    defect = _scrutiny_row(
+        check_id="DATE-1",
+        defect="The document is not of the same or subsequent date",
+        requirement="The document must bear a date that is the same as, or later than, the other date.",
+        inspect_parts=["Affidavit"],
+    )
+    response = DefectResponse(
+        check_id=defect.check_id,
+        status="defect_found",
+        confidence=0.9,
+        summary="The date on the document is blank.",
+        observed="The date line is blank.",
+        conclusion="The required date is incomplete.",
+        evidence=[
+            EvidenceRef(page=2, quote="on this day of the stated month and year")
+        ],
+    )
+    gated = apply_visual_conflict_policy(
+        defect,
+        response,
+        {
+            "status": "skipped",
+            "error": "missing",
+            "pages": [],
+            "targets": [],
+            "marks": [],
+            "failures": [],
+        },
+    )
+    assert gated.status == "defect_found"
+    assert "incomplete page coverage" not in (gated.gap_detail or "")
+
+
 def test_blank_date_is_not_conflicted_by_present_advocate_signature() -> None:
     defect = _scrutiny_row(
         defect="Memo of Appearance does not mention the date of execution",
