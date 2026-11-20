@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.render_ecs_task_for_environment import render
+from scripts.render_ecs_task_for_environment import RUNTIME_SECRET_NAMES, render
 
 
 def test_render_rewrites_environment_and_secret_references() -> None:
@@ -68,4 +68,6 @@ def test_render_rewrites_environment_and_secret_references() -> None:
     assert secrets["LLAMA_CLOUD_API_KEY"] == "arn:llama:LLAMA_CLOUD_API_KEY::"
     assert secrets["LLAMA_CLOUD_TIER"] == "arn:llama:LLAMA_CLOUD_TIER::"
     assert secrets["JUBEEX_API_KEY"] == "arn:api:JUBEEX_API_KEY::"
+    for name in RUNTIME_SECRET_NAMES - {"LLAMA_CLOUD_TIER"}:
+        assert secrets[name] == f"arn:agent:{name}::"
     assert container["logConfiguration"]["options"]["awslogs-group"] == "/ecs/prod"

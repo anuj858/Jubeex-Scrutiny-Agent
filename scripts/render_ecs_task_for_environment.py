@@ -23,6 +23,21 @@ READ_ONLY_KEYS = {
     "taskDefinitionArn",
 }
 
+RUNTIME_SECRET_NAMES = {
+    "EXTRACTION_PROVIDER",
+    "LLAMA_CLOUD_TIER",
+    "LLAMA_PARSE_COST_OPTIMIZER",
+    "OPENROUTER_BATCH_DELETE_AFTER_READ",
+    "OPENROUTER_BATCH_ENABLED",
+    "OPENROUTER_BATCH_MAX_REQUESTS",
+    "OPENROUTER_BATCH_POLL_SECONDS",
+    "OPENROUTER_BATCH_SYNC_FALLBACK",
+    "OPENROUTER_BATCH_TIMEOUT_S",
+    "OPENROUTER_PROMPT_CACHE",
+    "OPENROUTER_RESPONSE_CACHE",
+    "OPENROUTER_RESPONSE_CACHE_TTL_S",
+}
+
 
 def _set_environment(container: dict[str, Any], values: dict[str, str]) -> None:
     environment = {
@@ -43,8 +58,10 @@ def _rewrite_secrets(
     api_secret_arn: str,
 ) -> None:
     rewritten: list[dict[str, str]] = []
-    for item in container.get("secrets", []):
-        name = str(item["name"])
+    names = {
+        str(item["name"]) for item in container.get("secrets", [])
+    } | RUNTIME_SECRET_NAMES
+    for name in names:
         if name.startswith("LLAMA_CLOUD_"):
             arn = llama_secret_arn
         elif name == "JUBEEX_API_KEY":
