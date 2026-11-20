@@ -668,6 +668,7 @@ async def test_openrouter_batch_submits_maps_usage_and_deletes(
     assert sum(result.usage.cost_usd or 0 for result in results.values()) == 0.002
     assert submitted_body["endpoint"] == "/v1/chat/completions"
     assert submitted_body["model"] == "openai/gpt-6-luna"
+    assert submitted_body["requests"][0]["body"]["model"] == "openai/gpt-6-luna"
     assert [entry["custom_id"] for entry in submitted_body["requests"]] == [
         "D-1",
         "D-2",
@@ -677,6 +678,68 @@ async def test_openrouter_batch_submits_maps_usage_and_deletes(
         ("GET", "/api/v1/batches/batch_123"),
         ("DELETE", "/api/v1/batches/batch_123"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_batch_retries_not_found_until_the_job_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import extraction_review.llm as llm_module
+
+    class Result(BaseModel):
+        value: str
+
+    gets = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, request=request, json={"id": "batch_123"})
+        gets["count"] += 1
+        if gets["count"] == 1:
+            return httpx.Response(
+                404,
+                request=request,
+                json={"error": {"message": "Batch job batch_123 not found."}},
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "batch_123",
+                "status": "completed",
+                "results": [
+                    {
+                        "custom_id": "D-1",
+                        "response": {
+                            "body": {
+                                "id": "gen-1",
+                                "choices": [
+                                    {
+                                        "message": {"content": '{"value":"one"}'},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(llm_module, "openrouter_batch_poll_seconds", lambda: 0)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        results = await llm_module.call_structured_batch(
+            requests=[llm_module.StructuredBatchRequest("D-1", "system", "user")],
+            response_model=Result,
+            model="openai/gpt-6-luna",
+            client=client,
+        )
+
+    assert gets["count"] == 2
+    assert results["D-1"].value is not None
+    assert results["D-1"].value.value == "one"
 
 
 @pytest.mark.asyncio

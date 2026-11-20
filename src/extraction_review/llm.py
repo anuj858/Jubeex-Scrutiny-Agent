@@ -1499,12 +1499,15 @@ def _batch_headers() -> dict[str, str]:
 def _structured_batch_body(
     request: StructuredBatchRequest,
     *,
+    model: str,
     response_model: type[BaseModel],
     temperature: float,
     token_limit: int,
 ) -> dict[str, Any]:
     system_prompt = _with_output_budget(request.system_prompt)
     body: dict[str, Any] = {
+        # The documented chat batch repeats the batch model inside each body.
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.user_prompt},
@@ -1599,7 +1602,8 @@ async def call_structured_batch[T: BaseModel](
     A submission failure has ``accepted=False`` and may safely use the sync
     fallback. Once OpenRouter returns a batch id, this function never silently
     resubmits: a timeout/failure exposes the id so the accepted work can be
-    recovered without duplicate spend.
+    recovered without duplicate spend. A later "not found" on that id stays
+    on this poll.
     """
     if llm_provider() != "openrouter":
         raise OpenRouterBatchError(
@@ -1628,6 +1632,7 @@ async def call_structured_batch[T: BaseModel](
                 "custom_id": request.custom_id,
                 "body": _structured_batch_body(
                     request,
+                    model=model_name,
                     response_model=response_model,
                     temperature=temperature,
                     token_limit=token_limit,
@@ -1715,6 +1720,17 @@ async def call_structured_batch[T: BaseModel](
                 )
             except httpx.HTTPError as exc:
                 logger.warning("[LLM][batch=%s] poll failed: %s", batch_id, exc)
+                await asyncio.sleep(openrouter_batch_poll_seconds())
+                continue
+            if polled.status_code == 404:
+                # A 202 already stored this batch. OpenRouter can answer
+                # "batch not found" before that id is readable. Stay on
+                # GET /batches/{id}; do not leave the batch for a sync call.
+                logger.info(
+                    "[LLM][batch=%s] accepted batch is not readable yet; "
+                    "staying on the batch poll",
+                    batch_id,
+                )
                 await asyncio.sleep(openrouter_batch_poll_seconds())
                 continue
             if polled.status_code == 429:
