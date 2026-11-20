@@ -97,7 +97,9 @@ def render(
             "AWS_S3_BUCKET": bucket,
             "JUBEEX_CALLBACK_URL": callback_url,
             "JUBEEX_REMOTE_FILE_HOSTS": (
-                f"{bucket}.s3.ap-south-1.amazonaws.com,s3.ap-south-1.amazonaws.com"
+                f"{bucket}.s3.ap-south-1.amazonaws.com,"
+                f"{bucket}.s3.amazonaws.com,"
+                "s3.ap-south-1.amazonaws.com"
             ),
             "JUBEEX_SQS_ENABLED": "true",
             "JUBEEX_SQS_INGESTION_QUEUE_URL": ingestion_queue_url,
