@@ -56,11 +56,14 @@ def _rewrite_secrets(
     agent_secret_arn: str,
     llama_secret_arn: str,
     api_secret_arn: str,
+    extra_agent_secret_names: set[str] | None = None,
 ) -> None:
     rewritten: list[dict[str, str]] = []
-    names = {
-        str(item["name"]) for item in container.get("secrets", [])
-    } | RUNTIME_SECRET_NAMES
+    names = (
+        {str(item["name"]) for item in container.get("secrets", [])}
+        | RUNTIME_SECRET_NAMES
+        | (extra_agent_secret_names or set())
+    )
     for name in names:
         if name.startswith("LLAMA_CLOUD_"):
             arn = llama_secret_arn
@@ -94,7 +97,11 @@ def render(
     agent_secret_arn: str,
     llama_secret_arn: str,
     api_secret_arn: str,
+    catalogue_source: str = "db",
+    catalogue_source_from_secret: bool = False,
 ) -> dict[str, Any]:
+    if catalogue_source not in {"db", "json"}:
+        raise ValueError("catalogue_source must be 'db' or 'json'")
     task = dict(payload.get("taskDefinition", payload))
     for key in READ_ONLY_KEYS:
         task.pop(key, None)
@@ -122,7 +129,7 @@ def render(
             "JUBEEX_SQS_INGESTION_QUEUE_URL": ingestion_queue_url,
             "JUBEEX_SQS_SCRUTINY_QUEUE_URL": scrutiny_queue_url,
             "PINECONE_NAMESPACE": pinecone_namespace,
-            "SCRUTINY_CATALOGUE_SOURCE": "db",
+            "SCRUTINY_CATALOGUE_SOURCE": catalogue_source,
             "SCRUTINY_DEFECTS": "all",
         },
     )
@@ -131,6 +138,9 @@ def render(
         agent_secret_arn=agent_secret_arn,
         llama_secret_arn=llama_secret_arn,
         api_secret_arn=api_secret_arn,
+        extra_agent_secret_names=(
+            {"SCRUTINY_CATALOGUE_SOURCE"} if catalogue_source_from_secret else None
+        ),
     )
     log_configuration = container.setdefault("logConfiguration", {})
     log_configuration["logDriver"] = "awslogs"
@@ -157,6 +167,16 @@ def main() -> None:
     parser.add_argument("--agent-secret-arn", required=True)
     parser.add_argument("--llama-secret-arn", required=True)
     parser.add_argument("--api-secret-arn", required=True)
+    parser.add_argument(
+        "--catalogue-source",
+        choices=("db", "json"),
+        default="db",
+    )
+    parser.add_argument(
+        "--catalogue-source-from-secret",
+        action="store_true",
+        help="Read SCRUTINY_CATALOGUE_SOURCE from the agent secret",
+    )
     args = parser.parse_args()
 
     payload = json.loads(args.source.read_text(encoding="utf-8"))
@@ -175,6 +195,8 @@ def main() -> None:
         agent_secret_arn=args.agent_secret_arn,
         llama_secret_arn=args.llama_secret_arn,
         api_secret_arn=args.api_secret_arn,
+        catalogue_source=args.catalogue_source,
+        catalogue_source_from_secret=args.catalogue_source_from_secret,
     )
     args.output.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
 

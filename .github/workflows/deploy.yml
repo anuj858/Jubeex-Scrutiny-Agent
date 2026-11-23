@@ -233,6 +233,10 @@ jobs:
           AGENT_IMAGE: ${{ steps.images.outputs.agent }}
         run: |
           set -euo pipefail
+          catalogue_arguments=(--catalogue-source db)
+          if [[ "${ENVIRONMENT_NAME}" == "production" ]]; then
+            catalogue_arguments=(--catalogue-source-from-secret)
+          fi
           agent_secret="$(aws secretsmanager describe-secret --secret-id "${AGENT_SECRET_NAME}" --query ARN --output text)"
           llama_secret="$(aws secretsmanager describe-secret --secret-id "${LLAMA_SECRET_NAME}" --query ARN --output text)"
           api_secret="$(aws secretsmanager describe-secret --secret-id "${API_SECRET_NAME}" --query ARN --output text)"
@@ -282,7 +286,8 @@ jobs:
               --pinecone-namespace "${ENVIRONMENT_NAME}-jubeex-filings" \
               --agent-secret-arn "${agent_secret}" \
               --llama-secret-arn "${llama_secret}" \
-              --api-secret-arn "${api_secret}"
+              --api-secret-arn "${api_secret}" \
+              "${catalogue_arguments[@]}"
             task_arn="$(aws ecs register-task-definition \
               --cli-input-json "file:///tmp/${role}-task.json" \
               --query 'taskDefinition.taskDefinitionArn' --output text)"
