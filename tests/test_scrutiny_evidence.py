@@ -35,6 +35,7 @@ from extraction_review.scrutiny.schema import (
     apply_catalogue_gap_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
+    apply_element_status_contract_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -62,9 +63,14 @@ from extraction_review.scrutiny_workflow import (
     _absence_owner_check_ids,
     _add_layout_fallback_chunks,
     _aggregate_complete_batch_responses,
+    _complete_batch_adjudication_prompt,
+    _complete_batch_outcomes_conflict,
     _complete_evidence_batches,
     _complete_layout_chunks_for_defect,
+    _defect_requires_visual_evidence,
     _retrieval_evidence_complete,
+    _usable_visual_detection,
+    _visual_evidence_complete,
     _visual_index_for_defect,
 )
 from extraction_review.vector_store import build_page_records
@@ -526,7 +532,7 @@ def test_complete_evidence_batches_never_drop_oversized_page_text() -> None:
     assert len(batches) >= 3
 
 
-def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> None:
+def test_complete_batch_aggregation_does_not_publish_a_partial_view() -> None:
     compliant = DefectResponse(
         check_id="D-68",
         status="compliant",
@@ -545,7 +551,22 @@ def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> Non
         conclusion="The translation is missing.",
         evidence=[EvidenceRef(page=9, quote="मराठी")],
     )
-    assert _aggregate_complete_batch_responses([compliant, defect]) is defect
+    responses = [compliant, defect]
+    assert _complete_batch_outcomes_conflict(responses)
+    result = _aggregate_complete_batch_responses(responses)
+    assert result.status == "needs_review"
+
+    prompt = _complete_batch_adjudication_prompt(
+        SimpleNamespace(
+            check_id="D-68",
+            requirement="Every vernacular passage must have a translation.",
+            ai_note="Compare the complete Annexure collection.",
+        ),
+        responses,
+    )
+    assert "BATCH 1" in prompt
+    assert "BATCH 2" in prompt
+    assert "does not prove it is absent from the filing" in prompt
 
 
 def test_complete_batch_aggregation_does_not_publish_legal_gate_status() -> None:
@@ -1173,6 +1194,77 @@ def test_split_nicknames_come_from_config_not_a_python_map() -> None:
     )
 
 
+def test_visual_requirement_ignores_generic_need_review_boilerplate() -> None:
+    defect = SimpleNamespace(
+        defect="A required paragraph is absent",
+        requirement="The paragraph must be present.",
+        requirement_ai=None,
+        ai_note=(
+            "SCOPE\nApply globally.\n\n"
+            "TEST\nCheck whether paragraph 1A exists.\n\n"
+            "EVIDENCE\nRead the complete petition text.\n\n"
+            "DECISION\nNEED REVIEW: use only when genuinely illegible after visual inspection.\n\n"
+            "GUARDRAILS\nDo not infer absence from a failed search.\n\n"
+            "RECORD\nRecord the decisive quotation."
+        ),
+    )
+
+    assert not _defect_requires_visual_evidence(defect)
+
+
+def test_visual_requirement_uses_substantive_signature_instruction() -> None:
+    defect = SimpleNamespace(
+        defect="The affidavit is unsigned",
+        requirement="The affidavit must bear the deponent's signature.",
+        requirement_ai=None,
+        ai_note=(
+            "SCOPE\nApply globally.\n\n"
+            "TEST\nInspect the deponent signature.\n\n"
+            "EVIDENCE\nUse the rendered signature block.\n\n"
+            "DECISION\nReturn Defect when absent.\n\n"
+            "GUARDRAILS\nOCR silence is not absence.\n\n"
+            "RECORD\nRecord the visual region."
+        ),
+    )
+
+    assert _defect_requires_visual_evidence(defect)
+
+
+def test_visual_page_quality_is_kept_without_an_ink_mark() -> None:
+    assert _usable_visual_detection(
+        {
+            "status": "ok",
+            "pages": [12],
+            "marks": [],
+            "quality_assessments": [
+                {"page": 12, "readable": True, "confidence": 0.98}
+            ],
+        }
+    )
+    assert _usable_visual_detection(
+        {
+            "status": "ok",
+            "field_assessments": [
+                {"page": 12, "field": "execution_date", "value_present": False}
+            ],
+        }
+    )
+    assert not _usable_visual_detection({"status": "ok", "marks": []})
+    assert not _usable_visual_detection({"status": "error", "pages": [12]})
+
+
+def test_visual_coverage_rejects_a_capped_page_plan() -> None:
+    visual = {
+        "status": "ok",
+        "pages": [12, 13, 14, 15],
+        "targets": [{"page": page} for page in (12, 13, 14, 15)],
+        "incomplete_check_ids": ["D-81"],
+        "failures": [],
+    }
+    assert not _visual_evidence_complete("D-81", visual)
+    assert _visual_evidence_complete("D-83", visual)
+
+
 def test_low_confidence_defect_becomes_needs_review() -> None:
     weak = DefectResponse(
         check_id="D003",
@@ -1188,6 +1280,137 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert review_reason_for_response(gated) == (
         "The document reading is only 40% certain, below the 60% needed to decide."
     )
+
+
+def test_low_confidence_grounded_failed_element_stays_defect() -> None:
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.4,
+        summary="The verification day is blank.",
+        observed="The verification clause shows an empty day field.",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="missing",
+                detail="The day field is blank.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this ___ day of March")],
+    )
+
+    assert apply_status_policy(response).status == "defect_found"
+
+
+def test_element_contract_promotes_decisive_review_to_defect() -> None:
+    response = DefectResponse(
+        check_id="D119",
+        status="needs_review",
+        confidence=0.55,
+        summary="The verification date requires review.",
+        gap="low_confidence",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="missing",
+                detail="The complete clause leaves the day blank.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this ___ day of March")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+    assert decided.review_reason == ""
+
+
+def test_element_contract_keeps_real_visual_uncertainty_in_review() -> None:
+    response = DefectResponse(
+        check_id="D119",
+        status="needs_review",
+        confidence=0.7,
+        summary="The handwritten day cannot be read.",
+        gap="unreadable",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="incomplete",
+                detail="Ink obscures the day.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this [ink] day of March")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+        visual_required=True,
+        visual_complete=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
+
+
+def test_element_contract_rejects_compliance_with_failed_element() -> None:
+    response = DefectResponse(
+        check_id="D077",
+        status="compliant",
+        confidence=0.9,
+        summary="The affidavit complies.",
+        elements=[
+            ElementFinding(
+                name="source of knowledge",
+                state="incomplete",
+                detail="The statement relies on another petitioner's belief.",
+            )
+        ],
+        evidence=[
+            EvidenceRef(
+                page=2,
+                quote="authorised to affirm this affidavit on behalf of petitioner No. 2",
+            )
+        ],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+
+
+def test_element_contract_does_not_promote_ocr_failure_without_required_visual() -> None:
+    response = DefectResponse(
+        check_id="D058",
+        status="compliant",
+        confidence=0.9,
+        summary="The index complies.",
+        elements=[
+            ElementFinding(
+                name="running pagination",
+                state="incomplete",
+                detail="OCR reads the folio as 11 rather than 111.",
+            )
+        ],
+        evidence=[EvidenceRef(page=4, quote="11")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+        visual_required=True,
+        visual_complete=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:

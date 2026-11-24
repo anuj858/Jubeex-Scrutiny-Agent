@@ -600,6 +600,22 @@ def _stamp_explicit_applicability(catalogue: Catalogue) -> Catalogue:
         ):
             status = "needs_verification"
         if note:
+            # Structured dependency_parts is the source of truth. Catalogue
+            # notes are edited separately and can retain an obsolete prose
+            # dependency, which then tells the evaluator to skip the wrong
+            # check. Keep the prompt synchronized at load time for JSON and DB
+            # catalogues alike.
+            dependency_line = (
+                "Primary dependency: " + ", ".join(defect.dependency_parts) + "."
+                if defect.dependency_parts
+                else ""
+            )
+            note = re.sub(
+                r"(?m)^Primary dependency:.*(?:\n|$)",
+                dependency_line + ("\n" if dependency_line else ""),
+                note,
+                count=1,
+            )
             # Authority verification is structured policy. Let the model decide
             # the filing evidence first, then apply the authority gate in Python.
             note = re.sub(

@@ -50,11 +50,13 @@ from .split_repair import (
     _has_explicit_record_of_proceedings_identity,
     _has_leading_high_court_caption,
     _heading_window,
+    _explicit_unmapped_document_heading,
     _is_lower_court_caption,
     _is_near_blank_page,
     _is_sci_caption,
     _looks_like_court_notice_or_rop,
     _looks_like_index_continuation,
+    _looks_like_judgment_continuation,
     _looks_like_sci_main_petition,
     _outer_anchor_label,
     _restore_early_record_of_proceedings,
@@ -184,6 +186,9 @@ _EVIDENCE_TYPE_BY_SIGNAL: dict[str, str] = {
     "registry_notice": "exclusion",
     "explicit_rop_identity_absent": "exclusion",
     "llama_rop_rejected": "exclusion",
+    "unmapped_document_heading": "exclusion",
+    "llama_known_label_rejected": "exclusion",
+    "explicit_unmapped_heading": "exclusion",
     "protected_llama_segment": "model_hint",
 }
 
@@ -902,6 +907,9 @@ def classify_page(
         and not _has_explicit_record_of_proceedings_identity(text)
     )
     outer_anchor = _outer_anchor_label(text)
+    unmapped_heading = (
+        _explicit_unmapped_document_heading(text) if outer_anchor is None else None
+    )
     # A continued Index page can contain many strings such as "Annexure P-7".
     # Those are inventory references, not outer-document stamps.  LlamaParse's
     # complete-segment owner plus table structure is stronger evidence than a
@@ -911,7 +919,13 @@ def classify_page(
     # paper-book Index.  Resolve that exact outer form before preserving a
     # model Index hint; otherwise Llama agreement protects the broader label
     # and the deterministic Filing Memo correction can never be committed.
-    if registry_notice_without_rop_identity:
+    if unmapped_heading:
+        # A strong title outside the controlled taxonomy must remain Other;
+        # never coerce a future document type into the closest known slot.
+        doc_type = "other"
+        score = 0.95
+        signals.append("unmapped_document_heading")
+    elif registry_notice_without_rop_identity:
         # Service/Registry notices contain an SCI caption, hearing language,
         # delivery mode and an Assistant Registrar signature.  Those are
         # useful exclusion cues, but they do not make the sheet a Record of
@@ -979,7 +993,9 @@ def classify_page(
 
     if llama_hint:
         hint = _normalize_taxonomy(llama_hint)
-        if registry_notice_without_rop_identity and hint == "Record of Proceedings":
+        if unmapped_heading and hint != "other":
+            signals.append("llama_known_label_rejected")
+        elif registry_notice_without_rop_identity and hint == "Record of Proceedings":
             # A broad Llama boundary label cannot override the absence of the
             # defining RoP heading/order-sheet structure on a Registry notice.
             signals.append("llama_rop_rejected")
@@ -2047,7 +2063,29 @@ def reconcile_compiled_split(
                 and proposed_segment_range
                 and original_segment_range[0] == page
                 and proposed_segment_range[0] == page
+                and not (
+                    old == ("Impugned Order",)
+                    and new == (MAIN_PETITION_PART,)
+                    and _looks_like_judgment_continuation(page_text.get(page, ""))
+                )
             )
+            unmapped_opening_page = (
+                proposed_segment_range[0] if proposed_segment_range else page
+            )
+            unmapped_opening_text = page_text.get(unmapped_opening_page, "")
+            verified_unmapped_document = bool(
+                old
+                and new == ("Undefined",)
+                and all(
+                    family_split_name(label) != ANNEXURE_FAMILY for label in old
+                )
+                and _outer_anchor_label(unmapped_opening_text) is None
+                and not _is_lower_court_caption(unmapped_opening_text)
+                and _explicit_unmapped_document_heading(unmapped_opening_text)
+                is not None
+            )
+            if verified_unmapped_document:
+                evidence.append("explicit_unmapped_heading")
             protected_segment = protected_by_page.get(page)
             protected_owner = (
                 str(protected_segment.get("category") or "")
@@ -2077,6 +2115,7 @@ def reconcile_compiled_split(
                 and not verified_indexed_annexure_nesting
                 and not verified_stamped_annexure_envelope
                 and not verified_exact_outer_relabel
+                and not verified_unmapped_document
                 and (index_reference_conflict or not verified_internal_opening)
             ):
                 protected_evidence = ["protected_llama_segment"]
@@ -2120,6 +2159,7 @@ def reconcile_compiled_split(
                     and not verified_annexure_nesting
                     and not verified_stamped_annexure_envelope
                     and not verified_exact_outer_relabel
+                    and not verified_unmapped_document
                     and not verified_preceding_opening_continuation
                 )
                 or (
@@ -2129,6 +2169,7 @@ def reconcile_compiled_split(
                     and not verified_annexure_nesting
                     and not verified_stamped_annexure_envelope
                     and not verified_exact_outer_relabel
+                    and not verified_unmapped_document
                     and not verified_preceding_opening_continuation
                 )
             )
@@ -2270,6 +2311,7 @@ def reconcile_compiled_split(
                 len(new) == 1
                 and (
                     verified_exact_outer_relabel
+                    or verified_unmapped_document
                     or verified_stamped_annexure_envelope
                     or (
                         new[0] == "Index"
@@ -2412,6 +2454,7 @@ def reconcile_compiled_split(
                 or verified_preceding_opening_continuation
                 or index_proves_annexure_identity
                 or lower_court_source_correction
+                or verified_unmapped_document
             ) or (
                 not (
                     direct
@@ -2948,6 +2991,32 @@ def structure_aware_split(
             texts,
             page_count=len(units),
         )
+        # A model is constrained to the known taxonomy and can therefore force
+        # a genuinely new document into the nearest familiar slot. Correct
+        # that only at the start of an existing model segment: a prominent,
+        # unmapped title moves the complete physical segment to Other. Never
+        # inspect interior pages independently, because headings inside an
+        # Annexure, prayer, verification, or judgment are enclosed content.
+        classification_by_page = {item.page: item for item in classifications}
+        for start in range(1, len(units) + 1):
+            labels = parts_on_page(baseline.get(start))
+            if (
+                len(labels) != 1
+                or family_split_name(labels[0]) == ANNEXURE_FAMILY
+                or (start > 1 and parts_on_page(baseline.get(start - 1)) == labels)
+            ):
+                continue
+            opening = classification_by_page.get(start)
+            if not opening or "unmapped_document_heading" not in opening.signals:
+                continue
+            end = start
+            while (
+                end + 1 <= len(units)
+                and parts_on_page(baseline.get(end + 1)) == labels
+            ):
+                end += 1
+            for source_page in range(start, end + 1):
+                proposed[source_page] = ["Undefined"]
         _trace_assignment_stage(
             assignment_events,
             "repair_proposal",

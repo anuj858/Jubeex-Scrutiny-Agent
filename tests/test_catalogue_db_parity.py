@@ -174,12 +174,13 @@ def test_local_catalogue_url_reads_the_json_file_only(monkeypatch: pytest.Monkey
     catalogue = refresh_catalogue()
     assert catalogue.schema_version != "db"
     assert catalogue.catalogue_version == "3.4.0"
-    assert len(catalogue.defects) == 306
+    assert len(catalogue.defects) == 337
     assert catalogue.defect("D-179") is not None
     get_catalogue.cache_clear()
 
 
 def test_localhost_database_url_is_not_the_json_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRUTINY_CATALOGUE_SOURCE", "db")
     monkeypatch.setenv(
         "CATALOGUE_DATABASE_URL",
         "postgresql://parse:secret@localhost:5432/none",

@@ -85,12 +85,26 @@ def split_trigger_words(value: str | None) -> list[str]:
 def _part_codes(labels: list[str] | None, *, check_id: str, role: str) -> list[str]:
     codes: list[str] = []
     for label in labels or []:
+        if label == "Synopsis & List of Dates & Events":
+            for canonical in ("Synopsis", "List of Dates & Events"):
+                code = PART_DOCUMENT_TYPES[canonical]["code"]
+                if code not in codes:
+                    codes.append(code)
+            continue
+        if label in {"List of Dates", "List of Dates and Events"}:
+            label = "List of Dates & Events"
         spec = PART_DOCUMENT_TYPES.get(label)
+        # Split output groups named interlocutory applications under the
+        # canonical Application family. Keep the precise catalogue wording,
+        # while linking its DB relation to that canonical document type.
+        if spec is None and label.casefold().startswith("application"):
+            spec = PART_DOCUMENT_TYPES.get("Application")
         if spec is None:
             raise ValueError(
                 f"{check_id} {role} part {label!r} has no document type mapping"
             )
-        codes.append(spec["code"])
+        if spec["code"] not in codes:
+            codes.append(spec["code"])
     return codes
 
 

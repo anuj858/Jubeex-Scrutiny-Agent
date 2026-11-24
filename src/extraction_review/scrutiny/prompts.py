@@ -96,9 +96,12 @@ and seals as words such as STAMP, SEAL, NOTARY, WELFARE FUND, COURT FEE, \
 Sd/-, or digitally signed. Do not treat absence of the word A4, a margin \
 measurement, or a font name in OCR as proof of a physical-layout defect.
 5. Do not add requirements that are not in this task.
-6. confidence is 0.0 to 1.0. Partial evidence means lower confidence. If you \
-would mark defect_found or compliant but confidence is below 0.6, return \
-needs_review instead.
+6. confidence is 0.0 to 1.0. Confidence describes the evidence, not willingness \
+to decide. A complete page that visibly shows a blank, missing, inconsistent, \
+or incomplete required element is defect_found even if the model is cautious. \
+Use needs_review for low confidence only when the decisive evidence itself is \
+uncertain. Low-confidence compliance is needs_review because compliance requires \
+every applicable element to be established.
 7. evidence is a list of one or more independent items, each with \
 {{"chunk_id", "quote"}}. Use multiple items when the decision combines \
 different clauses, pages, document parts, or contradictory observations. \
@@ -140,9 +143,10 @@ exact missing or satisfied element (for example endorsement wording versus the \
 Advocate-on-Record's accepting signature). Do not claim a visible phrase, \
 signature, date, paragraph, or document is missing when the quoted excerpt \
 shows it; explain what remains deficient instead.
-14. Treat visible stamps, handwritten dates, signatures, seals, and equivalent \
-wording as evidence. If OCR and stored visual observations conflict, return \
-needs_review rather than defect_found.
+14. Treat visible stamps, handwritten dates, signatures, seals, folios and \
+equivalent wording as evidence. A completed page-image assessment outranks OCR \
+silence or garbling. Use needs_review only when the rendered region itself is \
+unreadable or two equally reliable filing observations materially conflict.
 15. Do not require an exact phrase when the requirement can be satisfied by \
 equivalent wording, unless the Standard explicitly says the exact wording is mandatory.
 16. evidence_request is null unless status is needs_review, confidence is \

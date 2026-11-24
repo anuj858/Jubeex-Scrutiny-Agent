@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 HEADINGS = ("SCOPE", "TEST", "EVIDENCE", "DECISION", "GUARDRAILS", "RECORD")
 OUTCOMES = ("DEFECT:", "COMPLIANT:", "N/A:", "NEED REVIEW:")
 FORBIDDEN = (
@@ -25,7 +24,16 @@ FORBIDDEN = (
 
 def _section(note: str, heading: str, next_heading: str | None) -> str:
     start = note.index(f"{heading}\n") + len(heading) + 1
-    end = note.index(f"\n\n{next_heading}\n", start) if next_heading else len(note)
+    if next_heading:
+        marker = f"\n\n{next_heading}\n"
+        end = note.find(marker, start)
+        # Some legally material notes contain an additional named section,
+        # such as RECALCULATION, between canonical sections.  Validation must
+        # report content problems instead of crashing on those extensions.
+        if end < 0:
+            end = len(note)
+    else:
+        end = len(note)
     return note[start:end].strip()
 
 
@@ -107,7 +115,7 @@ def _validate(row: dict[str, Any]) -> list[str]:
         and not re.search(
             r"\b(differ(?:ent|s|ed)?|mismatch|conflict|correspond|match)\b",
             decision,
-            re.I,
+            re.IGNORECASE,
         )
     ):
         errors.append(f"{code}: comparison requirement lacks a mismatch decision rule")

@@ -364,7 +364,7 @@ def test_catalogue_query_plan_stays_evidence_focused() -> None:
         len(retrieval_plan_for_defect(defect).queries) for defect in catalogue.defects
     ]
 
-    assert len(counts) == 306
+    assert len(counts) == 337
     assert statistics.median(counts) <= 2
     assert sum(count >= 5 for count in counts) == 0
     assert max(counts) <= 4
@@ -373,7 +373,7 @@ def test_catalogue_query_plan_stays_evidence_focused() -> None:
 def test_catalogue_declares_dependency_parts_explicitly() -> None:
     catalogue = rules_mod._load_file_catalogue()
 
-    assert len(catalogue.defects) == 306
+    assert len(catalogue.defects) == 337
     assert all(
         set(defect.dependency_parts).issubset(set(defect.inspect_parts))
         for defect in catalogue.defects
@@ -819,7 +819,7 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     catalogue = rules_mod._load_file_catalogue()
     monkeypatch.setattr(rules_mod, "get_catalogue", lambda: catalogue)
     assert catalogue.catalogue_version == "3.4.0"
-    assert len(catalogue.defects) == 306
+    assert len(catalogue.defects) == 337
     schema = json.loads(catalogue_schema_path().read_text(encoding="utf-8"))
     jsonschema.validate(
         json.loads(rules_mod.catalogue_path().read_text(encoding="utf-8")),
@@ -874,13 +874,9 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
     ]
     assert catalogue.defect("D-58").inspect_parts == ["Index"]
     assert catalogue.defect("D-58").context_parts == []
-    assert catalogue.defect("D-88").inspect_parts == [
-        "Main Petition",
-        "Application",
-        "Affidavit",
-        "Synopsis",
-    ]
-    assert catalogue.defect("D-89").inspect_parts == ["Main Petition", "Synopsis"]
+    # D-88 and D-89 were deliberately retired from the active catalogue.
+    assert catalogue.defect_by_id("D-88") is None
+    assert catalogue.defect_by_id("D-89") is None
     d155 = catalogue.defect("D-155")
     assert d155.dependency_parts == ["Impugned Order"]
     assert "Absence of the exemption Application is not N/A" in (d155.ai_note or "")
@@ -924,10 +920,30 @@ def test_imported_csv_catalogue(monkeypatch) -> None:
         "Application",
         "Main Petition",
     ]
-    assert catalogue.defect("D-111").inspect_parts == [
+    d111 = catalogue.defect("D-111")
+    assert d111.inspect_parts == [
         "List of Dates & Events",
         "Application",
     ]
+    assert d111.dependency_parts == ["List of Dates & Events"]
+    assert "Primary dependency: List of Dates & Events." in (d111.ai_note or "")
+    assert "Primary dependency: Application." not in (d111.ai_note or "")
+    d158 = catalogue.defect("D-158")
+    assert d158.dependency_parts == ["Office Report on Limitation"]
+    assert "Primary dependency: Office Report on Limitation." in (
+        d158.ai_note or ""
+    )
+    d177 = catalogue.defect("D-177")
+    assert d177.inspect_parts == [
+        "Index",
+        "Synopsis",
+        "Impugned Order",
+        "Main Petition",
+        "Appendix",
+        "Annexures",
+    ]
+    assert d177.dependency_parts == ["Index"]
+    assert "Do not retrieve every filing document" in (d177.ai_note or "")
     assert catalogue.defect("D-114").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-115").inspect_parts == ["Memo of Appearance"]
     assert catalogue.defect("D-120").inspect_parts == ["Vakalatnama"]

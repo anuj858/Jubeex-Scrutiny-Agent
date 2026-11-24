@@ -1461,11 +1461,29 @@ def apply_evidence_pages(
 
 
 def apply_status_policy(response: DefectResponse) -> DefectResponse:
-    """Move low-confidence defect/compliant calls to needs_review."""
-    if (
-        response.status in ("defect_found", "compliant")
-        and response.confidence < review_confidence_threshold()
-    ):
+    """Use confidence as a review signal, never as contrary filing evidence.
+
+    A grounded failed element is positive evidence of non-compliance. Moving
+    that result to ``needs_review`` merely because the model emitted 0.59
+    recreates the failure this pipeline is intended to prevent: the filing is
+    decisive, but the model is cautious. Compliance is different because it
+    asserts that every applicable element passed, so a low-confidence
+    compliant answer remains unsafe to publish.
+    """
+    if response.confidence >= review_confidence_threshold():
+        return response
+    if response.status == "defect_found":
+        failed = any(
+            element.state in {"missing", "incomplete"}
+            for element in response.elements
+        )
+        grounded = any(
+            ref.page is not None and bool(ref.quote.strip())
+            for ref in response.evidence
+        )
+        if failed and grounded:
+            return response
+    if response.status in ("defect_found", "compliant"):
         return _move_to_review(response, gap="low_confidence")
     return response
 
@@ -1624,6 +1642,105 @@ def apply_scope_coverage_policy(
         gap="element_page_not_in_excerpts",
         detail=detail,
     )
+
+
+def apply_element_status_contract_policy(
+    response: DefectResponse,
+    *,
+    scope_complete: bool,
+    visual_required: bool = False,
+    visual_complete: bool = False,
+) -> DefectResponse:
+    """Reconcile the published status with the model's element findings.
+
+    The model returns one state per required element, but historically the
+    free-form status could contradict those states. This contract is
+    deliberately asymmetric: grounded failure can establish a defect;
+    compliance requires complete scope; unreadable/conflicting evidence stays
+    reviewable; and an internally contradictory defect is withheld.
+    """
+    failed = [
+        element
+        for element in response.elements
+        if element.state in {"missing", "incomplete"}
+    ]
+    unresolved = [
+        element for element in response.elements if element.state == "not_visible"
+    ]
+    grounded = any(
+        ref.page is not None and bool(ref.quote.strip()) for ref in response.evidence
+    )
+    visual_ready = not visual_required or visual_complete
+
+    if response.status == "needs_review":
+        material_visual_uncertainty = response.gap in {"unreadable", "conflict"}
+        if (
+            failed
+            and grounded
+            and scope_complete
+            and visual_ready
+            and not material_visual_uncertainty
+        ):
+            response.status = "defect_found"
+            response.confidence = max(response.confidence, 0.9)
+            response.gap = None
+            response.gap_detail = ""
+            response.review_reason = ""
+            if not response.conclusion.strip():
+                response.conclusion = (
+                    "The grounded filing evidence establishes a required element "
+                    "as missing or incomplete."
+                )
+        return response
+
+    if (
+        response.status == "compliant"
+        and failed
+        and grounded
+        and scope_complete
+        and visual_ready
+    ):
+        response.status = "defect_found"
+        response.confidence = max(response.confidence, 0.9)
+        response.gap = None
+        response.gap_detail = ""
+        response.review_reason = ""
+        if not response.conclusion.strip():
+            response.conclusion = (
+                "The grounded filing evidence establishes a required element "
+                "as missing or incomplete."
+            )
+        return response
+
+    if response.status == "compliant" and (
+        not scope_complete or unresolved or (visual_required and not visual_complete)
+    ):
+        visual_gap = visual_required and not visual_complete
+        return _move_to_review(
+            response,
+            gap="unreadable" if visual_gap else "ambiguous",
+            detail=(
+                "A required visual element was not completely inspected."
+                if visual_gap
+                else "At least one required element was not completely inspected."
+            ),
+        )
+
+    if (
+        response.status == "defect_found"
+        and response.elements
+        and not failed
+        and not unresolved
+    ):
+        return _move_to_review(
+            response,
+            gap="ambiguous",
+            detail=(
+                "The returned Defect status contradicts the element findings, "
+                "which mark every required element present."
+            ),
+        )
+    return response
 
 
 def apply_final_evidence_contract_policy(
