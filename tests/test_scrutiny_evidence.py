@@ -32,7 +32,9 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
+    apply_affidavit_reference_policy,
     apply_catalogue_gap_policy,
+    apply_checklist_response_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
     apply_element_status_contract_policy,
@@ -1708,6 +1710,149 @@ def test_d93_present_party_section_cannot_be_reported_as_not_filed() -> None:
     assert "assessed separately under D-63" in decided.reasoning
 
 
+def test_d74_filed_memo_cannot_fail_for_cause_title_or_case_number() -> None:
+    defect = SimpleNamespace(check_id="D-74")
+    response = DefectResponse(
+        check_id="D-74",
+        status="defect_found",
+        confidence=0.97,
+        summary="Memo of Appearance has the wrong cause title.",
+        reasoning="The case number does not match the Main Petition.",
+        evidence=[EvidenceRef(page=42, quote="MEMO OF APPEARANCE")],
+    )
+    layout = {
+        42: {
+            "document_part": "Memo of Appearance + Vakalatnama",
+            "words": [{"t": "MEMO"}, {"t": "OF"}, {"t": "APPEARANCE"}],
+        }
+    }
+
+    decided = apply_presence_only_policy(defect, response, [], layout)
+
+    assert decided.status == "compliant"
+    assert decided.confidence == 0.97
+    assert decided.gap is None
+    assert "cause-title, case-number, format and content" in decided.reasoning
+
+
+def test_d74_vakalatnama_alone_does_not_prove_memo_is_filed() -> None:
+    defect = SimpleNamespace(check_id="D-74")
+    response = DefectResponse(
+        check_id="D-74",
+        status="defect_found",
+        confidence=1.0,
+        summary="Memo of Appearance is not filed.",
+        reasoning="The complete manifest contains only a Vakalatnama.",
+        evidence=[],
+    )
+    layout = {42: {"document_part": "Vakalatnama", "words": []}}
+
+    decided = apply_presence_only_policy(defect, response, [], layout)
+
+    assert decided.status == "defect_found"
+    assert decided.summary == "Memo of Appearance is not filed."
+
+
+def test_d56_repairs_dropped_paragraph_start_but_preserves_other_defects() -> None:
+    defect = SimpleNamespace(check_id="D-56")
+    response = DefectResponse(
+        check_id="D-56",
+        status="defect_found",
+        confidence=0.99,
+        summary="The Affidavit leaves its date, paragraph and page references incomplete.",
+        observed=(
+            "The verification day is blank, the Affidavit says SLP from para to "
+            "8, and the page range has no ending value."
+        ),
+        elements=[
+            ElementFinding(
+                name="Date on the Affidavit",
+                state="incomplete",
+                detail="The verification day is blank.",
+            ),
+            ElementFinding(
+                name="Number or range of the petition's paragraphs",
+                state="incomplete",
+                detail="The starting paragraph number is blank.",
+            ),
+            ElementFinding(
+                name="Number or range of the petition's pages",
+                state="incomplete",
+                detail="The ending page value is blank.",
+            ),
+        ],
+        conclusion="All three references are incomplete.",
+        evidence=[EvidenceRef(page=38, quote="SLP from para to 8")],
+    )
+    layout = {
+        38: {
+            "document_part": "Affidavit",
+            "markdown": (
+                "I say that the contents of the Synopsis & List of Dates from "
+                "page B to [___] and SLP from para 1 to 8 are true.\n\n"
+                "Verified at New Delhi of this [___] day of October, 2026."
+            ),
+            "words": [
+                {"t": "SLP", "x": 0.2, "y": 0.6},
+                {"t": "from", "x": 0.25, "y": 0.6},
+                {"t": "para", "x": 0.3, "y": 0.6},
+                {"t": "to", "x": 0.38, "y": 0.6},
+                {"t": "8", "x": 0.41, "y": 0.6},
+            ],
+        }
+    }
+
+    decided = apply_affidavit_reference_policy(
+        defect, response, layout, scope_complete=True
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.elements[1].state == "present"
+    assert "paragraph range 1 to 8" in decided.elements[1].detail
+    assert decided.elements[0].state == "incomplete"
+    assert decided.elements[2].state == "incomplete"
+    assert "paragraph range 1 to 8" in decided.reasoning
+    assert "starting paragraph number is blank" not in decided.reasoning
+    assert any(item.quote == "SLP from para 1 to 8" for item in decided.evidence)
+
+
+def test_d56_complete_paragraph_range_can_clear_only_false_failure() -> None:
+    defect = SimpleNamespace(check_id="D-56")
+    response = DefectResponse(
+        check_id="D-56",
+        status="defect_found",
+        confidence=0.96,
+        summary="The paragraph range is incomplete.",
+        observed="The Affidavit says SLP from para to 8.",
+        elements=[
+            ElementFinding(name="Affidavit date", state="present"),
+            ElementFinding(
+                name="Petition paragraph range",
+                state="incomplete",
+                detail="The starting paragraph number is blank.",
+            ),
+            ElementFinding(name="Petition page range", state="present"),
+        ],
+        conclusion="The paragraph reference is incomplete.",
+        evidence=[EvidenceRef(page=38, quote="SLP from para to 8")],
+    )
+    layout = {
+        38: {
+            "document_part": "Affidavit",
+            "markdown": "SLP from para 1 to 8",
+            "words": [],
+        }
+    }
+
+    decided = apply_affidavit_reference_policy(
+        defect, response, layout, scope_complete=True
+    )
+
+    assert decided.status == "compliant"
+    assert all(item.state == "present" for item in decided.elements)
+    assert "paragraph range 1 to 8" in decided.reasoning
+
+
 def test_defect_reasoning_removes_internal_chunk_and_uses_document_page() -> None:
     defect = SimpleNamespace(
         defect="Paper Book does not have one common index or proper pagination",
@@ -2969,6 +3114,115 @@ def test_complete_d75_endorsement_scope_becomes_defect_not_conflict() -> None:
     )
     assert decided.status == "defect_found"
     assert decided.gap is None
+
+
+def _d61_layout(answer: str | None) -> dict[int, dict[str, object]]:
+    words: list[dict[str, object]] = [
+        {"t": "11.", "x": 0.11, "y": 0.07, "w": 0.03, "h": 0.02},
+        {"t": "Whether", "x": 0.17, "y": 0.07, "w": 0.08, "h": 0.02},
+        {"t": "particulars", "x": 0.26, "y": 0.07, "w": 0.09, "h": 0.02},
+        {"t": "are", "x": 0.36, "y": 0.07, "w": 0.04, "h": 0.02},
+        {"t": "uniform", "x": 0.41, "y": 0.07, "w": 0.08, "h": 0.02},
+        {"t": "12.", "x": 0.11, "y": 0.13, "w": 0.03, "h": 0.02},
+    ]
+    if answer is not None:
+        words.append({"t": answer, "x": 0.81, "y": 0.07, "w": 0.04, "h": 0.02})
+    return {
+        2: {
+            "document_part": "Advocate's Checklist",
+            "local_page": 2,
+            "slot_id": "advocates_checklist",
+            "words": words,
+        }
+    }
+
+
+def _d61_unanswered_response() -> DefectResponse:
+    return DefectResponse(
+        check_id="D-61",
+        status="defect_found",
+        confidence=0.97,
+        summary="The Advocate's Checklist leaves numbered item 11 unanswered.",
+        observed="Numbered item 11 has no answer.",
+        conclusion="The Checklist is incomplete because item 11 is unanswered.",
+        elements=[
+            ElementFinding(
+                name="Numbered items answered YES, NO or N.A.",
+                state="missing",
+                detail="Numbered item 11 has no answer.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="11. Whether particulars are uniform")],
+    )
+
+
+@pytest.mark.parametrize("answer", ["NA", "N.A.", "N/A", "/NA", "Yes", "NO"])
+def test_d61_visible_response_cannot_be_published_as_unanswered(answer: str) -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+
+    decided = apply_checklist_response_policy(
+        defect,
+        _d61_unanswered_response(),
+        _d61_layout(answer),
+        scope_complete=True,
+    )
+
+    assert decided.status == "compliant"
+    assert decided.confidence == 0.97
+    assert decided.elements[0].state == "present"
+    assert decided.evidence[0].quote in {"YES", "NO", "NA"}
+    assert "11=" in decided.observed
+
+
+def test_d61_genuinely_blank_response_remains_defect() -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+    response = _d61_unanswered_response()
+
+    decided = apply_checklist_response_policy(
+        defect,
+        response,
+        _d61_layout(None),
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.elements[0].state == "missing"
+
+
+def test_d61_unreadable_review_is_not_overridden() -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+    response = _d61_unanswered_response().model_copy(
+        update={
+            "status": "needs_review",
+            "gap": "unreadable",
+            "gap_detail": "The item 11 response cell is unreadable.",
+        }
+    )
+
+    decided = apply_checklist_response_policy(
+        defect,
+        response,
+        _d61_layout("NA"),
+        scope_complete=True,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_complete_manifest_without_conditional_trigger_becomes_not_applicable() -> None:

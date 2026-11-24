@@ -9,6 +9,7 @@ from extraction_review.layout_index import (
     grounded_items_url,
     load_layout_index,
     locate_quote,
+    merge_parse_markdown,
     merge_granular_bboxes,
     merge_pdf_text_words,
     parse_sidecar_jsonl,
@@ -221,12 +222,33 @@ def test_slot_local_page_stitches_to_global_page_12() -> None:
     assert stitched[12]["local_page"] == 1
     assert stitched[12]["slot_id"] == "vakalatnama_appearance"
     assert stitched[12]["document_part"] == "Vakalatnama"
+    assert stitched[12]["markdown"] == "vakalatnama"
     assert stitched[1]["local_page"] == 1
     assert stitched[1]["slot_id"] == "cover_page"
     assert stitched[1]["words"] == []
+    assert stitched[1]["markdown"] == "cover 1"
     boxes, status = boxes_for_quote(QUOTE, 12, stitched)
     assert status == "matched"
     assert boxes[0]["page"] == 12
+
+
+def test_legacy_layout_backfills_markdown_by_slot_and_local_page() -> None:
+    layout = {
+        38: {
+            "slot_id": "affidavit",
+            "local_page": 1,
+            "document_part": "Affidavit",
+            "words": [{"t": "para"}, {"t": "to"}, {"t": "8"}],
+        }
+    }
+
+    merged = merge_parse_markdown(
+        layout,
+        {"affidavit": {1: "SLP from para 1 to 8"}},
+    )
+
+    assert merged[38]["markdown"] == "SLP from para 1 to 8"
+    assert "markdown" not in layout[38]
 
 
 def test_parse_sidecar_jsonl_skips_blank_lines() -> None:

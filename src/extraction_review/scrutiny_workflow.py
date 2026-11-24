@@ -52,6 +52,7 @@ from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
     load_layout_index,
+    merge_parse_markdown,
 )
 from .llm import (
     LLMError,
@@ -75,7 +76,12 @@ from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
-from .s3_artifacts import STEP_DEFECTS, upload_step_json
+from .s3_artifacts import STEP_DEFECTS, download_json_object, upload_step_json
+from .split_upload import (
+    PARSE_ARTIFACT_KEY_KEY,
+    PARSE_ARTIFACT_URL_KEY,
+    load_parse_artifact,
+)
 from .scrutiny.context_followup import (
     evidence_chunks_for_rerun,
     serve_context_followup,
@@ -103,7 +109,9 @@ from .scrutiny.schema import (
     DefectResponse,
     LlmUsage,
     ScrutinyReport,
+    apply_affidavit_reference_policy,
     apply_catalogue_gap_policy,
+    apply_checklist_response_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
     apply_element_status_contract_policy,
@@ -626,6 +634,56 @@ async def _sha256_from_url(file_url: str) -> str:
         raise ValueError(f"Downloaded empty body from {url}")
     _require_pdf_bytes(data, url)
     return hashlib.sha256(data).hexdigest()
+
+
+async def _layout_with_parse_markdown(
+    layout: dict[int, dict[str, Any]],
+    metadata: dict[str, Any],
+) -> dict[int, dict[str, Any]]:
+    """Backfill page Markdown for legacy layouts from the saved ParseArtifact."""
+    if not layout or all(
+        str(page.get("markdown") or page.get("text") or "").strip()
+        for page in layout.values()
+        if isinstance(page, dict)
+    ):
+        return layout
+    key = str(metadata.get(PARSE_ARTIFACT_KEY_KEY) or "").strip()
+    url = str(metadata.get(PARSE_ARTIFACT_URL_KEY) or "").strip()
+    payload = (
+        await asyncio.to_thread(download_json_object, key) if key else None
+    )
+    if payload is None and url:
+        try:
+            timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                candidate = response.json()
+                payload = candidate if isinstance(candidate, dict) else None
+        except Exception:
+            logger.warning(
+                "Failed to backfill layout Markdown from ParseArtifact URL",
+                exc_info=True,
+            )
+    if not isinstance(payload, dict):
+        return layout
+    _slots, _order, pages_by_slot, _jobs, _layouts, _structured = (
+        load_parse_artifact(payload)
+    )
+    if not pages_by_slot:
+        return layout
+    merged = merge_parse_markdown(layout, pages_by_slot)
+    added = sum(
+        1
+        for page_number, page in merged.items()
+        if str(page.get("markdown") or "").strip()
+        and not str((layout.get(page_number) or {}).get("markdown") or "").strip()
+    )
+    if added:
+        logger.info("Backfilled parsed Markdown into %s legacy layout page(s)", added)
+    return merged
 
 
 def _sanitize_response(
@@ -1450,6 +1508,18 @@ async def _finalize_defect_evaluation(
         response,
         chunks,
         check_visual_index,
+        scope_complete=coverage.scope_complete,
+    )
+    response = apply_affidavit_reference_policy(
+        defect,
+        response,
+        layout,
+        scope_complete=coverage.scope_complete,
+    )
+    response = apply_checklist_response_policy(
+        defect,
+        response,
+        layout,
         scope_complete=coverage.scope_complete,
     )
     response = apply_conditional_manifest_policy(defect, response, layout)
@@ -2622,6 +2692,8 @@ class ScrutinyWorkflow(Workflow):
             layout_url if isinstance(layout_url, str) else None,
             key=layout_key if isinstance(layout_key, str) else None,
         )
+        if isinstance(metadata, dict):
+            layout = await _layout_with_parse_markdown(layout, metadata)
         visual_url = (
             metadata.get(VISUAL_ARTIFACT_URL_KEY)
             if isinstance(metadata, dict)
