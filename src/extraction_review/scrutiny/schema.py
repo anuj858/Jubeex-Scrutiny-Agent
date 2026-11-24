@@ -1461,11 +1461,29 @@ def apply_evidence_pages(
 
 
 def apply_status_policy(response: DefectResponse) -> DefectResponse:
-    """Move low-confidence defect/compliant calls to needs_review."""
-    if (
-        response.status in ("defect_found", "compliant")
-        and response.confidence < review_confidence_threshold()
-    ):
+    """Use confidence as a review signal, never as contrary filing evidence.
+
+    A grounded failed element is positive evidence of non-compliance. Moving
+    that result to ``needs_review`` merely because the model emitted 0.59
+    recreates the failure this pipeline is intended to prevent: the filing is
+    decisive, but the model is cautious. Compliance is different because it
+    asserts that every applicable element passed, so a low-confidence
+    compliant answer remains unsafe to publish.
+    """
+    if response.confidence >= review_confidence_threshold():
+        return response
+    if response.status == "defect_found":
+        failed = any(
+            element.state in {"missing", "incomplete"}
+            for element in response.elements
+        )
+        grounded = any(
+            ref.page is not None and bool(ref.quote.strip())
+            for ref in response.evidence
+        )
+        if failed and grounded:
+            return response
+    if response.status in ("defect_found", "compliant"):
         return _move_to_review(response, gap="low_confidence")
     return response
 
@@ -1624,6 +1642,105 @@ def apply_scope_coverage_policy(
         gap="element_page_not_in_excerpts",
         detail=detail,
     )
+
+
+def apply_element_status_contract_policy(
+    response: DefectResponse,
+    *,
+    scope_complete: bool,
+    visual_required: bool = False,
+    visual_complete: bool = False,
+) -> DefectResponse:
+    """Reconcile the published status with the model's element findings.
+
+    The model returns one state per required element, but historically the
+    free-form status could contradict those states. This contract is
+    deliberately asymmetric: grounded failure can establish a defect;
+    compliance requires complete scope; unreadable/conflicting evidence stays
+    reviewable; and an internally contradictory defect is withheld.
+    """
+    failed = [
+        element
+        for element in response.elements
+        if element.state in {"missing", "incomplete"}
+    ]
+    unresolved = [
+        element for element in response.elements if element.state == "not_visible"
+    ]
+    grounded = any(
+        ref.page is not None and bool(ref.quote.strip()) for ref in response.evidence
+    )
+    visual_ready = not visual_required or visual_complete
+
+    if response.status == "needs_review":
+        material_visual_uncertainty = response.gap in {"unreadable", "conflict"}
+        if (
+            failed
+            and grounded
+            and scope_complete
+            and visual_ready
+            and not material_visual_uncertainty
+        ):
+            response.status = "defect_found"
+            response.confidence = max(response.confidence, 0.9)
+            response.gap = None
+            response.gap_detail = ""
+            response.review_reason = ""
+            if not response.conclusion.strip():
+                response.conclusion = (
+                    "The grounded filing evidence establishes a required element "
+                    "as missing or incomplete."
+                )
+        return response
+
+    if (
+        response.status == "compliant"
+        and failed
+        and grounded
+        and scope_complete
+        and visual_ready
+    ):
+        response.status = "defect_found"
+        response.confidence = max(response.confidence, 0.9)
+        response.gap = None
+        response.gap_detail = ""
+        response.review_reason = ""
+        if not response.conclusion.strip():
+            response.conclusion = (
+                "The grounded filing evidence establishes a required element "
+                "as missing or incomplete."
+            )
+        return response
+
+    if response.status == "compliant" and (
+        not scope_complete or unresolved or (visual_required and not visual_complete)
+    ):
+        visual_gap = visual_required and not visual_complete
+        return _move_to_review(
+            response,
+            gap="unreadable" if visual_gap else "ambiguous",
+            detail=(
+                "A required visual element was not completely inspected."
+                if visual_gap
+                else "At least one required element was not completely inspected."
+            ),
+        )
+
+    if (
+        response.status == "defect_found"
+        and response.elements
+        and not failed
+        and not unresolved
+    ):
+        return _move_to_review(
+            response,
+            gap="ambiguous",
+            detail=(
+                "The returned Defect status contradicts the element findings, "
+                "which mark every required element present."
+            ),
+        )
+    return response
 
 
 def apply_final_evidence_contract_policy(
@@ -2035,6 +2152,376 @@ def apply_deterministic_postclassification_policy(
     response.conclusion = "The required AOR execution endorsement is missing."
     if not response.evidence and page is not None:
         response.evidence = [EvidenceRef(page=page, quote="Vakalatnama execution block")]
+    return response
+
+
+_D56_PARAGRAPH_RANGE = re.compile(
+    r"\b(?:SLP|petition)\s+from\s+para(?:graph)?s?\s+"
+    r"(?P<start>\d{1,3})\s*(?:to|[-–—])\s*(?P<end>\d{1,3})\b",
+    re.IGNORECASE,
+)
+_D56_PARAGRAPH_FAILURE = re.compile(
+    r"(?:paragraph|\bpara\b).{0,120}"
+    r"(?:blank|incomplete|missing|omitt|leav|no\s+(?:start|number|range))|"
+    r"(?:blank|incomplete|missing|omitt|leav).{0,120}(?:paragraph|\bpara\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+_D56_DROPPED_RANGE = re.compile(
+    r"\bpara(?:graph)?s?\s+to\s+\d{1,3}\b", re.IGNORECASE
+)
+_D56_BLANK_DATE = re.compile(
+    r"\bthis\s+(?:\[(?:_+|\s*)\]|_+)?\s*day\s+of\b",
+    re.IGNORECASE,
+)
+_D56_BLANK_PAGE_END = re.compile(
+    r"\bfrom\s+page\s+\S+\s+to\s*(?:\[(?:_+|\s*)\]|_+)?"
+    r"(?=\s+(?:and\b|SLP\b)|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _d56_affidavit_markdown(
+    layout: dict[int, dict[str, Any]] | None,
+) -> list[tuple[int, str]]:
+    pages: list[tuple[int, str]] = []
+    for page_number, page in sorted((layout or {}).items()):
+        if not isinstance(page, dict):
+            continue
+        if not any(
+            name.casefold() == "affidavit"
+            for name in parts_on_page(page.get("document_part"))
+        ):
+            continue
+        # Use only persisted LlamaParse text here. Coordinate words are the
+        # representation being cross-checked and must not prove themselves.
+        text = str(page.get("markdown") or page.get("text") or "").strip()
+        if text:
+            pages.append((int(page_number), text))
+    return pages
+
+
+def apply_affidavit_reference_policy(
+    defect: Defect,
+    response: DefectResponse,
+    layout: dict[int, dict[str, Any]] | None,
+    *,
+    scope_complete: bool,
+) -> DefectResponse:
+    """Reject D-56 paragraph failures caused by a dropped OCR numeral.
+
+    The persisted LlamaParse page text and the coordinate word layer are
+    independent representations of the same page. A complete numeric range in
+    the former disproves an allegation based only on a missing coordinate word.
+    Independent date or page-reference failures remain defects.
+    """
+    if (
+        _normalized_check_id(defect) != "D56"
+        or response.status != "defect_found"
+        or not scope_complete
+    ):
+        return response
+    pages = _d56_affidavit_markdown(layout)
+    parsed_range: tuple[int, re.Match[str]] | None = None
+    for page_number, text in pages:
+        match = _D56_PARAGRAPH_RANGE.search(text)
+        if match:
+            parsed_range = (page_number, match)
+            break
+    if parsed_range is None:
+        return response
+
+    response_text = " ".join(
+        part
+        for part in (
+            response.summary,
+            response.observed,
+            response.conclusion,
+            *(f"{item.name} {item.detail}" for item in response.elements),
+        )
+        if part
+    )
+    if not _D56_PARAGRAPH_FAILURE.search(response_text):
+        return response
+
+    page_number, match = parsed_range
+    start = match.group("start")
+    end = match.group("end")
+    confirmed = f"The Affidavit states the petition paragraph range {start} to {end}."
+    repaired_element = False
+    for element in response.elements:
+        if element.state not in {"missing", "incomplete"}:
+            continue
+        if not re.search(
+            r"\b(?:paragraphs?|para)\b",
+            f"{element.name} {element.detail}",
+            re.IGNORECASE,
+        ):
+            continue
+        element.state = "present"
+        element.detail = confirmed
+        repaired_element = True
+
+    remaining = [
+        item
+        for item in response.elements
+        if item.state in {"missing", "incomplete", "conflict", "unreadable"}
+    ]
+    if repaired_element and response.elements and not remaining:
+        response.status = "compliant"
+        response.summary = "The Affidavit states its required date, paragraph range and page reference."
+        response.observed = confirmed
+        response.conclusion = "The Affidavit reference requirement is satisfied."
+    else:
+        full_text = "\n".join(text for _page, text in pages)
+        independent: list[str] = []
+        if _D56_BLANK_DATE.search(full_text):
+            independent.append("the verification day is blank")
+        if _D56_BLANK_PAGE_END.search(full_text):
+            independent.append("the petition page range has no ending value")
+        if remaining:
+            independent.extend(
+                item.detail.strip()
+                for item in remaining
+                if item.detail.strip() and item.detail.strip() not in independent
+            )
+        if not independent:
+            # The paragraph allegation is disproved, but the other mandatory
+            # elements are not independently established by this safeguard.
+            response = _move_to_review(
+                response,
+                gap="ambiguous",
+                detail=(
+                    "The paragraph range is present; the Affidavit date and page "
+                    "reference still require a reliable determination."
+                ),
+            )
+            response.summary = "The paragraph range is present, but the remaining D-56 elements are uncertain."
+            response.observed = confirmed
+            response.conclusion = "The available representations do not decide every D-56 element."
+            return response
+        response.status = "defect_found"
+        response.summary = "The Affidavit has an independently incomplete required reference."
+        response.observed = confirmed + " However, " + "; ".join(independent) + "."
+        response.conclusion = (
+            "D-56 remains a defect only for the independently incomplete "
+            "Affidavit element or elements."
+        )
+
+    response.confidence = max(response.confidence, 0.95)
+    response.gap = None
+    response.gap_detail = ""
+    response.review_reason = ""
+    response.evidence_request = None
+    repaired_quote = False
+    for item in response.evidence:
+        if item.page == page_number and (
+            _D56_PARAGRAPH_FAILURE.search(item.quote)
+            or _D56_DROPPED_RANGE.search(item.quote)
+        ):
+            item.quote = f"SLP from para {start} to {end}"
+            repaired_quote = True
+    if not repaired_quote and not any(
+        item.page == page_number and f"para {start} to {end}" in item.quote
+        for item in response.evidence
+    ):
+        response.evidence.append(
+            EvidenceRef(page=page_number, quote=f"SLP from para {start} to {end}")
+        )
+    return response
+
+
+_CHECKLIST_ITEM_CLAIM = re.compile(
+    r"\b(?:numbered\s+)?item\s+(?P<number>\d{1,2})"
+    r"(?:\s*\(\s*(?P<subitem>[ivxlcdm]+|[a-z])\s*\))?"
+    r".{0,80}?\b(?:unanswered|has\s+no\s+answer|without\s+an\s+answer|"
+    r"left\s+blank|response\s+(?:is\s+)?blank)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_CHECKLIST_NUMBER = re.compile(r"^(?P<number>\d{1,2})[.)]?$")
+_CHECKLIST_SUBITEM = re.compile(r"^\(?(?P<subitem>[ivxlcdm]+|[a-z])\)?$", re.IGNORECASE)
+_CHECKLIST_ANSWER = {"YES": "YES", "NO": "NO", "NA": "NA"}
+
+
+def _checklist_unanswered_claims(response: DefectResponse) -> list[tuple[str, str | None]]:
+    """Return checklist item identifiers the model expressly calls unanswered."""
+    text = " ".join(
+        part
+        for part in (
+            response.summary,
+            response.observed,
+            response.conclusion,
+            response.gap_detail,
+            *(item.detail for item in response.elements),
+        )
+        if part
+    )
+    claims: list[tuple[str, str | None]] = []
+    for match in _CHECKLIST_ITEM_CLAIM.finditer(text):
+        claim = (
+            match.group("number"),
+            (match.group("subitem") or "").casefold() or None,
+        )
+        if claim not in claims:
+            claims.append(claim)
+    return claims
+
+
+def _checklist_answer_token(value: Any) -> str | None:
+    token = re.sub(r"[^A-Za-z]", "", str(value or "")).upper()
+    return _CHECKLIST_ANSWER.get(token)
+
+
+def _checklist_page(page: dict[str, Any]) -> bool:
+    return any(
+        "checklist" in part.casefold() or "check list" in part.casefold()
+        for part in parts_on_page(page.get("document_part"))
+    )
+
+
+def _checklist_item_answer(
+    layout: dict[int, dict[str, Any]],
+    number: str,
+    subitem: str | None,
+) -> tuple[int, str] | None:
+    """Read a checklist response from the right-hand answer column.
+
+    Layout words preserve the table coordinates even when linear OCR places the
+    answer away from its question.  Restricting responses to the right-hand
+    column prevents nearby prose from being mistaken for YES/NO/N.A.
+    """
+    for raw_page_number, page in sorted(layout.items()):
+        if not isinstance(page, dict) or not _checklist_page(page):
+            continue
+        words = [word for word in page.get("words") or [] if isinstance(word, dict)]
+        anchors: list[tuple[str, float]] = []
+        for word in words:
+            try:
+                x = float(word.get("x"))
+                y = float(word.get("y"))
+            except (TypeError, ValueError):
+                continue
+            match = _CHECKLIST_NUMBER.fullmatch(str(word.get("t") or "").strip())
+            if match and x <= 0.16:
+                anchors.append((match.group("number"), y))
+        anchors.sort(key=lambda item: item[1])
+        for index, (found_number, start_y) in enumerate(anchors):
+            if found_number != number:
+                continue
+            end_y = anchors[index + 1][1] if index + 1 < len(anchors) else 1.01
+            segment_start = start_y - 0.006
+            segment_end = end_y - 0.002
+            if subitem:
+                subanchors: list[tuple[str, float]] = []
+                for word in words:
+                    try:
+                        x = float(word.get("x"))
+                        y = float(word.get("y"))
+                    except (TypeError, ValueError):
+                        continue
+                    match = _CHECKLIST_SUBITEM.fullmatch(
+                        str(word.get("t") or "").strip()
+                    )
+                    if (
+                        match
+                        and 0.14 <= x <= 0.24
+                        and segment_start <= y < segment_end
+                    ):
+                        subanchors.append((match.group("subitem").casefold(), y))
+                subanchors.sort(key=lambda item: item[1])
+                for subindex, (found_subitem, sub_y) in enumerate(subanchors):
+                    if found_subitem != subitem:
+                        continue
+                    segment_start = sub_y - 0.006
+                    segment_end = (
+                        subanchors[subindex + 1][1] - 0.002
+                        if subindex + 1 < len(subanchors)
+                        else segment_end
+                    )
+                    break
+                else:
+                    continue
+            answers: list[tuple[float, str]] = []
+            for word in words:
+                try:
+                    x = float(word.get("x"))
+                    y = float(word.get("y"))
+                except (TypeError, ValueError):
+                    continue
+                answer = _checklist_answer_token(word.get("t"))
+                if answer and x >= 0.78 and segment_start <= y < segment_end:
+                    answers.append((y, answer))
+            if answers:
+                answers.sort(key=lambda item: item[0])
+                return int(raw_page_number), answers[0][1]
+    return None
+
+
+def apply_checklist_response_policy(
+    defect: Defect,
+    response: DefectResponse,
+    layout: dict[int, dict[str, Any]] | None,
+    *,
+    scope_complete: bool,
+) -> DefectResponse:
+    """Reject D-61 false positives caused by losing the answer table column."""
+    if (
+        _normalized_check_id(defect) != "D61"
+        or response.status != "defect_found"
+        or not scope_complete
+        or not layout
+    ):
+        return response
+    claims = _checklist_unanswered_claims(response)
+    if not claims:
+        return response
+    resolved: dict[tuple[str, str | None], tuple[int, str]] = {}
+    for claim in claims:
+        answer = _checklist_item_answer(layout, *claim)
+        if answer is None:
+            return response
+        resolved[claim] = answer
+
+    # Preserve a defect supported by an independent failed element. Only the
+    # contradicted unanswered-item finding is repaired here.
+    for element in response.elements:
+        if element.state not in {"missing", "incomplete"}:
+            continue
+        element_text = f"{element.name} {element.detail}"
+        matched = [
+            claim
+            for claim in claims
+            if re.search(
+                rf"\bitem\s+{re.escape(claim[0])}\b",
+                element_text,
+                re.IGNORECASE,
+            )
+        ]
+        if not matched:
+            return response
+        answer_values = ", ".join(resolved[claim][1] for claim in matched)
+        element.state = "present"
+        element.detail = f"The response column records {answer_values}."
+
+    labels = [
+        f"{number}{f'({subitem})' if subitem else ''}={resolved[(number, subitem)][1]}"
+        for number, subitem in claims
+    ]
+    response.status = "compliant"
+    response.confidence = max(response.confidence, 0.95)
+    response.gap = None
+    response.gap_detail = ""
+    response.review_reason = ""
+    response.evidence_request = None
+    response.summary = (
+        "The Advocate's Checklist records a response for the claimed unanswered "
+        "item or items."
+    )
+    response.observed = "The response column records " + ", ".join(labels) + "."
+    response.conclusion = "The claimed unanswered Checklist item is completed."
+    response.evidence = [
+        EvidenceRef(page=page, quote=answer)
+        for page, answer in dict.fromkeys(resolved.values())
+    ]
     return response
 
 
@@ -2533,16 +3020,53 @@ def _memo_of_parties_present(
     return False
 
 
+def _memo_of_appearance_present(
+    chunks: list[dict[str, Any]],
+    layout: dict[int, dict[str, Any]] | None,
+) -> bool:
+    """Whether an actual Memo of Appearance page is present in the filing.
+
+    Document-part ownership is used instead of cause-title or case-number
+    content because D-74 is only the document-presence objection. Combined
+    Memo of Appearance/Vakalatnama parts are expanded by ``parts_on_page``.
+    """
+    pages = [page for page in (layout or {}).values() if isinstance(page, dict)]
+    pages.extend(chunk for chunk in chunks if chunk.get("chunk_kind") != "summary")
+    return any(
+        any(
+            name.casefold() == "memo of appearance"
+            for name in parts_on_page(page.get("document_part"))
+        )
+        for page in pages
+    )
+
+
 def apply_presence_only_policy(
     defect: Defect,
     response: DefectResponse,
     chunks: list[dict[str, Any]],
     layout: dict[int, dict[str, Any]] | None,
 ) -> DefectResponse:
-    """Keep D-93 presence separate from D-63 address completeness."""
-    if _normalized_check_id(defect) != "D93" or not _memo_of_parties_present(
-        chunks, layout
-    ):
+    """Keep presence-only objections separate from document-content checks."""
+    check_id = _normalized_check_id(defect)
+    if check_id == "D74" and _memo_of_appearance_present(chunks, layout):
+        response.status = "compliant"
+        response.confidence = max(response.confidence, 0.95)
+        response.gap = None
+        response.gap_detail = ""
+        response.review_reason = ""
+        response.evidence_request = None
+        response.summary = "The filing contains a Memo of Appearance."
+        response.observed = (
+            "A page in the filing is classified as Memo of Appearance, including "
+            "a combined Memo of Appearance and Vakalatnama part."
+        )
+        response.conclusion = (
+            "The D-74 filing-presence requirement is met; cause-title, case-number, "
+            "format and content issues are outside this check."
+        )
+        return response
+    if check_id != "D93" or not _memo_of_parties_present(chunks, layout):
         return response
     response.status = "compliant"
     response.confidence = max(response.confidence, 0.95)

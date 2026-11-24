@@ -178,7 +178,12 @@ def _looks_like_filing_inventory_index(text: str) -> bool:
     # The caption and party block can precede the INDEX title in this
     # one-page filing list. Eight lines stops inside the caption on scans.
     head = _heading_window(text, lines=18)
-    if not re.search(r"(?mi)^\s*index\s*$", head):
+    compact_head = re.sub(r"[^a-z]", "", head.casefold())
+    has_index_heading = bool(
+        re.search(r"(?mi)^\s*index(?:\s+of\s+papers?)?\s*$", head)
+        or "indexofpapers" in compact_head
+    )
+    if not has_index_heading:
         return False
     folded = _fold(text[:3500])
     if "master index" in folded or "page no. of part" in folded:
@@ -476,19 +481,44 @@ def _looks_like_aor_declaration(text: str) -> bool:
 
 
 def _is_sci_caption(text: str) -> bool:
-    # OCR often inserts extra spaces/punctuation: "IN   THE    SUPREME", "S_UPRE1:IE".
-    head = _fold(_heading_window(text, lines=12))
-    if _SCI_CAPTION_RE.search(head):
-        return True
-    if _SCI_CAPTION_OCR_RE.search(head) or _SCI_CAPTION_OCR_RE.search(text[:900]):
-        return True
-    letters = re.sub(r"[^a-z0-9]+", "", head)
-    # A round scanned O is commonly recognized as Q ("SUPREME CQURT").
-    letters = letters.replace("cqurt", "court")
-    if "inthesupremecourtofindia" in letters:
-        return True
-    # Digits/punctuation inside "supreme" (supre1ie, s_upreme, …).
-    return bool(re.search(r"inthesupr[a-z0-9]{0,10}courtofindia", letters))
+    """Return true only when an SCI caption opens a heading line.
+
+    Judgment prose routinely cites the "Hon'ble Supreme Court of India".  A
+    caption detector must not turn that citation into a new Main Petition
+    boundary.  Inspect individual heading lines (and short adjacent-line
+    joins for OCR-split captions) rather than searching a folded prose block.
+    """
+
+    heading_lines = [
+        line.strip()
+        for line in _heading_window(text, lines=12).splitlines()
+        if line.strip()
+    ]
+    candidates: list[str] = []
+    for index in range(len(heading_lines)):
+        for width in (1, 2, 3):
+            lines = heading_lines[index : index + width]
+            if len(lines) != width:
+                continue
+            candidate = " ".join(lines)
+            # Markdown/table markers can precede a real caption.  A filing
+            # folio may also appear as ``1 | IN THE ...``.  Do not strip a
+            # numbered prose paragraph such as ``11. In the Supreme ...``.
+            candidate = re.sub(r"^[\s#>*_`|~\-]+", "", candidate)
+            candidate = re.sub(r"^\d{1,3}\s*[|:]\s*", "", candidate)
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        folded = _fold(candidate)
+        if _SCI_CAPTION_RE.match(folded) or _SCI_CAPTION_OCR_RE.match(candidate):
+            return True
+        letters = re.sub(r"[^a-z0-9]+", "", folded).replace("cqurt", "court")
+        if letters.startswith("inthesupremecourtofindia"):
+            return True
+        # Digits/punctuation inside "supreme" (supre1ie, s_upreme, …).
+        if re.match(r"^inthesupr[a-z0-9]{0,10}courtofindia", letters):
+            return True
+    return False
 
 
 def _normalized_court_heading(text: str) -> str:
@@ -573,6 +603,20 @@ def _has_leading_high_court_caption(text: str) -> bool:
 def _looks_like_rop_index_form(text: str) -> bool:
     """Blank Index of Record of Proceedings table in the paper-book front matter."""
     head = _heading_window(text, lines=12)
+    # LlamaParse can serialize the three column headings as two Markdown rows:
+    # ``S.NO. | DATE OF RECORD OF | PAGES`` followed by ``PROCEEDINGS``.
+    # Compare their normalized reading order before requiring the contiguous
+    # phrase ``RECORD OF PROCEEDINGS``. A master Index row merely listing the
+    # RoP does not contain this DATE/PAGES column combination.
+    normalized_head = re.sub(r"[^a-z0-9]+", " ", head.casefold()).strip()
+    split_markdown_columns = bool(
+        re.search(
+            r"\bs\s*no\s+date\s+of\s+record\s+of\s+pages\s+proceedings\b",
+            normalized_head,
+        )
+    )
+    if split_markdown_columns:
+        return True
     if not _RECORD_RE.search(head):
         return False
     if _ROP_INDEX_FORM_RE.search(text[:1800]):
@@ -750,6 +794,85 @@ def _looks_like_listing_proforma(text: str) -> bool:
         sum(bool(re.search(pattern, folded, re.I)) for pattern in _LISTING_FIELD_CUES)
         >= 3
     )
+
+
+def _explicit_unmapped_document_heading(text: str) -> str | None:
+    """Return a strong opening title that is outside the controlled taxonomy.
+
+    This is the generic escape hatch for future document types. It deliberately
+    requires a short, prominent opening title and excludes court captions,
+    pleading boilerplate, and every known outer-document title. Callers must
+    also verify that no known outer anchor owns the page.
+    """
+    raw_lines = [line for line in (text or "").splitlines()[:12] if line.strip()]
+    cleaned: list[tuple[str, bool]] = []
+    for raw in raw_lines:
+        plain = re.sub(r"<[^>]+>", " ", raw)
+        markdown_heading = bool(re.match(r"^\s*#{1,6}\s+", plain))
+        plain = re.sub(r"[#*_`|]+", " ", plain)
+        plain = " ".join(plain.split()).strip(" -–—:;,.()[]{}")
+        if not plain or re.fullmatch(r"\d{1,4}[A-Za-z]?", plain):
+            continue
+        # Reported judgments repeat a physical/court folio and neutral
+        # citation at the top of every page (for example
+        # ``4 | (2026:JHHC:26284)``).  That running header identifies a
+        # judgment continuation; it is never a new, unmapped document title.
+        if re.fullmatch(
+            r"(?:\d{1,4}\s+)?\(?\d{4}\s*:\s*[A-Z]{2,12}\s*:\s*\d+\)?",
+            plain,
+            re.IGNORECASE,
+        ):
+            continue
+        cleaned.append((plain, markdown_heading))
+
+    candidates: list[tuple[str, bool]] = []
+    for index, item in enumerate(cleaned):
+        candidates.append(item)
+        # OCR can split a title inside a word (``FIR D`` / ``ETAILS``).
+        last_word = item[0].split()[-1]
+        if index + 1 < len(cleaned) and len(last_word) == 1:
+            candidates.append((f"{item[0]}{cleaned[index + 1][0]}", item[1]))
+
+    known_title = re.compile(
+        r"(?i)^(?:index(?:\s+of\s+papers?)?|record\s+of\s+proceedings|"
+        r"listing\s+(?:proforma|performa)|proforma\s+for\s+first\s+listing|"
+        r"synopsis|list\s+of\s+dates|office\s+report|cover\s+page|"
+        r"advocate'?s?\s+check\s*list|impugned\s+(?:order|judg)|"
+        r"main\s+petition|special\s+leave\s+petition|affidavit|appendix|"
+        r"filing\s+memo|vakalatnama|memo\s+of|application|annexure|"
+        r"aor'?s?\s+(?:certificate|declaration)|custody\s+certificate|"
+        r"court\s+fees?)\b"
+    )
+    boilerplate = re.compile(
+        r"(?i)^(?:in\s+the|before\s+the|criminal\s+appellate|"
+        r"civil\s+appellate|under\s+article|in\s+the\s+matter|versus|"
+        r"section\b|filed\s+by|dated\b|advocate\b|petitioner\b|"
+        r"respondent\b|judg(?:e)?ment\b|order\b|coram\b|present\b|"
+        r"prayer\b|grounds?\b|verification\b|deponent\b|certified\s+copy\b|"
+        r"opening\s+sheet\b|contents?\b|and\s+for\s+this\s+act\b)"
+    )
+    for candidate, markdown_heading in candidates:
+        words = re.findall(r"[A-Za-z][A-Za-z0-9./&'-]*", candidate)
+        if not 1 <= len(words) <= 8 or len(candidate) > 100:
+            continue
+        letters = [char for char in candidate if char.isalpha()]
+        uppercase_ratio = (
+            sum(char.isupper() for char in letters) / len(letters) if letters else 0
+        )
+        if not markdown_heading and uppercase_ratio < 0.8:
+            continue
+        folded = _fold(candidate)
+        if known_title.search(folded) or boilerplate.search(folded):
+            continue
+        # A court docket line (``Cr.M.P. No.2683 of 2026``) identifies the
+        # case printed on the judgment; it is not an outer filing-document
+        # title and must not activate the generic Other-document fallback.
+        if re.search(
+            r"\bno\.?\s*\d+\s*(?:of|/)\s*\d{4}\b", folded, re.IGNORECASE
+        ):
+            continue
+        return candidate
+    return None
 
 
 def _looks_like_preface_narrative_continuation(text: str) -> bool:
@@ -944,13 +1067,15 @@ _NEUTRAL_CITATION_LINE_RE = re.compile(
     r"(?m)^\s*(\d{4}\s*:\s*[A-Z][A-Z0-9]*\s*:\s*\d{1,8})\s*$"
 )
 _RUNNING_COURT_CASE_RE = re.compile(
-    r"(?im)^\s*(?:w\.?\s*[ap]\.?\s*(?:\([a-z]\))?|"
-    r"r\.?\s*f\.?\s*a\.?|c\.?\s*r\.?\s*a\.?)\s*"
+    r"(?im)^\s*(?:\d{1,3}\s+)?(?:w\.?\s*[ap]\.?\s*(?:\([a-z]\))?|"
+    r"r\.?\s*f\.?\s*a\.?|c\.?\s*r\.?\s*a\.?|"
+    r"c\.?\s*r\.?\s*m\.?\s*p\.?)\s*"
     r"(?:no\.?\s*)?\d+\s*(?:/|of\s+)\s*\d{2,4}\b"
 )
 _COURT_JUDGMENT_RUNNING_HEADER_RE = re.compile(
-    r"(?im)^\s*(?:w\.?\s*p\.?|wp|writ\s+petition|c\.?\s*r\.?\s*a\.?|"
-    r"cra|r\.?\s*f\.?\s*a\.?)\s*(?:no\.?\s*)?\d+\s*"
+    r"(?im)^\s*(?:\d{1,3}\s+)?(?:w\.?\s*p\.?|wp|writ\s+petition|c\.?\s*r\.?\s*a\.?|"
+    r"cra|r\.?\s*f\.?\s*a\.?|c\.?\s*r\.?\s*m\.?\s*p\.?)\s*"
+    r"(?:no\.?\s*)?\d+\s*"
     r"(?:/|(?:of|0f|o0)\s+)\d{2,4}(?:\s*[-–—]\s*[a-z])?(?:[-_.a-z0-9]*)?\s*$",
 )
 
@@ -1499,6 +1624,11 @@ def _looks_like_cover_page(text: str) -> bool:
 
 
 def _looks_like_sci_main_petition(text: str) -> bool:
+    # A High Court judgment continuation can cite the Supreme Court in its
+    # opening paragraph. Repeated court-file headers and numbered judgment
+    # paragraphs are continuity evidence, not a fresh SCI petition caption.
+    if _looks_like_judgment_continuation(text):
+        return False
     if _is_lower_court_caption(text):
         return False
     if _looks_like_cover_page(text):

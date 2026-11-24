@@ -661,6 +661,14 @@ def stitch_slot_layouts(
                 copied["words"] = list(words) if isinstance(words, list) else []
             else:
                 copied = {"words": []}
+            # Keep the richer LlamaParse page text beside the coordinate word
+            # layer. The word layer is required for bounding boxes, but it can
+            # lose isolated digits or handwritten field values that the parsed
+            # Markdown correctly recovered. Scrutiny can then cross-check both
+            # representations instead of treating OCR silence as a blank field.
+            markdown = str(local.get(local_page) or "").strip()
+            if markdown:
+                copied["markdown"] = markdown
             copied["slot_id"] = item.slot_id
             copied["local_page"] = local_page
             if document_part:
@@ -668,6 +676,34 @@ def stitch_slot_layouts(
             stitched[next_page] = copied
             next_page += 1
     return stitched
+
+
+def merge_parse_markdown(
+    layout: LayoutIndex,
+    pages_by_slot: Mapping[str, Mapping[int, str]],
+) -> LayoutIndex:
+    """Backfill parsed page text into legacy global layout artifacts.
+
+    Older layout artifacts contain coordinate words but not the per-page
+    LlamaParse Markdown saved in the ParseArtifact. Slot id and local page are
+    stable join keys, so no physical/printed page-number inference is needed.
+    """
+    merged: LayoutIndex = {}
+    for page_number, raw in sorted(layout.items()):
+        page = dict(raw)
+        if not str(page.get("markdown") or page.get("text") or "").strip():
+            slot_id = str(page.get("slot_id") or "").strip()
+            try:
+                local_page = int(page.get("local_page"))
+            except (TypeError, ValueError):
+                local_page = 0
+            markdown = str(
+                (pages_by_slot.get(slot_id) or {}).get(local_page) or ""
+            ).strip()
+            if markdown:
+                page["markdown"] = markdown
+        merged[int(page_number)] = page
+    return merged
 
 
 def _layout_page_stub(

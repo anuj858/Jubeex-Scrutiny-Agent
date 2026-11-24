@@ -32,9 +32,12 @@ from extraction_review.scrutiny.schema import (
     FindingEvidence,
     _display_evidence_quote,
     _one_published_evidence,
+    apply_affidavit_reference_policy,
     apply_catalogue_gap_policy,
+    apply_checklist_response_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
+    apply_element_status_contract_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -62,9 +65,14 @@ from extraction_review.scrutiny_workflow import (
     _absence_owner_check_ids,
     _add_layout_fallback_chunks,
     _aggregate_complete_batch_responses,
+    _complete_batch_adjudication_prompt,
+    _complete_batch_outcomes_conflict,
     _complete_evidence_batches,
     _complete_layout_chunks_for_defect,
+    _defect_requires_visual_evidence,
     _retrieval_evidence_complete,
+    _usable_visual_detection,
+    _visual_evidence_complete,
     _visual_index_for_defect,
 )
 from extraction_review.vector_store import build_page_records
@@ -526,7 +534,7 @@ def test_complete_evidence_batches_never_drop_oversized_page_text() -> None:
     assert len(batches) >= 3
 
 
-def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> None:
+def test_complete_batch_aggregation_does_not_publish_a_partial_view() -> None:
     compliant = DefectResponse(
         check_id="D-68",
         status="compliant",
@@ -545,7 +553,22 @@ def test_complete_batch_aggregation_publishes_any_grounded_local_defect() -> Non
         conclusion="The translation is missing.",
         evidence=[EvidenceRef(page=9, quote="मराठी")],
     )
-    assert _aggregate_complete_batch_responses([compliant, defect]) is defect
+    responses = [compliant, defect]
+    assert _complete_batch_outcomes_conflict(responses)
+    result = _aggregate_complete_batch_responses(responses)
+    assert result.status == "needs_review"
+
+    prompt = _complete_batch_adjudication_prompt(
+        SimpleNamespace(
+            check_id="D-68",
+            requirement="Every vernacular passage must have a translation.",
+            ai_note="Compare the complete Annexure collection.",
+        ),
+        responses,
+    )
+    assert "BATCH 1" in prompt
+    assert "BATCH 2" in prompt
+    assert "does not prove it is absent from the filing" in prompt
 
 
 def test_complete_batch_aggregation_does_not_publish_legal_gate_status() -> None:
@@ -1173,6 +1196,77 @@ def test_split_nicknames_come_from_config_not_a_python_map() -> None:
     )
 
 
+def test_visual_requirement_ignores_generic_need_review_boilerplate() -> None:
+    defect = SimpleNamespace(
+        defect="A required paragraph is absent",
+        requirement="The paragraph must be present.",
+        requirement_ai=None,
+        ai_note=(
+            "SCOPE\nApply globally.\n\n"
+            "TEST\nCheck whether paragraph 1A exists.\n\n"
+            "EVIDENCE\nRead the complete petition text.\n\n"
+            "DECISION\nNEED REVIEW: use only when genuinely illegible after visual inspection.\n\n"
+            "GUARDRAILS\nDo not infer absence from a failed search.\n\n"
+            "RECORD\nRecord the decisive quotation."
+        ),
+    )
+
+    assert not _defect_requires_visual_evidence(defect)
+
+
+def test_visual_requirement_uses_substantive_signature_instruction() -> None:
+    defect = SimpleNamespace(
+        defect="The affidavit is unsigned",
+        requirement="The affidavit must bear the deponent's signature.",
+        requirement_ai=None,
+        ai_note=(
+            "SCOPE\nApply globally.\n\n"
+            "TEST\nInspect the deponent signature.\n\n"
+            "EVIDENCE\nUse the rendered signature block.\n\n"
+            "DECISION\nReturn Defect when absent.\n\n"
+            "GUARDRAILS\nOCR silence is not absence.\n\n"
+            "RECORD\nRecord the visual region."
+        ),
+    )
+
+    assert _defect_requires_visual_evidence(defect)
+
+
+def test_visual_page_quality_is_kept_without_an_ink_mark() -> None:
+    assert _usable_visual_detection(
+        {
+            "status": "ok",
+            "pages": [12],
+            "marks": [],
+            "quality_assessments": [
+                {"page": 12, "readable": True, "confidence": 0.98}
+            ],
+        }
+    )
+    assert _usable_visual_detection(
+        {
+            "status": "ok",
+            "field_assessments": [
+                {"page": 12, "field": "execution_date", "value_present": False}
+            ],
+        }
+    )
+    assert not _usable_visual_detection({"status": "ok", "marks": []})
+    assert not _usable_visual_detection({"status": "error", "pages": [12]})
+
+
+def test_visual_coverage_rejects_a_capped_page_plan() -> None:
+    visual = {
+        "status": "ok",
+        "pages": [12, 13, 14, 15],
+        "targets": [{"page": page} for page in (12, 13, 14, 15)],
+        "incomplete_check_ids": ["D-81"],
+        "failures": [],
+    }
+    assert not _visual_evidence_complete("D-81", visual)
+    assert _visual_evidence_complete("D-83", visual)
+
+
 def test_low_confidence_defect_becomes_needs_review() -> None:
     weak = DefectResponse(
         check_id="D003",
@@ -1188,6 +1282,137 @@ def test_low_confidence_defect_becomes_needs_review() -> None:
     assert review_reason_for_response(gated) == (
         "The document reading is only 40% certain, below the 60% needed to decide."
     )
+
+
+def test_low_confidence_grounded_failed_element_stays_defect() -> None:
+    response = DefectResponse(
+        check_id="D003",
+        status="defect_found",
+        confidence=0.4,
+        summary="The verification day is blank.",
+        observed="The verification clause shows an empty day field.",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="missing",
+                detail="The day field is blank.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this ___ day of March")],
+    )
+
+    assert apply_status_policy(response).status == "defect_found"
+
+
+def test_element_contract_promotes_decisive_review_to_defect() -> None:
+    response = DefectResponse(
+        check_id="D119",
+        status="needs_review",
+        confidence=0.55,
+        summary="The verification date requires review.",
+        gap="low_confidence",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="missing",
+                detail="The complete clause leaves the day blank.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this ___ day of March")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.gap is None
+    assert decided.review_reason == ""
+
+
+def test_element_contract_keeps_real_visual_uncertainty_in_review() -> None:
+    response = DefectResponse(
+        check_id="D119",
+        status="needs_review",
+        confidence=0.7,
+        summary="The handwritten day cannot be read.",
+        gap="unreadable",
+        elements=[
+            ElementFinding(
+                name="verification day",
+                state="incomplete",
+                detail="Ink obscures the day.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="Verified on this [ink] day of March")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+        visual_required=True,
+        visual_complete=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
+
+
+def test_element_contract_rejects_compliance_with_failed_element() -> None:
+    response = DefectResponse(
+        check_id="D077",
+        status="compliant",
+        confidence=0.9,
+        summary="The affidavit complies.",
+        elements=[
+            ElementFinding(
+                name="source of knowledge",
+                state="incomplete",
+                detail="The statement relies on another petitioner's belief.",
+            )
+        ],
+        evidence=[
+            EvidenceRef(
+                page=2,
+                quote="authorised to affirm this affidavit on behalf of petitioner No. 2",
+            )
+        ],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+
+
+def test_element_contract_does_not_promote_ocr_failure_without_required_visual() -> None:
+    response = DefectResponse(
+        check_id="D058",
+        status="compliant",
+        confidence=0.9,
+        summary="The index complies.",
+        elements=[
+            ElementFinding(
+                name="running pagination",
+                state="incomplete",
+                detail="OCR reads the folio as 11 rather than 111.",
+            )
+        ],
+        evidence=[EvidenceRef(page=4, quote="11")],
+    )
+
+    decided = apply_element_status_contract_policy(
+        response,
+        scope_complete=True,
+        visual_required=True,
+        visual_complete=False,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_high_score_review_does_not_claim_score_is_below_threshold() -> None:
@@ -1483,6 +1708,149 @@ def test_d93_present_party_section_cannot_be_reported_as_not_filed() -> None:
     assert decided.status == "compliant"
     assert decided.confidence == 0.95
     assert "assessed separately under D-63" in decided.reasoning
+
+
+def test_d74_filed_memo_cannot_fail_for_cause_title_or_case_number() -> None:
+    defect = SimpleNamespace(check_id="D-74")
+    response = DefectResponse(
+        check_id="D-74",
+        status="defect_found",
+        confidence=0.97,
+        summary="Memo of Appearance has the wrong cause title.",
+        reasoning="The case number does not match the Main Petition.",
+        evidence=[EvidenceRef(page=42, quote="MEMO OF APPEARANCE")],
+    )
+    layout = {
+        42: {
+            "document_part": "Memo of Appearance + Vakalatnama",
+            "words": [{"t": "MEMO"}, {"t": "OF"}, {"t": "APPEARANCE"}],
+        }
+    }
+
+    decided = apply_presence_only_policy(defect, response, [], layout)
+
+    assert decided.status == "compliant"
+    assert decided.confidence == 0.97
+    assert decided.gap is None
+    assert "cause-title, case-number, format and content" in decided.reasoning
+
+
+def test_d74_vakalatnama_alone_does_not_prove_memo_is_filed() -> None:
+    defect = SimpleNamespace(check_id="D-74")
+    response = DefectResponse(
+        check_id="D-74",
+        status="defect_found",
+        confidence=1.0,
+        summary="Memo of Appearance is not filed.",
+        reasoning="The complete manifest contains only a Vakalatnama.",
+        evidence=[],
+    )
+    layout = {42: {"document_part": "Vakalatnama", "words": []}}
+
+    decided = apply_presence_only_policy(defect, response, [], layout)
+
+    assert decided.status == "defect_found"
+    assert decided.summary == "Memo of Appearance is not filed."
+
+
+def test_d56_repairs_dropped_paragraph_start_but_preserves_other_defects() -> None:
+    defect = SimpleNamespace(check_id="D-56")
+    response = DefectResponse(
+        check_id="D-56",
+        status="defect_found",
+        confidence=0.99,
+        summary="The Affidavit leaves its date, paragraph and page references incomplete.",
+        observed=(
+            "The verification day is blank, the Affidavit says SLP from para to "
+            "8, and the page range has no ending value."
+        ),
+        elements=[
+            ElementFinding(
+                name="Date on the Affidavit",
+                state="incomplete",
+                detail="The verification day is blank.",
+            ),
+            ElementFinding(
+                name="Number or range of the petition's paragraphs",
+                state="incomplete",
+                detail="The starting paragraph number is blank.",
+            ),
+            ElementFinding(
+                name="Number or range of the petition's pages",
+                state="incomplete",
+                detail="The ending page value is blank.",
+            ),
+        ],
+        conclusion="All three references are incomplete.",
+        evidence=[EvidenceRef(page=38, quote="SLP from para to 8")],
+    )
+    layout = {
+        38: {
+            "document_part": "Affidavit",
+            "markdown": (
+                "I say that the contents of the Synopsis & List of Dates from "
+                "page B to [___] and SLP from para 1 to 8 are true.\n\n"
+                "Verified at New Delhi of this [___] day of October, 2026."
+            ),
+            "words": [
+                {"t": "SLP", "x": 0.2, "y": 0.6},
+                {"t": "from", "x": 0.25, "y": 0.6},
+                {"t": "para", "x": 0.3, "y": 0.6},
+                {"t": "to", "x": 0.38, "y": 0.6},
+                {"t": "8", "x": 0.41, "y": 0.6},
+            ],
+        }
+    }
+
+    decided = apply_affidavit_reference_policy(
+        defect, response, layout, scope_complete=True
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.elements[1].state == "present"
+    assert "paragraph range 1 to 8" in decided.elements[1].detail
+    assert decided.elements[0].state == "incomplete"
+    assert decided.elements[2].state == "incomplete"
+    assert "paragraph range 1 to 8" in decided.reasoning
+    assert "starting paragraph number is blank" not in decided.reasoning
+    assert any(item.quote == "SLP from para 1 to 8" for item in decided.evidence)
+
+
+def test_d56_complete_paragraph_range_can_clear_only_false_failure() -> None:
+    defect = SimpleNamespace(check_id="D-56")
+    response = DefectResponse(
+        check_id="D-56",
+        status="defect_found",
+        confidence=0.96,
+        summary="The paragraph range is incomplete.",
+        observed="The Affidavit says SLP from para to 8.",
+        elements=[
+            ElementFinding(name="Affidavit date", state="present"),
+            ElementFinding(
+                name="Petition paragraph range",
+                state="incomplete",
+                detail="The starting paragraph number is blank.",
+            ),
+            ElementFinding(name="Petition page range", state="present"),
+        ],
+        conclusion="The paragraph reference is incomplete.",
+        evidence=[EvidenceRef(page=38, quote="SLP from para to 8")],
+    )
+    layout = {
+        38: {
+            "document_part": "Affidavit",
+            "markdown": "SLP from para 1 to 8",
+            "words": [],
+        }
+    }
+
+    decided = apply_affidavit_reference_policy(
+        defect, response, layout, scope_complete=True
+    )
+
+    assert decided.status == "compliant"
+    assert all(item.state == "present" for item in decided.elements)
+    assert "paragraph range 1 to 8" in decided.reasoning
 
 
 def test_defect_reasoning_removes_internal_chunk_and_uses_document_page() -> None:
@@ -2746,6 +3114,115 @@ def test_complete_d75_endorsement_scope_becomes_defect_not_conflict() -> None:
     )
     assert decided.status == "defect_found"
     assert decided.gap is None
+
+
+def _d61_layout(answer: str | None) -> dict[int, dict[str, object]]:
+    words: list[dict[str, object]] = [
+        {"t": "11.", "x": 0.11, "y": 0.07, "w": 0.03, "h": 0.02},
+        {"t": "Whether", "x": 0.17, "y": 0.07, "w": 0.08, "h": 0.02},
+        {"t": "particulars", "x": 0.26, "y": 0.07, "w": 0.09, "h": 0.02},
+        {"t": "are", "x": 0.36, "y": 0.07, "w": 0.04, "h": 0.02},
+        {"t": "uniform", "x": 0.41, "y": 0.07, "w": 0.08, "h": 0.02},
+        {"t": "12.", "x": 0.11, "y": 0.13, "w": 0.03, "h": 0.02},
+    ]
+    if answer is not None:
+        words.append({"t": answer, "x": 0.81, "y": 0.07, "w": 0.04, "h": 0.02})
+    return {
+        2: {
+            "document_part": "Advocate's Checklist",
+            "local_page": 2,
+            "slot_id": "advocates_checklist",
+            "words": words,
+        }
+    }
+
+
+def _d61_unanswered_response() -> DefectResponse:
+    return DefectResponse(
+        check_id="D-61",
+        status="defect_found",
+        confidence=0.97,
+        summary="The Advocate's Checklist leaves numbered item 11 unanswered.",
+        observed="Numbered item 11 has no answer.",
+        conclusion="The Checklist is incomplete because item 11 is unanswered.",
+        elements=[
+            ElementFinding(
+                name="Numbered items answered YES, NO or N.A.",
+                state="missing",
+                detail="Numbered item 11 has no answer.",
+            )
+        ],
+        evidence=[EvidenceRef(page=2, quote="11. Whether particulars are uniform")],
+    )
+
+
+@pytest.mark.parametrize("answer", ["NA", "N.A.", "N/A", "/NA", "Yes", "NO"])
+def test_d61_visible_response_cannot_be_published_as_unanswered(answer: str) -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+
+    decided = apply_checklist_response_policy(
+        defect,
+        _d61_unanswered_response(),
+        _d61_layout(answer),
+        scope_complete=True,
+    )
+
+    assert decided.status == "compliant"
+    assert decided.confidence == 0.97
+    assert decided.elements[0].state == "present"
+    assert decided.evidence[0].quote in {"YES", "NO", "NA"}
+    assert "11=" in decided.observed
+
+
+def test_d61_genuinely_blank_response_remains_defect() -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+    response = _d61_unanswered_response()
+
+    decided = apply_checklist_response_policy(
+        defect,
+        response,
+        _d61_layout(None),
+        scope_complete=True,
+    )
+
+    assert decided.status == "defect_found"
+    assert decided.elements[0].state == "missing"
+
+
+def test_d61_unreadable_review_is_not_overridden() -> None:
+    defect = _scrutiny_row(
+        check_id="D-61",
+        defect="AoR has not filed the requisite checklist in the prescribed format.",
+        requirement="Every numbered checklist item must have a response.",
+        inspect_parts=["Advocate's Checklist"],
+    )
+    response = _d61_unanswered_response().model_copy(
+        update={
+            "status": "needs_review",
+            "gap": "unreadable",
+            "gap_detail": "The item 11 response cell is unreadable.",
+        }
+    )
+
+    decided = apply_checklist_response_policy(
+        defect,
+        response,
+        _d61_layout("NA"),
+        scope_complete=True,
+    )
+
+    assert decided.status == "needs_review"
+    assert decided.gap == "unreadable"
 
 
 def test_complete_manifest_without_conditional_trigger_becomes_not_applicable() -> None:

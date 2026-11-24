@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from ..document_parts import family_split_name, parts_on_page
 from ..scrutiny.rules import Defect
@@ -26,6 +27,13 @@ MAX_DEFECT_IMAGES = 4
 _INK_RE = re.compile(
     r"\b(?:signatur\w*|signed|notary|notarial|notar\w*|seal|stamp|"
     r"handwritten|thumb\s+impression|duly\s+sworn|attested|attestation)\b",
+    re.IGNORECASE,
+)
+_RENDERED_PAGE_RE = re.compile(
+    r"\b(?:legible|illegible|readable|unreadable|dim|blurred|faint|cut\s+edges?|"
+    r"clear\s*,?\s*sharp|typed\s+copy|true\s+typed\s+copy|page\s+numbers?\s+"
+    r"(?:not\s+)?indicated|paginated|pagination\s+order|running\s+pagination|"
+    r"page\s+ranges?|margins?|paper\s+size|font\s+size|spacing)\b",
     re.IGNORECASE,
 )
 _DATE_ROLE_WORDS = frozenset(
@@ -109,9 +117,17 @@ def _needs_page_date(text: str) -> bool:
 
 
 def defect_needs_ink(defect: Defect) -> bool:
-    """True when this defect's own title or requirement asks to see the page."""
+    """True when this defect needs a rendered page, field, or ink mark.
+
+    The historical name is retained for API compatibility. Rendering is also
+    required for page-quality and geometry facts that OCR text cannot prove.
+    Generic Need Review boilerplate is intentionally excluded because only the
+    defect title and requirement are examined here.
+    """
     text = _LANDMARK_RE.sub(" ", f"{defect.defect or ''}\n{defect.requirement or ''}")
-    return bool(_INK_RE.search(text) or _needs_page_date(text))
+    return bool(
+        _INK_RE.search(text) or _RENDERED_PAGE_RE.search(text) or _needs_page_date(text)
+    )
 
 
 def selector_for_document(name: str) -> str:

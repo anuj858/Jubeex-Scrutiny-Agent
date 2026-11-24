@@ -71,10 +71,24 @@ def test_ink_comes_from_the_defect_wording_not_a_fixed_list() -> None:
         requirement="State the date of the order.",
         inspect_parts=["Impugned Order"],
     )
+    rendered_quality = _defect(
+        "NEW-5",
+        "The annexure is dim and not accompanied by a true typed copy",
+        requirement="Every annexure must be clear, sharp and legible.",
+        inspect_parts=["Annexures"],
+    )
+    pagination = _defect(
+        "NEW-6",
+        "The Index does not use running pagination",
+        requirement="Index page ranges must remain in pagination order.",
+        inspect_parts=["Index"],
+    )
     assert defect_needs_ink(sworn)
     assert defect_needs_ink(signed)
     assert not defect_needs_ink(plain)
     assert defect_needs_ink(landmark)
+    assert defect_needs_ink(rendered_quality)
+    assert defect_needs_ink(pagination)
 
 
 def test_vakalatnama_of_two_or_three_pages_is_sent_whole() -> None:

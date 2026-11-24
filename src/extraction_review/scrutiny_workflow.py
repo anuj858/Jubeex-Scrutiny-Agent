@@ -52,6 +52,7 @@ from .layout_index import (
     LAYOUT_ARTIFACT_KEY_KEY,
     LAYOUT_ARTIFACT_URL_KEY,
     load_layout_index,
+    merge_parse_markdown,
 )
 from .llm import (
     LLMError,
@@ -75,7 +76,12 @@ from .logging_utils import safe_url_for_log
 from .process_file import FILE_DOWNLOAD_TIMEOUT_S, _require_pdf_bytes
 from .remote_download import download_remote_pdf
 from .reranking import rerank_chunks_for_defect
-from .s3_artifacts import STEP_DEFECTS, upload_step_json
+from .s3_artifacts import STEP_DEFECTS, download_json_object, upload_step_json
+from .split_upload import (
+    PARSE_ARTIFACT_KEY_KEY,
+    PARSE_ARTIFACT_URL_KEY,
+    load_parse_artifact,
+)
 from .scrutiny.context_followup import (
     evidence_chunks_for_rerun,
     serve_context_followup,
@@ -103,9 +109,12 @@ from .scrutiny.schema import (
     DefectResponse,
     LlmUsage,
     ScrutinyReport,
+    apply_affidavit_reference_policy,
     apply_catalogue_gap_policy,
+    apply_checklist_response_policy,
     apply_conditional_manifest_policy,
     apply_deterministic_postclassification_policy,
+    apply_element_status_contract_policy,
     apply_evidence_capability_policy,
     apply_evidence_pages,
     apply_final_evidence_contract_policy,
@@ -174,6 +183,70 @@ _VISUAL_TERMS = (
     "paper size",
     "spacing",
 )
+
+_AI_NOTE_SECTION = re.compile(
+    r"(?ms)^(SCOPE|TEST|EVIDENCE|DECISION|GUARDRAILS|RECORD)\s*$\n"
+    r"(.*?)(?=^[A-Z][A-Z ]+\s*$\n|\Z)"
+)
+
+
+def _defect_requires_visual_evidence(defect: Defect) -> bool:
+    """Return whether the substantive rule needs rendered-page evidence.
+
+    Catalogue notes share generic review wording containing terms such as
+    ``illegible`` and ``visual inspection``. Scanning the whole note made
+    text-only rules visual, increasing cost and allowing missing image coverage
+    to block otherwise decisive text. Only the rule wording and substantive
+    TEST, EVIDENCE and GUARDRAILS sections participate here.
+    """
+    sections = {
+        name: body
+        for name, body in _AI_NOTE_SECTION.findall(str(defect.ai_note or ""))
+    }
+    substantive_note = " ".join(
+        sections.get(name, "") for name in ("TEST", "EVIDENCE", "GUARDRAILS")
+    )
+    wording = (
+        f"{defect.defect} {check_requirement(defect)} {substantive_note}"
+    ).casefold()
+    return any(term in wording for term in _VISUAL_TERMS)
+
+
+def _usable_visual_detection(detected: dict[str, Any] | None) -> bool:
+    """Accept completed visual evidence even when no ink mark was detected."""
+    if not isinstance(detected, dict) or detected.get("status") != "ok":
+        return False
+    return any(
+        bool(detected.get(key))
+        for key in (
+            "pages",
+            "targets",
+            "marks",
+            "field_assessments",
+            "quality_assessments",
+        )
+    )
+
+
+def _visual_evidence_complete(
+    check_id: str, visual_index: dict[str, Any] | None
+) -> bool:
+    """True only when every planned page for this check was rendered."""
+    if not isinstance(visual_index, dict) or visual_index.get("status") != "ok":
+        return False
+    if check_id in set(visual_index.get("incomplete_check_ids") or []):
+        return False
+    target_pages = {
+        int(target["page"])
+        for target in visual_index.get("targets") or []
+        if isinstance(target, dict) and target.get("page") is not None
+    }
+    reviewed_pages = {int(page) for page in visual_index.get("pages") or []}
+    return bool(
+        target_pages
+        and target_pages.issubset(reviewed_pages)
+        and not visual_index.get("failures")
+    )
 
 
 @dataclass
@@ -287,15 +360,7 @@ class ScrutinyMicrobatcher:
             *required_parts_for_defect(defect),
             *(getattr(defect, "context_parts", None) or []),
         ]
-        visual = (
-            "visual"
-            if any(
-                term
-                in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
-                for term in _VISUAL_TERMS
-            )
-            else "text"
-        )
+        visual = "visual" if _defect_requires_visual_evidence(defect) else "text"
         return (model, visual, *sorted(set(parts), key=str.casefold))
 
     async def evaluate(
@@ -571,6 +636,56 @@ async def _sha256_from_url(file_url: str) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+async def _layout_with_parse_markdown(
+    layout: dict[int, dict[str, Any]],
+    metadata: dict[str, Any],
+) -> dict[int, dict[str, Any]]:
+    """Backfill page Markdown for legacy layouts from the saved ParseArtifact."""
+    if not layout or all(
+        str(page.get("markdown") or page.get("text") or "").strip()
+        for page in layout.values()
+        if isinstance(page, dict)
+    ):
+        return layout
+    key = str(metadata.get(PARSE_ARTIFACT_KEY_KEY) or "").strip()
+    url = str(metadata.get(PARSE_ARTIFACT_URL_KEY) or "").strip()
+    payload = (
+        await asyncio.to_thread(download_json_object, key) if key else None
+    )
+    if payload is None and url:
+        try:
+            timeout = httpx.Timeout(FILE_DOWNLOAD_TIMEOUT_S)
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                candidate = response.json()
+                payload = candidate if isinstance(candidate, dict) else None
+        except Exception:
+            logger.warning(
+                "Failed to backfill layout Markdown from ParseArtifact URL",
+                exc_info=True,
+            )
+    if not isinstance(payload, dict):
+        return layout
+    _slots, _order, pages_by_slot, _jobs, _layouts, _structured = (
+        load_parse_artifact(payload)
+    )
+    if not pages_by_slot:
+        return layout
+    merged = merge_parse_markdown(layout, pages_by_slot)
+    added = sum(
+        1
+        for page_number, page in merged.items()
+        if str(page.get("markdown") or "").strip()
+        and not str((layout.get(page_number) or {}).get("markdown") or "").strip()
+    )
+    if added:
+        logger.info("Backfilled parsed Markdown into %s legacy layout page(s)", added)
+    return merged
+
+
 def _sanitize_response(
     defect: Defect,
     response: DefectResponse,
@@ -712,9 +827,16 @@ def _complete_evidence_batches(
 def _aggregate_complete_batch_responses(
     responses: list[DefectResponse],
 ) -> DefectResponse:
-    """Aggregate exhaustive batches; a local defect is immediately decisive."""
+    """Aggregate exhaustive batches without treating a partial view as global.
+
+    A batch can positively prove a local blank, mismatch, or other defect, but
+    it cannot prove a collection-wide absence.  Mixed outcomes therefore need
+    one compact adjudication over *all* batch findings.  The caller performs
+    that adjudication; this helper returns ``needs_review`` as the safe interim
+    state instead of publishing whichever batch happened to be most confident.
+    """
     defects = [item for item in responses if item.status == "defect_found"]
-    if defects:
+    if defects and len(defects) == len(responses):
         return max(defects, key=lambda item: item.confidence)
     if responses and all(item.status == "compliant" for item in responses):
         chosen = max(responses, key=lambda item: item.confidence)
@@ -726,10 +848,42 @@ def _aggregate_complete_batch_responses(
     chosen.status = "needs_review"
     chosen.gap = chosen.gap or "ambiguous"
     chosen.gap_detail = chosen.gap_detail or (
-        "The complete evidence batches produced inconsistent filing outcomes. "
-        "Catalogue legal-verification metadata was not used as a filing status."
+        "The complete evidence batches produced different filing outcomes and "
+        "must be reconciled against their combined evidence."
     )
     return chosen
+
+
+def _complete_batch_outcomes_conflict(responses: list[DefectResponse]) -> bool:
+    """True when page-preserving batches need a combined-evidence decision."""
+    return len({item.status for item in responses}) > 1
+
+
+def _complete_batch_adjudication_prompt(
+    defect: Defect,
+    responses: list[DefectResponse],
+) -> str:
+    """Build a compact second-pass prompt from every batch's grounded result."""
+    findings = "\n\n".join(
+        f"BATCH {number}\n{response.model_dump_json(exclude_none=True)}"
+        for number, response in enumerate(responses, start=1)
+    )
+    return (
+        f"Reconcile the complete-evidence batch findings for {defect.check_id}.\n"
+        f"Requirement: {defect.requirement}\n"
+        f"Operational note:\n{defect.ai_note or ''}\n\n"
+        "The batches together cover the complete relevant evidence scope. Treat "
+        "their evidence references and element results as one filing. A statement "
+        "that an item is absent from one batch does not prove it is absent from the "
+        "filing when another batch shows it. A visible blank, mismatch, prohibited "
+        "content, or other positive non-compliance remains a Defect. Return "
+        "Compliant only when the combined findings establish every applicable "
+        "element. Return Needs Review only for a genuine unreadable region or a "
+        "material conflict that the combined findings cannot resolve. Do not use "
+        "confidence as evidence and do not invent pages or text. Preserve supporting "
+        "evidence references from the batch findings.\n\n"
+        f"{findings}"
+    )
 
 
 def _absence_owner_check_ids(
@@ -1035,32 +1189,15 @@ def _prepare_defect_evaluation(
     chunks = evidence_chunks_for_rerun(defect, chunks)
 
     pages = sorted({c["page"] for c in chunks if c.get("page") is not None})
-    visual_required = any(
-        term
-        in f"{defect.defect} {check_requirement(defect)} {defect.ai_note or ''}".casefold()
-        for term in _VISUAL_TERMS
-    )
+    visual_required = _defect_requires_visual_evidence(defect)
     visual_pages = (
         [int(page) for page in check_visual_index.get("pages") or []]
         if isinstance(check_visual_index, dict)
         else []
     )
-    visual_target_pages = (
-        {
-            int(target["page"])
-            for target in check_visual_index.get("targets") or []
-            if isinstance(target, dict) and target.get("page") is not None
-        }
-        if isinstance(check_visual_index, dict)
-        else set()
-    )
     visual_complete = bool(
         visual_required
-        and isinstance(check_visual_index, dict)
-        and check_visual_index.get("status") == "ok"
-        and visual_target_pages
-        and visual_target_pages.issubset(set(visual_pages))
-        and not check_visual_index.get("failures")
+        and _visual_evidence_complete(defect.check_id, check_visual_index)
     )
     document_found = bool(chunks) and not missing_required_parts(defect, chunks)
     prompt_truncated = _prompt_evidence_truncated(chunks)
@@ -1308,7 +1445,30 @@ async def _finalize_defect_evaluation(
                 retry_responses.append(retry_response)
                 retry_usage = retry_usage.plus(batch_usage)
             complete_document_retried = bool(retry_responses)
-            response = _aggregate_complete_batch_responses(retry_responses)
+            if _complete_batch_outcomes_conflict(retry_responses):
+                adjudicated, adjudication_usage = await call_structured(
+                    system_prompt=system_prompt,
+                    user_prompt=_complete_batch_adjudication_prompt(
+                        defect, retry_responses
+                    ),
+                    response_model=DefectResponse,
+                    model=model,
+                    client=llm_client,
+                    request_label=(
+                        f"scrutiny:{defect.check_id}:complete-evidence-adjudication"
+                    ),
+                )
+                retry_usage = retry_usage.plus(adjudication_usage)
+                response = _sanitize_response(
+                    defect,
+                    adjudicated,
+                    complete_chunks,
+                    check_visual_index,
+                    layout,
+                    enforce_retrieval=False,
+                )
+            else:
+                response = _aggregate_complete_batch_responses(retry_responses)
             chunks = complete_chunks
             usage = usage.plus(retry_usage)
             pages = sorted(complete_pages)
@@ -1350,7 +1510,25 @@ async def _finalize_defect_evaluation(
         check_visual_index,
         scope_complete=coverage.scope_complete,
     )
+    response = apply_affidavit_reference_policy(
+        defect,
+        response,
+        layout,
+        scope_complete=coverage.scope_complete,
+    )
+    response = apply_checklist_response_policy(
+        defect,
+        response,
+        layout,
+        scope_complete=coverage.scope_complete,
+    )
     response = apply_conditional_manifest_policy(defect, response, layout)
+    response = apply_element_status_contract_policy(
+        response,
+        scope_complete=coverage.scope_complete,
+        visual_required=coverage.visual_required,
+        visual_complete=coverage.visual_complete,
+    )
     # A context follow-up is one extra chunk, not the complete-document retry.
     # The contract turns a leftover retrieval gap into not_determined only
     # after that retry has called the model. Otherwise the answer stays in
@@ -2514,6 +2692,8 @@ class ScrutinyWorkflow(Workflow):
             layout_url if isinstance(layout_url, str) else None,
             key=layout_key if isinstance(layout_key, str) else None,
         )
+        if isinstance(metadata, dict):
+            layout = await _layout_with_parse_markdown(layout, metadata)
         visual_url = (
             metadata.get(VISUAL_ARTIFACT_URL_KEY)
             if isinstance(metadata, dict)
@@ -2659,6 +2839,12 @@ class ScrutinyWorkflow(Workflow):
             plan_defect_images(defects, layout),
             metadata if isinstance(metadata, dict) else None,
         )
+        incomplete_visual_checks = sorted(
+            plan.check_id for plan in image_plans if plan.leftover_pages
+        )
+        if isinstance(visual_index, dict) and incomplete_visual_checks:
+            visual_index = dict(visual_index)
+            visual_index["incomplete_check_ids"] = incomplete_visual_checks
         if visual_detection_enabled() and any(plan.pages for plan in image_plans):
             ctx.write_event_to_stream(
                 Status(
@@ -2676,9 +2862,13 @@ class ScrutinyWorkflow(Workflow):
                 model_tier=event.model_tier,
                 selected_targets=visual_targets_for_plans(image_plans),
             )
-            # Boxes only. A failed or empty scan must not replace the filing
-            # text the defect model reads, and must not turn a defect into review.
-            if detected.get("status") == "ok" and detected.get("marks"):
+            # Preserve completed page-quality and labelled-field assessments
+            # even when the page contains no signature, seal, or stamp. An
+            # empty marks list is affirmative visual evidence for blank-field
+            # and legibility checks, not a failed scan.
+            if _usable_visual_detection(detected):
+                if incomplete_visual_checks:
+                    detected["incomplete_check_ids"] = incomplete_visual_checks
                 visual_index = detected
 
         def build_report(

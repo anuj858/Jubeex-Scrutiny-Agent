@@ -51,13 +51,24 @@ def main() -> None:
     parser.add_argument("path", type=Path)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--check-id",
+        action="append",
+        default=[],
+        help="Update only the named check id; repeat for multiple checks.",
+    )
     args = parser.parse_args()
 
     payload = json.loads(args.path.read_text(encoding="utf-8"))
     original = copy.deepcopy(payload)
     rows = payload.get("defects") or []
+    selected = set(args.check_id)
+    updated_count = 0
     for row in rows:
+        if selected and row.get("check_id") not in selected:
+            continue
         standardize(row)
+        updated_count += 1
 
     for before, after in zip(original.get("defects") or [], rows, strict=True):
         if {key: value for key, value in before.items() if key != "ai_note"} != {
@@ -75,7 +86,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "updated_notes": len(rows),
+                "updated_notes": updated_count,
                 "maximum_ai_note_length": max(len(row["ai_note"]) for row in rows),
                 "output": str(target),
             },
