@@ -18,6 +18,7 @@ import os
 import re
 import uuid
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -95,6 +96,7 @@ from .source_url import renew_workspace_s3_url
 from .split_upload import (
     UNDEFINED_SLOT_ID,
     SplitUploadError,
+    UploadSlot,
     dynamic_upload_slot,
     type_catalog,
     ui_catalog,
@@ -640,21 +642,114 @@ def normalize_document_stem(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
 
 
-def _known_slot_ids(filing_type: str | None) -> list[str]:
+def _slots_for_filing(filing_type: str | None) -> tuple[UploadSlot, ...]:
     if filing_type:
         try:
-            return [slot.id for slot in type_catalog(filing_type).slots]
+            return type_catalog(filing_type).slots
         except SplitUploadError:
             pass
-    ids: list[str] = []
+    slots: list[UploadSlot] = []
     seen: set[str] = set()
-    for entry in ui_catalog().values():
-        for slot in entry.get("slots") or []:
-            slot_id = str(slot.get("id") or "").strip()
-            if slot_id and slot_id not in seen:
-                seen.add(slot_id)
-                ids.append(slot_id)
-    return ids
+    for filing in ui_catalog():
+        try:
+            catalog = type_catalog(str(filing))
+        except SplitUploadError:
+            continue
+        for slot in catalog.slots:
+            if slot.id in seen:
+                continue
+            seen.add(slot.id)
+            slots.append(slot)
+    return tuple(slots)
+
+
+def _known_slot_ids(filing_type: str | None) -> list[str]:
+    return [slot.id for slot in _slots_for_filing(filing_type)]
+
+
+def _slot_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (value or "").casefold()).strip("_")
+
+
+def _slot_match_keys(value: str) -> set[str]:
+    """Slot id, display name, and the possessive slug of that name.
+
+    ``Advocate's Checklist`` becomes ``advocate_s_checklist``. The catalog id
+    is ``advocates_checklist``. Folding ``_s_`` to ``s_`` makes those the same
+    key. ``AOR's Certificate`` still stays distinct from ``AOR's Declaration``.
+    """
+    token = _slot_token(value)
+    if not token:
+        return set()
+    return {token, token.replace("_s_", "s_")}
+
+
+def _slot_owning_label(slots: Sequence[UploadSlot], label: str) -> str | None:
+    folded = (label or "").casefold()
+    if not folded:
+        return None
+    owners: list[str] = []
+    for slot in slots:
+        if slot.id == UNDEFINED_SLOT_ID:
+            continue
+        names = (slot.label, *slot.parts)
+        if any(name.casefold() == folded for name in names):
+            owners.append(slot.id)
+    unique = list(dict.fromkeys(owners))
+    if len(unique) == 1:
+        return unique[0]
+    return None
+
+
+@lru_cache(maxsize=32)
+def _slot_token_index(filing_type: str | None) -> dict[str, str]:
+    """Map catalogue slugs and part names onto one upload slot id."""
+    slots = _slots_for_filing(filing_type)
+    buckets: dict[str, set[str]] = {}
+
+    def add(raw: str, slot_id: str) -> None:
+        for key in _slot_match_keys(raw):
+            if not key or key == UNDEFINED_SLOT_ID:
+                continue
+            buckets.setdefault(key, set()).add(slot_id)
+
+    for slot in slots:
+        if slot.id == UNDEFINED_SLOT_ID:
+            continue
+        add(slot.id, slot.id)
+        add(slot.label, slot.id)
+        for part in slot.parts:
+            add(part, slot.id)
+
+    from .scrutiny.applicability import PART_DOCUMENT_TYPES
+
+    for spec in PART_DOCUMENT_TYPES.values():
+        owner = _slot_owning_label(slots, str(spec.get("split_label") or ""))
+        if owner is None:
+            continue
+        add(str(spec.get("code") or ""), owner)
+        add(str(spec.get("name") or ""), owner)
+        add(str(spec.get("split_label") or ""), owner)
+
+    index = {key: next(iter(ids)) for key, ids in buckets.items() if len(ids) == 1}
+    known = {slot.id for slot in slots}
+    for alias, target in _SLOT_NAME_ALIASES.items():
+        if target in known or target == "fullpetition":
+            index[alias] = target
+    return index
+
+
+def _slot_from_token(stem: str, filing_type: str | None) -> str | None:
+    if not stem:
+        return None
+    index = _slot_token_index(filing_type)
+    mapped = index.get(stem)
+    if mapped:
+        return mapped
+    folded = stem.replace("_s_", "s_")
+    if folded != stem:
+        return index.get(folded)
+    return None
 
 
 def _numbered_slot_id(stem: str, known: list[str]) -> str | None:
@@ -705,6 +800,9 @@ def slot_id_from_name(name: str, filing_type: str | None = None) -> str | None:
     alias = _SLOT_NAME_ALIASES.get(stem)
     if alias and (not known or alias in known or alias == "fullpetition"):
         return alias
+    mapped = _slot_from_token(stem, filing_type)
+    if mapped and (not known or mapped in known or mapped == "fullpetition"):
+        return mapped
     matches = [slot_id for slot_id in known if slot_id in stem or stem in slot_id]
     if matches:
         return max(matches, key=len)

@@ -310,8 +310,9 @@ class AdvocateOnRecord(BaseModel):
         description=(
             "The phone number printed for this advocate. Look for Ph., Phone, Tel., "
             "or Mobile on the chamber line, including a number after the PIN such as "
-            "Ph.: 23386175. Copy that number here. Leave null only when no phone is "
-            "printed. Do not invent one."
+            "Ph.: 23386175. Copy that number here. A +91 number printed under the "
+            "AOR name on a Vakalatnama or Memo of Appearance also goes here. "
+            "Leave null only when no phone is printed. Do not invent one."
         ),
     )
     firm: str | None = Field(

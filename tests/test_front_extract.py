@@ -181,6 +181,50 @@ def test_chamber_line_phone_is_stored_on_the_advocate() -> None:
     assert "320" in advocate["office_address"]
 
 
+def test_vakalatnama_phone_and_address_fill_a_blank_advocate() -> None:
+    done = finalize_front_extract(
+        {
+            "advocates_on_record": [
+                {
+                    "name": "IVAN",
+                    "registration_number": "3232",
+                    "email": "in.chambers@outlook.com",
+                    "mobile": None,
+                    "office_address": None,
+                    "source_pages": [3, 11],
+                }
+            ]
+        },
+        page_markdown={
+            131: """
+            ## V A K A L A T N A M A
+            I, RAJEEV RANJAN SINGH, r/o Village Piyan, Bihar 821108, appoint Mr. Ivan.
+            **Ivan**
+            **AOR Code: 3232**
+
+            ## MEMO OF APPEARANCE
+            To
+            The Registrar,
+            Supreme Court of India,
+            New Delhi.
+            Yours faithfully,
+            **Ivan**
+            **AOR Code: 3232**
+            **T-19 (LGF) Green Park Extn.**
+            **New Delhi 110016**
+            **+91 9818155965**
+            """,
+        },
+    )
+    advocate = done["advocates_on_record"][0]
+    assert advocate["mobile"] == "+91 9818155965"
+    assert advocate["office_address"] == (
+        "T-19 (LGF) Green Park Extn., New Delhi 110016"
+    )
+    assert "821108" not in advocate["office_address"]
+    assert 131 in advocate["source_pages"]
+
+
 def test_chamber_phone_is_read_from_the_page_when_the_address_omits_it() -> None:
     done = finalize_front_extract(
         {
