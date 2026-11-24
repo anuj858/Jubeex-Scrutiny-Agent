@@ -128,7 +128,11 @@ def prepare(
             _set_environment(
                 container,
                 "JUBEEX_REMOTE_FILE_HOSTS",
-                (f"{bucket}.s3.{region}.amazonaws.com,s3.{region}.amazonaws.com"),
+                (
+                    f"{bucket}.s3.{region}.amazonaws.com,"
+                    f"{bucket}.s3.amazonaws.com,"
+                    f"s3.{region}.amazonaws.com"
+                ),
             )
         if role == "api" and "JUBEEX_API_KEY" not in secrets:
             raise ValueError(f"{filename}: missing JUBEEX_API_KEY secret")

@@ -35,6 +35,7 @@ def test_prepare_release_pins_images_and_database_catalogue(tmp_path: Path) -> N
         assert env["JUBEEX_CALLBACK_URL"].startswith("https://")
         assert env["JUBEEX_REMOTE_FILE_HOSTS"] == (
             "jubeex-893338224943-ap-south-1-an.s3.ap-south-1.amazonaws.com,"
+            "jubeex-893338224943-ap-south-1-an.s3.amazonaws.com,"
             "s3.ap-south-1.amazonaws.com"
         )
         assert container["image"] == (API_IMAGE if "api" in path.name else WORKER_IMAGE)
