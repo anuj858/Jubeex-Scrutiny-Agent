@@ -1665,6 +1665,110 @@ def _fill_aor_phones(
             phone = _phone_after_chamber(address, page_markdown)
         if phone:
             aor["mobile"] = phone
+    _fill_aor_from_appearance(payload, page_markdown)
+
+
+_APPEARANCE_PAGE = re.compile(
+    r"vak[a-z]{0,3}latnama|memo\s+of\s+appearance",
+    re.IGNORECASE,
+)
+_AOR_CODE_LINE = re.compile(
+    r"\baor\s*code\s*[:.]?\s*(\d{3,6})\b|\bregistration\s+no\.?\s*[:.]?\s*(\d{3,6})\b",
+    re.IGNORECASE,
+)
+_APPEARANCE_PLACE = re.compile(
+    r"\b(?:delhi|extn|extension|park|nagar|road|floor|lgf|chamber|block|marg|enclave)\b"
+    r"|\b\d{6}\b",
+    re.IGNORECASE,
+)
+
+
+def _plain_aor_line(line: str) -> str:
+    text = re.sub(r"\[signature:[^\]]*\]", " ", line or "", flags=re.IGNORECASE)
+    text = re.sub(r"\*+", " ", text)
+    text = re.sub(r"^#+\s*", "", text)
+    return re.sub(r"\s+", " ", text).strip(" -*")
+
+
+def _bare_mobile(text: str) -> str | None:
+    """A phone printed on its own line, including +91 with no Ph. label."""
+    if re.search(r"[A-Za-z]", text or ""):
+        return None
+    digits = re.sub(r"\D", "", text or "")
+    if digits.startswith("91") and len(digits) == 12 and digits[2] in "6789":
+        return re.sub(r"\s+", " ", text).strip()
+    if len(digits) == 10 and digits[0] in "6789":
+        return digits
+    return None
+
+
+def _appearance_contacts(
+    pages: Mapping[int, str] | None,
+) -> list[tuple[str, str | None, str | None, int]]:
+    """Chamber and phone printed under the AOR code on a vakalatnama or memo."""
+    found: list[tuple[str, str | None, str | None, int]] = []
+    for page in sorted(pages or {}):
+        text = (pages or {}).get(page) or ""
+        if not _APPEARANCE_PAGE.search(text):
+            continue
+        lines = [_plain_aor_line(line) for line in text.splitlines()]
+        for index, line in enumerate(lines):
+            code_match = _AOR_CODE_LINE.search(line)
+            if not code_match:
+                continue
+            code = next(group for group in code_match.groups() if group)
+            address: list[str] = []
+            phone: str | None = None
+            for follow in lines[index + 1 : index + 7]:
+                if not follow:
+                    if address or phone:
+                        break
+                    continue
+                labelled = _printed_phone(follow)
+                bare = _bare_mobile(follow)
+                if labelled or bare:
+                    phone = labelled or bare
+                    break
+                if _APPEARANCE_PLACE.search(follow) and len(follow.split()) <= 12:
+                    address.append(follow.strip(" ,"))
+                    continue
+                if address:
+                    break
+            if address or phone:
+                found.append((code, ", ".join(address) or None, phone, page))
+    return found
+
+
+def _fill_aor_from_appearance(
+    payload: dict[str, Any],
+    page_markdown: Mapping[int, str] | None,
+) -> None:
+    """Fill a blank chamber or phone from the vakalatnama or memo of appearance."""
+    contacts = _appearance_contacts(page_markdown)
+    if not contacts:
+        return
+    advocates = [
+        aor for aor in payload.get("advocates_on_record") or [] if isinstance(aor, dict)
+    ]
+    if not advocates:
+        return
+    for aor in advocates:
+        if aor.get("office_address") and str(aor.get("mobile") or "").strip():
+            continue
+        code = re.sub(r"\D", "", str(aor.get("registration_number") or ""))
+        chosen = [item for item in contacts if item[0] == code] or (
+            contacts if len(advocates) == 1 else []
+        )
+        if not chosen:
+            continue
+        _code, address, phone, page = chosen[-1]
+        if address and not aor.get("office_address"):
+            aor["office_address"] = address
+        if phone and not str(aor.get("mobile") or "").strip():
+            aor["mobile"] = phone
+        pages = aor.get("source_pages")
+        if isinstance(pages, list) and page not in pages:
+            pages.append(page)
 
 
 def _normalize_legacy_keys(payload: dict[str, Any]) -> None:

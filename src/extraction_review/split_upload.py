@@ -1910,6 +1910,8 @@ def build_front_extract_system_prompt(names: Sequence[str] | None = None) -> str
             f"- acting_through: {FRONT_ACTING_THROUGH_DESCRIPTION}",
             "- advocates_on_record: the printed advocate footer on any page. "
             "A Ph., Phone, Tel., or Mobile number on the chamber line goes in mobile. "
+            "If that footer has no phone, a +91 number under the AOR name on the "
+            "Vakalatnama or Memo of Appearance also goes in mobile. "
             "Do not invent name, code, email, mobile, firm, chamber, or PIN.",
             "- impugned_orders: court, date, and case number of the order under challenge, from whichever page prints them. bench is the CORAM judge names joined with '; '.",
             "- relief_sort: the prayer body under Main Prayer or Prayer, without the heading.",
