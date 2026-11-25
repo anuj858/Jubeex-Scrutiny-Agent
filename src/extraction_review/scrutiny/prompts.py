@@ -22,6 +22,7 @@ from ..document_parts import (
     required_parts_for_defect,
 )
 from ..layout_index import page_entry
+from ..parsed_document import attach_side_cells
 from .rules import (
     Catalogue,
     Defect,
@@ -157,6 +158,11 @@ is the clause as printed on the missing page, embedded against normalized_text. 
 Put that printed clause first. Do not copy the Standard. It is not a keyword \
 filter and not a field name. Do not ask for more context when the excerpts \
 already decide the row.
+17. A line that begins with "Row:" is that table row read across. The number \
+at the start is the item or paragraph number. YES, NO, NA, or N.A. after the \
+colon is the answer in the second cell or in the cell beside the words. A \
+plain line with that answer after a colon is the same. When the Row line or \
+the plain line shows the number or the answer, it is present.
 
 How to decide:
 
@@ -300,7 +306,9 @@ def _format_evidence(
         else:
             header = "[Document excerpt]"
 
-        text = chunk.get("text") or ""
+        text = attach_side_cells(str(chunk.get("text") or ""))
+        if text != (chunk.get("text") or ""):
+            chunk["text"] = text
         block = f"{header}\n{text}"
         if len(block) > budget:
             if label:
