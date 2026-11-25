@@ -237,6 +237,7 @@ class SplitFilesEvent(StartEvent):
     model_tier: str | None = None
     court: str | None = None
     version: int | None = None
+    scrutiny_date: str | None = None
     reuse_pages_by_slot: dict[str, dict[str, str]] = Field(default_factory=dict)
     reuse_layouts_by_slot: dict[str, dict[str, Any]] = Field(default_factory=dict)
     reuse_structured_pages_by_slot: dict[str, dict[str, Any]] = Field(
@@ -310,6 +311,7 @@ class SplitFilesState(BaseModel):
     model_tier: str | None = None
     court: str | None = None
     version: int | None = None
+    scrutiny_date: str | None = None
     pages_by_slot: dict[str, dict[int, str]] = Field(default_factory=dict)
     layouts_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(default_factory=dict)
     structured_pages_by_slot: dict[str, dict[int, dict[str, Any]]] = Field(
@@ -643,6 +645,7 @@ class ProcessSplitFilesWorkflow(Workflow):
             state.model_tier = event.model_tier
             state.court = event.court
             state.version = event.version
+            state.scrutiny_date = event.scrutiny_date
             state.pages_by_slot = pages_by_slot
             state.layouts_by_slot = layouts_by_slot
             state.structured_pages_by_slot = structured_pages_by_slot
@@ -2028,6 +2031,7 @@ async def _run_nested_scrutiny(
             model_tier=state.model_tier,
             court=state.court,
             version=state.version,
+            scrutiny_date=state.scrutiny_date,
         )
     )
     try:

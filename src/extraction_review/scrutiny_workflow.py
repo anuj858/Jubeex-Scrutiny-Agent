@@ -90,6 +90,10 @@ from .scrutiny.prompts import (
     MAX_EVIDENCE_CHARS,
     build_defect_prompt,
     build_system_prompt,
+    parse_scrutiny_date,
+    scrutiny_date_prompt,
+    scrutiny_run_clock,
+    stamp_scrutiny_date,
 )
 from .scrutiny.rules import (
     Catalogue,
@@ -539,6 +543,8 @@ class ScrutinyEvent(StartEvent):
     court: str | None = None
     model_tier: str | None = None
     version: int | None = None
+    # Indian calendar date (YYYY-MM-DD) captured when index or reindex was hit.
+    scrutiny_date: str | None = None
 
 
 class Status(Event):
@@ -868,9 +874,12 @@ def _complete_batch_adjudication_prompt(
         f"BATCH {number}\n{response.model_dump_json(exclude_none=True)}"
         for number, response in enumerate(responses, start=1)
     )
-    return (
+    scrutiny_date = scrutiny_date_prompt(defect)
+    date_section = f"{scrutiny_date}\n\n" if scrutiny_date else ""
+    return stamp_scrutiny_date(
         f"Reconcile the complete-evidence batch findings for {defect.check_id}.\n"
         f"Requirement: {defect.requirement}\n"
+        f"{date_section}"
         f"Operational note:\n{defect.ai_note or ''}\n\n"
         "The batches together cover the complete relevant evidence scope. Treat "
         "their evidence references and element results as one filing. A statement "
@@ -2555,6 +2564,16 @@ class ScrutinyWorkflow(Workflow):
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
+    ) -> ScrutinyResponse:
+        """Run every defect against the Indian date when index or reindex was hit."""
+        with scrutiny_run_clock(parse_scrutiny_date(event.scrutiny_date)):
+            return await self._run_scrutiny(event, ctx, llama_cloud_client)
+
+    async def _run_scrutiny(
+        self,
+        event: ScrutinyEvent,
+        ctx: Context[ScrutinyState],
+        llama_cloud_client: AsyncLlamaCloud,
     ) -> ScrutinyResponse:
         scrutiny_started = time.perf_counter()
         if not scrutiny_enabled():

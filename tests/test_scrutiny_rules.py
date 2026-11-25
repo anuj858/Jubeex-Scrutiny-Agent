@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import statistics
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import jsonschema
 
@@ -25,6 +27,8 @@ from extraction_review.scrutiny.prompts import (
     build_system_prompt,
     fallback_reasoning,
     finding_title,
+    parse_scrutiny_date,
+    scrutiny_run_clock,
 )
 from extraction_review.scrutiny.rules import (
     Catalogue,
@@ -46,6 +50,7 @@ from extraction_review.scrutiny.schema import (
     official_source_locations,
 )
 from extraction_review.scrutiny_workflow import (
+    _complete_batch_adjudication_prompt,
     _defects_for_special_categories,
     _special_categories_for_filing,
 )
@@ -117,6 +122,117 @@ def test_defect_prompt_includes_relevant_stored_visual_observations() -> None:
     assert "Vakalatnama, page 1" in prompt
     assert "visible text: 9 June 2024" in prompt
     assert "Annexure P-1" not in prompt
+
+
+def test_scrutiny_date_is_the_live_indian_date(monkeypatch) -> None:
+    frozen = datetime(2026, 11, 25, 18, 5, 12, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return frozen.replace(tzinfo=None)
+            return frozen.astimezone(tz)
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.prompts.datetime",
+        _FrozenDateTime,
+    )
+
+    dated = _defect("D-341", "Civil Appeal").model_copy(
+        update={
+            "requirement": (
+                "Limitation is calculated up to the Scrutiny Date, the date "
+                "on which scrutiny is actually run."
+            ),
+        }
+    )
+    prompt = build_defect_prompt(dated, record={}, chunks=[])
+
+    assert prompt.index("## Scrutiny Date (25 November 2026) for this run") < prompt.index(
+        "## Standard"
+    )
+    assert "Scrutiny Date: 25 November 2026" in prompt
+    assert "up to the Scrutiny Date (25 November 2026)" in prompt
+    assert "Fetched at" not in prompt
+    assert "18:05" not in prompt
+
+    looked_up = _defect("D-342", "Review Petition").model_copy(
+        update={
+            "where_to_look": [
+                "The Scrutiny Date (the actual date on which scrutiny is run)."
+            ],
+        }
+    )
+    noted = _defect("D-361", "Civil Appeal").model_copy(
+        update={"ai_note": "Fetch the current scrutiny date afresh for this run."}
+    )
+    shouted = _defect("D-362", "Civil Appeal").model_copy(
+        update={"requirement": "Count delay up to the SCRUTINY DATE."}
+    )
+    for defect in (looked_up, noted, shouted):
+        text = build_defect_prompt(defect, record={}, chunks=[])
+        assert "Fetched at" not in text
+    assert "Scrutiny Date (25 November 2026)" in build_defect_prompt(
+        looked_up, record={}, chunks=[]
+    )
+    assert "scrutiny date (25 November 2026)" in build_defect_prompt(
+        noted, record={}, chunks=[]
+    )
+    assert "SCRUTINY DATE (25 November 2026)" in build_defect_prompt(
+        shouted, record={}, chunks=[]
+    )
+
+    plain = _defect("D-57", "General/Global")
+    assert "## Scrutiny Date for this run" not in build_defect_prompt(
+        plain, record={}, chunks=[]
+    )
+
+    reconciled = _complete_batch_adjudication_prompt(dated, [])
+    assert "Scrutiny Date: 25 November 2026" in reconciled
+    assert "Scrutiny Date (25 November 2026)" in reconciled
+    assert "Fetched at" not in reconciled
+    assert "## Scrutiny Date for this run" not in _complete_batch_adjudication_prompt(
+        plain, []
+    )
+
+
+def test_scrutiny_run_keeps_the_start_date_past_midnight(monkeypatch) -> None:
+    later = datetime(2026, 11, 26, 0, 1, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return later.replace(tzinfo=None)
+            return later.astimezone(tz)
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.prompts.datetime",
+        _FrozenDateTime,
+    )
+    dated = _defect("D-341", "Civil Appeal").model_copy(
+        update={
+            "requirement": (
+                "Limitation is calculated up to the Scrutiny Date, the date "
+                "on which scrutiny is actually run."
+            ),
+        }
+    )
+    noted = _defect("D-361", "Civil Appeal").model_copy(
+        update={"ai_note": "Fetch the current Scrutiny Date afresh for this run."}
+    )
+
+    with scrutiny_run_clock(parse_scrutiny_date("2026-11-25")):
+        first = build_defect_prompt(dated, record={}, chunks=[])
+        second = build_defect_prompt(noted, record={}, chunks=[])
+        reconciled = _complete_batch_adjudication_prompt(dated, [])
+
+    for text in (first, second, reconciled):
+        assert "Scrutiny Date (25 November 2026)" in text
+        assert "26 November 2026" not in text
+        assert "Fetched at" not in text
+        assert "00:01" not in text
 
 
 def test_unverified_catalogue_note_does_not_gate_operational_outcome() -> None:

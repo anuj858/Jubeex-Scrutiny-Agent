@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -869,6 +871,63 @@ def test_index_and_reindex_take_the_special_category_array(
     assert empty.status_code == 202
     assert getattr(captured["event"], "special_categories") == []
     assert getattr(captured["event"], "version") == 4
+
+
+def test_index_and_reindex_stamp_the_indian_date_when_hit(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = BundlePrepared(filing_type="SLP_CIVIL", agent_data_id="agd-date")
+    captured: dict[str, object] = {}
+    frozen = datetime(2026, 11, 25, 23, 58, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return frozen.replace(tzinfo=None)
+            return frozen.astimezone(tz)
+
+    monkeypatch.setattr(
+        "extraction_review.scrutiny.prompts.datetime",
+        _FrozenDateTime,
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.process_file_workflow.run",
+        lambda start_event: captured.update(event=start_event)
+        or ImmediateHandler(prepared),
+    )
+
+    async def fake_notify(**_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr("extraction_review.api.notify_job_finished", fake_notify)
+
+    async def existing_filing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "extraction_review.api._require_filing_for_index",
+        existing_filing,
+    )
+    monkeypatch.setattr(
+        "extraction_review.api.delete_workspace_records",
+        lambda _workspace_id: None,
+    )
+    body = {
+        "filing_type": "SLP_CIVIL",
+        "model_tier": "low",
+        "version": 1,
+        "workspace_id": "ws-date",
+        "documents": [_doc("01_Petition.pdf")],
+    }
+    for path in (
+        "/v1/filings/agd-date/index",
+        "/v1/filings/agd-date/reindex",
+    ):
+        captured.clear()
+        response = client.post(path, json=body)
+        assert response.status_code == 202
+        assert getattr(captured["event"], "scrutiny_date") == "2026-11-25"
 
 
 def test_index_edited_false(

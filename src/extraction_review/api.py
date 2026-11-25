@@ -53,6 +53,7 @@ from .process_file import (
 from .process_file import workflow as process_file_workflow
 from .queue import enqueue_job, sqs_enabled
 from .s3_artifacts import recorded_artifacts, set_job_context
+from .scrutiny.prompts import ist_calendar_date
 from .scrutiny.rules import special_categories_for_catalog
 from .scrutiny_workflow import ScrutinyAfterIndexError, ScrutinyEvent
 from .scrutiny_workflow import workflow as scrutiny_workflow
@@ -1354,6 +1355,9 @@ def _index_event(agent_data_id: str, body: IndexFilingRequest) -> FileEvent:
     payload["job_type"] = "index_parsed"
     payload["agent_data_id"] = agent_data_id
     payload["edited"] = parse_edited_flag(body.edited)
+    # Both /index and /reindex stamp this before the job is queued. Defects
+    # that finish after midnight still use this Indian calendar date.
+    payload["scrutiny_date"] = ist_calendar_date().isoformat()
     return _file_event_http(payload)
 
 
