@@ -6,6 +6,7 @@ from typing import Any
 
 from extraction_review import vector_store
 from extraction_review.parsed_document import (
+    attach_side_cells,
     build_semantic_chunks,
     extract_structured_pages,
 )
@@ -157,3 +158,68 @@ def test_gemini_evidence_label_includes_parser_provenance() -> None:
     assert "printed page A-1" in evidence
     assert "heading: I N D E X" in evidence
     assert "table rows 3-11" in evidence
+    assert "Row: 1. Office Report on Limitation" in evidence
+
+
+def test_checklist_answer_cell_is_written_on_the_row() -> None:
+    text = attach_side_cells(
+        "\n".join(
+            [
+                "S.No.: 11",
+                "Particulars: Whether the particulars of the impugned judgment are uniform.",
+                "YES/NO/N.A.: NA",
+                "",
+                "S.No.: 12",
+                "Particulars: (i) Whether the addresses of the parties are complete.",
+                "YES/NO/N.A.: Yes",
+                "",
+                "Particulars: (ii) Whether the cause title corresponds.",
+                "YES/NO/N.A.: Yes",
+            ]
+        )
+    )
+    assert (
+        "Row: 11. Whether the particulars of the impugned judgment are uniform. : NA"
+        in text
+    )
+    assert "Row: 12. (i) Whether the addresses of the parties are complete. : Yes" in text
+    assert "Row: 12. (ii) Whether the cause title corresponds. : Yes" in text
+    assert attach_side_cells(text) == text
+
+
+def test_affidavit_paragraph_number_is_written_on_the_row() -> None:
+    text = attach_side_cells(
+        "\n".join(
+            [
+                "Column 1: 1",
+                "Column 2: That I am Petitioner in the aforesaid matter.",
+                "",
+                "Column 1: 2",
+                "Column 2: I say that the contents of the Synopsis are true.",
+            ]
+        )
+    )
+    assert "Row: 1. That I am Petitioner in the aforesaid matter." in text
+    assert "Row: 2. I say that the contents of the Synopsis are true." in text
+
+
+def test_markdown_table_and_plain_colon_line_keep_the_answer() -> None:
+    text = attach_side_cells(
+        "\n".join(
+            [
+                "| S.No. | Particulars | YES/NO/N.A. |",
+                "| --- | --- | --- |",
+                "| 16 | Whether the petition is confined to the pleadings. | Yes |",
+                "|  | If not, whether an application for additional grounds has been filed. | NA |",
+                "",
+                "18. In matters involving conviction: NO",
+            ]
+        )
+    )
+    assert "Row: 16. Whether the petition is confined to the pleadings. : Yes" in text
+    assert (
+        "Row: 16. If not, whether an application for additional grounds has been filed. : NA"
+        in text
+    )
+    assert "18. In matters involving conviction: NO" in text
+    assert "Row: 18." not in text

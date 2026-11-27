@@ -221,6 +221,226 @@ def _looks_like_header(row: list[str]) -> bool:
     return any(cue in joined for cue in cues)
 
 
+# A stored table row is one labelled cell per line. The paragraph number, the
+# item number, and YES/NO/NA sit in the cells beside the words. Put them back
+# on one line so a later check can see that they were filled.
+_ROW_MARK = "Row:"
+_CELL_SPLIT_RE = re.compile(r"^(?P<label>.{1,80}?):\s*(?P<value>.*)$")
+_KNOWN_LABEL_RE = re.compile(
+    r"^(?:column\s+\d+|s\.?\s*no\.?|sr\.?\s*no\.?|serial(?:\s+no\.?)?|"
+    r"particulars?|remarks?|description|page\s*no\.?|"
+    r"yes\s*/\s*no(?:\s*/\s*n\.?\s*a\.?)?|answer|requirement)"
+    r"(?:\s*\(\s*column\s+\d+\s*\))?$",
+    re.IGNORECASE,
+)
+_COLUMN_TAG_RE = re.compile(r"\(\s*column\s+\d+\s*\)", re.IGNORECASE)
+_ITEM_NUMBER_RE = re.compile(r"^\d{1,3}\s*[.)]?$")
+_SUB_NUMBER_RE = re.compile(r"^\(\s*[ivxlcdm]{1,6}\s*\)$", re.IGNORECASE)
+_ANSWER_CELL_RE = re.compile(
+    r"^(?:yes|no|n\.?\s*a\.?|n\s*/\s*a|/+\s*n\.?\s*a\.?)$",
+    re.IGNORECASE,
+)
+_PIPE_RULE_RE = re.compile(r"^:?-{3,}:?$")
+_HEADER_CUES = ("s.no", "serial", "particular", "remarks", "yes/no", "yes / no", "description")
+
+
+def _known_cell_label(label: str) -> bool:
+    text = re.sub(r"\s+", " ", label).strip()
+    if not text:
+        return False
+    if _COLUMN_TAG_RE.search(text):
+        return True
+    return _KNOWN_LABEL_RE.match(text) is not None
+
+
+def _cell_value(line: str) -> str | None:
+    """Value of one stored table cell, when the line is a column label."""
+    match = _CELL_SPLIT_RE.match(line.strip())
+    if match is None or not _known_cell_label(match.group("label")):
+        return None
+    return match.group("value").strip()
+
+
+def _is_item_number(value: str) -> bool:
+    return _ITEM_NUMBER_RE.fullmatch(value.strip()) is not None
+
+
+def _is_sub_number(value: str) -> bool:
+    return _SUB_NUMBER_RE.fullmatch(value.strip()) is not None
+
+
+def _is_answer(value: str) -> bool:
+    return _ANSWER_CELL_RE.fullmatch(value.strip().strip(".")) is not None
+
+
+def _number_prefix(number: str | None) -> str:
+    if not number:
+        return ""
+    token = re.sub(r"\s+", " ", number).strip()
+    match = re.fullmatch(
+        r"(\d{1,3})\s*[.)]?\s*(\(\s*[ivxlcdm]{1,6}\s*\))?",
+        token,
+        re.IGNORECASE,
+    )
+    if match:
+        prefix = f"{match.group(1)}."
+        if match.group(2):
+            prefix = f"{prefix} {match.group(2)}"
+        return f"{prefix} "
+    if _is_sub_number(token):
+        return f"{token} "
+    return f"{token} "
+
+
+def _reading_line(
+    values: list[str], carried: str | None
+) -> tuple[str | None, str | None]:
+    """One row, with its side cells written beside the words."""
+    cells = [re.sub(r"\s+", " ", value).strip() for value in values]
+    if not any(cells):
+        return None, carried
+    first = cells[0]
+    if first and _is_item_number(first):
+        carried = first
+        number: str | None = first
+        rest = cells[1:]
+    elif first and _is_sub_number(first):
+        number = f"{carried} {first}".strip() if carried else first
+        rest = cells[1:]
+    elif not first:
+        number = carried
+        rest = cells[1:]
+    else:
+        number = carried
+        rest = cells
+    body_cells = [cell for cell in rest if cell]
+    answer = None
+    if body_cells and _is_answer(body_cells[-1]):
+        answer = body_cells[-1].strip().strip(".")
+        body_cells = body_cells[:-1]
+    body = " ".join(body_cells).strip()
+    prefix = _number_prefix(number)
+    if prefix and body.casefold().startswith(prefix.strip().casefold()):
+        text = body
+    else:
+        text = f"{prefix}{body}".strip()
+    if answer:
+        text = f"{text} : {answer}".strip()
+    if not text or (not prefix and not answer):
+        return None, carried
+    return f"{_ROW_MARK} {text}", carried
+
+
+def _column_values(lines: list[str]) -> list[str] | None:
+    values: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith(f"{_ROW_MARK} "):
+            continue
+        value = _cell_value(line)
+        if value is None:
+            if not values:
+                return None
+            values[-1] = f"{values[-1]} {line}".strip()
+            continue
+        values.append(value)
+    if len([value for value in values if value]) < 2:
+        return None
+    return values
+
+
+def _pipe_cells(line: str) -> list[str]:
+    raw = line.strip()
+    if raw.startswith("|"):
+        raw = raw[1:]
+    if raw.endswith("|"):
+        raw = raw[:-1]
+    cells: list[str] = []
+    for cell in raw.split("|"):
+        text = _BR_RE.sub(" ", cell)
+        text = _TAG_RE.sub("", text)
+        cells.append(re.sub(r"\s+", " ", text).strip())
+    return cells
+
+
+def _is_pipe_rule(cells: list[str]) -> bool:
+    nonempty = [cell for cell in cells if cell]
+    return bool(nonempty) and all(_PIPE_RULE_RE.fullmatch(cell) for cell in nonempty)
+
+
+def _is_pipe_header(cells: list[str]) -> bool:
+    if any(_is_item_number(cell) for cell in cells if cell):
+        return False
+    joined = " ".join(cells).casefold()
+    return any(cue in joined for cue in _HEADER_CUES)
+
+
+def attach_side_cells(text: str) -> str:
+    """Repeat each table row with its number and YES/NO/NA on that line.
+
+    Stored rows keep one cell per line, and a markdown table keeps the answer
+    in another column. The added ``Row:`` line is the same row read across.
+    A number that spans the following sub-rows stays on those sub-rows.
+    """
+    lines = (text or "").splitlines()
+    if not lines:
+        return text or ""
+    output: list[str] = []
+    carried: str | None = None
+    index = 0
+    while index < len(lines):
+        if not lines[index].strip():
+            output.append(lines[index])
+            index += 1
+            continue
+        if lines[index].lstrip().startswith("|"):
+            end = index
+            while end < len(lines) and lines[end].lstrip().startswith("|"):
+                end += 1
+            output.extend(lines[index:end])
+            carried = None
+            for line in lines[index:end]:
+                cells = _pipe_cells(line)
+                if _is_pipe_rule(cells) or _is_pipe_header(cells):
+                    continue
+                reading, carried = _reading_line(cells, carried)
+                if reading and reading not in lines:
+                    output.append(reading)
+            index = end
+            continue
+        end = index
+        while (
+            end < len(lines)
+            and lines[end].strip()
+            and not lines[end].lstrip().startswith("|")
+        ):
+            end += 1
+        block = lines[index:end]
+        values = _column_values(block)
+        if values is None:
+            output.extend(block)
+            if not any(line.strip().startswith(f"{_ROW_MARK} ") for line in block):
+                carried = None
+            index = end
+            continue
+        output.extend(line for line in block if not line.strip().startswith(f"{_ROW_MARK} "))
+        reading, carried = _reading_line(values, carried)
+        existing = [
+            line.strip()
+            for line in block
+            if line.strip().startswith(f"{_ROW_MARK} ")
+        ]
+        if reading and reading not in existing:
+            output.append(reading)
+        else:
+            output.extend(existing)
+        index = end
+    rendered = "\n".join(output)
+    if text.endswith("\n") and not rendered.endswith("\n"):
+        rendered += "\n"
+    return rendered
+
+
 def _table_blocks(item: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows = [list(row) for row in item.get("rows") or [] if isinstance(row, list)]
     if not rows:

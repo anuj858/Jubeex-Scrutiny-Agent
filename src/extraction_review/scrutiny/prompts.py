@@ -10,7 +10,11 @@ from __future__ import annotations
 import ast
 import json
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..document_parts import (
     catalogue_inspect_parts,
@@ -22,6 +26,7 @@ from ..document_parts import (
     required_parts_for_defect,
 )
 from ..layout_index import page_entry
+from ..parsed_document import attach_side_cells
 from .rules import (
     Catalogue,
     Defect,
@@ -157,6 +162,11 @@ is the clause as printed on the missing page, embedded against normalized_text. 
 Put that printed clause first. Do not copy the Standard. It is not a keyword \
 filter and not a field name. Do not ask for more context when the excerpts \
 already decide the row.
+17. A line that begins with "Row:" is that table row read across. The number \
+at the start is the item or paragraph number. YES, NO, NA, or N.A. after the \
+colon is the answer in the second cell or in the cell beside the words. A \
+plain line with that answer after a colon is the same. When the Row line or \
+the plain line shows the number or the answer, it is present.
 
 How to decide:
 
@@ -300,7 +310,9 @@ def _format_evidence(
         else:
             header = "[Document excerpt]"
 
-        text = chunk.get("text") or ""
+        text = attach_side_cells(str(chunk.get("text") or ""))
+        if text != (chunk.get("text") or ""):
+            chunk["text"] = text
         block = f"{header}\n{text}"
         if len(block) > budget:
             if label:
@@ -1677,6 +1689,120 @@ def _indexed_chunks_note(defect: Defect) -> str:
     return "\n".join(lines)
 
 
+_SCRUTINY_DATE_RE = re.compile(r"\bscrutiny date\b", re.IGNORECASE)
+_IST = ZoneInfo("Asia/Kolkata")
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+# One Indian calendar date for every check in the run that set it.
+_RUN_ON: ContextVar[date | None] = ContextVar("scrutiny_run_on", default=None)
+
+
+def ist_calendar_date(moment: datetime | None = None) -> date:
+    """Calendar date in Indian Standard Time (UTC+05:30)."""
+    when = moment or datetime.now(_IST)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_IST)
+    else:
+        when = when.astimezone(_IST)
+    return when.date()
+
+
+def format_scrutiny_date(on: date) -> str:
+    """Date only, such as ``25 November 2026``."""
+    return f"{on.day} {_MONTHS[on.month - 1]} {on.year}"
+
+
+def scrutiny_run_date() -> date:
+    """Date fixed when this scrutiny run started, or today if no run is bound."""
+    bound = _RUN_ON.get()
+    return bound if bound is not None else ist_calendar_date()
+
+
+def parse_scrutiny_date(value: date | str | None) -> date | None:
+    """Read a ``YYYY-MM-DD`` run date. A blank or invalid value is unset."""
+    if isinstance(value, datetime):
+        return ist_calendar_date(value)
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+@contextmanager
+def scrutiny_run_clock(on: date | None = None):
+    """Keep every check in one run on the Indian date when the run was started."""
+    token = _RUN_ON.set(on or ist_calendar_date())
+    try:
+        yield _RUN_ON.get()
+    finally:
+        _RUN_ON.reset(token)
+
+
+def defect_uses_scrutiny_date(defect: Defect) -> bool:
+    """True when this check counts limitation to the live scrutiny date."""
+    parts = [
+        check_requirement(defect),
+        defect.requirement or "",
+        defect.ai_note or "",
+    ]
+    parts.extend(str(step) for step in defect.where_to_look or [])
+    return _SCRUTINY_DATE_RE.search("\n".join(parts)) is not None
+
+
+def stamp_scrutiny_date(text: str) -> str:
+    """Write the run date beside every ``Scrutiny Date``, in any capitalization.
+
+    ``Scrutiny Date``, ``scrutiny date`` and ``SCRUTINY DATE`` all receive the
+    same Indian calendar date captured when the index or reindex API was called.
+    A phrase that already has that date beside it is left unchanged.
+    """
+    if _SCRUTINY_DATE_RE.search(text) is None:
+        return text
+    calendar = format_scrutiny_date(scrutiny_run_date())
+    pattern = re.compile(
+        rf"\bscrutiny date\b(?!\s*:?\s*(?:\(\s*)?{re.escape(calendar)})",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda match: f"{match.group(0)} ({calendar})", text)
+
+
+def scrutiny_date_prompt(defect: Defect) -> str | None:
+    """Calendar date for a check that uses the Scrutiny Date.
+
+    The date is the Indian calendar date when the scrutiny run started, so a
+    check that finishes after midnight still uses that same day. Only the date
+    is sent. Checks that do not mention a Scrutiny Date receive nothing.
+    """
+    if not defect_uses_scrutiny_date(defect):
+        return None
+    calendar = format_scrutiny_date(scrutiny_run_date())
+    return (
+        "## Scrutiny Date for this run\n"
+        f"Scrutiny Date: {calendar}\n"
+        "Use this date as the end point of every limitation or delay "
+        "calculation in this task. Every check in this run uses this same "
+        "date. Do not use the filing date, a date printed in the documents, "
+        "or a date from an earlier run."
+    )
+
+
 def build_defect_prompt(
     defect: Defect,
     *,
@@ -1703,25 +1829,32 @@ def build_defect_prompt(
         f"# Task {defect.check_id}",
         "Decide this one defect. Ignore every other defect, even if the excerpts mention it.",
         "",
-        "## Standard",
-        _format_standard(defect),
-        "",
-        "## Where to look",
-        search or "Use the document types below.",
-        "",
-        "## Document types to inspect",
-        document_types or "The parts named in where to look.",
-        "",
-        (
-            "If the excerpts do not include the document type this task is "
-            "inspecting, return needs_review — not defect_found. If those "
-            "parts are present but the evidence does not positively show the "
-            "exact failure, return needs_review. Return defect_found only for "
-            "a grounded blank, incorrect value, inconsistency, or incomplete "
-            "clause. If you suspect a defect but "
-            "confidence is below 0.6, return needs_review."
-        ),
     ]
+    scrutiny_date = scrutiny_date_prompt(defect)
+    if scrutiny_date:
+        sections.extend([scrutiny_date, ""])
+    sections.extend(
+        [
+            "## Standard",
+            _format_standard(defect),
+            "",
+            "## Where to look",
+            search or "Use the document types below.",
+            "",
+            "## Document types to inspect",
+            document_types or "The parts named in where to look.",
+            "",
+            (
+                "If the excerpts do not include the document type this task is "
+                "inspecting, return needs_review — not defect_found. If those "
+                "parts are present but the evidence does not positively show the "
+                "exact failure, return needs_review. Return defect_found only for "
+                "a grounded blank, incorrect value, inconsistency, or incomplete "
+                "clause. If you suspect a defect but "
+                "confidence is below 0.6, return needs_review."
+            ),
+        ]
+    )
     if vision_note:
         sections.extend(
             [
@@ -1869,7 +2002,7 @@ def build_defect_prompt(
             ),
         ]
     )
-    return "\n".join(sections)
+    return stamp_scrutiny_date("\n".join(sections))
 
 
 def build_system_prompt(

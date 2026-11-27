@@ -12,6 +12,7 @@ from extraction_review.logging_utils import safe_url_for_log
 from extraction_review.process_file import (
     FileEvent,
     SourceDocument,
+    coerce_slot_id,
     _extract_sliced_parts,
     _filename_from_url,
     _load_bundle_pdf,
@@ -322,6 +323,49 @@ def test_slot_id_from_document_name() -> None:
         slot_id_from_name("Defect_File__001-Application_1.pdf", "SLP_CIVIL")
         == "application_1"
     )
+
+
+def test_catalogue_slug_maps_to_upload_slot() -> None:
+    assert slot_id_from_name("Advocate's Checklist", "SLP_CRIMINAL") == (
+        "advocates_checklist"
+    )
+    assert (
+        coerce_slot_id("advocate_s_checklist", filing_type="SLP_CRIMINAL")
+        == "advocates_checklist"
+    )
+    assert (
+        coerce_slot_id("advocate-s-checklist", filing_type="SLP_CRIMINAL")
+        == "advocates_checklist"
+    )
+    assert (
+        coerce_slot_id("poa-board-resolution", filing_type="SLP_CRIMINAL") == "poa_br"
+    )
+    assert (
+        coerce_slot_id("proof-of-court-fees", filing_type="SLP_CIVIL") == "court_fees"
+    )
+    assert coerce_slot_id("aor_s_certificate", filing_type="SLP_CRIMINAL") == (
+        "aor_s_certificate"
+    )
+    assert coerce_slot_id("aors_declaration", filing_type="SLP_CRIMINAL") == (
+        "aor_s_certificate"
+    )
+    assert coerce_slot_id("unidentified", filing_type="SLP_CRIMINAL") == "undefined"
+
+
+def test_index_request_checklist_slot_is_not_undefined() -> None:
+    event = FileEvent(
+        job_type="index_parsed",
+        filing_type="SLP_CRIMINAL",
+        agent_data_id="agd-test",
+        documents=[
+            {
+                "name": "Advocate's Checklist",
+                "slot_id": "advocate_s_checklist",
+                "download_url": "https://files.example.com/dfl-abc123/document.pdf",
+            }
+        ],
+    )
+    assert event.documents[0].slot_id == "advocates_checklist"
 
 
 def test_undefined_application_file_is_labelled_from_its_name() -> None:

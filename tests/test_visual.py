@@ -1068,6 +1068,31 @@ async def test_detect_uses_file_id_when_url_missing(
 
 
 @pytest.mark.asyncio
+async def test_missing_llamacloud_file_does_not_abort_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_vision(monkeypatch)
+
+    async def missing(_file_id: str) -> bytes:
+        raise RuntimeError(
+            "Error code: 404 - File c9b282ce-e005-4d3b-9fe6-d8a225209130 "
+            "not found in project"
+        )
+
+    index = await detect_visual_marks(
+        parts=[_part("petition", [MAIN_PETITION_PART], file_id="c9b282ce")],
+        pages_by_slot={"petition": {1: "p"}},
+        page_parts={1: [MAIN_PETITION_PART]},
+        download_file_id=missing,
+    )
+    assert index["status"] == "error"
+    assert index["error"] == "download_failed"
+    assert index["marks"] == []
+    assert index["failures"][0]["reason"] == "download_failed"
+    assert "404" in (index["failures"][0]["detail"] or "")
+
+
+@pytest.mark.asyncio
 async def test_detect_serializes_native_rendering_and_bounds_images(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
